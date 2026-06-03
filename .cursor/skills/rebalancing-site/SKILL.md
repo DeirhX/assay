@@ -22,6 +22,9 @@ If investment recommendations change, also read the `portfolio-rebalancing` skil
 - Include a visible sizing legend when pages use NAV percentages.
 - Put source links on detail pages when specific stock claims are made.
 - Do not add secrets, raw IBKR XML, account numbers, or credentials.
+- Never hand-type snapshot figures (NAV, sizing legend, per-position weights, P/L).
+  These come from `data/current-holdings.json` via `tools/generate_site.py`. Wrap
+  such values in `<!--GEN:key-->...<!--/GEN:key-->` markers and regenerate.
 
 ## Current Page Set
 
@@ -38,5 +41,7 @@ If investment recommendations change, also read the `portfolio-rebalancing` skil
 1. Update the relevant HTML page.
 2. Add/update navigation links if a new page is introduced.
 3. Keep `SITE_MAP.md` current.
-4. Run lints/checks for edited files if available.
-5. In the final response, provide the repo-relative path to the main updated page (e.g. `next-steps.html`). If an openable link is needed, build a `file://` URL from the current workspace's absolute path rather than hardcoding a drive.
+4. Run `py -3 tools/generate_site.py` to refresh snapshot-derived values, then
+   `py -3 tools/generate_site.py --check` to confirm nothing is stale.
+5. Run lints/checks for edited files if available.
+6. In the final response, provide the repo-relative path to the main updated page (e.g. `next-steps.html`). If an openable link is needed, build a `file://` URL from the current workspace's absolute path rather than hardcoding a drive.
