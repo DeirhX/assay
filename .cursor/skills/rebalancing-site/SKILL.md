@@ -39,4 +39,4 @@ If investment recommendations change, also read the `portfolio-rebalancing` skil
 2. Add/update navigation links if a new page is introduced.
 3. Keep `SITE_MAP.md` current.
 4. Run lints/checks for edited files if available.
-5. In the final response, provide the `file:///E:/Projects/Active/Finance/rebalancing/...` link for the main updated page.
+5. In the final response, provide the repo-relative path to the main updated page (e.g. `next-steps.html`). If an openable link is needed, build a `file://` URL from the current workspace's absolute path rather than hardcoding a drive.

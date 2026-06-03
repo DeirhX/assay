@@ -2,9 +2,9 @@
 
 Static research and execution checklist for the portfolio rebalancing work.
 
-Open the main page:
+Open the main page (relative to this repo root):
 
-`file:///E:/Projects/Active/Finance/rebalancing/next-steps.html`
+`next-steps.html`
 
 ## Pages
 

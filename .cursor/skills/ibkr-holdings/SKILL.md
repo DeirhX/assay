@@ -7,15 +7,17 @@ description: Pull and analyze the user's Interactive Brokers portfolio from the 
 
 ## Source
 
-Use the existing read-only IBKR Flex reader:
-
-`E:/Projects/Active/Stash/ibkr-portfolio`
+Use the existing read-only IBKR Flex reader. It lives in a separate project
+outside this repo. Resolve its location from the `IBKR_PORTFOLIO_DIR`
+environment variable; if unset, ask the user for the path rather than assuming
+a drive. (Historically it lived at `ibkr-portfolio` under the user's projects
+folder.)
 
 It uses `secrets.env` in that folder. Never print, copy, echo, summarize, or commit tokens. If credentials are missing or invalid, ask the user to update `secrets.env`.
 
 ## Pull Current Holdings
 
-Run from `E:/Projects/Active/Stash/ibkr-portfolio`:
+Run from the IBKR reader directory (`$IBKR_PORTFOLIO_DIR`):
 
 ```powershell
 py -3 "ibkr_portfolio.py" --json --out "portfolio.json" --snapshot-dir "snapshots"

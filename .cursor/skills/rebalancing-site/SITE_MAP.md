@@ -2,7 +2,7 @@
 
 Root directory:
 
-`E:/Projects/Active/Finance/rebalancing`
+The repository root. All page paths below are relative to it.
 
 ## Pages
 
@@ -23,15 +23,18 @@ Root directory:
 | `data/current-holdings.json` | Sanitized machine-readable IBKR holdings snapshot: positions, lots, cash, top positions, and tax-lot summary. |
 | `data/current-holdings-summary.md` | Human-readable holdings snapshot summary for quick context. |
 
-## Public File Links
+## Page Links
 
-- Overview plan: `file:///E:/Projects/Active/Finance/rebalancing/next-steps.html`
-- AMD detail: `file:///E:/Projects/Active/Finance/rebalancing/amd-detail.html`
-- ARM detail: `file:///E:/Projects/Active/Finance/rebalancing/arm-detail.html`
-- Loser dashboard: `file:///E:/Projects/Active/Finance/rebalancing/loser-position-recovery.html`
-- SOFI detail: `file:///E:/Projects/Active/Finance/rebalancing/sofi-detail.html`
-- PYPL detail: `file:///E:/Projects/Active/Finance/rebalancing/pypl-detail.html`
-- EEFT detail: `file:///E:/Projects/Active/Finance/rebalancing/eeft-detail.html`
+Paths are relative to the repository root. To produce an openable `file://` link,
+build it from the current workspace's absolute path rather than hardcoding a drive.
+
+- Overview plan: `next-steps.html`
+- AMD detail: `amd-detail.html`
+- ARM detail: `arm-detail.html`
+- Loser dashboard: `loser-position-recovery.html`
+- SOFI detail: `sofi-detail.html`
+- PYPL detail: `pypl-detail.html`
+- EEFT detail: `eeft-detail.html`
 
 ## Navigation Expectations
 
