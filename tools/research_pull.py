@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""On-demand deep-dive puller for a ticker or a whole segment.
+
+Pulls live numbers from multiple free sources (Yahoo for price/momentum/
+fundamentals, SEC EDGAR for an independent filing-based cross-check, FMP if a key
+is present) and writes a structured, dated, multi-source research file.
+
+The cardinal rule of this repo is preserved: numbers and judgement are kept
+apart. This tool only ever writes the *numbers* block; any human/LLM-authored
+``thesis`` already on disk is carried over untouched, so a re-pull refreshes the
+facts without nuking the analysis.
+
+Usage::
+
+    py -3 tools/research_pull.py --ticker NVDA
+    py -3 tools/research_pull.py --segment semiconductors
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from providers import fmp, sec_edgar, yahoo  # noqa: E402
+from providers.common import (  # noqa: E402
+    ProviderError,
+    fmt_b,
+    fmt_pct,
+    fmt_price,
+    fmt_x,
+)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RESEARCH_DIR = REPO_ROOT / "data" / "research"
+SEGMENT_DEF_DIR = REPO_ROOT / "data" / "segments"
+SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
+HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
+
+# (metric key, preferred source order, formatter)
+METRIC_SPECS: list[tuple[str, list[str], Any]] = [
+    ("market_cap_usd_b", ["yahoo", "fmp"], fmt_b),
+    ("shares_out_b", ["sec_edgar", "yahoo"], lambda v: fmt_b(v, prefix="")),
+    ("pe_ttm", ["yahoo", "fmp"], fmt_x),
+    ("pe_fwd", ["yahoo"], fmt_x),
+    ("ps", ["yahoo", "fmp"], fmt_x),
+    ("revenue_ttm_usd_b", ["yahoo", "sec_edgar"], fmt_b),
+    ("net_income_ttm_usd_b", ["sec_edgar"], fmt_b),
+    ("gross_margin_pct", ["yahoo"], lambda v: "n/a" if v is None else f"{v:.0f}%"),
+    ("rev_growth_yoy_pct", ["yahoo"], fmt_pct),
+]
+
+IDENTITY_TOL = 0.05
+SHARES_TOL = 0.05
+REVENUE_TOL = 0.15  # SEC TTM is an approximation; only flag real divergence
+PRICE_TOL = 0.03
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _rel(a: float, b: float) -> float:
+    return float("inf") if b == 0 else abs(a - b) / abs(b)
+
+
+def _val(node: dict[str, Any] | None) -> float | None:
+    return node.get("value") if isinstance(node, dict) else None
+
+
+def _collect(*sources: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    """metric_key -> list of per-source nodes that supplied it."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for src in sources:
+        if not src:
+            continue
+        for key, node in src.items():
+            if isinstance(node, dict) and "value" in node and "source" in node:
+                out.setdefault(key, []).append(node)
+    return out
+
+
+def _merge_metrics(by_metric: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key, prefs, fmt in METRIC_SPECS:
+        candidates = by_metric.get(key, [])
+        if not candidates:
+            continue
+        order = {s: i for i, s in enumerate(prefs)}
+        chosen = min(candidates, key=lambda n: order.get(n["source"], 99))
+        node = dict(chosen)
+        node["display"] = fmt(node["value"])
+        node["all_sources"] = {c["source"]: c["value"] for c in candidates}
+        merged[key] = node
+    return merged
+
+
+def _cross_checks(
+    symbol: str,
+    momentum: dict[str, Any],
+    y: dict[str, Any] | None,
+    s: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+
+    def add(sev: str, metric: str, msg: str) -> None:
+        findings.append({"severity": sev, "metric": metric, "message": msg})
+
+    y_price = _val(y.get("price")) if y else None
+    y_shares = _val(y.get("shares_out_b")) if y else None
+    y_mcap = _val(y.get("market_cap_usd_b")) if y else None
+    s_shares = _val(s.get("shares_out_b")) if s else None
+    y_rev = _val(y.get("revenue_ttm_usd_b")) if y else None
+    s_rev = _val(s.get("revenue_ttm_usd_b")) if s else None
+    last = momentum.get("last")
+
+    # 1) Yahoo internal identity: price x shares ~= market cap.
+    if y_price and y_shares and y_mcap:
+        implied = y_price * y_shares
+        if _rel(implied, y_mcap) > IDENTITY_TOL:
+            add("ERROR", "market_cap",
+                f"Yahoo internal mismatch: {y_price:g} x {y_shares:g}B = "
+                f"${implied:.0f}B, but market cap says ${y_mcap:.0f}B "
+                f"({_rel(implied, y_mcap):.0%} off).")
+
+    # 2) Independent share count: Yahoo vs SEC filing.
+    if y_shares and s_shares:
+        if _rel(y_shares, s_shares) > SHARES_TOL:
+            add("WARN", "shares_out",
+                f"share count disagrees across sources: Yahoo {y_shares:.2f}B vs "
+                f"SEC {s_shares:.2f}B ({_rel(y_shares, s_shares):.0%}).")
+        else:
+            add("INFO", "shares_out",
+                f"share count agrees: Yahoo {y_shares:.2f}B ~ SEC {s_shares:.2f}B.")
+
+    # 3) Independent revenue (TTM, approximate).
+    if y_rev and s_rev:
+        if _rel(y_rev, s_rev) > REVENUE_TOL:
+            add("WARN", "revenue_ttm",
+                f"TTM revenue disagrees: Yahoo ${y_rev:.1f}B vs SEC ~${s_rev:.1f}B "
+                f"({_rel(y_rev, s_rev):.0%}). SEC TTM is an approximation.")
+
+    # 4) Price freshness: fundamentals snapshot vs the chart's last close.
+    if y_price and last and _rel(y_price, last) > PRICE_TOL:
+        add("INFO", "price",
+            f"fundamentals price ${y_price:g} differs from latest close "
+            f"${last:g} ({_rel(y_price, last):.0%}) -- snapshot vs intraday.")
+
+    # 5) No independent anchor available.
+    if s is None:
+        add("INFO", "coverage",
+            "no SEC EDGAR cross-check (non-US filer or not in EDGAR); "
+            "numbers rest on Yahoo alone -- treat with extra suspicion.")
+    return findings
+
+
+def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
+    symbol = symbol.upper().strip()
+    errors: list[str] = []
+
+    try:
+        mo = yahoo.momentum(symbol)
+    except ProviderError as exc:
+        mo = {}
+        errors.append(f"yahoo momentum: {exc}")
+
+    y: dict[str, Any] | None = None
+    try:
+        y = yahoo.fundamentals(symbol)
+    except ProviderError as exc:
+        errors.append(f"yahoo fundamentals: {exc}")
+
+    s = sec_edgar.fundamentals(symbol)
+    f = fmp.fundamentals(symbol) if fmp.enabled() else None
+
+    by_metric = _collect(y, s, f)
+    merged = _merge_metrics(by_metric)
+    checks = _cross_checks(symbol, mo, y, s)
+
+    name = (y or {}).get("name") or (s or {}).get("entity") or (f or {}).get("name") or symbol
+    record: dict[str, Any] = {
+        "symbol": symbol,
+        "name": name,
+        "as_of": _now(),
+        "currency": (y or {}).get("currency") or mo.get("currency") or "USD",
+        "price": {"value": mo.get("last"), "source": "yahoo"} if mo.get("last") else (y or {}).get("price"),
+        "momentum": mo,
+        "metrics": merged,
+        "cross_checks": checks,
+        "sources": {
+            "yahoo": y is not None or bool(mo),
+            "sec_edgar": s is not None,
+            "fmp": f is not None,
+        },
+        "errors": errors,
+    }
+
+    if write:
+        existing = _load(RESEARCH_DIR / f"{symbol}.json")
+        if existing and "thesis" in existing:
+            record["thesis"] = existing["thesis"]  # never clobber judgement
+        _write(RESEARCH_DIR / f"{symbol}.json", record)
+    return record
+
+
+def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
+    name = name.lower().strip()
+    definition = _load(SEGMENT_DEF_DIR / f"{name}.json")
+    if not definition:
+        raise SystemExit(f"unknown segment '{name}' (expected {SEGMENT_DEF_DIR / (name + '.json')})")
+
+    held = _holdings_weights()
+    members: list[dict[str, Any]] = []
+    for entry in definition.get("members", []):
+        sym = entry["symbol"].upper()
+        rec = pull_ticker(sym, write=True)
+        worst = _worst_severity(rec["cross_checks"])
+        members.append({
+            "symbol": sym,
+            "name": rec["name"],
+            "sleeve": entry.get("sleeve", "other"),
+            "owned_pct_nav": held.get(sym),
+            "price": rec.get("price", {}).get("value") if rec.get("price") else None,
+            "market_cap_usd_b": _val(rec["metrics"].get("market_cap_usd_b")),
+            "pe_fwd": _val(rec["metrics"].get("pe_fwd")),
+            "ps": _val(rec["metrics"].get("ps")),
+            "rev_growth_yoy_pct": _val(rec["metrics"].get("rev_growth_yoy_pct")),
+            "gross_margin_pct": _val(rec["metrics"].get("gross_margin_pct")),
+            "chg_3m_pct": rec["momentum"].get("chg_3m_pct"),
+            "chg_12m_pct": rec["momentum"].get("chg_12m_pct"),
+            "pct_below_52w_high": rec["momentum"].get("pct_below_52w_high"),
+            "data_quality": worst,
+        })
+
+    record = {
+        "segment": name,
+        "title": definition.get("title", name.title()),
+        "as_of": _now(),
+        "sleeves": definition.get("sleeves", []),
+        "members": members,
+    }
+    if write:
+        _write(SEGMENT_OUT_DIR / f"{name}.json", record)
+    return record
+
+
+def _worst_severity(checks: list[dict[str, str]]) -> str:
+    order = {"ERROR": 0, "WARN": 1, "INFO": 2}
+    if not checks:
+        return "INFO"
+    return min((c["severity"] for c in checks), key=lambda s: order.get(s, 9))
+
+
+def _holdings_weights() -> dict[str, float]:
+    data = _load(HOLDINGS_JSON)
+    if not data:
+        return {}
+    return {p["symbol"]: p.get("percent_of_nav") for p in data.get("positions", [])}
+
+
+def _load(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--ticker", help="single symbol, e.g. NVDA")
+    group.add_argument("--segment", help="segment name, e.g. semiconductors")
+    args = parser.parse_args()
+
+    if args.ticker:
+        rec = pull_ticker(args.ticker)
+        print(f"{rec['symbol']} ({rec['name']}) @ {fmt_price(rec.get('price', {}).get('value') if rec.get('price') else None)}")
+        for key, _, _ in METRIC_SPECS:
+            node = rec["metrics"].get(key)
+            if node:
+                print(f"  {key:22} {node['display']:>10}  [{node['source']}]")
+        for c in rec["cross_checks"]:
+            print(f"  [{c['severity']}] {c['metric']}: {c['message']}")
+        if rec["errors"]:
+            print("  errors:", "; ".join(rec["errors"]))
+    else:
+        rec = pull_segment(args.segment)
+        print(f"{rec['title']}: {len(rec['members'])} members @ {rec['as_of']}")
+        for m in sorted(rec["members"], key=lambda x: (x["sleeve"], x["symbol"])):
+            owned = f"{m['owned_pct_nav']:.1f}%NAV" if m["owned_pct_nav"] else "-"
+            print(f"  {m['symbol']:7} {m['sleeve']:10} fwdPE={fmt_x(m['pe_fwd']):>7} "
+                  f"PS={fmt_x(m['ps']):>7} g={fmt_pct(m['rev_growth_yoy_pct']):>7} "
+                  f"3m={fmt_pct(m['chg_3m_pct']):>7} owned={owned:>8} [{m['data_quality']}]")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,5 +1,54 @@
 # Tools
 
+## serve.py + research_pull.py + providers/ (Interactive Research Console)
+
+On-demand deep analysis for a single ticker or a whole industry segment. Stdlib
+only -- no pip installs.
+
+```powershell
+$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+py -3 tools/serve.py            # UI + API at http://127.0.0.1:8765 (localhost only)
+
+py -3 tools/research_pull.py --ticker NVDA       # CLI: one deep dive
+py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
+```
+
+### Pieces
+
+- `providers/yahoo.py` -- price/momentum (chart endpoint) + fundamentals
+  (quoteSummary, via the cookie+crumb handshake). Same source as `yfinance`,
+  hit directly.
+- `providers/sec_edgar.py` -- the free, authoritative cross-check for **US
+  filers**: shares outstanding, revenue, net income from XBRL `companyfacts`.
+  Foreign filers (ADRs) often have thin/absent data; the app flags that rather
+  than pretending it verified anything.
+- `providers/fmp.py` -- optional third opinion; enabled only if `FMP_API_KEY` is
+  set (read from `secrets.env`, gitignored).
+- `research_pull.py` -- pulls all sources, merges with a preferred-source order,
+  and **cross-checks** them (price x shares vs market cap, Yahoo vs SEC share
+  count, TTM revenue agreement, price freshness, single-source warnings). Writes
+  `data/research/<SYMBOL>.json` and `data/research/segments/<name>.json`. It
+  preserves any human-authored `thesis` block across re-pulls.
+- `serve.py` -- stdlib `http.server` app serving `web/` and a small JSON API
+  (`/api/holdings`, `/api/segments`, `/api/research/<sym>`, `POST /api/pull/<sym>`,
+  `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`).
+
+### Data outputs
+
+- `data/research/<SYMBOL>.json` -- per-ticker numbers + cross-checks + thesis.
+  Carries human judgement, so it can be committed.
+- `data/research/segments/<name>.json` -- derived peer dashboard (gitignored).
+- `data/cache/sec_ticker_cik.json` -- weekly ticker->CIK cache (gitignored).
+- `data/segments/<name>.json` -- **input** universe definition (committed), e.g.
+  `semiconductors.json` with sleeves matching `CURRENT_PLAN.md`.
+
+### Relationship to verify_claims.py
+
+`verify_claims.py` stays the **offline** consistency check for the committed
+claims in `research-claims.json`. The console is the **live** counterpart that
+`tools/README` previously called "a later phase": it cross-checks fetched numbers
+against an independent source at pull time.
+
 ## generate_site.py
 
 Single source of truth for portfolio numbers is `data/current-holdings.json`
@@ -40,6 +89,16 @@ markers survive regeneration, so the operation is idempotent.
   (`SYMBOL` currently limited to `LOSER_SYMBOLS` in the script).
 - `claim.<SYMBOL>.price|mcap|pe_ttm|pe_fwd|ps` — valuation claims rendered from
   `data/research-claims.json` (see below).
+- `snapshot.date`, `snapshot.report` — snapshot `generated_at` date and IBKR
+  report date, shown in the staleness banner on the hub pages.
+
+### Staleness: static banner vs run-time check
+
+The site banner shows the snapshot's *absolute* date (deterministic, so `--check`
+stays stable). It deliberately does **not** show a live "N days old" age, because
+that would change every day and constantly invalidate the committed HTML. The
+*age* check lives in `verify_claims.py` instead, where using the current time is
+fine (it never writes files).
 
 ## research-claims.json + verify_claims.py
 
@@ -67,6 +126,8 @@ Checks performed:
 - **Regression guard** (INFO/ERROR): values listed in `disproven_market_cap_usd_b`
   must stay arithmetically inconsistent; if one ever starts passing, that's an error.
 - **Multiples** (ERROR): P/E and P/S must be positive.
+- **Snapshot age** (WARN/ERROR): `generated_at` older than 5 days warns, older
+  than 30 days errors. Run-time check; uses the current date.
 
 Note: a claim is verified against its `asof`, not "now" — a moved market is not a
 lie. Live cross-checking against an independent source (yfinance is the chosen

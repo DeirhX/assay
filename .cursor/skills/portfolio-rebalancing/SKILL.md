@@ -47,6 +47,14 @@ Last discussed NAV basis:
 
 Refresh IBKR before relying on these exact amounts.
 
+## Live Deep Dives
+
+For on-demand, live, multi-source analysis of a ticker or a whole segment (e.g.
+semiconductors), use the `research-console` skill (`py -3 tools/serve.py`). It
+pulls fresh numbers, cross-checks them across sources, and cross-joins a peer
+universe against current NAV weights. Use it to pressure-test the targets below
+before acting.
+
 ## Research Discipline
 
 For individual stock research:
