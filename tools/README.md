@@ -27,16 +27,19 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 - `research_pull.py` -- pulls all sources, merges with a preferred-source order,
   and **cross-checks** them (price x shares vs market cap, Yahoo vs SEC share
   count, TTM revenue agreement, price freshness, single-source warnings). Writes
-  `data/research/<SYMBOL>.json` and `data/research/segments/<name>.json`. It
-  preserves any human-authored `thesis` block across re-pulls.
+  `data/research/<SYMBOL>.json`, ignored history snapshots under
+  `data/cache/research-history/<SYMBOL>/`, and `data/research/segments/<name>.json`.
+  It preserves any human-authored `thesis` block across re-pulls.
 - `serve.py` -- stdlib `http.server` app serving `web/` and a small JSON API
   (`/api/holdings`, `/api/segments`, `/api/research/<sym>`, `POST /api/pull/<sym>`,
-  `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`).
+  `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`).
 
 ### Data outputs
 
 - `data/research/<SYMBOL>.json` -- per-ticker numbers + cross-checks + thesis.
   Carries human judgement, so it can be committed.
+- `data/cache/research-history/<SYMBOL>/*.json` -- ignored numeric snapshots from
+  repeated pulls. Used by the dossier's "Recent pulls" table.
 - `data/research/segments/<name>.json` -- derived peer dashboard (gitignored).
 - `data/cache/sec_ticker_cik.json` -- weekly ticker->CIK cache (gitignored).
 - `data/segments/<name>.json` -- **input** universe definition (committed), e.g.

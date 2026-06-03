@@ -16,8 +16,10 @@
     </div>
     <div class="spacer"></div>
     <nav>
-      <a href="../next-steps.html">Plan</a>
-      <a href="../loser-position-recovery.html">Losers</a>
+      <a href="/next-steps.html">Plan</a>
+      <a href="/loser-position-recovery.html">Losers</a>
+      <a href="/amd-detail.html">AMD</a>
+      <a href="/arm-detail.html">ARM</a>
     </nav>
   </header>
 
@@ -28,7 +30,7 @@
         <input id="ticker-input" placeholder="Enter a ticker (e.g. NVDA, TSM, AMD) and press Enter" autocomplete="off" spellcheck="false">
         <button class="primary" id="ticker-go">Analyze</button>
       </div>
-      <div class="hint">Pulls live numbers from Yahoo + SEC EDGAR (+ FMP if configured) and cross-checks them. SEC anchors US filers; foreign ADRs lean on Yahoo alone (flagged).</div>
+      <div class="hint">Builds a source-stamped ticker dossier from Yahoo + SEC EDGAR (+ FMP if configured), current holdings, target-model context, and recent pull history. SEC anchors US filers; foreign ADRs lean on Yahoo alone (flagged).</div>
       <div class="status" id="dd-status"></div>
       <div id="dd-result"></div>
     </section>
@@ -40,7 +42,7 @@
         <button class="primary" id="segment-run">Run live pull</button>
         <button class="ghost" id="segment-load">Load cached</button>
       </div>
-      <div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s). Cached loads are instant. Click any row to deep-dive that name.</div>
+      <div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s), scores the research queue, and caches the table. Click any row to open its dossier.</div>
       <div class="status" id="seg-status"></div>
       <div id="seg-result"></div>
     </section>

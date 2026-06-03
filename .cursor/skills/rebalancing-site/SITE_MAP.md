@@ -15,6 +15,7 @@ The repository root. All page paths below are relative to it.
 | `sofi-detail.html` | SOFI detail page: keep most, trim only if cash/risk requires it. |
 | `pypl-detail.html` | PYPL detail page: trim 50-75%, keep value-turnaround stub. |
 | `eeft-detail.html` | EEFT detail page: sell first, keep at most a monitored stub. |
+| `site.css` | Shared visual system for the root static pages: tokens, navigation pills, cards, legends, tables, notes, and responsive layout. |
 
 ## Data Files
 
@@ -49,6 +50,7 @@ build it from the current workspace's absolute path rather than hardcoding a dri
 - `next-steps.html` should link to the loser-position review and each stock detail page.
 - `loser-position-recovery.html` should link to `next-steps.html`, `amd-detail.html`, `arm-detail.html`, and each loser stock detail page.
 - Each stock detail page should link back to `next-steps.html`; loser stock pages should also link back to `loser-position-recovery.html`.
+- Root static pages should link to `web/index.html`; when served through `tools/serve.py`, `/web/index.html` and the root static HTML pages are whitelisted routes.
 
 ## Sensitive Data Rules
 
