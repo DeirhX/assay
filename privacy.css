@@ -1,0 +1,34 @@
+[data-sensitive] {
+  border-radius: 4px;
+  transition: filter .12s ease, opacity .12s ease;
+}
+
+body.privacy-mode [data-sensitive] {
+  filter: blur(7px);
+  opacity: .62;
+  user-select: none;
+}
+
+body.privacy-mode [data-sensitive]::selection {
+  background: transparent;
+}
+
+.privacy-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 999px;
+  background: var(--panel, #171a21);
+  color: var(--text, #eceff4);
+  padding: 8px 12px;
+  font: 700 12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}
+
+.privacy-toggle[aria-pressed="true"] {
+  color: var(--good, #6bd38a);
+  border-color: color-mix(in srgb, var(--good, #6bd38a) 45%, var(--border, #2a2f3a));
+}
