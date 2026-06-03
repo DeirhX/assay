@@ -21,6 +21,10 @@ const fmtB = (v) => {
 };
 const fmtShares = (v) => (v == null ? "n/a" : Number(v).toFixed(2) + "B");
 const pctClass = (v) => (v == null ? "muted" : v > 0 ? "good" : v < 0 ? "bad" : "muted");
+const fmtCZK = (v) => {
+  if (v == null) return "n/a";
+  return Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Number(v).toFixed(0);
+};
 
 async function api(path, method = "GET", body = null) {
   const opt = { method, headers: {} };
@@ -52,20 +56,55 @@ async function loadHoldings() {
     state.nav = h.net_asset_value;
     state.holdings = {};
     (h.positions || []).forEach((p) => { state.holdings[p.symbol] = p.percent_of_nav; });
-    status.textContent = `NAV ${(h.net_asset_value || 0).toLocaleString()} CZK · snapshot ${(h.generated_at || "").slice(0, 10)}`;
+    status.textContent =
+      `NAV ${Math.round(h.net_asset_value || 0).toLocaleString()} CZK · ` +
+      `invested ${Math.round(h.invested_value || 0).toLocaleString()} CZK · ` +
+      `snapshot ${(h.generated_at || "").slice(0, 10)}`;
     out.innerHTML = "";
-    const grid = el("div", "holdings-list");
-    (h.positions || [])
+
+    const rows = (h.positions || [])
       .slice()
-      .sort((a, b) => (b.percent_of_nav || 0) - (a.percent_of_nav || 0))
-      .forEach((p) => {
-        const card = el("div", "hold");
-        card.innerHTML = `<span class="h-sym">${esc(p.symbol)}</span><span class="h-w">${(p.percent_of_nav || 0).toFixed(2)}%</span>`;
-        card.title = p.description || "";
-        card.addEventListener("click", () => analyzeFromAnywhere(p.symbol));
-        grid.appendChild(card);
-      });
-    out.appendChild(grid);
+      .sort((a, b) => (b.percent_of_nav || 0) - (a.percent_of_nav || 0));
+    const weights = rows.map((p) => p.percent_of_nav || 0);
+    const maxW = Math.max(1e-6, ...weights);
+    const cum = (n) => weights.slice(0, n).reduce((s, w) => s + w, 0);
+
+    // Concentration is the single most important fact about this book; state it.
+    const banner = el("div", "conc-summary");
+    banner.innerHTML =
+      `<span>Top 2 <strong>${cum(2).toFixed(1)}%</strong></span>` +
+      `<span>Top 5 <strong>${cum(5).toFixed(1)}%</strong></span>` +
+      `<span>Top 10 <strong>${cum(10).toFixed(1)}%</strong></span>` +
+      `<span class="muted">${rows.length} positions · weights = % of invested</span>`;
+    out.appendChild(banner);
+
+    const list = el("div", "pos-list");
+    rows.forEach((p) => {
+      const isOpt = p.asset_class === "OPT";
+      const w = p.percent_of_nav || 0;
+      // Tier by absolute concentration (flags the AMD/ARM problem on sight);
+      // bar length is relative to the largest holding for visual ranking.
+      const tier = isOpt ? "opt" : w >= 10 ? "core" : w >= 5 ? "large" : w >= 1 ? "mid" : "small";
+      const barW = isOpt ? 0 : (w / maxW) * 100;
+      const right = isOpt ? `${fmtCZK(p.base_market_value)} CZK` : `${w.toFixed(2)}%`;
+      const label = isOpt ? (p.description || p.symbol) : p.symbol;
+      const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
+      const row = el("div", "pos-row tier-" + tier);
+      row.innerHTML =
+        `<span class="pos-sym">${esc(label)}${tag}</span>` +
+        `<span class="pos-bar-track"><span class="pos-bar" style="width:${barW.toFixed(2)}%"></span></span>` +
+        `<span class="pos-w">${right}</span>`;
+      row.title =
+        (p.description || p.symbol) +
+        (isOpt && p.broker_percent_of_nav != null
+          ? ` · broker tagged ${p.broker_percent_of_nav}% of NAV (margin/notional artifact, ignored)`
+          : ` · ${w.toFixed(2)}% of invested`);
+      if (!isOpt) row.addEventListener("click", () => analyzeFromAnywhere(p.symbol));
+      list.appendChild(row);
+    });
+    out.appendChild(list);
+    out.appendChild(el("div", "hint",
+      "Bar length \u221d weight. Colour = concentration: red >10% (single-name risk), amber 5\u201310%, blue 1\u20135%, grey <1%. Click a row to deep-dive."));
   } catch (e) {
     status.textContent = "Could not load holdings: " + e.message;
     status.classList.add("err");
