@@ -6,6 +6,7 @@ const state = {
   lastSegment: null,
   segSort: { key: "research_score", dir: -1 },
   currentDeepRun: null,
+  privacyMode: localStorage.getItem("financeRebalancingPrivacyMode") === "1",
 };
 
 // ---- tiny helpers ---------------------------------------------------------
@@ -40,6 +41,19 @@ const decisionClass = (v) => {
   return "muted";
 };
 const scoreClass = (v) => (v == null ? "muted" : v >= 70 ? "good" : v >= 45 ? "warn" : "bad");
+const sensitive = (html, label = "sensitive value") =>
+  `<span data-sensitive title="${esc(label)}">${html}</span>`;
+
+function applyPrivacyMode(on) {
+  state.privacyMode = !!on;
+  document.body.classList.toggle("privacy-mode", state.privacyMode);
+  localStorage.setItem("financeRebalancingPrivacyMode", state.privacyMode ? "1" : "0");
+  const btn = $("#privacy-toggle");
+  if (btn) {
+    btn.setAttribute("aria-pressed", state.privacyMode ? "true" : "false");
+    btn.textContent = state.privacyMode ? "Privacy: on" : "Privacy: off";
+  }
+}
 
 async function api(path, method = "GET", body = null) {
   const opt = { method, headers: {} };
@@ -62,6 +76,8 @@ document.querySelectorAll(".tab").forEach((btn) => {
   });
 });
 
+$("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
+
 // ---- holdings -------------------------------------------------------------
 async function loadHoldings() {
   const status = $("#hold-status");
@@ -72,9 +88,9 @@ async function loadHoldings() {
     state.nav = h.net_asset_value;
     state.holdings = {};
     (h.positions || []).forEach((p) => { state.holdings[p.symbol] = p.percent_of_nav; });
-    status.textContent =
-      `NAV ${Math.round(h.net_asset_value || 0).toLocaleString()} CZK · ` +
-      `invested ${Math.round(h.invested_value || 0).toLocaleString()} CZK · ` +
+    status.innerHTML =
+      `NAV ${sensitive(`${Math.round(h.net_asset_value || 0).toLocaleString()} CZK`, "total NAV")} · ` +
+      `invested ${sensitive(`${Math.round(h.invested_value || 0).toLocaleString()} CZK`, "invested value")} · ` +
       `snapshot ${(h.generated_at || "").slice(0, 10)}`;
     out.innerHTML = "";
 
@@ -102,7 +118,7 @@ async function loadHoldings() {
       // bar length is relative to the largest holding for visual ranking.
       const tier = isOpt ? "opt" : w >= 10 ? "core" : w >= 5 ? "large" : w >= 1 ? "mid" : "small";
       const barW = isOpt ? 0 : (w / maxW) * 100;
-      const right = isOpt ? `${fmtCZK(p.base_market_value)} CZK` : `${w.toFixed(2)}%`;
+      const right = isOpt ? sensitive(`${fmtCZK(p.base_market_value)} CZK`, "absolute position value") : `${w.toFixed(2)}%`;
       const label = isOpt ? (p.description || p.symbol) : p.symbol;
       const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
       const row = el("div", "pos-row tier-" + tier);
@@ -738,6 +754,7 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
 });
 
 // ---- boot -----------------------------------------------------------------
+applyPrivacyMode(state.privacyMode);
 loadHoldings();
 loadSegmentList();
 $("#ticker-input").focus();

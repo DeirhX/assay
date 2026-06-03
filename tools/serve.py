@@ -40,6 +40,8 @@ HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 ROOT_STATIC_FILES = {
     "site.css",
+    "privacy.css",
+    "privacy.js",
     "next-steps.html",
     "loser-position-recovery.html",
     "amd-detail.html",

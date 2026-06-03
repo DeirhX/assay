@@ -76,6 +76,18 @@ button.ghost {
   border-radius: var(--radius-soft); padding: 7px 12px; font-weight: 600; cursor: pointer; font-size: 13px;
 }
 button.danger { border-color: rgba(255,122,122,.5); color: var(--bad); }
+.privacy-inline { white-space: nowrap; }
+.privacy-inline[aria-pressed="true"] {
+  color: var(--good);
+  border-color: rgba(107,211,138,.45);
+}
+[data-sensitive] { border-radius: 4px; transition: filter .12s ease, opacity .12s ease; }
+body.privacy-mode [data-sensitive] {
+  filter: blur(7px);
+  opacity: .62;
+  user-select: none;
+}
+body.privacy-mode [data-sensitive]::selection { background: transparent; }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 2px 18px; }
 
 .card {
