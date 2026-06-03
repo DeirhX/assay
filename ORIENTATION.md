@@ -16,6 +16,8 @@ can continue without transcript archaeology.
 | Rebalance validator | `tools/rebalance.py` | Compares current weights against `data/target-model.json`. |
 | Claim validator | `tools/verify_claims.py`, `data/research-claims.json` | Checks valuation claims for arithmetic consistency and snapshot drift. |
 | Research Console | `tools/serve.py`, `tools/research_pull.py`, `web/` | Local live research UI/API using Yahoo, SEC EDGAR, optional FMP. |
+| Research segments | `data/segments/*.json` | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
+| Deep Research artifacts | `data/research/deep/` | Committed Perplexity reports, source sidecars, review-gate output, and target proposals. |
 | Project skills | `.cursor/skills/` | Cursor instructions for future chats. |
 
 ## Standard Workflow
@@ -61,6 +63,19 @@ Then open:
 
 `http://127.0.0.1:8765`
 
+Use the website as the normal control surface. It can:
+
+- draft a research segment from a freeform name,
+- edit and approve segment membership,
+- run deterministic pulls,
+- generate a Perplexity Deep Research prompt,
+- save a Deep Research report and Links-tab citation JSON,
+- run the review gate,
+- show target-model proposals for explicit approval.
+
+Manual JSON editing is a debugging fallback, not the standard workflow. Future
+you did not ask to become a config goblin.
+
 CLI alternatives:
 
 ```powershell
@@ -72,6 +87,8 @@ Research discipline:
 
 - Numbers come from providers and are source-stamped.
 - Human judgement goes in `thesis` blocks and is preserved across re-pulls.
+- Research segments may overlap. Allocation sleeves in `data/target-model.json`
+  should remain non-overlapping unless deliberately modeled.
 - Disagreements are surfaced, not smoothed over. The whole damn point is to catch
   impossible market caps and stale valuation claims before they infect the plan.
 
@@ -111,6 +128,15 @@ Critical trap:
 See `.cursor/skills/perplexity-deep-research/SKILL.md` for the exact browser
 automation workflow.
 
+Pipeline discipline:
+
+- Save committed Deep Research artifacts under `data/research/deep/<segment>-<date>.*`.
+- Always extract sources from Perplexity's `Links` tab into a `.sources.json` sidecar.
+- Run `tools/review_deep_research.py` or the website review action before changing
+  ticker theses or target bands.
+- Target-model proposals are drafts. Applying them requires explicit approval in
+  the website and still does not create trades.
+
 ## What To Commit
 
 Commit:
@@ -121,6 +147,9 @@ Commit:
 - `data/target-model.json`.
 - `data/research-claims.json`.
 - `data/research/<SYMBOL>.json` when it contains useful research and thesis.
+- `data/segments/*.json` for approved research segment definitions.
+- `data/research/deep/*.md`, `*.sources.json`, `*.review.md`, and
+  `*.target-proposal.json` when they are reviewed research artifacts.
 - Project skills under `.cursor/skills/`.
 
 Do not commit:

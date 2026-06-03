@@ -11,6 +11,8 @@ It has two layers:
 1. **Static pages** (committed HTML) for the standing plan and per-stock detail.
 2. **Interactive Research Console** (`web/` + `tools/serve.py`) for on-demand,
    live, multi-source deep dives on any ticker or whole industry segment.
+3. **Deep Research pipeline** for website-managed segment creation, Perplexity
+   report capture, source extraction, review gating, and target-model proposals.
 
 Open the static main page (relative to this repo root):
 
@@ -60,6 +62,9 @@ What it does:
 - **Segment** dashboard: pull a whole peer universe (e.g. `semiconductors`),
   ranked and sortable, cross-joined against your current NAV weights so you can
   see owned vs. cheaper-peer at a glance.
+- **Pipeline** tab: draft or approve research segments, generate Deep Research
+  prompts, save Perplexity report/source artifacts, run the review gate, and
+  inspect target-model proposals without hand-editing config files.
 - **Thesis editor**: your judgement (summary / action / drivers / downside
   triggers) is saved per ticker, kept strictly separate from the fetched
   numbers, and never clobbered on re-pull.
@@ -108,6 +113,13 @@ Perplexity Pro quota is used through browser automation, not the API.
 The dedicated MCP server is `playwright-pplx` / `user-playwright-pplx`. After MCP reload/restart, log into Perplexity once in the persistent profile. Use the Search dropdown's **Deep research** option and verify the URL is `/search/...`, not `/computer/...`.
 
 See `.cursor/skills/perplexity-deep-research/SKILL.md` for exact steps.
+
+Saved Deep Research artifacts live under `data/research/deep/<segment>-<date>.*`:
+
+- `.md` — report text.
+- `.sources.json` — Perplexity Links-tab citation URLs.
+- `.review.md` — local review-gate output.
+- `.target-proposal.json` — draft target-model changes, never trades.
 
 ## Current Sizing Legend
 

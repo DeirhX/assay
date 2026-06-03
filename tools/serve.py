@@ -20,23 +20,28 @@ Design notes / honest caveats:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
 DATA_DIR = REPO_ROOT / "data"
 RESEARCH_DIR = DATA_DIR / "research"
+DEEP_DIR = RESEARCH_DIR / "deep"
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
+TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_pull  # noqa: E402
+import review_deep_research  # noqa: E402
 
 _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
 
@@ -56,6 +61,262 @@ def _load(path: Path):
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _write_json(path: Path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_text(path: Path, payload: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    if not slug or len(slug) > 64:
+        raise ValueError("bad segment slug")
+    return slug
+
+
+def _safe_symbol(value: str) -> str:
+    sym = (value or "").upper().strip()
+    if not sym or len(sym) > 16 or not re.match(r"^[A-Z0-9.=-]+$", sym):
+        raise ValueError(f"bad symbol: {value!r}")
+    return sym
+
+
+def _segment_path(name: str) -> Path:
+    return SEGMENT_DEF_DIR / f"{_slugify(name)}.json"
+
+
+def _validate_segment_definition(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        raise ValueError("segment definition must be an object")
+    title = str(raw.get("title") or "").strip()
+    if not title:
+        raise ValueError("segment title is required")
+    members = raw.get("members")
+    if not isinstance(members, list):
+        raise ValueError("members must be a list")
+
+    cleaned_members = []
+    sleeves = set(str(s).strip() for s in raw.get("sleeves", []) if str(s).strip())
+    for item in members:
+        if not isinstance(item, dict):
+            raise ValueError("each member must be an object")
+        sym = _safe_symbol(str(item.get("symbol") or ""))
+        sleeve = str(item.get("sleeve") or "other").strip().lower() or "other"
+        sleeves.add(sleeve)
+        cleaned = {
+            "symbol": sym,
+            "sleeve": sleeve,
+        }
+        for key in ("rationale", "confidence"):
+            if item.get(key):
+                cleaned[key] = str(item[key]).strip()
+        cleaned_members.append(cleaned)
+
+    cleaned = {
+        "title": title,
+        "kind": raw.get("kind") or "research",
+        "status": raw.get("status") or "draft",
+        "overlap_allowed": bool(raw.get("overlap_allowed", True)),
+        "comment": str(raw.get("comment") or "").strip(),
+        "sleeves": sorted(sleeves) or ["other"],
+        "members": cleaned_members,
+    }
+    for key in ("origin", "description", "inclusion_criteria", "exclusion_criteria", "notes"):
+        if key in raw:
+            cleaned[key] = raw[key]
+    return cleaned
+
+
+_DRAFT_UNIVERSE = [
+    ("NVDA", "compute", "Dominant AI accelerator and networking platform.", ["ai", "infrastructure", "semiconductor", "compute", "gpu"]),
+    ("AMD", "compute", "AI GPU, EPYC CPU, and accelerator challenger.", ["ai", "infrastructure", "semiconductor", "compute", "gpu"]),
+    ("ARM", "ip", "CPU IP and AI/data-center architecture exposure.", ["ai", "infrastructure", "semiconductor", "compute", "ip"]),
+    ("TSM", "foundry", "Leading advanced-node foundry.", ["ai", "infrastructure", "semiconductor", "foundry"]),
+    ("ASML", "equipment", "Lithography monopoly for advanced semis.", ["ai", "infrastructure", "semiconductor", "equipment"]),
+    ("AMAT", "equipment", "Wafer-fab equipment exposure.", ["semiconductor", "equipment"]),
+    ("LRCX", "equipment", "Etch/deposition wafer-fab equipment.", ["semiconductor", "equipment"]),
+    ("KLAC", "equipment", "Process control and inspection equipment.", ["semiconductor", "equipment"]),
+    ("TXN", "analog", "Analog and embedded semiconductor cycle exposure.", ["semiconductor", "analog", "industrial"]),
+    ("ADI", "analog", "Analog and mixed-signal semiconductor exposure.", ["semiconductor", "analog", "industrial"]),
+    ("MU", "memory", "Memory cycle and HBM/DRAM exposure.", ["semiconductor", "memory", "ai"]),
+    ("SOXX", "etf", "Broad semiconductor ETF exposure.", ["semiconductor", "etf"]),
+    ("XSD", "etf", "Equal-weight semiconductor ETF exposure.", ["semiconductor", "etf"]),
+    ("PYPL", "payments", "Global checkout, wallet, Venmo, and merchant payments.", ["fintech", "payments", "value", "turnaround"]),
+    ("SOFI", "digital-bank", "US digital bank, lending, and fintech infrastructure.", ["fintech", "bank", "credit", "growth"]),
+    ("NU", "latam-fintech", "Scaled LatAm digital bank.", ["fintech", "bank", "latam", "growth"]),
+    ("EEFT", "money-transfer", "ATM, prepaid/epay, and money-transfer network.", ["fintech", "payments", "money", "value", "turnaround"]),
+]
+
+
+def _draft_segment(query: str) -> dict:
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("query is required")
+    slug = _slugify(query)
+    tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
+    members = []
+    for symbol, sleeve, rationale, keys in _DRAFT_UNIVERSE:
+        score = len(tokens.intersection(keys))
+        if score:
+            members.append({
+                "symbol": symbol,
+                "sleeve": sleeve,
+                "rationale": rationale,
+                "confidence": "high" if score >= 2 else "medium",
+            })
+    llm_prompt = (
+        f"Create a public-equity research segment for '{query}'. Return JSON with "
+        "title, comment, sleeves, and members. Each member must include symbol, "
+        "sleeve, rationale, and confidence. Exclude private companies unless you "
+        "list them only in notes with public proxies."
+    )
+    return {
+        "slug": slug,
+        "definition": {
+            "title": query.title(),
+            "kind": "research",
+            "status": "draft",
+            "overlap_allowed": True,
+            "comment": f"Draft research lens generated from freeform query: {query}",
+            "sleeves": sorted({m["sleeve"] for m in members}) or ["other"],
+            "members": members,
+            "origin": {
+                "type": "website_draft",
+                "query": query,
+            },
+        },
+        "llm_prompt": llm_prompt,
+        "warnings": [] if members else [
+            "No local candidates matched. Use the prompt with an LLM, paste/edit members, then validate before approving."
+        ],
+    }
+
+
+def _segment_prompt(name: str) -> dict:
+    slug = _slugify(name)
+    definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
+    if not definition:
+        raise ValueError(f"unknown segment {slug}")
+    holdings = _holdings_payload()
+    held = {
+        p["symbol"]: p.get("percent_of_nav")
+        for p in holdings.get("positions", [])
+        if p.get("percent_of_nav") is not None
+    }
+    symbols = [m["symbol"] for m in definition.get("members", [])]
+    held_lines = [
+        f"- {sym}: {held[sym]:.2f}% NAV"
+        for sym in symbols
+        if sym in held
+    ]
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    prompt = (
+        f"Deep research on my {definition.get('title', slug)} segment as a long-term investment, as of {today}.\n"
+        f"Cover: {', '.join(symbols)}.\n"
+        "Compare business momentum, valuation, competitive positioning, catalysts, risks, and likely recovery/underperformance over the next 6-24 months.\n"
+        "Tie conclusions to portfolio action: keep, trim, sell, add, or wait.\n"
+        "Include source citations and distinguish facts from opinion.\n"
+        "Call out which numeric claims need deterministic verification.\n"
+    )
+    if held_lines:
+        prompt += "\nCurrent owned weights:\n" + "\n".join(held_lines) + "\n"
+    return {"segment": slug, "date": today, "prompt": prompt}
+
+
+def _deep_runs() -> list[dict]:
+    runs = {}
+    for path in sorted(DEEP_DIR.glob("*")):
+        if not path.is_file():
+            continue
+        name = path.name
+        suffix = None
+        stem = path.stem
+        if name.endswith(".sources.json"):
+            suffix = "sources"
+            stem = name[:-len(".sources.json")]
+        elif name.endswith(".target-proposal.json"):
+            suffix = "proposal"
+            stem = name[:-len(".target-proposal.json")]
+        elif name.endswith(".review.md"):
+            suffix = "review"
+            stem = name[:-len(".review.md")]
+        elif name.endswith(".md"):
+            suffix = "report"
+            stem = name[:-len(".md")]
+        else:
+            continue
+        rec = runs.setdefault(stem, {"stem": stem, "files": {}})
+        rec["files"][suffix] = str(path.relative_to(REPO_ROOT))
+    return sorted(runs.values(), key=lambda r: r["stem"], reverse=True)
+
+
+def _save_deep_artifact(body: dict) -> dict:
+    segment = _slugify(str(body.get("segment") or ""))
+    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise ValueError("date must be YYYY-MM-DD")
+    stem = f"{segment}-{date}"
+    report = str(body.get("report") or "").strip()
+    if not report:
+        raise ValueError("report text is required")
+    citations = body.get("citations") or []
+    if isinstance(citations, str):
+        citations = json.loads(citations) if citations.strip() else []
+    sources = {
+        "schema_version": 1,
+        "segment": segment,
+        "source_url": body.get("source_url") or "",
+        "mode": "perplexity_in_app_deep_research",
+        "extracted_from": body.get("extracted_from") or "Perplexity Links tab",
+        "extracted_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "citations": citations,
+    }
+    _write_text(DEEP_DIR / f"{stem}.md", report + "\n")
+    _write_json(DEEP_DIR / f"{stem}.sources.json", sources)
+    return {"stem": stem, "report": f"data/research/deep/{stem}.md", "sources": f"data/research/deep/{stem}.sources.json"}
+
+
+def _apply_target_proposal(segment: str, date: str, confirm: bool) -> dict:
+    if not confirm:
+        raise ValueError("confirm=true is required")
+    segment = _slugify(segment)
+    proposal_path = DEEP_DIR / f"{segment}-{date}.target-proposal.json"
+    proposal = _load(proposal_path)
+    if not proposal:
+        raise ValueError(f"proposal not found: {proposal_path.relative_to(REPO_ROOT)}")
+    model = _load(TARGET_MODEL_JSON)
+    if not model:
+        raise ValueError("target model not found")
+    targets = model.setdefault("targets", {})
+    applied = []
+    skipped = []
+    for change in proposal.get("changes", []):
+        sym = _safe_symbol(change.get("symbol", ""))
+        if change.get("action") != "add_target":
+            skipped.append({"symbol": sym, "reason": "unsupported action"})
+            continue
+        if sym in targets:
+            skipped.append({"symbol": sym, "reason": "target already exists"})
+            continue
+        target = dict(change.get("proposed_target") or {})
+        if not target:
+            skipped.append({"symbol": sym, "reason": "missing proposed_target"})
+            continue
+        targets[sym] = target
+        applied.append(sym)
+    proposal["status"] = "applied" if applied else "reviewed"
+    proposal["applied_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    proposal["applied_symbols"] = applied
+    proposal["skipped"] = skipped
+    _write_json(TARGET_MODEL_JSON, model)
+    _write_json(proposal_path, proposal)
+    return {"applied": applied, "skipped": skipped, "proposal": proposal}
 
 
 def _holdings_payload():
@@ -109,6 +370,9 @@ def _segments_list():
         out.append({
             "name": path.stem,
             "title": definition.get("title", path.stem.title()),
+            "kind": definition.get("kind", "research"),
+            "status": definition.get("status", "approved"),
+            "overlap_allowed": definition.get("overlap_allowed", True),
             "count": len(definition.get("members", [])),
             "cached": (SEGMENT_OUT_DIR / path.name).exists(),
         })
@@ -160,7 +424,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- routing -----------------------------------------------------------
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
         if path == "/favicon.ico":
             self.send_response(204)
             self.end_headers()
@@ -172,6 +438,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(_holdings_payload())
         if path == "/api/segments":
             return self._send_json({"segments": _segments_list()})
+        if path.startswith("/api/segment-def/"):
+            name = path.rsplit("/", 1)[-1].lower()
+            rec = _load(_segment_path(name))
+            return self._send_json(rec) if rec else self._send_error_json(404, f"unknown segment {name}")
+        if path == "/api/deep-runs":
+            return self._send_json({"runs": _deep_runs()})
+        if path == "/api/deep-prompt":
+            name = (query.get("segment") or [""])[0]
+            try:
+                return self._send_json(_segment_prompt(name))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+        if path.startswith("/api/deep-run/"):
+            stem = _slugify(path.rsplit("/", 1)[-1])
+            payload = {"stem": stem}
+            for suffix, rel in {
+                "report": DEEP_DIR / f"{stem}.md",
+                "sources": DEEP_DIR / f"{stem}.sources.json",
+                "review": DEEP_DIR / f"{stem}.review.md",
+                "proposal": DEEP_DIR / f"{stem}.target-proposal.json",
+            }.items():
+                if rel.exists():
+                    payload[suffix] = (
+                        _load(rel) if rel.suffix == ".json" else rel.read_text(encoding="utf-8")
+                    )
+            return self._send_json(payload)
+        if path == "/api/target-model":
+            rec = _load(TARGET_MODEL_JSON)
+            return self._send_json(rec) if rec else self._send_error_json(404, "target model not found")
         if path.startswith("/api/research/"):
             sym = path.rsplit("/", 1)[-1].upper()
             rec = _load(RESEARCH_DIR / f"{sym}.json")
@@ -185,6 +480,37 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
+            if path == "/api/segment-draft":
+                body = self._read_body()
+                return self._send_json(_draft_segment(str(body.get("query") or "")))
+
+            if path.startswith("/api/segment-def/"):
+                name = _slugify(path.rsplit("/", 1)[-1])
+                body = self._read_body()
+                definition = _validate_segment_definition(body.get("definition") or body)
+                _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
+                return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
+
+            if path == "/api/deep-research/save":
+                body = self._read_body()
+                return self._send_json(_save_deep_artifact(body))
+
+            if path == "/api/deep-research/review":
+                body = self._read_body()
+                segment = str(body.get("segment") or "")
+                date = str(body.get("date") or "")
+                if not segment or not date:
+                    return self._send_error_json(400, "segment and date are required")
+                return self._send_json(review_deep_research.review(segment, date))
+
+            if path == "/api/target-proposal/apply":
+                body = self._read_body()
+                return self._send_json(_apply_target_proposal(
+                    str(body.get("segment") or ""),
+                    str(body.get("date") or ""),
+                    bool(body.get("confirm")),
+                ))
+
             if path.startswith("/api/pull/"):
                 sym = path.rsplit("/", 1)[-1].upper()
                 if not sym.isascii() or not sym or len(sym) > 12:
@@ -213,6 +539,9 @@ class Handler(BaseHTTPRequestHandler):
                     "action": body.get("action", ""),
                     "drivers": body.get("drivers", []),
                     "downside_triggers": body.get("downside_triggers", []),
+                    "source_confidence": body.get("source_confidence", ""),
+                    "review_after": body.get("review_after", ""),
+                    "source_artifact": body.get("source_artifact", ""),
                     "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                 }
                 (RESEARCH_DIR / f"{sym}.json").write_text(

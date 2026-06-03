@@ -12,6 +12,7 @@
     <div class="tabs">
       <button class="tab active" data-view="deepdive">Deep dive</button>
       <button class="tab" data-view="segment">Segment</button>
+      <button class="tab" data-view="pipeline">Pipeline</button>
       <button class="tab" data-view="holdings">Holdings</button>
     </div>
     <div class="spacer"></div>
@@ -43,6 +44,73 @@
       <div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s). Cached loads are instant. Click any row to deep-dive that name.</div>
       <div class="status" id="seg-status"></div>
       <div id="seg-result"></div>
+    </section>
+
+    <!-- PIPELINE -->
+    <section class="view" id="view-pipeline">
+      <div class="pipeline-grid">
+        <div class="card">
+          <h2 class="section">1. Segment control</h2>
+          <label>Freeform segment name</label>
+          <div class="inline-form">
+            <input id="pipe-query" placeholder="AI infrastructure, credit-sensitive fintech, nuclear supply chain">
+            <button class="primary" id="pipe-draft">Draft</button>
+          </div>
+          <div class="hint">Drafts are editable and must be approved before becoming normal research inputs.</div>
+          <label>Segment slug</label>
+          <input id="pipe-slug" placeholder="segment-slug">
+          <label>Segment definition JSON</label>
+          <textarea id="pipe-segment-json" rows="14" spellcheck="false"></textarea>
+          <div class="thesis-actions">
+            <button class="primary" id="pipe-save-segment">Approve / save segment</button>
+            <span class="status" id="pipe-segment-status"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="section">2. Deep Research prompt</h2>
+          <label>Approved segment</label>
+          <select id="pipe-segment-select"></select>
+          <div class="thesis-actions">
+            <button class="primary" id="pipe-build-prompt">Build prompt</button>
+            <button class="ghost" id="pipe-run-deterministic">Run deterministic pull</button>
+          </div>
+          <textarea id="pipe-prompt" rows="12" spellcheck="false"></textarea>
+          <div class="hint">Run this via Perplexity in-app Deep Research. Save the report and Links-tab citations below.</div>
+          <div class="status" id="pipe-prompt-status"></div>
+        </div>
+
+        <div class="card">
+          <h2 class="section">3. Save Deep Research artifact</h2>
+          <label>Date</label>
+          <input id="pipe-date" placeholder="YYYY-MM-DD">
+          <label>Perplexity URL</label>
+          <input id="pipe-source-url" placeholder="https://www.perplexity.ai/search/...">
+          <label>Report markdown/text</label>
+          <textarea id="pipe-report" rows="10" spellcheck="false"></textarea>
+          <label>Links-tab citations JSON</label>
+          <textarea id="pipe-sources" rows="8" spellcheck="false" placeholder='[{"label":"reuters","href":"https://..."}]'></textarea>
+          <div class="thesis-actions">
+            <button class="primary" id="pipe-save-report">Save report + sources</button>
+            <span class="status" id="pipe-artifact-status"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="section">4. Review gate & proposal</h2>
+          <div class="thesis-actions">
+            <button class="primary" id="pipe-run-review">Run review gate</button>
+            <button class="ghost" id="pipe-refresh-runs">Refresh runs</button>
+          </div>
+          <div class="status" id="pipe-review-status"></div>
+          <div id="pipe-runs"></div>
+          <div id="pipe-review-output"></div>
+          <div class="proposal-box">
+            <button class="ghost danger" id="pipe-apply-proposal">Apply current proposal</button>
+            <span class="status" id="pipe-apply-status"></span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- HOLDINGS -->
