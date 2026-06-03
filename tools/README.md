@@ -49,6 +49,60 @@ claims in `research-claims.json`. The console is the **live** counterpart that
 `tools/README` previously called "a later phase": it cross-checks fetched numbers
 against an independent source at pull time.
 
+## target-model.json + rebalance.py (Rebalancing Spine)
+
+Where `current-holdings.json` answers *"where am I?"*, `data/target-model.json`
+answers *"where do I want to be?"* — as **data, not prose**. It is the
+machine-readable replacement for the target weights that used to live only in
+`CURRENT_PLAN.md`. All weights are percent of NAV.
+
+Structure:
+
+- `cash_target_pct` — desired cash sleeve.
+- `sleeves.<name>` — a combined target band (`low`/`high`) shared across
+  `members` (e.g. `semis-equipment` = AMAT/LRCX/KLAC at 5-7%). Optional
+  `member_caps` bound an individual member.
+- `targets.<SYMBOL>` — a per-name band (`low`/`high`), a `rule`, an optional
+  longer-horizon `structural` band, and a `note`. Bands are **no-trade zones**:
+  only act when the current weight falls outside `[low, high]`.
+- `rules_legend` documents the rules: `accumulate`, `trim_only`, `do_not_add`,
+  `reduce`, `hold`, `wait`, `avoid`.
+
+This is **judgement** (human-set). `tools/rebalance.py` is the **computed** side
+— it never invents targets, it only measures against them:
+
+```powershell
+py -3 tools/rebalance.py            # drift preview + plain-language advice
+py -3 tools/rebalance.py --check    # validate the model; exit 1 on ERROR
+py -3 tools/rebalance.py --check --strict   # also exit 1 on WARN
+```
+
+Default mode prints a drift table (current weight vs band per name/sleeve) and a
+short **advice** list — trim/add suggestions in %NAV, ordered by funding
+priority. It is deliberately advice for a human, **not** an order generator:
+no share counts, no netting, no execution. The user decides and trades.
+
+`--check` is offline and deterministic (same severity/exit-code model as
+`verify_claims.py`). It catches:
+
+- **Invalid band / unknown rule** (ERROR): `low<=high` in `[0,100]`; rule must be
+  one of the legend.
+- **Rule vs current weight** (ERROR/WARN): a no-buy rule (`trim_only`,
+  `do_not_add`, `reduce`, `avoid`) whose floor sits *above* the current weight is
+  contradictory (you'd have to buy); `reduce` on an unheld position; `accumulate`
+  already above its ceiling (should be `trim_only`); `hold` drifted outside band.
+- **Double-listing** (ERROR/WARN): a symbol in two sleeves, or in both a sleeve
+  and a top-level target.
+- **Feasibility** (ERROR): minimum targets + cash exceeding 100% of NAV.
+- **Coverage** (INFO): how much NAV the targets claim vs the untargeted "hold"
+  bucket, and how much must be freed to fund the plan.
+- **Holdings hygiene** (WARN): implausible weights (e.g. an option mislabelled at
+  100% of NAV) or missing `percent_of_nav`.
+
+The goal is to **advise**, not automate: surface drift and suggest trims/adds so
+a human can decide. We are intentionally *not* building an order generator,
+share-level netting, or execution. Targets are edited HERE, never in prose.
+
 ## generate_site.py
 
 Single source of truth for portfolio numbers is `data/current-holdings.json`

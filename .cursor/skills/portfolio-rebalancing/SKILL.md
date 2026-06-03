@@ -67,6 +67,22 @@ For individual stock research:
 
 Do not confuse "great company" with "good buy at this price." That is how portfolios get mugged by multiples.
 
+## Target Model (where we want to be)
+
+Target weights live as structured data in `data/target-model.json`, not as
+prose. Each name/sleeve has a band (`low`/`high`) that is a no-trade zone and a
+`rule` (`accumulate`, `trim_only`, `do_not_add`, `reduce`, `hold`, `wait`,
+`avoid`). Edit targets there, then:
+
+```powershell
+py -3 tools/rebalance.py            # drift: current weight vs target band per name/sleeve
+py -3 tools/rebalance.py --check    # validate the model against holdings (exit 1 on ERROR)
+```
+
+`--check` flags self-contradictions (e.g. a `do_not_add` name whose floor is
+above its current weight, infeasible totals, double-listed sleeve members) and
+holdings hygiene issues. Run it after any target edit or fresh IBKR pull.
+
 ## Claim Verification
 
 Valuation claims (price, market cap, P/E, P/S) live as structured data in
