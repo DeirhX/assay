@@ -23,6 +23,14 @@ The repository root. All page paths below are relative to it.
 | `data/current-holdings.json` | Sanitized machine-readable IBKR holdings snapshot: positions, lots, cash, top positions, and tax-lot summary. |
 | `data/current-holdings-summary.md` | Human-readable holdings snapshot summary for quick context. |
 
+## Documentation
+
+| File | Purpose |
+| --- | --- |
+| `README.md` | Concise front door and common commands. |
+| `ORIENTATION.md` | Cold-start guide covering repo organization, standard workflows, Perplexity setup, commit rules, and project skills. |
+| `tools/README.md` | Detailed tool architecture and command reference. |
+
 ## Page Links
 
 Paths are relative to the repository root. To produce an openable `file://` link,

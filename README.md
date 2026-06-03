@@ -2,6 +2,10 @@
 
 Research and execution checklist for the portfolio rebalancing work.
 
+Start here if you are new to the repo:
+
+`ORIENTATION.md`
+
 It has two layers:
 
 1. **Static pages** (committed HTML) for the standing plan and per-stock detail.
@@ -11,6 +15,27 @@ It has two layers:
 Open the static main page (relative to this repo root):
 
 `next-steps.html`
+
+## Core Processes
+
+For the full workflow, see `ORIENTATION.md`.
+
+Short version:
+
+```powershell
+# Serve the local Research Console.
+$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+py -3 tools/serve.py
+
+# Validate target model and committed valuation claims.
+py -3 tools/rebalance.py --check
+py -3 tools/verify_claims.py
+
+# Check generated holdings/page snippets are synchronized.
+py -3 tools/generate_site.py --check
+```
+
+Use `tools/generate_site.py` after refreshing `data/current-holdings.json`.
 
 ## Interactive Research Console
 
@@ -67,8 +92,22 @@ This directory includes project-scoped Cursor skills under `.cursor/skills/`:
 - `ibkr-holdings` — refresh and parse the local IBKR Flex portfolio reader.
 - `portfolio-rebalancing` — continue the portfolio allocation and stock research workflow.
 - `rebalancing-site` — maintain the static HTML mini-site.
+- `research-console` — run/extend the local live research console.
+- `perplexity-deep-research` — run in-app Perplexity Deep Research through browser automation using Pro included quota.
 
-In a new chat/workspace, ask Cursor to use the `portfolio-rebalancing` and `rebalancing-site` skills before changing recommendations or pages.
+In a new chat/workspace, ask Cursor to read `ORIENTATION.md` and use the relevant project skills before changing recommendations, pages, target models, or research data.
+
+## Perplexity Research
+
+Perplexity Pro quota is used through browser automation, not the API.
+
+- Browser in-app Deep Research: included Pro quota.
+- Perplexity API / Sonar: separately metered API billing.
+- Perplexity Computer: credit-billed; avoid for normal research.
+
+The dedicated MCP server is `playwright-pplx` / `user-playwright-pplx`. After MCP reload/restart, log into Perplexity once in the persistent profile. Use the Search dropdown's **Deep research** option and verify the URL is `/search/...`, not `/computer/...`.
+
+See `.cursor/skills/perplexity-deep-research/SKILL.md` for exact steps.
 
 ## Current Sizing Legend
 
@@ -85,6 +124,6 @@ Refresh IBKR before relying on exact amounts.
 
 ## Sensitive Data
 
-Do not commit IBKR credentials, raw XML exports, full account snapshots, or `secrets.env`.
+Commit sanitized analytical data only. Do not commit IBKR credentials, raw XML exports, full unsanitized account snapshots, browser profiles, API keys, or `secrets.env`.
 
 The pages contain summarized research and allocation guidance, not a full account export.
