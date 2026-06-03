@@ -27,6 +27,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -38,6 +39,9 @@ CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
 IDENTITY_TOL = 0.05
 # claim price vs the broker mark for the same (roughly contemporaneous) snapshot.
 SNAPSHOT_PRICE_TOL = 0.03
+# snapshot freshness: warn after a few days, error once badly stale.
+STALE_WARN_DAYS = 5
+STALE_ERROR_DAYS = 30
 
 SEVERITY_ORDER = {"ERROR": 0, "WARN": 1, "INFO": 2}
 
@@ -64,6 +68,26 @@ def rel_diff(a: float, b: float) -> float:
     if b == 0:
         return float("inf")
     return abs(a - b) / abs(b)
+
+
+def check_snapshot_age(holdings: dict) -> list[Finding]:
+    """Flag a stale snapshot. Uses the current time, so this is run-time only."""
+    raw = holdings.get("generated_at")
+    if not raw:
+        return []
+    try:
+        generated = datetime.fromisoformat(raw)
+    except ValueError:
+        return [Finding("WARN", "snapshot", f"unparseable generated_at: {raw!r}.")]
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - generated).total_seconds() / 86400
+    msg = f"snapshot is {age_days:.1f} days old (generated {raw}); refresh IBKR before acting."
+    if age_days > STALE_ERROR_DAYS:
+        return [Finding("ERROR", "snapshot", msg)]
+    if age_days > STALE_WARN_DAYS:
+        return [Finding("WARN", "snapshot", msg)]
+    return []
 
 
 def check_symbol(symbol: str, claim: dict, mark: float | None) -> list[Finding]:
@@ -142,6 +166,7 @@ def main() -> int:
 
     claims = json.loads(CLAIMS_JSON.read_text(encoding="utf-8"))
     marks: dict[str, float] = {}
+    findings: list[Finding] = []
     if HOLDINGS_JSON.exists():
         holdings = json.loads(HOLDINGS_JSON.read_text(encoding="utf-8"))
         marks = {
@@ -149,8 +174,8 @@ def main() -> int:
             for p in holdings.get("positions", [])
             if p.get("mark_price") is not None
         }
+        findings += check_snapshot_age(holdings)
 
-    findings: list[Finding] = []
     for symbol, claim in claims.get("symbols", {}).items():
         findings += check_symbol(symbol, claim, marks.get(symbol))
 

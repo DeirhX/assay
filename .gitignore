@@ -8,4 +8,5 @@ agent-tools/
 *.log
 data/cache/
 data/research/segments/
+.playwright-mcp/
 __pycache__/

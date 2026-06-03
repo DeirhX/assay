@@ -97,6 +97,13 @@ def compute_fragments(data: dict, claims: dict | None) -> dict[str, str]:
         fragments[f"pos.{symbol}.lots"] = lot_range(lot)
         fragments[f"pos.{symbol}.cz3y"] = str(int(round(lot["cz_three_year_eligible_quantity"])))
 
+    generated_date = str(data.get("generated_at", ""))[:10]
+    report_to = data.get("report_to_date", "")
+    fragments["snapshot.date"] = generated_date
+    fragments["snapshot.report"] = (
+        f"{report_to[:4]}-{report_to[4:6]}-{report_to[6:8]}" if len(report_to) == 8 else report_to
+    )
+
     if claims:
         for symbol, metrics in claims.get("symbols", {}).items():
             for field, suffix in CLAIM_METRICS.items():
