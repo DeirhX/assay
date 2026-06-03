@@ -29,11 +29,14 @@ py -3 tools/research_pull.py --segment semiconductors
   companyfacts). Foreign ADRs are thin/absent; that gets flagged, not faked.
 - `tools/providers/fmp.py` -- optional, only if `FMP_API_KEY` is set.
 - `tools/research_pull.py` -- merges sources, runs cross-checks, writes
-  `data/research/<SYM>.json` and `data/research/segments/<name>.json`.
+  `data/research/<SYM>.json`, ignored ticker history snapshots under
+  `data/cache/research-history/<SYM>/`, and `data/research/segments/<name>.json`.
+  It also attaches portfolio/target-model context and segment research scores.
 - `tools/review_deep_research.py` -- reviews saved Perplexity Deep Research
   artifacts against sources, deterministic ticker data, holdings, and target rules.
 - `tools/serve.py` -- stdlib `http.server`; serves `web/` + the JSON API.
-- `web/` -- vanilla-JS single page (deep dive / segment / pipeline / holdings tabs).
+- `web/` -- vanilla-JS single page (dossier-style deep dive / scored segment /
+  pipeline / holdings tabs).
 
 ## Non-Negotiable Discipline
 

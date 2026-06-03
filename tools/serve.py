@@ -38,6 +38,18 @@ SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+ROOT_STATIC_FILES = {
+    "site.css",
+    "privacy.css",
+    "privacy.js",
+    "next-steps.html",
+    "loser-position-recovery.html",
+    "amd-detail.html",
+    "arm-detail.html",
+    "sofi-detail.html",
+    "pypl-detail.html",
+    "eeft-detail.html",
+}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import research_pull  # noqa: E402
@@ -398,8 +410,17 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_static(self, rel: str):
         if rel in ("", "/"):
             rel = "index.html"
-        target = (WEB_DIR / rel.lstrip("/")).resolve()
-        if WEB_DIR not in target.parents and target != WEB_DIR:
+        clean = rel.lstrip("/")
+        if clean.startswith("web/"):
+            target = (WEB_DIR / clean.removeprefix("web/")).resolve()
+            allowed_root = WEB_DIR
+        elif clean in ROOT_STATIC_FILES:
+            target = (REPO_ROOT / clean).resolve()
+            allowed_root = REPO_ROOT
+        else:
+            target = (WEB_DIR / clean).resolve()
+            allowed_root = WEB_DIR
+        if allowed_root not in target.parents and target != allowed_root:
             return self._send_error_json(403, "forbidden")
         if not target.is_file():
             return self._send_error_json(404, f"not found: {rel}")
@@ -471,6 +492,9 @@ class Handler(BaseHTTPRequestHandler):
             sym = path.rsplit("/", 1)[-1].upper()
             rec = _load(RESEARCH_DIR / f"{sym}.json")
             return self._send_json(rec) if rec else self._send_error_json(404, f"no cached research for {sym}")
+        if path.startswith("/api/history/"):
+            sym = path.rsplit("/", 1)[-1].upper()
+            return self._send_json({"symbol": sym, "history": research_pull.history_for(sym)})
         if path.startswith("/api/segment/"):
             name = path.rsplit("/", 1)[-1].lower()
             rec = _load(SEGMENT_OUT_DIR / f"{name}.json")

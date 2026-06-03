@@ -27,13 +27,14 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 - `research_pull.py` -- pulls all sources, merges with a preferred-source order,
   and **cross-checks** them (price x shares vs market cap, Yahoo vs SEC share
   count, TTM revenue agreement, price freshness, single-source warnings). Writes
-  `data/research/<SYMBOL>.json` and `data/research/segments/<name>.json`. It
-  preserves any human-authored `thesis` block across re-pulls.
+  `data/research/<SYMBOL>.json`, ignored history snapshots under
+  `data/cache/research-history/<SYMBOL>/`, and `data/research/segments/<name>.json`.
+  It preserves any human-authored `thesis` block across re-pulls.
 - `serve.py` -- stdlib `http.server` app serving `web/` and a small JSON API
   (`/api/holdings`, `/api/segments`, `/api/research/<sym>`, `POST /api/pull/<sym>`,
-  `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`, plus the Deep
-  Research pipeline endpoints for segment drafting, artifact saving, review, and
-  target-proposal approval).
+  `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`,
+  plus the Deep Research pipeline endpoints for segment drafting, artifact
+  saving, review, and target-proposal approval).
 - `review_deep_research.py` -- offline review gate for saved Perplexity reports.
   It compares source quality, deterministic ticker data, holdings, and
   `target-model.json`, then writes a review markdown file and draft target-model
@@ -43,6 +44,8 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 
 - `data/research/<SYMBOL>.json` -- per-ticker numbers + cross-checks + thesis.
   Carries human judgement, so it can be committed.
+- `data/cache/research-history/<SYMBOL>/*.json` -- ignored numeric snapshots from
+  repeated pulls. Used by the dossier's "Recent pulls" table.
 - `data/research/deep/<segment>-<date>.md` -- committed Perplexity Deep Research
   report text.
 - `data/research/deep/<segment>-<date>.sources.json` -- committed Links-tab

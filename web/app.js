@@ -4,7 +4,7 @@ const state = {
   holdings: {},
   nav: null,
   lastSegment: null,
-  segSort: { key: "owned_pct_nav", dir: -1 },
+  segSort: { key: "research_score", dir: -1 },
   currentDeepRun: null,
   privacyMode: localStorage.getItem("financeRebalancingPrivacyMode") === "1",
 };
@@ -28,10 +28,19 @@ const fmtB = (v) => {
 };
 const fmtShares = (v) => (v == null ? "n/a" : Number(v).toFixed(2) + "B");
 const pctClass = (v) => (v == null ? "muted" : v > 0 ? "good" : v < 0 ? "bad" : "muted");
+const fmtWeight = (v) => (v == null ? "n/a" : Number(v).toFixed(2) + "%");
+const fmtSignedWeight = (v) => (v == null ? "n/a" : (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%");
 const fmtCZK = (v) => {
   if (v == null) return "n/a";
   return Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Number(v).toFixed(0);
 };
+const decisionClass = (v) => {
+  if (["add_candidate", "accumulate"].includes(v)) return "good";
+  if (["trim", "avoid"].includes(v)) return "bad";
+  if (["watch"].includes(v)) return "warn";
+  return "muted";
+};
+const scoreClass = (v) => (v == null ? "muted" : v >= 70 ? "good" : v >= 45 ? "warn" : "bad");
 const sensitive = (html, label = "sensitive value") =>
   `<span data-sensitive title="${esc(label)}">${html}</span>`;
 
@@ -153,6 +162,8 @@ async function pullTicker(raw) {
   $("#ticker-go").disabled = true;
   try {
     const rec = await api("/api/pull/" + encodeURIComponent(sym), "POST");
+    const hist = await api("/api/history/" + encodeURIComponent(sym)).catch(() => ({ history: [] }));
+    rec.history = hist.history || [];
     status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
     renderDeepDive(rec);
   } catch (e) {
@@ -180,7 +191,10 @@ function renderDeepDive(rec) {
   const out = $("#dd-result");
   out.innerHTML = "";
   const price = rec.price ? rec.price.value : null;
-  const owned = state.holdings[rec.symbol];
+  const portfolio = rec.portfolio || {};
+  const target = portfolio.target || {};
+  const owned = portfolio.current_weight_pct ?? state.holdings[rec.symbol];
+  const decision = mDecision(rec);
 
   const card = el("div", "card");
   // header
@@ -188,13 +202,15 @@ function renderDeepDive(rec) {
   head.innerHTML =
     `<span class="sym">${esc(rec.symbol)}</span>` +
     `<span class="name">${esc(rec.name || "")}</span>` +
+    `<span class="decision-pill ${decisionClass(decision)}">${esc(decision.replace("_", " "))}</span>` +
     `<span class="price">${fmtPrice(price)} <small class="muted">${esc(rec.currency || "")}</small></span>`;
   card.appendChild(head);
 
   const sub = el("div", "dd-sub");
   sub.innerHTML =
     `<span>as of ${new Date(rec.as_of).toLocaleString()}</span>` +
-    (owned != null ? `<span class="owned-pill">held: ${owned.toFixed(2)}% NAV</span>` : `<span class="muted">not held</span>`);
+    (owned != null ? `<span class="owned-pill">held: ${fmtWeight(owned)} NAV</span>` : `<span class="muted">not held</span>`) +
+    (target.rule ? `<span>rule: <strong>${esc(target.rule)}</strong></span>` : `<span class="muted">no target rule</span>`);
   card.appendChild(sub);
 
   // source badges
@@ -205,6 +221,26 @@ function renderDeepDive(rec) {
   });
   card.appendChild(badges);
   out.appendChild(card);
+
+  // decision context
+  const dcard = el("div", "card");
+  dcard.appendChild(el("h2", "section", "Decision context"));
+  const dgrid = el("div", "dossier-grid");
+  const band = target.low != null && target.high != null ? `${fmtWeight(target.low)} - ${fmtWeight(target.high)}` : "n/a";
+  const gap = portfolio.gap_to_band_pct == null ? "n/a" : fmtSignedWeight(portfolio.gap_to_band_pct);
+  const targetKind = target.kind === "sleeve" ? `sleeve: ${target.sleeve}` : target.kind === "target" ? "single-name target" : "not modeled";
+  [
+    ["Current weight", fmtWeight(owned), portfolio.status ? portfolio.status.replace("_", " ") : "not held"],
+    ["Target band", band, targetKind],
+    ["Band gap", gap, "positive means room to add; negative means trim pressure"],
+    ["Research role", decision.replace("_", " "), target.note || "No model note yet."],
+  ].forEach(([label, val, note]) => {
+    const cell = el("div", "metric-cell");
+    cell.innerHTML = `<div class="label">${esc(label)}</div><div class="val">${esc(val)}</div><div class="src">${esc(note)}</div>`;
+    dgrid.appendChild(cell);
+  });
+  dcard.appendChild(dgrid);
+  out.appendChild(dcard);
 
   // cross-checks (the trust layer)
   const checks = rec.cross_checks || [];
@@ -226,7 +262,7 @@ function renderDeepDive(rec) {
 
   // metrics
   const mcard = el("div", "card");
-  mcard.appendChild(el("h2", "section", "Fundamentals"));
+  mcard.appendChild(el("h2", "section", "Valuation & fundamentals"));
   const grid = el("div", "metrics-grid");
   METRIC_ROWS.forEach(([key, label, fmt]) => {
     const node = rec.metrics ? rec.metrics[key] : null;
@@ -256,8 +292,50 @@ function renderDeepDive(rec) {
   mom.appendChild(mgrid);
   out.appendChild(mom);
 
+  out.appendChild(renderHistory(rec));
+
   // thesis editor
   out.appendChild(renderThesis(rec));
+}
+
+function mDecision(rec) {
+  const p = rec.portfolio || {};
+  const t = p.target || {};
+  if (t.rule === "avoid") return "avoid";
+  if (t.rule === "reduce" || (["trim_only", "do_not_add"].includes(t.rule) && p.status === "above_band")) return "trim";
+  if (t.rule === "accumulate" && p.status === "below_band") return "add_candidate";
+  if (t.rule === "wait") return "watch";
+  if (["hold", "trim_only", "do_not_add"].includes(t.rule)) return "hold";
+  if (t.rule === "accumulate") return "accumulate";
+  return "research";
+}
+
+function renderHistory(rec) {
+  const card = el("div", "card");
+  card.appendChild(el("h2", "section", "Recent pulls"));
+  const rows = rec.history || [];
+  if (!rows.length) {
+    card.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
+    return card;
+  }
+  const table = el("table");
+  table.innerHTML =
+    `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th></tr></thead>`;
+  const tbody = el("tbody");
+  rows.slice(0, 8).forEach((h) => {
+    const tr = el("tr");
+    tr.innerHTML =
+      `<td>${esc(h.as_of ? new Date(h.as_of).toLocaleString() : "n/a")}</td>` +
+      `<td class="num">${esc(fmtPrice(h.price))}</td>` +
+      `<td class="num">${esc(fmtX(h.pe_fwd))}</td>` +
+      `<td class="num">${esc(fmtX(h.ps))}</td>` +
+      `<td class="num">${esc(fmtB(h.revenue_ttm_usd_b))}</td>` +
+      `<td><span class="dot ${esc(h.data_quality || "INFO")}"></span>${esc(h.data_quality || "INFO")}</td>`;
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+  return card;
 }
 
 function dataQualityTag(checks) {
@@ -377,6 +455,8 @@ $("#segment-load").addEventListener("click", async () => {
 
 const SEG_COLS = [
   ["symbol", "Symbol", false],
+  ["decision", "Decision", false],
+  ["research_score", "Score", true],
   ["sleeve", "Sleeve", false],
   ["owned_pct_nav", "Held %", true],
   ["price", "Price", true],
@@ -425,6 +505,8 @@ function renderSegment(rec) {
     const tr = el("tr");
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
+      `<span class="decision-pill ${decisionClass(m.decision)}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,
+      `<span class="score-pill ${scoreClass(m.research_score)}">${m.research_score == null ? "n/a" : esc(m.research_score)}</span>`,
       `<span class="sleeve-tag">${esc(m.sleeve)}</span>`,
       m.owned_pct_nav != null ? `<span class="owned-pill">${m.owned_pct_nav.toFixed(1)}</span>` : `<span class="muted">–</span>`,
       fmtPrice(m.price),
@@ -445,7 +527,7 @@ function renderSegment(rec) {
   });
   table.appendChild(tbody);
   card.appendChild(table);
-  card.appendChild(el("div", "hint", "Green/amber/red dot = data-trust level of that name's last pull. Click a row to deep-dive. Held % is your current NAV weight — empty means a peer you don't own."));
+  card.appendChild(el("div", "hint", "Score is a rough research queue heuristic from target rule, band gap, growth, valuation, momentum, and data trust. It is not an order signal, because we are not building a robot broker for future regret. Click a row to deep-dive."));
   out.appendChild(card);
 }
 

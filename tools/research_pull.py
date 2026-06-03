@@ -40,6 +40,9 @@ RESEARCH_DIR = REPO_ROOT / "data" / "research"
 SEGMENT_DEF_DIR = REPO_ROOT / "data" / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
+TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
+CACHE_DIR = REPO_ROOT / "data" / "cache"
+HISTORY_DIR = CACHE_DIR / "research-history"
 
 # (metric key, preferred source order, formatter)
 METRIC_SPECS: list[tuple[str, list[str], Any]] = [
@@ -191,6 +194,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         "momentum": mo,
         "metrics": merged,
         "cross_checks": checks,
+        "portfolio": _portfolio_context(symbol),
         "sources": {
             "yahoo": y is not None or bool(mo),
             "sec_edgar": s is not None,
@@ -204,6 +208,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         if existing and "thesis" in existing:
             record["thesis"] = existing["thesis"]  # never clobber judgement
         _write(RESEARCH_DIR / f"{symbol}.json", record)
+        _write_history(symbol, record)
     return record
 
 
@@ -234,6 +239,9 @@ def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
             "chg_12m_pct": rec["momentum"].get("chg_12m_pct"),
             "pct_below_52w_high": rec["momentum"].get("pct_below_52w_high"),
             "data_quality": worst,
+            "research_score": _research_score(rec, worst),
+            "decision": _decision_label(rec),
+            "score_reasons": _score_reasons(rec, worst),
         })
 
     record = {
@@ -259,7 +267,207 @@ def _holdings_weights() -> dict[str, float]:
     data = _load(HOLDINGS_JSON)
     if not data:
         return {}
-    return {p["symbol"]: p.get("percent_of_nav") for p in data.get("positions", [])}
+    positions = data.get("positions", [])
+    invested = sum(
+        p["base_market_value"]
+        for p in positions
+        if isinstance(p.get("base_market_value"), (int, float))
+    )
+    if not invested:
+        return {}
+    return {
+        p["symbol"]: p["base_market_value"] / invested * 100.0
+        for p in positions
+        if isinstance(p.get("base_market_value"), (int, float))
+    }
+
+
+def _portfolio_context(symbol: str) -> dict[str, Any]:
+    weights = _holdings_weights()
+    model = _load(TARGET_MODEL_JSON) or {}
+    current = weights.get(symbol)
+    target = _target_context(model, symbol)
+    ctx: dict[str, Any] = {
+        "current_weight_pct": current,
+        "target": target,
+    }
+    low = target.get("low")
+    high = target.get("high")
+    if isinstance(current, (int, float)) and isinstance(low, (int, float)) and isinstance(high, (int, float)):
+        if current < low:
+            ctx["status"] = "below_band"
+            ctx["gap_to_band_pct"] = round(low - current, 4)
+        elif current > high:
+            ctx["status"] = "above_band"
+            ctx["gap_to_band_pct"] = round(high - current, 4)
+        else:
+            ctx["status"] = "in_band"
+            ctx["gap_to_band_pct"] = 0.0
+    elif current:
+        ctx["status"] = "held_no_target"
+    else:
+        ctx["status"] = "not_held"
+    return ctx
+
+
+def _target_context(model: dict[str, Any], symbol: str) -> dict[str, Any]:
+    targets = model.get("targets", {})
+    if symbol in targets:
+        node = dict(targets[symbol])
+        node["kind"] = "target"
+        return node
+    for sleeve_name, sleeve in model.get("sleeves", {}).items():
+        if symbol in sleeve.get("members", []):
+            node = dict(sleeve)
+            node["kind"] = "sleeve"
+            node["sleeve"] = sleeve_name
+            node.pop("members", None)
+            return node
+    return {"kind": "none"}
+
+
+def _research_score(rec: dict[str, Any], worst: str) -> int:
+    """Heuristic peer score. It ranks research candidates; it is not an order signal."""
+    metrics = rec.get("metrics", {})
+    portfolio = rec.get("portfolio", {})
+    target = portfolio.get("target", {})
+    score = 50
+
+    rule = target.get("rule")
+    status = portfolio.get("status")
+    if rule == "accumulate":
+        score += 18
+        if status == "below_band":
+            score += 18
+    elif rule in {"trim_only", "do_not_add"}:
+        score -= 12
+        if status == "above_band":
+            score -= 18
+    elif rule == "reduce":
+        score -= 25
+    elif rule == "avoid":
+        score -= 35
+    elif rule == "hold":
+        score += 4
+
+    growth = _val(metrics.get("rev_growth_yoy_pct"))
+    margin = _val(metrics.get("gross_margin_pct"))
+    fwd_pe = _val(metrics.get("pe_fwd"))
+    ps = _val(metrics.get("ps"))
+    chg_3m = rec.get("momentum", {}).get("chg_3m_pct")
+    chg_12m = rec.get("momentum", {}).get("chg_12m_pct")
+
+    if growth is not None:
+        score += max(-12, min(18, growth / 2.5))
+    if margin is not None:
+        score += max(-6, min(14, (margin - 35) / 2.5))
+    if fwd_pe is not None:
+        if fwd_pe <= 25:
+            score += 10
+        elif fwd_pe <= 45:
+            score += 4
+        elif fwd_pe >= 80:
+            score -= 12
+    if ps is not None:
+        if ps <= 8:
+            score += 8
+        elif ps >= 25:
+            score -= 10
+    if chg_3m is not None:
+        if chg_3m < -20:
+            score -= 8
+        elif chg_3m <= 25:
+            score += 6
+        elif chg_3m > 60:
+            score -= 8
+    if chg_12m is not None:
+        score += max(-10, min(12, chg_12m / 8))
+    if worst == "ERROR":
+        score -= 30
+    elif worst == "WARN":
+        score -= 10
+
+    return int(round(max(0, min(100, score))))
+
+
+def _decision_label(rec: dict[str, Any]) -> str:
+    portfolio = rec.get("portfolio", {})
+    target = portfolio.get("target", {})
+    rule = target.get("rule")
+    status = portfolio.get("status")
+    if rule == "avoid":
+        return "avoid"
+    if rule == "reduce" or (rule in {"trim_only", "do_not_add"} and status == "above_band"):
+        return "trim"
+    if rule == "accumulate" and status == "below_band":
+        return "add_candidate"
+    if rule == "wait":
+        return "watch"
+    if rule in {"hold", "trim_only", "do_not_add"}:
+        return "hold"
+    if rule == "accumulate":
+        return "accumulate"
+    return "research"
+
+
+def _score_reasons(rec: dict[str, Any], worst: str) -> list[str]:
+    reasons: list[str] = []
+    portfolio = rec.get("portfolio", {})
+    target = portfolio.get("target", {})
+    rule = target.get("rule")
+    status = portfolio.get("status")
+    if rule:
+        reasons.append(f"rule: {rule}")
+    if status:
+        reasons.append(status.replace("_", " "))
+    if worst != "INFO":
+        reasons.append(f"data trust: {worst}")
+    metrics = rec.get("metrics", {})
+    growth = _val(metrics.get("rev_growth_yoy_pct"))
+    fwd_pe = _val(metrics.get("pe_fwd"))
+    if growth is not None:
+        reasons.append(f"growth {growth:+.1f}%")
+    if fwd_pe is not None:
+        reasons.append(f"fwd P/E {fwd_pe:.1f}x")
+    return reasons[:5]
+
+
+def history_for(symbol: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    folder = HISTORY_DIR / symbol.upper().strip()
+    if not folder.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for path in sorted(folder.glob("*.json"), reverse=True)[:limit]:
+        rec = _load(path)
+        if not rec:
+            continue
+        metrics = rec.get("metrics", {})
+        entries.append({
+            "as_of": rec.get("as_of"),
+            "price": _val(rec.get("price")),
+            "market_cap_usd_b": _val(metrics.get("market_cap_usd_b")),
+            "pe_fwd": _val(metrics.get("pe_fwd")),
+            "ps": _val(metrics.get("ps")),
+            "revenue_ttm_usd_b": _val(metrics.get("revenue_ttm_usd_b")),
+            "data_quality": _worst_severity(rec.get("cross_checks", [])),
+            "path": str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
+        })
+    return entries
+
+
+def _write_history(symbol: str, record: dict[str, Any]) -> None:
+    snapshot = dict(record)
+    snapshot.pop("thesis", None)
+    stamp = _history_stamp(record.get("as_of") or _now())
+    _write(HISTORY_DIR / symbol.upper() / f"{stamp}.json", snapshot)
+
+
+def _history_stamp(as_of: str) -> str:
+    try:
+        parsed = dt.datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = dt.datetime.now(dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _load(path: Path) -> dict[str, Any] | None:
