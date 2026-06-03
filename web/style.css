@@ -143,6 +143,9 @@ tr:last-child td { border-bottom: 0; }
 .hold:hover { border-color: var(--accent); }
 .hold .h-sym { font-weight: 700; }
 .hold .h-w { color: var(--muted); font-variant-numeric: tabular-nums; }
+.hold.opt { cursor: default; opacity: .8; border-style: dashed; }
+.hold.opt:hover { border-color: var(--border); }
+.opt-tag { font-size: 9px; font-weight: 800; letter-spacing: .05em; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; margin-left: 5px; vertical-align: middle; }
 .empty { color: var(--muted); padding: 30px 4px; text-align: center; }
 
 @media (max-width: 860px) {

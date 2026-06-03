@@ -21,6 +21,10 @@ const fmtB = (v) => {
 };
 const fmtShares = (v) => (v == null ? "n/a" : Number(v).toFixed(2) + "B");
 const pctClass = (v) => (v == null ? "muted" : v > 0 ? "good" : v < 0 ? "bad" : "muted");
+const fmtCZK = (v) => {
+  if (v == null) return "n/a";
+  return Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Number(v).toFixed(0);
+};
 
 async function api(path, method = "GET", body = null) {
   const opt = { method, headers: {} };
@@ -52,17 +56,32 @@ async function loadHoldings() {
     state.nav = h.net_asset_value;
     state.holdings = {};
     (h.positions || []).forEach((p) => { state.holdings[p.symbol] = p.percent_of_nav; });
-    status.textContent = `NAV ${(h.net_asset_value || 0).toLocaleString()} CZK · snapshot ${(h.generated_at || "").slice(0, 10)}`;
+    status.textContent =
+      `NAV ${Math.round(h.net_asset_value || 0).toLocaleString()} CZK · ` +
+      `invested ${Math.round(h.invested_value || 0).toLocaleString()} CZK · ` +
+      `snapshot ${(h.generated_at || "").slice(0, 10)} · weights = % of invested`;
     out.innerHTML = "";
     const grid = el("div", "holdings-list");
     (h.positions || [])
       .slice()
       .sort((a, b) => (b.percent_of_nav || 0) - (a.percent_of_nav || 0))
       .forEach((p) => {
-        const card = el("div", "hold");
-        card.innerHTML = `<span class="h-sym">${esc(p.symbol)}</span><span class="h-w">${(p.percent_of_nav || 0).toFixed(2)}%</span>`;
-        card.title = p.description || "";
-        card.addEventListener("click", () => analyzeFromAnywhere(p.symbol));
+        const isOpt = p.asset_class === "OPT";
+        const card = el("div", "hold" + (isOpt ? " opt" : ""));
+        const label = isOpt ? (p.description || p.symbol) : p.symbol;
+        // Options carry negligible market value but a misleading broker weight;
+        // show their actual CZK value so the display is honest, not notional.
+        const right = isOpt
+          ? `<span class="h-w">${fmtCZK(p.base_market_value)} CZK</span>`
+          : `<span class="h-w">${(p.percent_of_nav || 0).toFixed(2)}%</span>`;
+        const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
+        card.innerHTML = `<span class="h-sym">${esc(label)}${tag}</span>${right}`;
+        card.title =
+          (p.description || p.symbol) +
+          (isOpt && p.broker_percent_of_nav != null
+            ? ` · broker tagged ${p.broker_percent_of_nav}% of NAV (margin/notional artifact, ignored)`
+            : ` · ${(p.percent_of_nav || 0).toFixed(2)}% of invested`);
+        if (!isOpt) card.addEventListener("click", () => analyzeFromAnywhere(p.symbol));
         grid.appendChild(card);
       });
     out.appendChild(grid);
