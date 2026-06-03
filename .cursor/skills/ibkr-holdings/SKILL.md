@@ -28,6 +28,15 @@ This writes:
 
 The Flex query is read-only and cannot trade. It returns a generated snapshot, not streaming live prices. Always report `generated_at`, report dates, and whether prices are stale.
 
+## Repo-Local Cached Snapshot
+
+This repo also stores a sanitized holdings snapshot for continuity:
+
+- `data/current-holdings.json`: machine-readable positions, cash, lots, top positions, and tax-lot summary.
+- `data/current-holdings-summary.md`: human-readable summary.
+
+Use the cached snapshot when the user asks to continue prior analysis without refreshing. Refresh IBKR first when making trade recommendations or when the user asks for current holdings.
+
 ## JSON Shape
 
 Use `positions` for allocation weights and `lots` for tax-lot timing:

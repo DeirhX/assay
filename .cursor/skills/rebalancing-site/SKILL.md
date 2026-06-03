@@ -26,6 +26,8 @@ If investment recommendations change, also read the `portfolio-rebalancing` skil
 ## Current Page Set
 
 - `next-steps.html`: main execution checklist.
+- `amd-detail.html`: AMD momentum, valuation, and action detail.
+- `arm-detail.html`: ARM momentum, valuation, and action detail.
 - `loser-position-recovery.html`: normalized dashboard for `EEFT`, `PYPL`, `SOFI`.
 - `sofi-detail.html`: SOFI research detail.
 - `pypl-detail.html`: PYPL research detail.

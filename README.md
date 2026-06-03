@@ -9,6 +9,8 @@ Open the main page:
 ## Pages
 
 - `next-steps.html` — broad rebalance checklist and target weights.
+- `amd-detail.html` — AMD momentum/valuation/action detail page.
+- `arm-detail.html` — ARM momentum/valuation/action detail page.
 - `loser-position-recovery.html` — normalized dashboard for `SOFI`, `PYPL`, and `EEFT`.
 - `sofi-detail.html` — SOFI detail page.
 - `pypl-detail.html` — PYPL detail page.
@@ -26,12 +28,14 @@ In a new chat/workspace, ask Cursor to use the `portfolio-rebalancing` and `reba
 
 ## Current Sizing Legend
 
-Last discussed NAV was about `31.6m CZK`:
+Sanitized holdings snapshot: `data/current-holdings.json`.
 
-- `1% NAV ~= 316k CZK ~= $15.1k`
-- `2% NAV ~= 632k CZK`
-- `5% NAV ~= 1.58m CZK`
-- `10% NAV ~= 3.16m CZK`
+Snapshot generated at `2026-06-03T10:23:04+00:00`, report date `20260602`, NAV about `«redacted»`:
+
+- `1% NAV ~= «redacted»`
+- `2% NAV ~= «redacted»`
+- `5% NAV ~= «redacted»`
+- `10% NAV ~= «redacted»`
 
 Refresh IBKR before relying on exact amounts.
 

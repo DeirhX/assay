@@ -10,6 +10,8 @@ description: Continue the user's aggressive semiconductor/AI portfolio rebalanci
 Before answering or editing pages, read:
 
 - [CURRENT_PLAN.md](CURRENT_PLAN.md)
+- `data/current-holdings-summary.md` if current allocation context matters.
+- `data/current-holdings.json` if exact positions, lots, cash, or NAV weights matter.
 
 Use the `ibkr-holdings` skill when fresh portfolio data, NAV weights, or lot-level tax timing are needed.
 
@@ -39,10 +41,9 @@ Give concrete actions, not vague asset-allocation oatmeal:
 
 Last discussed NAV basis:
 
-- `1% NAV ~= 316k CZK`
-- `1% NAV ~= $15.1k`
-- `5% NAV ~= 1.58m CZK`
-- `10% NAV ~= 3.16m CZK`
+- `1% NAV ~= «redacted»`
+- `5% NAV ~= «redacted»`
+- `10% NAV ~= «redacted»`
 
 Refresh IBKR before relying on these exact amounts.
 

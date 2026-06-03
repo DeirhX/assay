@@ -9,14 +9,25 @@ Root directory:
 | Page | Purpose |
 | --- | --- |
 | `next-steps.html` | Main broad rebalance execution checklist: sells, trims, buys, tax handling, ETF guidance, 1-3 month targets. |
+| `amd-detail.html` | AMD detail page: tangible AI GPU/CPU momentum, expensive valuation, hold core but trim concentration. |
+| `arm-detail.html` | ARM detail page: real AI/data-center royalty momentum, extreme valuation, do not add and trim concentration. |
 | `loser-position-recovery.html` | Normalized comparison dashboard for `SOFI`, `PYPL`, and `EEFT`. Links to the broader plan and stock detail pages. |
 | `sofi-detail.html` | SOFI detail page: keep most, trim only if cash/risk requires it. |
 | `pypl-detail.html` | PYPL detail page: trim 50-75%, keep value-turnaround stub. |
 | `eeft-detail.html` | EEFT detail page: sell first, keep at most a monitored stub. |
 
+## Data Files
+
+| File | Purpose |
+| --- | --- |
+| `data/current-holdings.json` | Sanitized machine-readable IBKR holdings snapshot: positions, lots, cash, top positions, and tax-lot summary. |
+| `data/current-holdings-summary.md` | Human-readable holdings snapshot summary for quick context. |
+
 ## Public File Links
 
 - Overview plan: `file:///E:/Projects/Active/Finance/rebalancing/next-steps.html`
+- AMD detail: `file:///E:/Projects/Active/Finance/rebalancing/amd-detail.html`
+- ARM detail: `file:///E:/Projects/Active/Finance/rebalancing/arm-detail.html`
 - Loser dashboard: `file:///E:/Projects/Active/Finance/rebalancing/loser-position-recovery.html`
 - SOFI detail: `file:///E:/Projects/Active/Finance/rebalancing/sofi-detail.html`
 - PYPL detail: `file:///E:/Projects/Active/Finance/rebalancing/pypl-detail.html`
@@ -25,8 +36,8 @@ Root directory:
 ## Navigation Expectations
 
 - `next-steps.html` should link to the loser-position review and each stock detail page.
-- `loser-position-recovery.html` should link to `next-steps.html` and each stock detail page.
-- Each stock detail page should link back to `loser-position-recovery.html`. If the site grows, also add a link back to `next-steps.html`.
+- `loser-position-recovery.html` should link to `next-steps.html`, `amd-detail.html`, `arm-detail.html`, and each loser stock detail page.
+- Each stock detail page should link back to `next-steps.html`; loser stock pages should also link back to `loser-position-recovery.html`.
 
 ## Sensitive Data Rules
 
