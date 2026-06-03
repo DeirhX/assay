@@ -61,15 +61,39 @@ def _load(path: Path):
 def _holdings_payload():
     data = _load(HOLDINGS_JSON) or {}
     positions = data.get("positions", [])
+
+    # Weight by actual market value, not the broker's percent_of_nav field. That
+    # field is reliable for stocks but garbage for options (the SPY put is
+    # stamped 100% -- a margin/notional artifact, not its ~870 CZK market value).
+    # Recomputing from base_market_value over total invested reproduces the
+    # familiar stock weights (the broker uses NAV-minus-cash as denominator) and
+    # drops derivatives to their true tiny weight.
+    invested = sum(
+        p["base_market_value"]
+        for p in positions
+        if isinstance(p.get("base_market_value"), (int, float))
+    )
+
+    def weight(p):
+        bmv = p.get("base_market_value")
+        if not isinstance(bmv, (int, float)) or not invested:
+            return None
+        return bmv / invested * 100.0
+
     return {
         "net_asset_value": data.get("net_asset_value"),
+        "invested_value": invested,
         "generated_at": data.get("generated_at"),
         "sizing_legend": data.get("sizing_legend", {}),
         "positions": [
             {
                 "symbol": p["symbol"],
                 "description": p.get("description"),
-                "percent_of_nav": p.get("percent_of_nav"),
+                "asset_class": p.get("asset_class"),
+                "percent_of_nav": weight(p),
+                "broker_percent_of_nav": p.get("percent_of_nav"),
+                "base_market_value": p.get("base_market_value"),
+                "currency": p.get("currency"),
                 "unrealized_pnl": p.get("unrealized_pnl"),
                 "issuer_country_code": p.get("issuer_country_code"),
             }
