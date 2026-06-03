@@ -58,3 +58,11 @@ For individual stock research:
 5. Tie the answer back to portfolio action: add, hold, trim, sell, or wait.
 
 Do not confuse "great company" with "good buy at this price." That is how portfolios get mugged by multiples.
+
+## Claim Verification
+
+Valuation claims (price, market cap, P/E, P/S) live as structured data in
+`data/research-claims.json`, not as loose prose. After changing any of them, run
+`py -3 tools/verify_claims.py` to confirm they are internally consistent and
+agree with the broker snapshot. Anchor claims with an `asof` date so a moved
+market is never mistaken for an error.
