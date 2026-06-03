@@ -23,6 +23,9 @@ The repository root. All page paths below are relative to it.
 | --- | --- |
 | `data/current-holdings.json` | Sanitized machine-readable IBKR holdings snapshot: positions, lots, cash, top positions, and tax-lot summary. |
 | `data/current-holdings-summary.md` | Human-readable holdings snapshot summary for quick context. |
+| `data/segments/*.json` | Website-managed research segment definitions. These are overlapping research lenses, not target-model allocation sleeves. |
+| `data/research/<SYMBOL>.json` | Deterministic ticker pulls plus preserved thesis blocks. |
+| `data/research/deep/*` | Committed Perplexity Deep Research reports, Links-tab source sidecars, review-gate output, and target proposals. |
 
 ## Documentation
 
@@ -31,6 +34,18 @@ The repository root. All page paths below are relative to it.
 | `README.md` | Concise front door and common commands. |
 | `ORIENTATION.md` | Cold-start guide covering repo organization, standard workflows, Perplexity setup, commit rules, and project skills. |
 | `tools/README.md` | Detailed tool architecture and command reference. |
+
+## Interactive Console
+
+Run `py -3 tools\serve.py` and open `http://127.0.0.1:8765`.
+
+Tabs:
+
+- `Deep dive`: single ticker pull and thesis editor.
+- `Segment`: deterministic peer dashboard for approved research segments.
+- `Pipeline`: segment drafting/approval, Perplexity prompt/report/source capture,
+  review gate, and target proposal approval.
+- `Holdings`: sanitized portfolio snapshot and concentration view.
 
 ## Page Links
 

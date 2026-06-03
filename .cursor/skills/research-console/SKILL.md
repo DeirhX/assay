@@ -1,6 +1,6 @@
 ---
 name: research-console
-description: Run and extend the interactive Research Console for on-demand, live, multi-source deep dives on a ticker or industry segment. Use when asked to analyze a specific stock live, compare a peer/segment universe (e.g. semiconductors), launch/serve the console, add a data provider or segment, or work on tools/serve.py, tools/research_pull.py, or web/.
+description: Run and extend the interactive Research Console for on-demand, live, multi-source deep dives on a ticker or industry segment, plus the website-controlled Deep Research pipeline. Use when asked to analyze a stock live, compare a segment universe, draft/approve segments, launch/serve the console, add a data provider, or work on tools/serve.py, tools/research_pull.py, tools/review_deep_research.py, or web/.
 ---
 
 # Research Console
@@ -32,9 +32,11 @@ py -3 tools/research_pull.py --segment semiconductors
   `data/research/<SYM>.json`, ignored ticker history snapshots under
   `data/cache/research-history/<SYM>/`, and `data/research/segments/<name>.json`.
   It also attaches portfolio/target-model context and segment research scores.
+- `tools/review_deep_research.py` -- reviews saved Perplexity Deep Research
+  artifacts against sources, deterministic ticker data, holdings, and target rules.
 - `tools/serve.py` -- stdlib `http.server`; serves `web/` + the JSON API.
 - `web/` -- vanilla-JS single page (dossier-style deep dive / scored segment /
-  holdings tabs).
+  pipeline / holdings tabs).
 
 ## Non-Negotiable Discipline
 
@@ -49,11 +51,19 @@ This repo exists to not trust unverified numbers. Keep it that way:
    per-name dots reflect real cross-check findings (ERROR/WARN/INFO). Don't
    suppress them to make output look clean.
 4. **Stamp `as_of` and source.** A moved market is not a lie; staleness is shown.
+5. **Use the website as the control plane.** Segment creation, Deep Research
+   artifact saving, review-gate runs, thesis drafts, and target proposals should
+   flow through the local UI. Manual JSON editing is a debugging fallback.
 
 ## Common Tasks
 
-- **Add a segment**: create `data/segments/<name>.json` with `title`, `sleeves`,
-  and `members` (`symbol` + `sleeve`). Prefer US listings/ADRs so SEC can anchor.
+- **Add a segment**: use the Pipeline tab to draft, edit, validate, and approve
+  it. The saved file is `data/segments/<name>.json` with `title`, `sleeves`, and
+  `members` (`symbol` + `sleeve`). Research segments may overlap; target-model
+  allocation sleeves should not double-count unless explicitly modeled.
+- **Run Deep Research pipeline**: Pipeline tab builds the prompt, saves
+  `data/research/deep/<segment>-<date>.md` and `.sources.json`, then runs the
+  review gate to create `.review.md` and `.target-proposal.json`.
 - **Add a provider**: add `tools/providers/<x>.py` returning metric nodes
   (`{value, source, ...}`); wire it into `research_pull._collect(...)` and the
   preferred-source order in `METRIC_SPECS`. Add any new cross-checks in
@@ -66,8 +76,9 @@ This repo exists to not trust unverified numbers. Keep it that way:
 - Server binds `127.0.0.1` only and runs live network pulls on request; never
   expose it.
 - Secrets (`FMP_API_KEY`) come from `secrets.env` (gitignored). Never commit keys.
-- `data/cache/` and `data/research/segments/` are gitignored; per-ticker research
-  files may be committed because they carry the thesis.
+- `data/cache/` and `data/research/segments/` are gitignored; per-ticker research,
+  approved segment definitions, and reviewed `data/research/deep/` artifacts may
+  be committed because they carry thesis/context.
 
 ## Caveats Worth Repeating to the User
 

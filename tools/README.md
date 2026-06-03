@@ -32,7 +32,13 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   It preserves any human-authored `thesis` block across re-pulls.
 - `serve.py` -- stdlib `http.server` app serving `web/` and a small JSON API
   (`/api/holdings`, `/api/segments`, `/api/research/<sym>`, `POST /api/pull/<sym>`,
-  `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`).
+  `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`,
+  plus the Deep Research pipeline endpoints for segment drafting, artifact
+  saving, review, and target-proposal approval).
+- `review_deep_research.py` -- offline review gate for saved Perplexity reports.
+  It compares source quality, deterministic ticker data, holdings, and
+  `target-model.json`, then writes a review markdown file and draft target-model
+  proposal.
 
 ### Data outputs
 
@@ -40,10 +46,44 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   Carries human judgement, so it can be committed.
 - `data/cache/research-history/<SYMBOL>/*.json` -- ignored numeric snapshots from
   repeated pulls. Used by the dossier's "Recent pulls" table.
+- `data/research/deep/<segment>-<date>.md` -- committed Perplexity Deep Research
+  report text.
+- `data/research/deep/<segment>-<date>.sources.json` -- committed Links-tab
+  citation extraction.
+- `data/research/deep/<segment>-<date>.review.md` -- review-gate output.
+- `data/research/deep/<segment>-<date>.target-proposal.json` -- draft target
+  changes for explicit human approval.
 - `data/research/segments/<name>.json` -- derived peer dashboard (gitignored).
 - `data/cache/sec_ticker_cik.json` -- weekly ticker->CIK cache (gitignored).
 - `data/segments/<name>.json` -- **input** universe definition (committed), e.g.
-  `semiconductors.json` with sleeves matching `CURRENT_PLAN.md`.
+  `semiconductors.json` with sleeves matching `CURRENT_PLAN.md`. These are
+  research lenses and may overlap; they are not target-model allocation sleeves.
+
+### Segment and Deep Research workflow
+
+The website is the normal control plane:
+
+1. Open `http://127.0.0.1:8765` and use the Pipeline tab.
+2. Draft or approve a segment. Segment JSON is stored in `data/segments/*.json`.
+3. Run deterministic pulls for the segment.
+4. Generate the Perplexity prompt and run browser-based Deep Research.
+5. Paste/save the report and Links-tab citation JSON.
+6. Run the review gate.
+7. Inspect target-model proposals and explicitly approve only if you want the
+   target model changed.
+
+CLI fallback:
+
+```powershell
+py -3 tools/review_deep_research.py --segment fintech-payments --date 2026-06-03
+```
+
+This writes:
+
+```text
+data/research/deep/fintech-payments-2026-06-03.review.md
+data/research/deep/fintech-payments-2026-06-03.target-proposal.json
+```
 
 ### Relationship to verify_claims.py
 

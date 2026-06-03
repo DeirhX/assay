@@ -1,6 +1,12 @@
 "use strict";
 
-const state = { holdings: {}, nav: null, lastSegment: null, segSort: { key: "research_score", dir: -1 } };
+const state = {
+  holdings: {},
+  nav: null,
+  lastSegment: null,
+  segSort: { key: "research_score", dir: -1 },
+  currentDeepRun: null,
+};
 
 // ---- tiny helpers ---------------------------------------------------------
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -52,6 +58,7 @@ document.querySelectorAll(".tab").forEach((btn) => {
     btn.classList.add("active");
     $("#view-" + btn.dataset.view).classList.add("active");
     if (btn.dataset.view === "holdings") loadHoldings();
+    if (btn.dataset.view === "pipeline") loadPipeline();
   });
 });
 
@@ -376,17 +383,24 @@ function renderThesis(rec) {
 // ---- segment --------------------------------------------------------------
 async function loadSegmentList() {
   const sel = $("#segment-select");
+  const pipeSel = $("#pipe-segment-select");
   try {
     const { segments } = await api("/api/segments");
     sel.innerHTML = "";
+    if (pipeSel) pipeSel.innerHTML = "";
     segments.forEach((s) => {
       const o = el("option");
       o.value = s.name;
-      o.textContent = `${s.title} (${s.count})${s.cached ? " · cached" : ""}`;
+      o.textContent = `${s.title} (${s.count})${s.status === "draft" ? " · draft" : ""}${s.cached ? " · cached" : ""}`;
       sel.appendChild(o);
+      if (pipeSel) {
+        const p = o.cloneNode(true);
+        pipeSel.appendChild(p);
+      }
     });
   } catch (e) {
     sel.innerHTML = `<option>${esc(e.message)}</option>`;
+    if (pipeSel) pipeSel.innerHTML = `<option>${esc(e.message)}</option>`;
   }
 }
 
@@ -500,6 +514,228 @@ function renderSegment(rec) {
   card.appendChild(el("div", "hint", "Score is a rough research queue heuristic from target rule, band gap, growth, valuation, momentum, and data trust. It is not an order signal, because we are not building a robot broker for future regret. Click a row to deep-dive."));
   out.appendChild(card);
 }
+
+// ---- pipeline -------------------------------------------------------------
+function loadPipeline() {
+  loadSegmentList();
+  refreshDeepRuns();
+  if (!$("#pipe-date").value) $("#pipe-date").value = new Date().toISOString().slice(0, 10);
+}
+
+function pipeSegment() {
+  return $("#pipe-segment-select").value || $("#pipe-slug").value.trim();
+}
+
+function parseJsonField(sel, fallback) {
+  const raw = $(sel).value.trim();
+  if (!raw) return fallback;
+  return JSON.parse(raw);
+}
+
+$("#pipe-draft").addEventListener("click", async () => {
+  const status = $("#pipe-segment-status");
+  status.classList.remove("err");
+  status.textContent = "drafting...";
+  try {
+    const rec = await api("/api/segment-draft", "POST", { query: $("#pipe-query").value });
+    $("#pipe-slug").value = rec.slug;
+    $("#pipe-segment-json").value = JSON.stringify(rec.definition, null, 2);
+    $("#pipe-prompt").value = rec.llm_prompt || "";
+    status.textContent = rec.warnings && rec.warnings.length ? rec.warnings.join(" ") : "draft ready; edit and approve when sane";
+  } catch (e) {
+    status.textContent = "draft failed: " + e.message;
+    status.classList.add("err");
+  }
+});
+
+$("#pipe-save-segment").addEventListener("click", async () => {
+  const status = $("#pipe-segment-status");
+  status.classList.remove("err");
+  status.textContent = "saving segment...";
+  try {
+    const slug = $("#pipe-slug").value.trim();
+    const definition = parseJsonField("#pipe-segment-json", {});
+    definition.status = "approved";
+    const rec = await api("/api/segment-def/" + encodeURIComponent(slug), "POST", { definition });
+    status.textContent = `saved ${rec.name}`;
+    await loadSegmentList();
+    $("#pipe-segment-select").value = rec.name;
+  } catch (e) {
+    status.textContent = "save failed: " + e.message;
+    status.classList.add("err");
+  }
+});
+
+$("#pipe-build-prompt").addEventListener("click", async () => {
+  const status = $("#pipe-prompt-status");
+  status.classList.remove("err");
+  status.textContent = "building prompt...";
+  try {
+    const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(pipeSegment()));
+    $("#pipe-date").value = rec.date;
+    $("#pipe-prompt").value = rec.prompt;
+    status.textContent = "prompt ready";
+  } catch (e) {
+    status.textContent = "prompt failed: " + e.message;
+    status.classList.add("err");
+  }
+});
+
+$("#pipe-run-deterministic").addEventListener("click", async () => {
+  const status = $("#pipe-prompt-status");
+  const name = pipeSegment();
+  status.classList.remove("err");
+  status.innerHTML = `<span class="spinner"></span> Pulling deterministic data for ${esc(name)}...`;
+  try {
+    const rec = await api("/api/pull-segment/" + encodeURIComponent(name), "POST");
+    status.textContent = `pulled ${rec.members.length} names`;
+    renderSegment(rec);
+  } catch (e) {
+    status.textContent = "pull failed: " + e.message;
+    status.classList.add("err");
+  }
+});
+
+$("#pipe-save-report").addEventListener("click", async () => {
+  const status = $("#pipe-artifact-status");
+  status.classList.remove("err");
+  status.textContent = "saving artifacts...";
+  try {
+    const rec = await api("/api/deep-research/save", "POST", {
+      segment: pipeSegment(),
+      date: $("#pipe-date").value.trim(),
+      source_url: $("#pipe-source-url").value.trim(),
+      report: $("#pipe-report").value,
+      citations: parseJsonField("#pipe-sources", []),
+    });
+    status.textContent = `saved ${rec.stem}`;
+    state.currentDeepRun = rec.stem;
+    await refreshDeepRuns();
+  } catch (e) {
+    status.textContent = "save failed: " + e.message;
+    status.classList.add("err");
+  }
+});
+
+$("#pipe-run-review").addEventListener("click", async () => {
+  const status = $("#pipe-review-status");
+  status.classList.remove("err");
+  status.textContent = "running review gate...";
+  try {
+    const segment = pipeSegment();
+    const date = $("#pipe-date").value.trim();
+    const rec = await api("/api/deep-research/review", "POST", { segment, date });
+    state.currentDeepRun = `${segment}-${date}`;
+    status.textContent = `review generated: ${rec.warnings.length} warning(s), ${rec.proposal.changes.length} proposal change(s)`;
+    renderReviewGate(rec);
+    await refreshDeepRuns();
+  } catch (e) {
+    status.textContent = "review failed: " + e.message;
+    status.classList.add("err");
+  }
+});
+
+$("#pipe-refresh-runs").addEventListener("click", refreshDeepRuns);
+
+async function refreshDeepRuns() {
+  const out = $("#pipe-runs");
+  if (!out) return;
+  try {
+    const { runs } = await api("/api/deep-runs");
+    out.innerHTML = "";
+    const list = el("div", "run-list");
+    (runs || []).forEach((run) => {
+      const row = el("button", "run-row", "");
+      const files = Object.keys(run.files || {}).sort().join(", ");
+      row.innerHTML = `<strong>${esc(run.stem)}</strong><span>${esc(files)}</span>`;
+      row.addEventListener("click", () => loadDeepRun(run.stem));
+      list.appendChild(row);
+    });
+    out.appendChild(list);
+  } catch (e) {
+    out.innerHTML = `<div class="status err">could not load runs: ${esc(e.message)}</div>`;
+  }
+}
+
+async function loadDeepRun(stem) {
+  const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
+  state.currentDeepRun = stem;
+  const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
+  if (m) {
+    $("#pipe-segment-select").value = m[1];
+    $("#pipe-date").value = m[2];
+  }
+  if (rec.report) $("#pipe-report").value = rec.report;
+  if (rec.sources) $("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
+  if (rec.sources && rec.sources.source_url) $("#pipe-source-url").value = rec.sources.source_url;
+  if (rec.markdown || rec.review || rec.proposal) renderReviewGate({
+    markdown: rec.review || "",
+    proposal: rec.proposal || { changes: [], warnings: [] },
+    warnings: (rec.proposal && rec.proposal.warnings) || [],
+    rows: [],
+    source_summary: rec.proposal ? null : undefined,
+  });
+}
+
+function renderReviewGate(rec) {
+  const out = $("#pipe-review-output");
+  out.innerHTML = "";
+  const card = el("div", "card");
+  card.appendChild(el("h2", "section", "Review gate output"));
+  if (rec.source_summary) {
+    const b = rec.source_summary.buckets || {};
+    card.appendChild(el("div", "badges",
+      Object.keys(b).map((k) => `<span class="badge ${k === "weak" && b[k] ? "off" : "on"}">${esc(k)}: ${b[k]}</span>`).join("")));
+  }
+  if (rec.warnings && rec.warnings.length) {
+    const checks = el("div", "checks");
+    rec.warnings.forEach((w) => checks.appendChild(el("div", "check WARN", `<span class="sev">WARN</span><span>${esc(w)}</span>`)));
+    card.appendChild(checks);
+  }
+  if (rec.rows && rec.rows.length) {
+    const table = el("table");
+    table.innerHTML =
+      "<thead><tr><th>Symbol</th><th>Action</th><th>Target</th><th>Data</th><th>Conflict</th></tr></thead>" +
+      "<tbody>" + rec.rows.map((r) =>
+        `<tr><td><strong>${esc(r.symbol)}</strong></td><td>${esc(r.report_action)}</td><td>${esc(r.target_rule || "")}</td><td>${esc(r.data_quality)}</td><td>${esc(r.conflict || "")}</td></tr>`
+      ).join("") + "</tbody>";
+    card.appendChild(table);
+  }
+  const proposal = rec.proposal || {};
+  const changes = proposal.changes || [];
+  card.appendChild(el("h2", "section", "Target-model proposal"));
+  if (changes.length) {
+    const pre = el("pre", "json-preview", esc(JSON.stringify(changes, null, 2)));
+    card.appendChild(pre);
+  } else {
+    card.appendChild(el("div", "hint", "No target-model changes proposed."));
+  }
+  if (rec.markdown) {
+    card.appendChild(el("h2", "section", "Review markdown"));
+    card.appendChild(el("pre", "markdown-preview", esc(rec.markdown.slice(0, 8000))));
+  }
+  out.appendChild(card);
+}
+
+$("#pipe-apply-proposal").addEventListener("click", async () => {
+  const status = $("#pipe-apply-status");
+  const m = (state.currentDeepRun || "").match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
+  if (!m) {
+    status.textContent = "select or generate a run first";
+    status.classList.add("err");
+    return;
+  }
+  if (!window.confirm("Apply this target-model proposal? This changes target-model.json, not trades.")) return;
+  status.classList.remove("err");
+  status.textContent = "applying proposal...";
+  try {
+    const rec = await api("/api/target-proposal/apply", "POST", { segment: m[1], date: m[2], confirm: true });
+    status.textContent = `applied: ${rec.applied.join(", ") || "none"}; skipped: ${rec.skipped.length}`;
+  } catch (e) {
+    status.textContent = "apply failed: " + e.message;
+    status.classList.add("err");
+  }
+});
 
 // ---- boot -----------------------------------------------------------------
 loadHoldings();

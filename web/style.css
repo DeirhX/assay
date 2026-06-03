@@ -60,7 +60,7 @@ main { max-width: 1180px; margin: 0 auto; padding: 24px 22px 64px; }
 .view.active { display: block; }
 
 .searchbar { display: flex; gap: 10px; margin-bottom: 8px; }
-.searchbar input {
+.searchbar input, .inline-form input, .pipeline-grid input, .pipeline-grid select {
   flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   color: var(--text); padding: 12px 14px; font-size: 16px; letter-spacing: .04em;
 }
@@ -75,6 +75,7 @@ button.ghost {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: var(--radius-soft); padding: 7px 12px; font-weight: 600; cursor: pointer; font-size: 13px;
 }
+button.danger { border-color: rgba(255,122,122,.5); color: var(--bad); }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 2px 18px; }
 
 .card {
@@ -146,7 +147,7 @@ tr:last-child td { border-bottom: 0; }
 
 .thesis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
 .thesis-grid label { display: block; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
-.thesis-grid textarea, .thesis-grid input {
+.thesis-grid textarea, .thesis-grid input, .pipeline-grid textarea {
   width: 100%; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
   color: var(--text); padding: 10px; font-family: inherit; font-size: 14px; resize: vertical;
 }
@@ -198,10 +199,31 @@ tr:last-child td { border-bottom: 0; }
 .opt-tag { font-size: 9px; font-weight: 800; letter-spacing: .05em; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; margin-left: 5px; vertical-align: middle; }
 .empty { color: var(--muted); padding: 30px 4px; text-align: center; }
 
+.pipeline-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.pipeline-grid label {
+  display: block; font-size: 12px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .05em; margin: 12px 0 5px;
+}
+.inline-form { display: flex; gap: 10px; align-items: stretch; }
+.proposal-box { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; display: flex; gap: 10px; align-items: center; }
+.run-list { display: grid; gap: 8px; margin-top: 10px; }
+.run-row {
+  display: flex; justify-content: space-between; gap: 14px; width: 100%;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  border-radius: 9px; padding: 9px 11px; cursor: pointer; text-align: left;
+}
+.run-row:hover { border-color: var(--accent); }
+.run-row span { color: var(--muted); font-size: 12px; }
+.json-preview, .markdown-preview {
+  max-height: 360px; overflow: auto; background: #0b0d12; border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px; color: var(--muted); font-size: 12px;
+}
+
 @media (max-width: 860px) {
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
   .dossier-grid { grid-template-columns: repeat(2, 1fr); }
   .thesis-grid { grid-template-columns: 1fr; }
+  .pipeline-grid { grid-template-columns: 1fr; }
   .dd-head .price { margin-left: 0; }
   table { display: block; overflow-x: auto; }
 }
