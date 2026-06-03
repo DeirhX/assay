@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rebalancing Research Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Research Console</h1>
+    <div class="tabs">
+      <button class="tab active" data-view="deepdive">Deep dive</button>
+      <button class="tab" data-view="segment">Segment</button>
+      <button class="tab" data-view="holdings">Holdings</button>
+    </div>
+    <div class="spacer"></div>
+    <nav>
+      <a href="../next-steps.html">Plan</a>
+      <a href="../loser-position-recovery.html">Losers</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- DEEP DIVE -->
+    <section class="view active" id="view-deepdive">
+      <div class="searchbar">
+        <input id="ticker-input" placeholder="Enter a ticker (e.g. NVDA, TSM, AMD) and press Enter" autocomplete="off" spellcheck="false">
+        <button class="primary" id="ticker-go">Analyze</button>
+      </div>
+      <div class="hint">Pulls live numbers from Yahoo + SEC EDGAR (+ FMP if configured) and cross-checks them. SEC anchors US filers; foreign ADRs lean on Yahoo alone (flagged).</div>
+      <div class="status" id="dd-status"></div>
+      <div id="dd-result"></div>
+    </section>
+
+    <!-- SEGMENT -->
+    <section class="view" id="view-segment">
+      <div class="seg-controls">
+        <select id="segment-select"></select>
+        <button class="primary" id="segment-run">Run live pull</button>
+        <button class="ghost" id="segment-load">Load cached</button>
+      </div>
+      <div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s). Cached loads are instant. Click any row to deep-dive that name.</div>
+      <div class="status" id="seg-status"></div>
+      <div id="seg-result"></div>
+    </section>
+
+    <!-- HOLDINGS -->
+    <section class="view" id="view-holdings">
+      <div class="status" id="hold-status"></div>
+      <div id="hold-result"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

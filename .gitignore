@@ -6,3 +6,6 @@ raw*.xml
 snapshots/
 agent-tools/
 *.log
+data/cache/
+data/research/segments/
+__pycache__/
