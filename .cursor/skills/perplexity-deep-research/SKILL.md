@@ -62,28 +62,56 @@ Navigate to `https://www.perplexity.ai`. If it redirects to a Google/sign-in wal
 ## Run workflow
 
 ```
-- [ ] 1. Navigate to https://www.perplexity.ai (confirm logged in)
-- [ ] 2. Dismiss cookie dialog if present ("Only necessary")
-- [ ] 3. Open the Search-mode dropdown (chevron on the "Search" pill)
-- [ ] 4. Click the "Deep research" menuitemradio
-- [ ] 5. Type the query into #ask-input and submit
-- [ ] 6. Verify URL is /search/... (NOT /computer/...)
-- [ ] 7. Poll cheaply until complete; scrape the report
+- [ ] 1. Open the local site (`py -3 tools\serve.py`, then http://127.0.0.1:8765)
+- [ ] 2. In the Pipeline tab, choose/create the research segment and build the prompt
+- [ ] 3. Navigate to https://www.perplexity.ai (confirm logged in)
+- [ ] 4. Dismiss cookie dialog if present ("Only necessary")
+- [ ] 5. Open the Search-mode dropdown by clicking the actual "Search" pill in the composer
+- [ ] 6. Click the exact "Deep research" menuitemradio in that dropdown
+- [ ] 6a. Verify the composer mode pill now says "Deep research" and is pressed
+- [ ] 7. Type the query into #ask-input and submit
+- [ ] 8. Verify URL is /search/... (NOT /computer/...)
+- [ ] 9. Poll cheaply until complete; scrape the report text and citation URLs
+- [ ] 10. Save report + Links-tab citations in the Pipeline tab, then run the review gate
 ```
 
-**Step 3–4: select Deep research mode.** The dropdown options are `role=menuitemradio`. Robust click via evaluate (avoids ref churn):
+**Step 3–4: select Deep research mode.** Do **not** rely on typing `/` as the primary path; it can expose a command menu and make it easy to click the wrong container or fail to persist the mode. Use the composer mode pill:
+
+1. Take a focused snapshot of the composer.
+2. Click the actual `Search` button/pill, not a sidebar history item and not the "Run deep research" Computer starter card.
+3. In the resulting menu, click the exact `menuitemradio` named `Deep research`.
+4. Verify the composer button changes from `Search` to `Deep research` and is pressed.
+
+Reliable snapshot-driven version:
+
+```text
+browser_snapshot target=<composer container> depth=10
+browser_click target=<Search pill ref> element="Search mode pill"
+browser_snapshot depth=8
+browser_click target=<Deep research menuitemradio ref> element="Deep research search mode menu item"
+browser_snapshot target=<composer container> depth=10
+```
+
+Expected verified state in the composer snapshot:
+
+```yaml
+button "Deep research" [pressed]
+```
+
+Robust JS fallback for the menu click, after the real Search pill dropdown is open:
 
 ```js
 () => {
-  const els = [...document.querySelectorAll('[role=menuitemradio],[role=menuitem],div,button')];
-  const t = els.find(e => (e.innerText||'').trim() === 'Deep research' && e.offsetParent !== null);
+  const els = [...document.querySelectorAll('[role=menuitemradio],[role=menuitem]')]
+    .filter(e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+  const t = els.find(e => (e.innerText||e.textContent||'').trim() === 'Deep research');
   if (!t) return 'not found';
   t.click();
   return 'clicked';
 }
 ```
 
-If the dropdown isn't open yet, first `browser_click` the `Search` pill's chevron (target = the chevron ref from a one-off snapshot, or click the `Search` button).
+If the dropdown is not open yet, first click the `Search` pill ref from a one-off focused composer snapshot. Avoid broad DOM searches for `/deep research/i`: they can match prior history items or the Computer starter card instead of the menu.
 
 **Step 5: submit the query.**
 
@@ -92,6 +120,14 @@ browser_type  target="#ask-input"  text="<the research prompt>"  submit=true
 ```
 
 **Step 6: verify the free path.** Read the returned page URL. `/search/<uuid>` = correct (included quota). `/computer/...` = paid Computer — abort.
+
+Also verify the page text indicates a Deep Research run, e.g. phrases like:
+
+- `Starting a deep research review...`
+- `Gathering ...`
+- the composer/mode context still includes `Deep research`
+
+If the output immediately looks like a normal search answer and does not show a deep-research workflow, treat it as a failed test. Do not save it as Deep Research output; return to the home composer and repeat mode selection from the real Search pill.
 
 **Step 7: poll for completion** with `browser_evaluate` (NOT snapshots). Deep Research runs several minutes. A run is **still going** while a Stop button exists; it's **done** when the Stop button is gone and the report/citations have rendered:
 
@@ -103,11 +139,82 @@ browser_type  target="#ask-input"  text="<the research prompt>"  submit=true
 }
 ```
 
-Poll every ~60–90s (sleep between checks). When `running` is false and `len` is large (full report, not just the echoed prompt), scrape the answer:
+Poll every ~60–90s (sleep between checks). When `running` is false and `len` is large (full report, not just the echoed prompt), scrape the answer text:
 
 ```js
 () => (document.querySelector('main')?.innerText || '')
 ```
+
+Then extract citation/source URLs from the `Links` tab, not only from the answer body. Do this automatically for every saved report; plain `innerText` collapses citations into labels such as `cnbc` or `+1`, and scanning the Answer tab can expose only a subset of sources.
+
+Preferred citation extraction workflow:
+
+1. Click the `Links` tab in the answer mode tabs.
+2. Verify the URL usually changes to include `?sm=r`.
+3. Extract unique anchors from `main`.
+4. Save the full source list before returning to the Answer tab.
+
+```js
+() => {
+  const main = document.querySelector('main') || document;
+  const seen = new Set();
+  return [...main.querySelectorAll('a[href]')]
+    .map(a => ({
+      label: (a.innerText || a.textContent || '').trim()
+        || a.getAttribute('aria-label')
+        || a.getAttribute('title')
+        || 'source',
+      href: a.href,
+      aria: a.getAttribute('aria-label'),
+      title: a.getAttribute('title')
+    }))
+    .filter(x => {
+      if (!x.href || x.href.startsWith('javascript:') || seen.has(x.href)) return false;
+      seen.add(x.href);
+      return true;
+    });
+}
+```
+
+When saving markdown manually, include a citation section before the report body:
+
+```markdown
+## Extracted Citation Links
+
+- `label`: https://example.com/source
+```
+
+Always save a sidecar JSON for downstream tooling. The website's Pipeline tab does
+this via `data/research/deep/<segment>-<date>.sources.json`:
+
+```json
+{
+  "source_url": "https://www.perplexity.ai/search/...",
+  "mode": "perplexity_in_app_deep_research",
+  "citations": [
+    {"label": "cnbc", "href": "https://..."}
+  ]
+}
+```
+
+If only a few URLs are visible, you probably extracted from the Answer tab, not the Links tab. Click `Links` and retry. If the Links tab is unavailable or still exposes only a few URLs, save what is visible and note that additional collapsed `+N` labels were not exposed in the current DOM state.
+
+## Saving and review gate
+
+The normal storage path is website-managed, not hand-edited:
+
+1. Paste the completed report into the Pipeline tab.
+2. Paste the Links-tab citation JSON.
+3. Save the artifact. This creates:
+   - `data/research/deep/<segment>-<date>.md`
+   - `data/research/deep/<segment>-<date>.sources.json`
+4. Run the review gate from the Pipeline tab. This creates:
+   - `data/research/deep/<segment>-<date>.review.md`
+   - `data/research/deep/<segment>-<date>.target-proposal.json`
+
+The review gate compares source quality, local deterministic ticker JSON, current
+holdings, and `data/target-model.json`. Perplexity may propose thesis shifts; it
+does not get to mutate allocation targets without explicit approval.
 
 ## Notes
 

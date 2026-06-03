@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""Review a Perplexity Deep Research artifact against local portfolio data.
+
+This is the handoff between narrative research and the deterministic pipeline.
+It does not fetch data, place trades, or mutate target-model.json. It reads a
+segment definition, a saved Deep Research report, extracted source links, local
+per-ticker research JSON, holdings, and the target model, then writes:
+
+* data/research/deep/<segment>-<date>.review.md
+* data/research/deep/<segment>-<date>.target-proposal.json
+
+Usage::
+
+    py -3 tools/review_deep_research.py --segment fintech-payments --date 2026-06-03
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import re
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = REPO_ROOT / "data"
+SEGMENT_DEF_DIR = DATA_DIR / "segments"
+RESEARCH_DIR = DATA_DIR / "research"
+DEEP_DIR = RESEARCH_DIR / "deep"
+HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
+TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+
+SOURCE_BUCKETS = {
+    "primary_ir": [
+        "investor.",
+        "investors.",
+        "investidores.",
+        "ir.",
+        "newsroom.paypal-corp.com",
+        "international.nubank.com.br",
+        "businesswire.com",
+        "sec.gov",
+    ],
+    "major_media": [
+        "reuters.com",
+        "cnbc.com",
+        "finance.yahoo.com",
+        "bloomberg.com",
+        "wsj.com",
+        "ft.com",
+    ],
+    "secondary": [
+        "public.com",
+        "simplywall.st",
+        "247wallst.com",
+        "capital.com",
+        "seekingalpha.com",
+        "fool.com",
+    ],
+    "weak": [
+        "facebook.com",
+        "reddit.com",
+        "x.com",
+        "twitter.com",
+        "linkedin.com",
+    ],
+}
+
+SEV_RANK = {"ERROR": 0, "WARN": 1, "INFO": 2}
+
+
+def load_json(path: Path, default: Any = None) -> Any:
+    if not path.exists():
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    if not slug:
+        raise SystemExit("empty segment slug")
+    return slug
+
+
+def run_paths(segment: str, date: str) -> dict[str, Path]:
+    stem = f"{segment}-{date}"
+    return {
+        "report": DEEP_DIR / f"{stem}.md",
+        "sources": DEEP_DIR / f"{stem}.sources.json",
+        "review": DEEP_DIR / f"{stem}.review.md",
+        "proposal": DEEP_DIR / f"{stem}.target-proposal.json",
+    }
+
+
+def normalize_sources(raw: Any) -> list[dict[str, str]]:
+    if isinstance(raw, dict):
+        raw = raw.get("citations", [])
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        href = str(item.get("href") or item.get("url") or "").strip()
+        if not href or href in seen:
+            continue
+        seen.add(href)
+        label = str(item.get("label") or item.get("title") or urlparse(href).netloc or "source").strip()
+        out.append({"label": label, "href": href})
+    return out
+
+
+def source_bucket(href: str) -> str:
+    host = urlparse(href).netloc.lower()
+    for bucket, needles in SOURCE_BUCKETS.items():
+        if any(n in host for n in needles):
+            return bucket
+    return "other"
+
+
+def source_summary(sources: list[dict[str, str]]) -> dict[str, Any]:
+    buckets = {bucket: [] for bucket in [*SOURCE_BUCKETS, "other"]}
+    for src in sources:
+        buckets[source_bucket(src["href"])].append(src)
+    return {
+        "count": len(sources),
+        "buckets": {k: len(v) for k, v in buckets.items()},
+        "weak_sources": buckets["weak"],
+        "primary_like_sources": buckets["primary_ir"],
+    }
+
+
+def current_weights(holdings: dict[str, Any]) -> dict[str, float]:
+    weights: dict[str, float] = {}
+    for pos in holdings.get("positions", []):
+        sym = pos.get("symbol")
+        pct = pos.get("percent_of_nav")
+        if sym and isinstance(pct, (int, float)) and 0 <= pct <= 50:
+            weights[str(sym).upper()] = float(pct)
+    return weights
+
+
+def worst_severity(checks: list[dict[str, str]]) -> str:
+    if not checks:
+        return "INFO"
+    return min((c.get("severity", "INFO") for c in checks), key=lambda s: SEV_RANK.get(s, 9))
+
+
+def metric_display(rec: dict[str, Any], key: str) -> str:
+    node = rec.get("metrics", {}).get(key)
+    if not isinstance(node, dict):
+        return "n/a"
+    return str(node.get("display") or node.get("value") or "n/a")
+
+
+def infer_report_action(report_text: str, symbol: str) -> str:
+    """Best-effort extraction only. The review remains a scaffold, not gospel."""
+    pattern = re.compile(rf"\b{re.escape(symbol)}\b", re.IGNORECASE)
+    matches = list(pattern.finditer(report_text))
+    if not matches:
+        return "not mentioned"
+    verbs = [
+        ("add", ["add", "accumulate", "overweight"]),
+        ("hold", ["hold", "keep"]),
+        ("wait", ["wait"]),
+        ("trim", ["trim", "reduce"]),
+        ("sell", ["sell", "exit"]),
+    ]
+    scores = {k: 0 for k, _ in verbs}
+    for m in matches:
+        start = max(0, m.start() - 900)
+        end = min(len(report_text), m.end() + 1200)
+        window = report_text[start:end].lower()
+        for action, words in verbs:
+            scores[action] += sum(1 for word in words if re.search(rf"\b{word}\b", window))
+    best = max(scores, key=lambda k: scores[k])
+    return best if scores[best] else "mentioned"
+
+
+def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
+    segment = slugify(segment)
+    paths = run_paths(segment, date)
+    segment_def = load_json(SEGMENT_DEF_DIR / f"{segment}.json")
+    if not segment_def:
+        raise SystemExit(f"missing segment definition: {SEGMENT_DEF_DIR / (segment + '.json')}")
+    if not paths["report"].exists():
+        raise SystemExit(f"missing report: {paths['report']}")
+
+    report_text = paths["report"].read_text(encoding="utf-8")
+    source_doc = load_json(paths["sources"], {"citations": []})
+    sources = normalize_sources(source_doc)
+    source_info = source_summary(sources)
+    holdings = load_json(HOLDINGS_JSON, {}) or {}
+    targets = (load_json(TARGET_MODEL_JSON, {}) or {}).get("targets", {})
+    funding_order = (load_json(TARGET_MODEL_JSON, {}) or {}).get("funding_order", [])
+    weights = current_weights(holdings)
+
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    proposal_changes: list[dict[str, Any]] = []
+
+    for member in segment_def.get("members", []):
+        sym = str(member.get("symbol", "")).upper()
+        if not sym:
+            continue
+        rec = load_json(RESEARCH_DIR / f"{sym}.json", {}) or {}
+        checks = rec.get("cross_checks", [])
+        worst = worst_severity(checks)
+        target = targets.get(sym)
+        report_action = infer_report_action(report_text, sym)
+        held_pct = weights.get(sym)
+        conflict = ""
+
+        if target:
+            rule = target.get("rule", "")
+            if report_action in {"add"} and rule in {"reduce", "do_not_add", "trim_only", "avoid"}:
+                conflict = f"report leans {report_action}, but target rule is {rule}"
+            elif report_action in {"trim", "sell"} and rule == "accumulate":
+                conflict = f"report leans {report_action}, but target rule is accumulate"
+        elif held_pct:
+            conflict = "held position is missing from target-model.json"
+            proposal_changes.append({
+                "symbol": sym,
+                "action": "add_target",
+                "status": "draft",
+                "proposed_target": {
+                    "low": max(0.0, round(held_pct - 1.0, 1)),
+                    "high": round(held_pct + 1.0, 1),
+                    "rule": "hold",
+                    "note": f"Draft target from {segment} review; verify before applying.",
+                },
+                "rationale": "Held position has no explicit target rule.",
+            })
+
+        if conflict:
+            warnings.append(f"{sym}: {conflict}.")
+        if sym in funding_order and report_action in {"add", "hold"}:
+            warnings.append(f"{sym}: report action may conflict with funding_order role.")
+        if worst == "ERROR":
+            warnings.append(f"{sym}: deterministic data has ERROR-level checks; do not use exact valuation blindly.")
+
+        rows.append({
+            "symbol": sym,
+            "sleeve": member.get("sleeve", ""),
+            "held_pct_nav": held_pct,
+            "report_action": report_action,
+            "target_rule": target.get("rule") if target else None,
+            "target_band": [target.get("low"), target.get("high")] if target else None,
+            "data_quality": worst,
+            "price": rec.get("price", {}).get("value") if isinstance(rec.get("price"), dict) else None,
+            "market_cap": metric_display(rec, "market_cap_usd_b"),
+            "pe_ttm": metric_display(rec, "pe_ttm"),
+            "ps": metric_display(rec, "ps"),
+            "cross_checks": checks,
+            "conflict": conflict,
+        })
+
+    if source_info["count"] < 5:
+        warnings.append("Source count is low; treat the report as thinly supported.")
+    if not source_info["primary_like_sources"]:
+        warnings.append("No primary/IR-like sources found; require primary-source follow-up before model changes.")
+    if source_info["weak_sources"]:
+        warnings.append("Weak/social sources present; treat them as pointers, not evidence.")
+
+    proposal = {
+        "schema_version": 1,
+        "segment": segment,
+        "date": date,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "status": "draft",
+        "message": "Human review required. This file is a proposal, not an allocation change.",
+        "changes": proposal_changes,
+        "warnings": warnings,
+    }
+
+    review_md = render_markdown(segment_def, date, paths["report"], source_info, rows, warnings, proposal)
+    result = {
+        "segment": segment,
+        "date": date,
+        "review_path": str(paths["review"].relative_to(REPO_ROOT)),
+        "proposal_path": str(paths["proposal"].relative_to(REPO_ROOT)),
+        "source_summary": source_info,
+        "rows": rows,
+        "warnings": warnings,
+        "proposal": proposal,
+        "markdown": review_md,
+    }
+    if write:
+        paths["review"].write_text(review_md, encoding="utf-8")
+        write_json(paths["proposal"], proposal)
+    return result
+
+
+def render_markdown(
+    segment_def: dict[str, Any],
+    date: str,
+    report_path: Path,
+    source_info: dict[str, Any],
+    rows: list[dict[str, Any]],
+    warnings: list[str],
+    proposal: dict[str, Any],
+) -> str:
+    title = segment_def.get("title") or "Segment"
+    lines = [
+        f"# Review: {title} Deep Research",
+        "",
+        f"- Date: `{date}`",
+        f"- Source report: `{report_path.relative_to(REPO_ROOT)}`",
+        f"- Source count: `{source_info['count']}`",
+        "",
+        "## Source Quality",
+        "",
+        "| Bucket | Count |",
+        "| --- | ---: |",
+    ]
+    for bucket, count in source_info["buckets"].items():
+        lines.append(f"| `{bucket}` | {count} |")
+    if source_info["weak_sources"]:
+        lines.extend(["", "Weak/social sources found:"])
+        for src in source_info["weak_sources"]:
+            lines.append(f"- `{src['label']}`: {src['href']}")
+
+    lines.extend([
+        "",
+        "## Deterministic Cross-Check",
+        "",
+        "| Symbol | Report Action | Held % NAV | Target Rule | Data Quality | Valuation Snapshot | Conflict |",
+        "| --- | --- | ---: | --- | --- | --- | --- |",
+    ])
+    for row in rows:
+        held = "" if row["held_pct_nav"] is None else f"{row['held_pct_nav']:.2f}%"
+        valuation = f"{row['market_cap']}; P/E {row['pe_ttm']}; P/S {row['ps']}"
+        lines.append(
+            f"| `{row['symbol']}` | {row['report_action']} | {held} | "
+            f"{row['target_rule'] or ''} | {row['data_quality']} | {valuation} | {row['conflict']} |"
+        )
+
+    lines.extend(["", "## Warnings", ""])
+    if warnings:
+        lines.extend(f"- {w}" for w in warnings)
+    else:
+        lines.append("- No review-gate warnings.")
+
+    lines.extend([
+        "",
+        "## Target-Model Proposal",
+        "",
+        "This is a draft only. Applying changes requires an explicit website approval.",
+        "",
+    ])
+    if proposal["changes"]:
+        for change in proposal["changes"]:
+            lines.append(f"- `{change['symbol']}`: {change['action']} ({change['rationale']})")
+    else:
+        lines.append("- No target-model changes proposed.")
+
+    lines.extend([
+        "",
+        "## Judgment",
+        "",
+        "Use this as a review scaffold. Perplexity can surface thesis shifts, but deterministic data and human sizing judgement still control the target model.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--segment", required=True, help="segment slug, e.g. fintech-payments")
+    parser.add_argument("--date", required=True, help="artifact date, e.g. 2026-06-03")
+    args = parser.parse_args()
+    result = review(args.segment, args.date)
+    print(f"wrote {result['review_path']}")
+    print(f"wrote {result['proposal_path']}")
+    print(f"{len(result['warnings'])} warning(s), {len(result['proposal']['changes'])} proposal change(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
