@@ -228,15 +228,26 @@ def _segment_prompt(name: str) -> dict:
     ]
     today = dt.datetime.now(dt.timezone.utc).date().isoformat()
     prompt = (
-        f"Deep research on my {definition.get('title', slug)} segment as a long-term investment, as of {today}.\n"
-        f"Cover: {', '.join(symbols)}.\n"
-        "Compare business momentum, valuation, competitive positioning, catalysts, risks, and likely recovery/underperformance over the next 6-24 months.\n"
-        "Tie conclusions to portfolio action: keep, trim, sell, add, or wait.\n"
+        f"Deep research on the {definition.get('title', slug)} segment as a long-term "
+        f"investment, as of {today}.\n"
+        f"Known names to start from: {', '.join(symbols)}.\n"
+        "Report on the ENTIRE segment, not just these names: explicitly identify and "
+        "evaluate other major public companies, leaders, and emerging challengers in "
+        "this segment that are not listed above, and flag any listed name that no "
+        "longer belongs.\n"
+        "Compare business momentum, valuation, competitive positioning, catalysts, "
+        "risks, and likely recovery/underperformance over the next 6-24 months.\n"
+        "Rank the most attractive long-term opportunities in the segment on their own "
+        "merits, independent of what I currently own.\n"
+        "Then tie conclusions to portfolio action: keep, trim, sell, add, start, or wait.\n"
         "Include source citations and distinguish facts from opinion.\n"
         "Call out which numeric claims need deterministic verification.\n"
     )
     if held_lines:
-        prompt += "\nCurrent owned weights:\n" + "\n".join(held_lines) + "\n"
+        prompt += (
+            "\nFor context only (do not bias coverage toward these), I currently own:\n"
+            + "\n".join(held_lines) + "\n"
+        )
     return {"segment": slug, "date": today, "prompt": prompt}
 
 
