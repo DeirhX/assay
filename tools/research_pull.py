@@ -169,6 +169,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
     except ProviderError as exc:
         mo = {}
         errors.append(f"yahoo momentum: {exc}")
+    price_history = mo.pop("price_history", None)
 
     y: dict[str, Any] | None = None
     try:
@@ -191,6 +192,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         "as_of": _now(),
         "currency": (y or {}).get("currency") or mo.get("currency") or "USD",
         "price": {"value": mo.get("last"), "source": "yahoo"} if mo.get("last") else (y or {}).get("price"),
+        "price_history": price_history,
         "momentum": mo,
         "metrics": merged,
         "cross_checks": checks,

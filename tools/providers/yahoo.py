@@ -107,9 +107,42 @@ def chart(symbol: str, *, rng: str = "1y", interval: str = "1d") -> dict[str, An
     return result
 
 
+def price_history_from_chart(result: dict[str, Any], *, rng: str, interval: str) -> dict[str, Any] | None:
+    """Compact daily close series for UI charts.
+
+    Keep this as structured data, not a downloaded vendor chart image. The UI can
+    redraw it, downsample it, or annotate it later without reverse-engineering a
+    PNG like absolute goblins.
+    """
+    meta = result.get("meta", {})
+    ts = result.get("timestamp") or []
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    closes = quote.get("close") or []
+    points: list[dict[str, Any]] = []
+    for timestamp, close in zip(ts, closes):
+        if timestamp is None or close is None:
+            continue
+        try:
+            day = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).date().isoformat()
+        except (OSError, OverflowError, TypeError, ValueError):
+            continue
+        points.append({"date": day, "close": round(float(close), 4)})
+    if not points:
+        return None
+    return {
+        "source": "yahoo",
+        "range": rng,
+        "interval": interval,
+        "currency": meta.get("currency"),
+        "points": points,
+    }
+
+
 def momentum(symbol: str) -> dict[str, Any]:
     """Current price, 52-week range, and trailing returns from the daily series."""
-    result = chart(symbol, rng="1y", interval="1d")
+    rng = "1y"
+    interval = "1d"
+    result = chart(symbol, rng=rng, interval=interval)
     meta = result.get("meta", {})
     ts = result.get("timestamp") or []
     quote = (result.get("indicators", {}).get("quote") or [{}])[0]
@@ -142,6 +175,7 @@ def momentum(symbol: str) -> dict[str, Any]:
         "chg_3m_pct": _round(ago_return(91)),
         "chg_6m_pct": _round(ago_return(182)),
         "chg_12m_pct": _round(ago_return(364)),
+        "price_history": price_history_from_chart(result, rng=rng, interval=interval),
     }
 
 
