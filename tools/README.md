@@ -36,14 +36,22 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 - `serve.py` -- stdlib `http.server` app serving `web/` and a small JSON API
   (`/api/holdings`, `/api/segments`, `/api/research/<sym>`, `POST /api/pull/<sym>`,
   `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`,
-  plus the Deep Research pipeline endpoints for segment drafting, artifact
-  saving, review, and target-proposal approval). It serves root-level
-  `.html`/`.css`/`.js` assets dynamically instead of maintaining a manual
-  filename allowlist.
+  the Deep Research pipeline endpoints for segment drafting, artifact saving,
+  review, and target-proposal approval, plus the automated-run endpoints
+  `POST /api/deep-research/run`, `POST /api/deep-research/login`,
+  `POST /api/deep-research/verify-login`, `GET /api/deep-research/login-status`,
+  and `GET /api/deep-job?id=<id>`). It serves root-level `.html`/`.css`/`.js`
+  assets dynamically instead of maintaining a manual filename allowlist.
 - `review_deep_research.py` -- offline review gate for saved Perplexity reports.
   It compares source quality, deterministic ticker data, holdings, and
   `target-model.json`, then writes a review markdown file and draft target-model
   proposal.
+- `pplx_deep_research.py` -- **optional** Playwright worker that drives a
+  logged-in Perplexity session to run in-app Deep Research and auto-save the
+  artifacts. This is the only heavy dependency in the repo and is **not** imported
+  by `serve.py` at load; the server imports it lazily inside a job thread, so if
+  Playwright is absent the manual paste flow still works. See "Automated Deep
+  Research" below.
 
 ### Data outputs
 
@@ -72,18 +80,64 @@ The website is the normal control plane:
 1. Open `http://127.0.0.1:8765` and use the Pipeline tab.
 2. Draft or approve a segment. Segment JSON is stored in `data/segments/*.json`.
 3. Run deterministic pulls for the segment.
-4. Generate the Perplexity prompt and run browser-based Deep Research.
-5. Paste/save the report and Links-tab citation JSON.
+4. Generate the Perplexity prompt, then either:
+   - click **Run Deep Research** to automate it (see below), or
+   - run it manually in Perplexity and paste the report + Links-tab citations.
+5. Save the report and Links-tab citation JSON (the automated path does this for
+   you).
 6. Run the review gate.
 7. Inspect target-model proposals and explicitly approve only if you want the
    target model changed.
+
+### Automated Deep Research (optional, Playwright)
+
+`Run Deep Research` puppets a **logged-in Perplexity web session** to spend the
+Pro subscription's included quota (~20/day) instead of the metered API. It is
+isolated in `pplx_deep_research.py` and only runs when you click the button.
+
+Setup (once):
+
+```powershell
+py -3 -m pip install playwright
+py -3 -m playwright install chromium
+```
+
+Then in the Pipeline tab click **Set up login** once (opens a visible window;
+complete the Perplexity login). After that, **Run Deep Research** launches an
+**off-screen** (invisible but not headless) browser, selects the Deep research
+search mode, submits the prompt, polls until done, scrapes the report + Links-tab
+citations, and saves the artifacts. The job is async; the UI polls
+`/api/deep-job?id=...`.
+
+Honest constraints:
+
+- **Headless is blocked** -- Perplexity sits behind Cloudflare and a headless
+  browser gets challenge-walled (no composer). The default is headed-off-screen
+  for that reason; `window_mode: "headless"` exists only for experiments.
+- **Dedicated profile.** The worker uses its own profile
+  (`PPLX_PROFILE_DIR`, default `~/.cursor/pplx-automation-profile`), distinct
+  from the agent's `user-playwright-pplx` MCP profile, to avoid a Chrome
+  profile-lock fight and Chrome-version "downgrade" errors. Log in once via the
+  button. Only one browser job (run or login) runs at a time.
+- **Quota is shared** with your manual Perplexity usage; don't smoke-test against
+  it. Use `--dry-run` (selects the mode but never submits) to validate plumbing.
+- Deep Research output is narrative synthesis -- the review gate still treats its
+  numbers as claims to verify, not ground truth.
+
+CLI (debugging the worker directly):
+
+```powershell
+py -3 tools/pplx_deep_research.py --login                 # visible login window
+py -3 tools/pplx_deep_research.py --dry-run --prompt "x"  # mode select, no submit, no quota
+py -3 tools/pplx_deep_research.py --prompt "deep research on ..."   # full run (spends quota)
+```
 
 The console encodes its current location in query parameters so browser
 Back/Forward and shared links work for the main views, e.g.
 `/?ticker=AMD`, `/?view=segment&segment=semiconductors`, and
 `/?view=pipeline&run=fintech-payments-2026-06-03`.
 
-CLI fallback:
+CLI fallback (review gate):
 
 ```powershell
 py -3 tools/review_deep_research.py --segment fintech-payments --date 2026-06-03

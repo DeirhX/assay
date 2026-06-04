@@ -59,7 +59,42 @@ Navigate to `https://www.perplexity.ai`. If it redirects to a Google/sign-in wal
 - **Snapshots are huge** (full sidebar + history every time). Do NOT poll with `browser_snapshot`. Use `browser_evaluate` with a small JS probe instead — orders of magnitude cheaper.
 - Composer textbox selector is stable: `#ask-input`.
 
-## Run workflow
+## Two ways to run
+
+1. **Automated (website-driven)** — Pipeline tab → **Run Deep Research**. A local
+   Playwright worker (`tools/pplx_deep_research.py`) drives a logged-in session in
+   an **off-screen** browser and auto-saves artifacts. Preferred for hands-off
+   runs. See "Automated worker" below.
+2. **Agent-driven (this MCP)** — drive `user-playwright-pplx` yourself with the
+   manual workflow below. Use for debugging selectors or when the worker breaks.
+
+## Automated worker (`tools/pplx_deep_research.py`)
+
+Hard-won facts baked into the worker (do not relearn these the hard way):
+
+- **Headless is blocked.** Perplexity is behind Cloudflare; a headless browser
+  gets a challenge page (`btns: ['Cloudflare','Privacy']`, no `#ask-input`). Run
+  **headed but off-screen** (`--window-position=-2400,-2400`). `headless` mode
+  exists only as an experiment toggle.
+- **`#ask-input` is NOT a logged-in signal** — anonymous users get the composer
+  too. Detect login by the **absence of a "Sign In" CTA**, and poll for ~6s
+  because that CTA renders a beat *after* the composer (else you get a false
+  "logged in").
+- **The mode menu is Radix** — it only opens on a **real pointer click**
+  (Playwright `get_by_role("button", name="Search", exact=True).click()`), never
+  a synthetic `element.click()`. Then click the `menuitemradio` named exactly
+  `Deep research`. Beware: `has-text("Search")` also matches "Run deep**research**"
+  (the Computer credit trap) — use exact role names.
+- **Dedicated profile.** The worker uses `PPLX_PROFILE_DIR`
+  (default `~/.cursor/pplx-automation-profile`), NOT the MCP's
+  `pplx-chrome-profile`. Sharing fails two ways: Chrome can't open one profile
+  twice (lock), and a profile written by a newer Chrome triggers a failing
+  "downgrade" when opened by the worker's Chromium. Log in once via the website's
+  **Set up login** button (or `--login`).
+- One browser job at a time (profile lock + scarce quota). Validate plumbing with
+  `--dry-run` (selects mode, never submits, spends no quota).
+
+## Agent-driven run workflow
 
 ```
 - [ ] 1. Open the local site (`py -3 tools\serve.py`, then http://127.0.0.1:8765)
