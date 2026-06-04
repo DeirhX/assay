@@ -17,6 +17,7 @@
     </div>
     <div class="spacer"></div>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
+    <button class="ghost privacy-inline" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">Settings</button>
     <nav>
       <a href="/next-steps.html">Plan</a>
       <a href="/loser-position-recovery.html">Losers</a>
@@ -25,7 +26,37 @@
     </nav>
   </header>
 
+  <div class="settings-panel" id="settings-panel" hidden>
+    <div class="settings-head">
+      <strong>Settings</strong>
+      <button class="ghost" id="settings-close" type="button" aria-label="Close settings">Close</button>
+    </div>
+    <div class="settings-row">
+      <div class="settings-info">
+        <div class="settings-label">Perplexity automation</div>
+        <div class="hint" id="settings-login-state">checking login...</div>
+      </div>
+      <div class="settings-actions">
+        <button class="ghost" id="settings-check" type="button">Check now</button>
+        <button class="ghost" id="settings-relogin" type="button">Re-login</button>
+      </div>
+    </div>
+  </div>
+
   <main>
+    <section class="console-hero" aria-label="Console overview">
+      <div>
+        <span class="eyebrow">Local research control plane</span>
+        <h2>Validate numbers, draft segments, and keep thesis changes reviewable.</h2>
+        <p>Use percentages for sharing, deterministic pulls for facts, and the Pipeline tab for Perplexity-backed narrative research.</p>
+      </div>
+      <div class="hero-steps" aria-label="Common workflow">
+        <span>1. Pull data</span>
+        <span>2. Review thesis</span>
+        <span>3. Propose targets</span>
+      </div>
+    </section>
+
     <!-- DEEP DIVE -->
     <section class="view active" id="view-deepdive">
       <div class="searchbar">
@@ -51,68 +82,125 @@
 
     <!-- PIPELINE -->
     <section class="view" id="view-pipeline">
-      <div class="pipeline-grid">
-        <div class="card">
-          <h2 class="section">1. Segment control</h2>
-          <label>Freeform segment name</label>
-          <div class="inline-form">
-            <input id="pipe-query" placeholder="AI infrastructure, credit-sensitive fintech, nuclear supply chain">
-            <button class="primary" id="pipe-draft">Draft</button>
-          </div>
-          <div class="hint">Drafts are editable and must be approved before becoming normal research inputs.</div>
-          <label>Segment slug</label>
-          <input id="pipe-slug" placeholder="segment-slug">
-          <label>Segment definition JSON</label>
-          <textarea id="pipe-segment-json" rows="14" spellcheck="false"></textarea>
-          <div class="thesis-actions">
-            <button class="primary" id="pipe-save-segment">Approve / save segment</button>
-            <span class="status" id="pipe-segment-status"></span>
-          </div>
-        </div>
+      <div class="wizard" id="pipe-wizard">
+        <ol class="stepper" id="pipe-stepper">
+          <li class="step-pill active" data-step="1"><span class="step-dot">1</span><span class="step-name">Segment</span></li>
+          <li class="step-pill" data-step="2"><span class="step-dot">2</span><span class="step-name">Deep Research</span></li>
+          <li class="step-pill" data-step="3"><span class="step-dot">3</span><span class="step-name">Report</span></li>
+          <li class="step-pill" data-step="4"><span class="step-dot">4</span><span class="step-name">Review &amp; apply</span></li>
+        </ol>
 
-        <div class="card">
-          <h2 class="section">2. Deep Research prompt</h2>
-          <label>Approved segment</label>
-          <select id="pipe-segment-select"></select>
-          <div class="thesis-actions">
-            <button class="primary" id="pipe-build-prompt">Build prompt</button>
-            <button class="ghost" id="pipe-run-deterministic">Run deterministic pull</button>
+        <!-- STEP 1: SEGMENT -->
+        <section class="wizard-step card active" data-step="1">
+          <div class="step-head">
+            <span class="step-index">Step 1 of 4</span>
+            <h2>Choose a segment</h2>
+            <p>Pick an already-approved segment, or draft a brand-new one from a freeform theme and approve it before researching.</p>
           </div>
-          <textarea id="pipe-prompt" rows="12" spellcheck="false"></textarea>
-          <div class="hint">Run this via Perplexity in-app Deep Research. Save the report and Links-tab citations below.</div>
-          <div class="status" id="pipe-prompt-status"></div>
-        </div>
-
-        <div class="card">
-          <h2 class="section">3. Save Deep Research artifact</h2>
-          <label>Date</label>
-          <input id="pipe-date" placeholder="YYYY-MM-DD">
-          <label>Perplexity URL</label>
-          <input id="pipe-source-url" placeholder="https://www.perplexity.ai/search/...">
-          <label>Report markdown/text</label>
-          <textarea id="pipe-report" rows="10" spellcheck="false"></textarea>
-          <label>Links-tab citations JSON</label>
-          <textarea id="pipe-sources" rows="8" spellcheck="false" placeholder='[{"label":"reuters","href":"https://..."}]'></textarea>
-          <div class="thesis-actions">
-            <button class="primary" id="pipe-save-report">Save report + sources</button>
-            <span class="status" id="pipe-artifact-status"></span>
+          <div class="step-body">
+            <label>Use an approved segment</label>
+            <select id="pipe-segment-select"></select>
+            <div class="or-divider"><span>or draft a new one</span></div>
+            <label>Freeform segment name</label>
+            <div class="inline-form">
+              <input id="pipe-query" placeholder="AI infrastructure, credit-sensitive fintech, nuclear supply chain">
+              <button class="primary" id="pipe-draft">Draft</button>
+            </div>
+            <div class="hint">Drafts are editable and must be approved before becoming normal research inputs.</div>
+            <label>Segment slug</label>
+            <input id="pipe-slug" placeholder="segment-slug">
+            <label>Segment definition JSON</label>
+            <textarea id="pipe-segment-json" rows="12" spellcheck="false"></textarea>
+            <div class="thesis-actions">
+              <button class="ghost" id="pipe-save-segment">Approve / save segment</button>
+              <span class="status" id="pipe-segment-status"></span>
+            </div>
           </div>
-        </div>
+          <div class="step-foot">
+            <span class="step-foot-note">Approve or select a segment to continue.</span>
+            <button class="primary step-next" data-goto="2">Continue to Deep Research →</button>
+          </div>
+        </section>
 
-        <div class="card">
-          <h2 class="section">4. Review gate & proposal</h2>
-          <div class="thesis-actions">
-            <button class="primary" id="pipe-run-review">Run review gate</button>
+        <!-- STEP 2: DEEP RESEARCH -->
+        <section class="wizard-step card" data-step="2">
+          <div class="step-head">
+            <span class="step-index">Step 2 of 4</span>
+            <h2>Run Deep Research</h2>
+            <p>Build the prompt, then run it through a logged-in Perplexity session in an off-screen browser. The report and Links-tab citations are saved automatically.</p>
+          </div>
+          <div class="step-body">
+            <label>Research date</label>
+            <input id="pipe-date" placeholder="YYYY-MM-DD">
+            <label>Prompt</label>
+            <textarea id="pipe-prompt" rows="12" spellcheck="false"></textarea>
+            <div class="hint">Build prompt seeds a template from the segment. Run Deep Research auto-saves the artifact and jumps you to the next step. First time only, set up login from Settings.</div>
+            <div class="thesis-actions">
+              <button class="ghost" id="pipe-build-prompt">Build prompt</button>
+              <button class="primary" id="pipe-run-deep">Run Deep Research</button>
+              <button class="ghost" id="pipe-run-deterministic">Run deterministic pull</button>
+              <button class="ghost" id="pipe-pplx-login">Set up login</button>
+            </div>
+            <div class="status" id="pipe-prompt-status"></div>
+          </div>
+          <div class="step-foot">
+            <button class="ghost step-back" data-goto="1">← Back</button>
+            <button class="primary step-next" data-goto="3">Continue to Report →</button>
+          </div>
+        </section>
+
+        <!-- STEP 3: REPORT / ARTIFACT -->
+        <section class="wizard-step card" data-step="3">
+          <div class="step-head">
+            <span class="step-index">Step 3 of 4</span>
+            <h2>Report &amp; citations</h2>
+            <p>Auto-filled after a Deep Research run. Paste a report manually if you ran it elsewhere, then edit and save the artifact.</p>
+          </div>
+          <div class="step-body">
+            <label>Perplexity URL</label>
+            <input id="pipe-source-url" placeholder="https://www.perplexity.ai/search/...">
+            <label>Report markdown/text</label>
+            <textarea id="pipe-report" rows="10" spellcheck="false"></textarea>
+            <label>Links-tab citations JSON</label>
+            <textarea id="pipe-sources" rows="8" spellcheck="false" placeholder='[{"label":"reuters","href":"https://..."}]'></textarea>
+            <div class="thesis-actions">
+              <button class="primary" id="pipe-save-report">Save report + sources</button>
+              <span class="status" id="pipe-artifact-status"></span>
+            </div>
+            <div class="subhead">Previous runs</div>
+            <div class="hint">Click a saved run to load its report, citations, and review back into this wizard.</div>
             <button class="ghost" id="pipe-refresh-runs">Refresh runs</button>
+            <div id="pipe-runs"></div>
           </div>
-          <div class="status" id="pipe-review-status"></div>
-          <div id="pipe-runs"></div>
-          <div id="pipe-review-output"></div>
-          <div class="proposal-box">
-            <button class="ghost danger" id="pipe-apply-proposal">Apply current proposal</button>
-            <span class="status" id="pipe-apply-status"></span>
+          <div class="step-foot">
+            <button class="ghost step-back" data-goto="2">← Back</button>
+            <button class="primary step-next" data-goto="4">Continue to Review →</button>
           </div>
-        </div>
+        </section>
+
+        <!-- STEP 4: REVIEW & APPLY -->
+        <section class="wizard-step card" data-step="4">
+          <div class="step-head">
+            <span class="step-index">Step 4 of 4</span>
+            <h2>Review &amp; apply</h2>
+            <p>Run the review gate to cross-check the narrative against deterministic data, then apply the target-model proposal if it holds up.</p>
+          </div>
+          <div class="step-body">
+            <div class="thesis-actions">
+              <button class="primary" id="pipe-run-review">Run review gate</button>
+            </div>
+            <div class="status" id="pipe-review-status"></div>
+            <div id="pipe-review-output"></div>
+            <div class="proposal-box">
+              <button class="ghost danger" id="pipe-apply-proposal">Apply current proposal</button>
+              <span class="status" id="pipe-apply-status"></span>
+            </div>
+          </div>
+          <div class="step-foot">
+            <button class="ghost step-back" data-goto="3">← Back</button>
+            <button class="ghost step-next" data-goto="1">Start a new segment ↺</button>
+          </div>
+        </section>
       </div>
     </section>
 

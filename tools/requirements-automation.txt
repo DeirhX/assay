@@ -1,0 +1,9 @@
+# Optional dependency for the automated Perplexity Deep Research path only.
+# The core console (serve.py + research_pull.py) is stdlib-only and does NOT
+# need this. Install only if you want the Pipeline tab's "Run Deep Research"
+# button to drive a browser for you.
+#
+#   py -3 -m pip install -r tools/requirements-automation.txt
+#   py -3 -m playwright install chromium
+#
+playwright>=1.40

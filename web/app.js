@@ -7,6 +7,8 @@ const state = {
   segSort: { key: "research_score", dir: -1 },
   currentDeepRun: null,
   privacyMode: localStorage.getItem("financeRebalancingPrivacyMode") === "1",
+  pplxLoggedIn: false,
+  pipeStep: 1,
 };
 
 // ---- tiny helpers ---------------------------------------------------------
@@ -532,9 +534,33 @@ function renderSegment(rec) {
 }
 
 // ---- pipeline -------------------------------------------------------------
+function setPipeStep(n) {
+  n = Math.max(1, Math.min(4, Number(n) || 1));
+  state.pipeStep = n;
+  document.querySelectorAll("#pipe-wizard .wizard-step").forEach((s) => {
+    s.classList.toggle("active", Number(s.dataset.step) === n);
+  });
+  document.querySelectorAll("#pipe-stepper .step-pill").forEach((p) => {
+    const s = Number(p.dataset.step);
+    p.classList.toggle("active", s === n);
+    p.classList.toggle("done", s < n);
+  });
+  const w = $("#pipe-wizard");
+  if (w) w.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.querySelectorAll("#pipe-stepper .step-pill").forEach((p) => {
+  p.addEventListener("click", () => setPipeStep(p.dataset.step));
+});
+document.querySelectorAll("#pipe-wizard .step-next, #pipe-wizard .step-back").forEach((b) => {
+  b.addEventListener("click", () => setPipeStep(b.dataset.goto));
+});
+
 function loadPipeline() {
   loadSegmentList();
   refreshDeepRuns();
+  refreshLoginStatus();
+  setPipeStep(state.pipeStep);
   if (!$("#pipe-date").value) $("#pipe-date").value = new Date().toISOString().slice(0, 10);
 }
 
@@ -573,9 +599,10 @@ $("#pipe-save-segment").addEventListener("click", async () => {
     const definition = parseJsonField("#pipe-segment-json", {});
     definition.status = "approved";
     const rec = await api("/api/segment-def/" + encodeURIComponent(slug), "POST", { definition });
-    status.textContent = `saved ${rec.name}`;
+    status.textContent = `saved ${rec.name} — continuing to Deep Research`;
     await loadSegmentList();
     $("#pipe-segment-select").value = rec.name;
+    setPipeStep(2);
   } catch (e) {
     status.textContent = "save failed: " + e.message;
     status.classList.add("err");
@@ -612,6 +639,131 @@ $("#pipe-run-deterministic").addEventListener("click", async () => {
   }
 });
 
+async function pollDeepJob(jobId, statusEl, onDone) {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 4000));
+    let job;
+    try {
+      job = await api("/api/deep-job?id=" + encodeURIComponent(jobId));
+    } catch (e) {
+      statusEl.classList.add("err");
+      statusEl.textContent = "lost the job: " + e.message;
+      return;
+    }
+    if (job.state === "queued" || job.state === "running") {
+      statusEl.classList.remove("err");
+      statusEl.innerHTML = `<span class="spinner"></span> ${esc(job.message || job.state)}`;
+      continue;
+    }
+    if (job.state === "done") {
+      statusEl.classList.remove("err");
+      await onDone(job);
+      return;
+    }
+    statusEl.classList.add("err");
+    statusEl.textContent = job.error || job.message || job.state;
+    return;
+  }
+}
+
+$("#pipe-run-deep").addEventListener("click", async () => {
+  const status = $("#pipe-prompt-status");
+  status.classList.remove("err");
+  const segment = pipeSegment();
+  const date = $("#pipe-date").value.trim() || undefined;
+  const prompt = $("#pipe-prompt").value.trim();
+  if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
+  if (!prompt) { status.classList.add("err"); status.textContent = "build or paste a prompt first"; return; }
+  status.innerHTML = `<span class="spinner"></span> starting deep research (off-screen browser)...`;
+  try {
+    const job = await api("/api/deep-research/run", "POST", { segment, date, prompt });
+    await pollDeepJob(job.id, status, async (done) => {
+      const stem = (done.artifact && done.artifact.stem) || `${segment}-${done.date || date}`;
+      const r = done.result || {};
+      const n = (r.citations && r.citations.length) || 0;
+      status.textContent = `done: ${stem} - ${r.report_chars || 0} chars, ${n} sources. Review the saved report on the next step.`;
+      await refreshDeepRuns();
+      await loadDeepRun(stem);
+      setPipeStep(3);
+    });
+    await refreshLoginStatus();
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent = "run failed: " + e.message;
+    await refreshLoginStatus();
+  }
+});
+
+async function refreshLoginStatus() {
+  let st;
+  try {
+    st = await api("/api/deep-research/login-status");
+  } catch (e) {
+    st = { logged_in: false };
+  }
+  state.pplxLoggedIn = !!st.logged_in;
+  const btn = $("#pipe-pplx-login");
+  if (btn) btn.hidden = state.pplxLoggedIn;
+  const txt = $("#settings-login-state");
+  if (txt) {
+    const when = st.updated_at ? " (confirmed " + st.updated_at.slice(0, 10) + ")" : "";
+    txt.classList.remove("err");
+    txt.textContent = state.pplxLoggedIn
+      ? `Logged in${when}. Re-login only if runs start hitting the login wall.`
+      : "Not logged in. Use Re-login to set up the Perplexity session.";
+  }
+  return state.pplxLoggedIn;
+}
+
+async function runPplxLogin(statusEl) {
+  statusEl.classList.remove("err");
+  statusEl.innerHTML = `<span class="spinner"></span> opening a visible login window...`;
+  try {
+    const job = await api("/api/deep-research/login", "POST");
+    await pollDeepJob(job.id, statusEl, async () => {
+      statusEl.textContent = "Perplexity login confirmed. Off-screen runs will reuse it.";
+    });
+  } catch (e) {
+    statusEl.classList.add("err");
+    statusEl.textContent = "login failed: " + e.message;
+  }
+  await refreshLoginStatus();
+}
+
+$("#pipe-pplx-login").addEventListener("click", () => runPplxLogin($("#pipe-prompt-status")));
+
+$("#settings-toggle").addEventListener("click", () => {
+  const panel = $("#settings-panel");
+  const opening = panel.hasAttribute("hidden");
+  if (opening) {
+    panel.removeAttribute("hidden");
+    refreshLoginStatus();
+  } else {
+    panel.setAttribute("hidden", "");
+  }
+  $("#settings-toggle").setAttribute("aria-expanded", opening ? "true" : "false");
+});
+
+$("#settings-close").addEventListener("click", () => {
+  $("#settings-panel").setAttribute("hidden", "");
+  $("#settings-toggle").setAttribute("aria-expanded", "false");
+});
+
+$("#settings-relogin").addEventListener("click", () => runPplxLogin($("#settings-login-state")));
+
+$("#settings-check").addEventListener("click", async () => {
+  const txt = $("#settings-login-state");
+  txt.classList.remove("err");
+  txt.innerHTML = `<span class="spinner"></span> checking (off-screen browser, ~10s)...`;
+  try {
+    await api("/api/deep-research/verify-login", "POST");
+    await refreshLoginStatus();
+  } catch (e) {
+    txt.classList.add("err");
+    txt.textContent = "check failed: " + e.message;
+  }
+});
+
 $("#pipe-save-report").addEventListener("click", async () => {
   const status = $("#pipe-artifact-status");
   status.classList.remove("err");
@@ -624,9 +776,10 @@ $("#pipe-save-report").addEventListener("click", async () => {
       report: $("#pipe-report").value,
       citations: parseJsonField("#pipe-sources", []),
     });
-    status.textContent = `saved ${rec.stem}`;
+    status.textContent = `saved ${rec.stem} — continuing to Review`;
     state.currentDeepRun = rec.stem;
     await refreshDeepRuns();
+    setPipeStep(4);
   } catch (e) {
     status.textContent = "save failed: " + e.message;
     status.classList.add("err");
@@ -757,4 +910,5 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
 applyPrivacyMode(state.privacyMode);
 loadHoldings();
 loadSegmentList();
+refreshLoginStatus();
 $("#ticker-input").focus();

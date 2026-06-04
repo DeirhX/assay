@@ -25,6 +25,7 @@ import json
 import re
 import sys
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -38,6 +39,7 @@ SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 ROOT_STATIC_FILES = {
     "site.css",
     "privacy.css",
@@ -56,6 +58,14 @@ import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 
 _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
+
+# Deep Research browser jobs. Only ONE may run at a time: the Playwright worker
+# opens a persistent Chrome profile (can't be opened twice) and each run spends
+# scarce Pro quota. Jobs are in-memory and disappear on restart -- artifacts on
+# disk are the durable record.
+_DEEP_JOBS: dict[str, dict] = {}
+_DEEP_JOBS_LOCK = threading.Lock()
+_DEEP_ACTIVE = {"running": False}
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -391,6 +401,204 @@ def _segments_list():
     return out
 
 
+def _get_auth_state() -> dict:
+    st = _load(AUTH_STATE_FILE) or {}
+    return {
+        "logged_in": bool(st.get("logged_in")),
+        "updated_at": st.get("updated_at"),
+        "note": st.get("note", ""),
+    }
+
+
+def _set_auth_state(logged_in: bool, note: str = "") -> None:
+    _write_json(AUTH_STATE_FILE, {
+        "logged_in": bool(logged_in),
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "note": note,
+    })
+
+
+def _verify_login() -> dict:
+    """Synchronous, ~8s live probe that refreshes the cached login flag."""
+    if not _claim_active():
+        raise RuntimeError("a deep research / login job is already running")
+    try:
+        import pplx_deep_research as worker
+        res = worker.check_login()
+        if res.get("status") == "error":
+            raise RuntimeError(res.get("detail") or "login check failed")
+        _set_auth_state(res.get("status") == "logged_in", "active check")
+        return _get_auth_state()
+    finally:
+        _release_active()
+
+
+def _job_public(job: dict) -> dict:
+    """The UI-safe view of a job (no giant report body)."""
+    return {
+        "id": job["id"],
+        "kind": job["kind"],
+        "state": job["state"],
+        "message": job.get("message", ""),
+        "segment": job.get("segment"),
+        "date": job.get("date"),
+        "result": job.get("result"),
+        "artifact": job.get("artifact"),
+        "error": job.get("error"),
+        "updated_at": job.get("updated_at"),
+    }
+
+
+def _update_job(job_id: str, **fields) -> None:
+    with _DEEP_JOBS_LOCK:
+        job = _DEEP_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+        job["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _release_active() -> None:
+    with _DEEP_JOBS_LOCK:
+        _DEEP_ACTIVE["running"] = False
+
+
+def _claim_active() -> bool:
+    with _DEEP_JOBS_LOCK:
+        if _DEEP_ACTIVE["running"]:
+            return False
+        _DEEP_ACTIVE["running"] = True
+        return True
+
+
+def _new_job(kind: str, **fields) -> dict:
+    job = {
+        "id": uuid.uuid4().hex[:8],
+        "kind": kind,
+        "state": "queued",
+        "message": "",
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        **fields,
+    }
+    with _DEEP_JOBS_LOCK:
+        _DEEP_JOBS[job["id"]] = job
+    return job
+
+
+def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode: str) -> None:
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        import pplx_deep_research as worker
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error",
+                    error=("Playwright not available: "
+                           f"{type(exc).__name__}: {exc}. Install with "
+                           "`py -3 -m pip install playwright` then "
+                           "`py -3 -m playwright install chromium`."))
+        _release_active()
+        return
+
+    _update_job(job_id, state="running", message="starting browser")
+    try:
+        res = worker.run_deep_research(prompt, window_mode=window_mode, progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        _release_active()
+        return
+
+    status = res.get("status")
+    if status == "done":
+        try:
+            artifact = _save_deep_artifact({
+                "segment": segment,
+                "date": date,
+                "report": res.get("report", ""),
+                "citations": res.get("citations", []),
+                "source_url": res.get("source_url", ""),
+            })
+        except Exception as exc:  # noqa: BLE001
+            _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
+            _release_active()
+            return
+        _set_auth_state(True, "deep run")
+        _update_job(job_id, state="done", message="report saved",
+                    result={
+                        "source_url": res.get("source_url"),
+                        "citations": res.get("citations", []),
+                        "report_chars": len(res.get("report", "")),
+                    },
+                    artifact=artifact)
+    elif status == "needs_login":
+        _set_auth_state(False, "run hit login wall")
+        _update_job(job_id, state="needs_login",
+                    message="Not logged in. Use 'Set up Perplexity login' once, then re-run.")
+    elif status == "computer_trap":
+        _update_job(job_id, state="error",
+                    error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
+    else:
+        _update_job(job_id, state="error",
+                    error=res.get("detail") or f"deep research {status}")
+    _release_active()
+
+
+def _run_login_job(job_id: str) -> None:
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        import pplx_deep_research as worker
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error",
+                    error=f"Playwright not available: {type(exc).__name__}: {exc}")
+        _release_active()
+        return
+
+    _update_job(job_id, state="running", message="opening login window")
+    try:
+        res = worker.ensure_login(progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        _release_active()
+        return
+    if res.get("status") == "logged_in":
+        _set_auth_state(True, "login window")
+        _update_job(job_id, state="done", message="Perplexity login confirmed")
+    else:
+        _update_job(job_id, state="error", message="login window timed out",
+                    error="login not completed in time")
+    _release_active()
+
+
+def _start_deep_research(body: dict) -> dict:
+    segment = _slugify(str(body.get("segment") or ""))
+    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise ValueError("date must be YYYY-MM-DD")
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("prompt is required")
+    window_mode = str(body.get("window_mode") or "offscreen")
+    if window_mode not in ("offscreen", "visible", "headless"):
+        raise ValueError("window_mode must be offscreen, visible, or headless")
+    if not _claim_active():
+        raise RuntimeError("a deep research / login job is already running")
+    job = _new_job("deep_research", segment=segment, date=date, window_mode=window_mode)
+    threading.Thread(target=_run_deep_job,
+                     args=(job["id"], segment, date, prompt, window_mode),
+                     daemon=True).start()
+    return _job_public(job)
+
+
+def _start_login() -> dict:
+    if not _claim_active():
+        raise RuntimeError("a deep research / login job is already running")
+    job = _new_job("login")
+    threading.Thread(target=_run_login_job, args=(job["id"],), daemon=True).start()
+    return _job_public(job)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "rebalancing-research/1.0"
 
@@ -465,6 +673,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(rec) if rec else self._send_error_json(404, f"unknown segment {name}")
         if path == "/api/deep-runs":
             return self._send_json({"runs": _deep_runs()})
+        if path == "/api/deep-research/login-status":
+            return self._send_json(_get_auth_state())
+        if path == "/api/deep-job":
+            job_id = (query.get("id") or [""])[0]
+            with _DEEP_JOBS_LOCK:
+                job = _DEEP_JOBS.get(job_id)
+                job = dict(job) if job else None
+            if not job:
+                return self._send_error_json(404, f"unknown job {job_id}")
+            return self._send_json(_job_public(job))
         if path == "/api/deep-prompt":
             name = (query.get("segment") or [""])[0]
             try:
@@ -518,6 +736,25 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/deep-research/save":
                 body = self._read_body()
                 return self._send_json(_save_deep_artifact(body))
+
+            if path == "/api/deep-research/run":
+                body = self._read_body()
+                try:
+                    return self._send_json(_start_deep_research(body))
+                except RuntimeError as exc:
+                    return self._send_error_json(409, str(exc))
+
+            if path == "/api/deep-research/login":
+                try:
+                    return self._send_json(_start_login())
+                except RuntimeError as exc:
+                    return self._send_error_json(409, str(exc))
+
+            if path == "/api/deep-research/verify-login":
+                try:
+                    return self._send_json(_verify_login())
+                except RuntimeError as exc:
+                    return self._send_error_json(409, str(exc))
 
             if path == "/api/deep-research/review":
                 body = self._read_body()
