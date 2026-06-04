@@ -34,13 +34,32 @@ from typing import Callable, Optional
 
 PPLX_HOME = "https://www.perplexity.ai"
 
-# A run is "going" while a Stop button exists; "done" when it's gone and the
-# report body has rendered (large innerText, not just the echoed prompt).
+# Deep Research has THREE relevant states, not two:
+#   running   -- a Stop button exists (model is working)
+#   awaiting  -- paused on a clarifying question ("Awaiting response" + a
+#                Continue button); NOT done, NOT running. Treating this as done
+#                is how we once scraped the question instead of the report.
+#   done      -- the final report rendered ("Prepared by Deep Research" /
+#                "Completed N steps" / an "N sources" button) with no Stop.
 _POLL_JS = """() => {
   const m = document.querySelector('main');
+  const body = document.body.innerText || '';
   const stop = !!document.querySelector('button[aria-label*=stop i]');
-  return { running: stop, len: m ? m.innerText.length : 0, url: location.pathname };
+  const awaiting = /awaiting response/i.test(body) || /quick clarification/i.test(body);
+  const done = /prepared by deep research/i.test(body)
+    || /\\bcompleted \\d+ steps?\\b/i.test(body)
+    || [...document.querySelectorAll('button')]
+         .some(b => /^\\d+\\s+sources?$/i.test((b.innerText || '').trim()));
+  return { running: stop, awaiting, done, len: m ? m.innerText.length : 0, url: location.pathname };
 }"""
+
+# Generic clarification reply when the caller does not supply a segment-specific
+# one. References the scope already in the original prompt.
+_DEFAULT_CLARIFY = (
+    "Use exactly the tickers and scope from my original request above. "
+    "Do not ask any further clarifying questions. Proceed with the full deep "
+    "research now and state any assumptions inline."
+)
 
 # Click the exact "Deep research" menuitemradio once the Search-mode dropdown is
 # open. Filtered to visible elements and exact text to dodge history items and
@@ -259,17 +278,104 @@ def check_login(profile_dir: Optional[Path] = None,
             ctx.close()
 
 
+def _scrape(page):
+    """Pull the report text and de-duped external citations from the open run."""
+    report = page.evaluate(_REPORT_JS)
+    citations = []
+    try:
+        if page.evaluate(_OPEN_LINKS_JS):
+            time.sleep(2)
+        citations = page.evaluate(_LINKS_JS)
+    except Exception:
+        pass
+    return report, citations
+
+
+def fetch_by_url(url: str, *, window_mode: str = "offscreen",
+                 profile_dir: Optional[Path] = None, timeout_s: int = 150,
+                 progress: Callable[[str], None] = _noop) -> dict:
+    """Recover a COMPLETED Perplexity run by its URL. Spends no quota -- it only
+    reads. This is the safety net: if a run ever finishes in Perplexity but does
+    not make it back (pause, timeout, disconnect), the result is never lost.
+
+    Returns {"status": "done"|"needs_login"|"needs_clarification"|"error", ...}.
+    """
+    from playwright.sync_api import sync_playwright
+
+    url = (url or "").strip()
+    if "perplexity.ai" not in url:
+        return {"status": "error", "detail": "not a perplexity.ai URL"}
+    profile_dir = profile_dir or default_profile_dir()
+    with sync_playwright() as pw:
+        ctx = _launch(pw, window_mode=window_mode, profile_dir=profile_dir)
+        try:
+            page = _page(ctx)
+            progress("Opening the run URL...")
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            _dismiss_cookies(page)
+            if not _logged_in(page):
+                return {"status": "needs_login"}
+            deadline = time.time() + timeout_s
+            stable = 0
+            while time.time() < deadline:
+                st = page.evaluate(_POLL_JS)
+                progress(f"running={st['running']} awaiting={st['awaiting']} "
+                         f"done={st['done']} chars={st['len']}")
+                if st["awaiting"] and not st["running"]:
+                    return {"status": "needs_clarification", "source_url": page.url,
+                            "report": page.evaluate(_REPORT_JS)}
+                if not st["running"] and st["len"] > 800 and (st["done"] or stable >= 2):
+                    break
+                stable = stable + 1 if (not st["running"] and st["len"] > 800) else 0
+                time.sleep(3)
+            report, citations = _scrape(page)
+            if len((report or "").strip()) < 800:
+                return {"status": "error",
+                        "detail": "no finished report found at that URL"}
+            return {"status": "done", "source_url": page.url,
+                    "report": report, "citations": citations}
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
+        finally:
+            ctx.close()
+
+
+def _answer_clarification(page, answer: str) -> bool:
+    """Reply to a Deep Research clarifying question via the composer so the run
+    proceeds unattended. Falls back to clicking a Continue button."""
+    answer = (answer or _DEFAULT_CLARIFY).strip()
+    try:
+        inp = page.locator("#ask-input")
+        inp.click(timeout=4000)
+        try:
+            inp.fill(answer)
+        except Exception:
+            inp.type(answer, delay=2)
+        page.keyboard.press("Enter")
+        return True
+    except Exception:
+        try:
+            page.get_by_role("button", name="Continue").first.click(timeout=3000)
+            return True
+        except Exception:
+            return False
+
+
 def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                       profile_dir: Optional[Path] = None, timeout_s: int = 900,
                       poll_interval_s: int = 30, dry_run: bool = False,
+                      clarify_answer: Optional[str] = None, max_clarify: int = 2,
                       progress: Callable[[str], None] = _noop) -> dict:
     """Run one Deep Research query end to end.
 
-    Returns one of:
+    If Perplexity pauses on a clarifying question, the worker auto-answers with
+    ``clarify_answer`` (up to ``max_clarify`` times) so the run completes without
+    a human. Returns one of:
       {"status": "done", "source_url", "report", "citations"}
       {"status": "dry_run_ok", "mode_verified": True}
       {"status": "needs_login"}
       {"status": "computer_trap", "url"}   # paid path -- aborted
+      {"status": "needs_clarification", "source_url", "report"}  # gave up answering
       {"status": "mode_failed", "detail"}
       {"status": "timeout"}
       {"status": "error", "detail"}
@@ -322,30 +428,53 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
 
             progress("Researching (this takes minutes)...")
             time.sleep(8)  # let the Stop button appear before we trust "not running"
+            answer = (clarify_answer or _DEFAULT_CLARIFY).strip()
             deadline = time.time() + timeout_s
-            stable = 0
+            done_seen = 0
+            idle = 0
+            nudges = 0
             while time.time() < deadline:
                 st = page.evaluate(_POLL_JS)
-                progress(f"running={st['running']} chars={st['len']}")
-                if not st["running"] and st["len"] > 800:
-                    stable += 1
-                    if stable >= 2:
+                progress(
+                    f"running={st['running']} awaiting={st['awaiting']} "
+                    f"done={st['done']} chars={st['len']}"
+                )
+                if st["running"]:
+                    done_seen = idle = 0
+                    time.sleep(poll_interval_s)
+                    continue
+                # A positive Deep Research completion marker is the ONLY thing that
+                # lets us scrape. A clarification page has none, so it can never be
+                # mistaken for a finished report (the bug we are killing).
+                if st["done"] and st["len"] > 800:
+                    done_seen += 1
+                    idle = 0
+                    if done_seen >= 2:
                         break
-                else:
-                    stable = 0
+                    time.sleep(poll_interval_s)
+                    continue
+                # Not running and no completion marker: paused on a clarification or
+                # stalled. Push it forward by answering; cap the attempts.
+                done_seen = 0
+                if st["awaiting"] or idle >= 2:
+                    if nudges >= max_clarify:
+                        progress("Clarification loop exhausted; returning partial.")
+                        return {"status": "needs_clarification",
+                                "source_url": page.url,
+                                "report": page.evaluate(_REPORT_JS)}
+                    nudges += 1
+                    progress(f"Answering clarifying question / nudging ({nudges})...")
+                    _answer_clarification(page, answer)
+                    idle = 0
+                    time.sleep(10)  # let it resume into the Stop state
+                    continue
+                idle += 1
                 time.sleep(poll_interval_s)
             else:
                 return {"status": "timeout"}
 
             progress("Scraping report and citations...")
-            report = page.evaluate(_REPORT_JS)
-            citations = []
-            try:
-                if page.evaluate(_OPEN_LINKS_JS):
-                    time.sleep(2)
-                citations = page.evaluate(_LINKS_JS)
-            except Exception:
-                pass
+            report, citations = _scrape(page)
             return {
                 "status": "done",
                 "source_url": page.url,
@@ -365,6 +494,7 @@ def _main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Perplexity in-app Deep Research worker")
     ap.add_argument("--login", action="store_true", help="open a visible window and wait for login")
     ap.add_argument("--dry-run", action="store_true", help="select Deep research mode but do not submit")
+    ap.add_argument("--fetch-url", default="", help="scrape a completed run by URL (no quota)")
     ap.add_argument("--prompt", default="", help="the research prompt")
     ap.add_argument("--window-mode", default="offscreen", choices=["offscreen", "visible", "headless"])
     ap.add_argument("--timeout", type=int, default=900)
@@ -376,8 +506,15 @@ def _main(argv=None) -> int:
     if args.login:
         print(json.dumps(ensure_login(progress=log)))
         return 0
+    if args.fetch_url:
+        res = fetch_by_url(args.fetch_url, window_mode=args.window_mode, progress=log)
+        echo = dict(res)
+        if "report" in echo:
+            echo["report_chars"] = len(echo.pop("report"))
+        print(json.dumps(echo))
+        return 0
     if not args.prompt:
-        ap.error("--prompt is required unless --login")
+        ap.error("--prompt is required unless --login or --fetch-url")
     res = run_deep_research(
         args.prompt, window_mode=args.window_mode, timeout_s=args.timeout,
         dry_run=args.dry_run, progress=log,

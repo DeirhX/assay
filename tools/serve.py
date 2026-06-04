@@ -234,6 +234,9 @@ def _segment_prompt(name: str) -> dict:
         "Tie conclusions to portfolio action: keep, trim, sell, add, or wait.\n"
         "Include source citations and distinguish facts from opinion.\n"
         "Call out which numeric claims need deterministic verification.\n"
+        "Treat the tickers above as individual stocks and the complete scope; "
+        "do not ask clarifying questions. If anything is ambiguous, state "
+        "assumptions and proceed.\n"
     )
     if held_lines:
         prompt += "\nCurrent owned weights:\n" + "\n".join(held_lines) + "\n"
@@ -439,6 +442,24 @@ def _new_job(kind: str, **fields) -> dict:
     return job
 
 
+def _clarify_answer_for(segment: str) -> str:
+    """A concrete reply the worker can submit if Perplexity asks what is in the
+    segment, so the run finishes unattended."""
+    definition = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
+    syms = [m.get("symbol") for m in definition.get("members", []) if m.get("symbol")]
+    if syms:
+        return (
+            "My segment is exactly these tickers, treated as individual stocks: "
+            + ", ".join(syms)
+            + ". Do not ask further clarifying questions; proceed with the full "
+            "deep research now."
+        )
+    return (
+        "Use exactly the tickers and scope in my original request. Do not ask "
+        "further clarifying questions; proceed now."
+    )
+
+
 def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode: str) -> None:
     def progress(msg: str) -> None:
         _update_job(job_id, message=msg)
@@ -456,7 +477,10 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
 
     _update_job(job_id, state="running", message="starting browser")
     try:
-        res = worker.run_deep_research(prompt, window_mode=window_mode, progress=progress)
+        res = worker.run_deep_research(
+            prompt, window_mode=window_mode,
+            clarify_answer=_clarify_answer_for(segment), progress=progress,
+        )
     except Exception as exc:  # noqa: BLE001
         _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
         _release_active()
@@ -491,6 +515,11 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
     elif status == "computer_trap":
         _update_job(job_id, state="error",
                     error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
+    elif status == "needs_clarification":
+        _update_job(job_id, state="error",
+                    error=("Perplexity kept asking clarifying questions. Open "
+                           f"{res.get('source_url')} , answer it there, then paste "
+                           "the finished report on the Report step."))
     else:
         _update_job(job_id, state="error",
                     error=res.get("detail") or f"deep research {status}")
@@ -550,6 +579,80 @@ def _start_login() -> dict:
         raise RuntimeError("a deep research / login job is already running")
     job = _new_job("login")
     threading.Thread(target=_run_login_job, args=(job["id"],), daemon=True).start()
+    return _job_public(job)
+
+
+def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        import pplx_deep_research as worker
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error",
+                    error=f"Playwright not available: {type(exc).__name__}: {exc}")
+        _release_active()
+        return
+
+    _update_job(job_id, state="running", message="opening run URL")
+    try:
+        res = worker.fetch_by_url(url, progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        _release_active()
+        return
+
+    status = res.get("status")
+    if status == "done":
+        try:
+            artifact = _save_deep_artifact({
+                "segment": segment,
+                "date": date,
+                "report": res.get("report", ""),
+                "citations": res.get("citations", []),
+                "source_url": res.get("source_url", url),
+            })
+        except Exception as exc:  # noqa: BLE001
+            _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
+            _release_active()
+            return
+        _set_auth_state(True, "import")
+        _update_job(job_id, state="done", message="imported report saved",
+                    result={
+                        "source_url": res.get("source_url", url),
+                        "citations": res.get("citations", []),
+                        "report_chars": len(res.get("report", "")),
+                    },
+                    artifact=artifact)
+    elif status == "needs_login":
+        _set_auth_state(False, "import hit login wall")
+        _update_job(job_id, state="needs_login",
+                    message="Not logged in. Use 'Set up Perplexity login' once, then import.")
+    elif status == "needs_clarification":
+        _update_job(job_id, state="error",
+                    error="That run is still awaiting a clarifying answer. Answer it in "
+                          "Perplexity, wait for it to finish, then import again.")
+    else:
+        _update_job(job_id, state="error", error=res.get("detail") or f"import {status}")
+    _release_active()
+
+
+def _start_import(body: dict) -> dict:
+    segment = _slugify(str(body.get("segment") or ""))
+    if not segment:
+        raise ValueError("segment is required")
+    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise ValueError("date must be YYYY-MM-DD")
+    url = str(body.get("url") or "").strip()
+    if "perplexity.ai" not in url:
+        raise ValueError("a perplexity.ai run URL is required")
+    if not _claim_active():
+        raise RuntimeError("a deep research / login job is already running")
+    job = _new_job("import", segment=segment, date=date)
+    threading.Thread(target=_run_import_job,
+                     args=(job["id"], segment, date, url),
+                     daemon=True).start()
     return _job_public(job)
 
 
@@ -709,6 +812,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/deep-research/login":
             try:
                 return self._send_json(_start_login())
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
+        if path == "/api/deep-research/import":
+            body = self._read_body()
+            try:
+                return self._send_json(_start_import(body))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
 

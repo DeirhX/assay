@@ -880,6 +880,32 @@ $("#pipe-run-deep").addEventListener("click", async () => {
   }
 });
 
+$("#pipe-import").addEventListener("click", async () => {
+  const status = $("#pipe-import-status");
+  status.classList.remove("err");
+  const url = $("#pipe-import-url").value.trim();
+  const segment = pipeSegment();
+  const date = $("#pipe-date").value.trim() || undefined;
+  if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
+  if (!url) { status.classList.add("err"); status.textContent = "paste a Perplexity run URL"; return; }
+  status.innerHTML = `<span class="spinner"></span> pulling the finished run (off-screen browser)...`;
+  try {
+    const job = await api("/api/deep-research/import", "POST", { segment, date, url });
+    await pollDeepJob(job.id, status, async (done) => {
+      const stem = (done.artifact && done.artifact.stem) || `${segment}-${done.date || date}`;
+      const r = done.result || {};
+      const n = (r.citations && r.citations.length) || 0;
+      status.textContent = `imported: ${stem} - ${r.report_chars || 0} chars, ${n} sources.`;
+      await refreshDeepRuns();
+      await loadDeepRun(stem);
+    });
+    await refreshLoginStatus();
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent = "import failed: " + e.message;
+  }
+});
+
 async function refreshLoginStatus() {
   let st;
   try {
