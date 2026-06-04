@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from portfolio import decision_label, holdings_weights, portfolio_context  # noqa: E402
 from providers import fmp, sec_edgar, yahoo  # noqa: E402
 from providers.common import (  # noqa: E402
     ProviderError,
@@ -39,8 +40,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RESEARCH_DIR = REPO_ROOT / "data" / "research"
 SEGMENT_DEF_DIR = REPO_ROOT / "data" / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
-HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
-TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
 CACHE_DIR = REPO_ROOT / "data" / "cache"
 HISTORY_DIR = CACHE_DIR / "research-history"
 
@@ -185,6 +184,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
     checks = _cross_checks(symbol, mo, y, s)
 
     name = (y or {}).get("name") or (s or {}).get("entity") or (f or {}).get("name") or symbol
+    portfolio = portfolio_context(symbol)
     record: dict[str, Any] = {
         "symbol": symbol,
         "name": name,
@@ -194,7 +194,8 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         "momentum": mo,
         "metrics": merged,
         "cross_checks": checks,
-        "portfolio": _portfolio_context(symbol),
+        "portfolio": portfolio,
+        "decision": decision_label(portfolio),
         "sources": {
             "yahoo": y is not None or bool(mo),
             "sec_edgar": s is not None,
@@ -218,7 +219,7 @@ def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
     if not definition:
         raise SystemExit(f"unknown segment '{name}' (expected {SEGMENT_DEF_DIR / (name + '.json')})")
 
-    held = _holdings_weights()
+    held = holdings_weights()
     members: list[dict[str, Any]] = []
     for entry in definition.get("members", []):
         sym = entry["symbol"].upper()
@@ -240,7 +241,7 @@ def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
             "pct_below_52w_high": rec["momentum"].get("pct_below_52w_high"),
             "data_quality": worst,
             "research_score": _research_score(rec, worst),
-            "decision": _decision_label(rec),
+            "decision": decision_label(rec.get("portfolio", {})),
             "score_reasons": _score_reasons(rec, worst),
         })
 
@@ -261,69 +262,6 @@ def _worst_severity(checks: list[dict[str, str]]) -> str:
     if not checks:
         return "INFO"
     return min((c["severity"] for c in checks), key=lambda s: order.get(s, 9))
-
-
-def _holdings_weights() -> dict[str, float]:
-    data = _load(HOLDINGS_JSON)
-    if not data:
-        return {}
-    positions = data.get("positions", [])
-    invested = sum(
-        p["base_market_value"]
-        for p in positions
-        if isinstance(p.get("base_market_value"), (int, float))
-    )
-    if not invested:
-        return {}
-    return {
-        p["symbol"]: p["base_market_value"] / invested * 100.0
-        for p in positions
-        if isinstance(p.get("base_market_value"), (int, float))
-    }
-
-
-def _portfolio_context(symbol: str) -> dict[str, Any]:
-    weights = _holdings_weights()
-    model = _load(TARGET_MODEL_JSON) or {}
-    current = weights.get(symbol)
-    target = _target_context(model, symbol)
-    ctx: dict[str, Any] = {
-        "current_weight_pct": current,
-        "target": target,
-    }
-    low = target.get("low")
-    high = target.get("high")
-    if isinstance(current, (int, float)) and isinstance(low, (int, float)) and isinstance(high, (int, float)):
-        if current < low:
-            ctx["status"] = "below_band"
-            ctx["gap_to_band_pct"] = round(low - current, 4)
-        elif current > high:
-            ctx["status"] = "above_band"
-            ctx["gap_to_band_pct"] = round(high - current, 4)
-        else:
-            ctx["status"] = "in_band"
-            ctx["gap_to_band_pct"] = 0.0
-    elif current:
-        ctx["status"] = "held_no_target"
-    else:
-        ctx["status"] = "not_held"
-    return ctx
-
-
-def _target_context(model: dict[str, Any], symbol: str) -> dict[str, Any]:
-    targets = model.get("targets", {})
-    if symbol in targets:
-        node = dict(targets[symbol])
-        node["kind"] = "target"
-        return node
-    for sleeve_name, sleeve in model.get("sleeves", {}).items():
-        if symbol in sleeve.get("members", []):
-            node = dict(sleeve)
-            node["kind"] = "sleeve"
-            node["sleeve"] = sleeve_name
-            node.pop("members", None)
-            return node
-    return {"kind": "none"}
 
 
 def _research_score(rec: dict[str, Any], worst: str) -> int:
@@ -388,27 +326,6 @@ def _research_score(rec: dict[str, Any], worst: str) -> int:
         score -= 10
 
     return int(round(max(0, min(100, score))))
-
-
-def _decision_label(rec: dict[str, Any]) -> str:
-    portfolio = rec.get("portfolio", {})
-    target = portfolio.get("target", {})
-    rule = target.get("rule")
-    status = portfolio.get("status")
-    if rule == "avoid":
-        return "avoid"
-    if rule == "reduce" or (rule in {"trim_only", "do_not_add"} and status == "above_band"):
-        return "trim"
-    if rule == "accumulate" and status == "below_band":
-        return "add_candidate"
-    if rule == "wait":
-        return "watch"
-    if rule in {"hold", "trim_only", "do_not_add"}:
-        return "hold"
-    if rule == "accumulate":
-        return "accumulate"
-    return "research"
-
 
 def _score_reasons(rec: dict[str, Any], worst: str) -> list[str]:
     reasons: list[str] = []

@@ -24,6 +24,9 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   than pretending it verified anything.
 - `providers/fmp.py` -- optional third opinion; enabled only if `FMP_API_KEY` is
   set (read from `secrets.env`, gitignored).
+- `portfolio.py` -- shared holdings/target-model helpers: computed position
+  weights, target context, holdings payloads, and decision labels used by the
+  server, puller, and generated-site checks.
 - `research_pull.py` -- pulls all sources, merges with a preferred-source order,
   and **cross-checks** them (price x shares vs market cap, Yahoo vs SEC share
   count, TTM revenue agreement, price freshness, single-source warnings). Writes
@@ -35,8 +38,10 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`,
   the Deep Research pipeline endpoints for segment drafting, artifact saving,
   review, and target-proposal approval, plus the automated-run endpoints
-  `POST /api/deep-research/run`, `POST /api/deep-research/login`, and
-  `GET /api/deep-job?id=<id>`).
+  `POST /api/deep-research/run`, `POST /api/deep-research/login`,
+  `POST /api/deep-research/verify-login`, `GET /api/deep-research/login-status`,
+  and `GET /api/deep-job?id=<id>`). It serves root-level `.html`/`.css`/`.js`
+  assets dynamically instead of maintaining a manual filename allowlist.
 - `review_deep_research.py` -- offline review gate for saved Perplexity reports.
   It compares source quality, deterministic ticker data, holdings, and
   `target-model.json`, then writes a review markdown file and draft target-model
@@ -125,6 +130,11 @@ py -3 tools/pplx_deep_research.py --login                 # visible login window
 py -3 tools/pplx_deep_research.py --dry-run --prompt "x"  # mode select, no submit, no quota
 py -3 tools/pplx_deep_research.py --prompt "deep research on ..."   # full run (spends quota)
 ```
+
+The console encodes its current location in query parameters so browser
+Back/Forward and shared links work for the main views, e.g.
+`/?ticker=AMD`, `/?view=segment&segment=semiconductors`, and
+`/?view=pipeline&run=fintech-payments-2026-06-03`.
 
 CLI fallback (review gate):
 

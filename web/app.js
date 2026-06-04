@@ -66,16 +66,105 @@ async function api(path, method = "GET", body = null) {
   return data;
 }
 
+// ---- location state --------------------------------------------------------
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "holdings"]);
+
+const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
+const cleanSlug = (raw) => (raw || "").trim();
+
+function navFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const view = VIEWS.has(params.get("view")) ? params.get("view") : "deepdive";
+  return {
+    view,
+    ticker: cleanSymbol(params.get("ticker")),
+    segment: cleanSlug(params.get("segment")),
+    run: cleanSlug(params.get("run")),
+  };
+}
+
+function urlForNav(nav) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  if (nav.view && nav.view !== "deepdive") url.searchParams.set("view", nav.view);
+  if (nav.ticker) url.searchParams.set("ticker", cleanSymbol(nav.ticker));
+  if (nav.segment) url.searchParams.set("segment", cleanSlug(nav.segment));
+  if (nav.run) url.searchParams.set("run", cleanSlug(nav.run));
+  return url;
+}
+
+function pushNav(partial, { replace = false } = {}) {
+  const next = {
+    ...navFromUrl(),
+    ticker: "",
+    segment: "",
+    run: "",
+    ...partial,
+  };
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method](next, "", urlForNav(next));
+  return next;
+}
+
+function navForView(view) {
+  const nav = { view };
+  if (view === "deepdive") nav.ticker = cleanSymbol($("#ticker-input").value);
+  if (view === "segment") nav.segment = cleanSlug($("#segment-select").value);
+  if (view === "pipeline") {
+    nav.segment = cleanSlug($("#pipe-segment-select").value || $("#pipe-slug").value);
+    if (state.currentDeepRun) nav.run = state.currentDeepRun;
+  }
+  return nav;
+}
+
+function setActiveView(view) {
+  const active = VIEWS.has(view) ? view : "deepdive";
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  $("#view-" + active).classList.add("active");
+  if (active === "holdings") loadHoldings();
+  if (active === "pipeline") loadPipeline();
+  return active;
+}
+
+function setSegmentControls(segment) {
+  if (!segment) return;
+  const seg = $("#segment-select");
+  const pipe = $("#pipe-segment-select");
+  if (seg && Array.from(seg.options).some((o) => o.value === segment)) seg.value = segment;
+  if (pipe && Array.from(pipe.options).some((o) => o.value === segment)) pipe.value = segment;
+  const slug = $("#pipe-slug");
+  if (slug && !slug.value) slug.value = segment;
+}
+
+async function restoreNav(nav) {
+  const active = setActiveView(nav.view);
+  if (nav.ticker) $("#ticker-input").value = nav.ticker;
+  if (nav.segment || nav.run || active === "segment" || active === "pipeline") {
+    await loadSegmentList();
+    setSegmentControls(nav.segment);
+  }
+  if (active === "deepdive" && nav.ticker) {
+    await loadTickerFromCache(nav.ticker);
+  } else if (active === "segment" && nav.segment) {
+    await loadCachedSegment(nav.segment);
+  } else if (active === "pipeline" && nav.run) {
+    await loadDeepRun(nav.run, { push: false });
+  }
+  if (active === "deepdive") $("#ticker-input").focus();
+}
+
 // ---- tabs -----------------------------------------------------------------
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    btn.classList.add("active");
-    $("#view-" + btn.dataset.view).classList.add("active");
-    if (btn.dataset.view === "holdings") loadHoldings();
-    if (btn.dataset.view === "pipeline") loadPipeline();
+    pushNav(navForView(btn.dataset.view));
+    restoreNav(navFromUrl());
   });
+});
+
+window.addEventListener("popstate", (event) => {
+  restoreNav(event.state || navFromUrl());
 });
 
 $("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
@@ -146,18 +235,43 @@ async function loadHoldings() {
 }
 
 function analyzeFromAnywhere(sym) {
-  document.querySelector('.tab[data-view="deepdive"]').click();
-  $("#ticker-input").value = sym;
-  pullTicker(sym);
+  const ticker = cleanSymbol(sym);
+  if (!ticker) return;
+  pushNav({ view: "deepdive", ticker });
+  setActiveView("deepdive");
+  $("#ticker-input").value = ticker;
+  pullTicker(ticker, { push: false });
 }
 
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
 $("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker($("#ticker-input").value); });
 
-async function pullTicker(raw) {
-  const sym = (raw || "").trim().toUpperCase();
+async function loadTickerFromCache(raw) {
+  const sym = cleanSymbol(raw);
   if (!sym) return;
+  const status = $("#dd-status");
+  status.classList.remove("err");
+  status.textContent = `Loading cached ${sym}...`;
+  try {
+    const rec = await api("/api/research/" + encodeURIComponent(sym));
+    const hist = await api("/api/history/" + encodeURIComponent(sym)).catch(() => ({ history: [] }));
+    rec.history = hist.history || [];
+    status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
+    renderDeepDive(rec);
+  } catch (e) {
+    status.textContent = `No cached research for ${sym}; press Analyze to pull live data.`;
+    status.classList.add("err");
+    $("#dd-result").innerHTML = "";
+  }
+}
+
+async function pullTicker(raw, { push = true } = {}) {
+  const sym = cleanSymbol(raw);
+  if (!sym) return;
+  if (push) pushNav({ view: "deepdive", ticker: sym });
+  setActiveView("deepdive");
+  $("#ticker-input").value = sym;
   const status = $("#dd-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling ${esc(sym)} from live sources...`;
@@ -196,7 +310,7 @@ function renderDeepDive(rec) {
   const portfolio = rec.portfolio || {};
   const target = portfolio.target || {};
   const owned = portfolio.current_weight_pct ?? state.holdings[rec.symbol];
-  const decision = mDecision(rec);
+  const decision = rec.decision || "research";
 
   const card = el("div", "card");
   // header
@@ -300,18 +414,6 @@ function renderDeepDive(rec) {
   out.appendChild(renderThesis(rec));
 }
 
-function mDecision(rec) {
-  const p = rec.portfolio || {};
-  const t = p.target || {};
-  if (t.rule === "avoid") return "avoid";
-  if (t.rule === "reduce" || (["trim_only", "do_not_add"].includes(t.rule) && p.status === "above_band")) return "trim";
-  if (t.rule === "accumulate" && p.status === "below_band") return "add_candidate";
-  if (t.rule === "wait") return "watch";
-  if (["hold", "trim_only", "do_not_add"].includes(t.rule)) return "hold";
-  if (t.rule === "accumulate") return "accumulate";
-  return "research";
-}
-
 function renderHistory(rec) {
   const card = el("div", "card");
   card.appendChild(el("h2", "section", "Recent pulls"));
@@ -320,7 +422,7 @@ function renderHistory(rec) {
     card.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
     return card;
   }
-  const table = el("table");
+  const table = el("table", "history-table");
   table.innerHTML =
     `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th></tr></thead>`;
   const tbody = el("tbody");
@@ -416,15 +518,33 @@ async function loadSegmentList() {
         pipeSel.appendChild(p);
       }
     });
+    return segments;
   } catch (e) {
     sel.innerHTML = `<option>${esc(e.message)}</option>`;
     if (pipeSel) pipeSel.innerHTML = `<option>${esc(e.message)}</option>`;
+    return [];
   }
 }
 
-$("#segment-run").addEventListener("click", async () => {
-  const name = $("#segment-select").value;
+$("#segment-select").addEventListener("change", () => {
+  if ($("#view-segment").classList.contains("active")) {
+    pushNav({ view: "segment", segment: $("#segment-select").value }, { replace: true });
+  }
+});
+
+$("#pipe-segment-select").addEventListener("change", () => {
+  if ($("#view-pipeline").classList.contains("active")) {
+    pushNav({ view: "pipeline", segment: $("#pipe-segment-select").value }, { replace: true });
+  }
+});
+
+async function runSegmentPull(name, { push = true } = {}) {
   const status = $("#seg-status");
+  name = cleanSlug(name);
+  if (!name) return;
+  if (push) pushNav({ view: "segment", segment: name });
+  setActiveView("segment");
+  $("#segment-select").value = name;
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling every peer in "${esc(name)}" live — this takes a bit...`;
   $("#segment-run").disabled = true;
@@ -438,11 +558,15 @@ $("#segment-run").addEventListener("click", async () => {
   } finally {
     $("#segment-run").disabled = false;
   }
-});
+}
 
-$("#segment-load").addEventListener("click", async () => {
-  const name = $("#segment-select").value;
+async function loadCachedSegment(name, { push = false } = {}) {
   const status = $("#seg-status");
+  name = cleanSlug(name);
+  if (!name) return;
+  if (push) pushNav({ view: "segment", segment: name });
+  setActiveView("segment");
+  $("#segment-select").value = name;
   status.classList.remove("err");
   status.textContent = "Loading cached segment...";
   try {
@@ -453,7 +577,10 @@ $("#segment-load").addEventListener("click", async () => {
     status.textContent = e.message + " — run a live pull first.";
     status.classList.add("err");
   }
-});
+}
+
+$("#segment-run").addEventListener("click", () => runSegmentPull($("#segment-select").value));
+$("#segment-load").addEventListener("click", () => loadCachedSegment($("#segment-select").value, { push: true }));
 
 const SEG_COLS = [
   ["symbol", "Symbol", false],
@@ -478,7 +605,7 @@ function renderSegment(rec) {
   out.innerHTML = "";
   const card = el("div", "card");
   card.appendChild(el("h2", "section", esc(rec.title) + " — peer comparison"));
-  const table = el("table");
+  const table = el("table", "segment-table");
   const thead = el("thead");
   const htr = el("tr");
   SEG_COLS.forEach(([key, label, num]) => {
@@ -556,9 +683,9 @@ document.querySelectorAll("#pipe-wizard .step-next, #pipe-wizard .step-back").fo
   b.addEventListener("click", () => setPipeStep(b.dataset.goto));
 });
 
-function loadPipeline() {
-  loadSegmentList();
-  refreshDeepRuns();
+async function loadPipeline() {
+  await loadSegmentList();
+  await refreshDeepRuns();
   refreshLoginStatus();
   setPipeStep(state.pipeStep);
   if (!$("#pipe-date").value) $("#pipe-date").value = new Date().toISOString().slice(0, 10);
@@ -602,6 +729,7 @@ $("#pipe-save-segment").addEventListener("click", async () => {
     status.textContent = `saved ${rec.name} — continuing to Deep Research`;
     await loadSegmentList();
     $("#pipe-segment-select").value = rec.name;
+    pushNav({ view: "pipeline", segment: rec.name }, { replace: true });
     setPipeStep(2);
   } catch (e) {
     status.textContent = "save failed: " + e.message;
@@ -617,6 +745,7 @@ $("#pipe-build-prompt").addEventListener("click", async () => {
     const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(pipeSegment()));
     $("#pipe-date").value = rec.date;
     $("#pipe-prompt").value = rec.prompt;
+    pushNav({ view: "pipeline", segment: rec.segment || pipeSegment() }, { replace: true });
     status.textContent = "prompt ready";
   } catch (e) {
     status.textContent = "prompt failed: " + e.message;
@@ -632,6 +761,8 @@ $("#pipe-run-deterministic").addEventListener("click", async () => {
   try {
     const rec = await api("/api/pull-segment/" + encodeURIComponent(name), "POST");
     status.textContent = `pulled ${rec.members.length} names`;
+    pushNav({ view: "segment", segment: name });
+    setActiveView("segment");
     renderSegment(rec);
   } catch (e) {
     status.textContent = "pull failed: " + e.message;
@@ -778,6 +909,7 @@ $("#pipe-save-report").addEventListener("click", async () => {
     });
     status.textContent = `saved ${rec.stem} — continuing to Review`;
     state.currentDeepRun = rec.stem;
+    pushNav({ view: "pipeline", segment: pipeSegment(), run: rec.stem });
     await refreshDeepRuns();
     setPipeStep(4);
   } catch (e) {
@@ -795,6 +927,7 @@ $("#pipe-run-review").addEventListener("click", async () => {
     const date = $("#pipe-date").value.trim();
     const rec = await api("/api/deep-research/review", "POST", { segment, date });
     state.currentDeepRun = `${segment}-${date}`;
+    pushNav({ view: "pipeline", segment, run: state.currentDeepRun });
     status.textContent = `review generated: ${rec.warnings.length} warning(s), ${rec.proposal.changes.length} proposal change(s)`;
     renderReviewGate(rec);
     await refreshDeepRuns();
@@ -826,13 +959,16 @@ async function refreshDeepRuns() {
   }
 }
 
-async function loadDeepRun(stem) {
+async function loadDeepRun(stem, { push = true } = {}) {
   const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   state.currentDeepRun = stem;
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
     $("#pipe-segment-select").value = m[1];
     $("#pipe-date").value = m[2];
+    if (push) pushNav({ view: "pipeline", segment: m[1], run: stem });
+  } else if (push) {
+    pushNav({ view: "pipeline", run: stem });
   }
   if (rec.report) $("#pipe-report").value = rec.report;
   if (rec.sources) $("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
@@ -908,7 +1044,7 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
 
 // ---- boot -----------------------------------------------------------------
 applyPrivacyMode(state.privacyMode);
-loadHoldings();
-loadSegmentList();
+const initialNav = navFromUrl();
+window.history.replaceState(initialNav, "", window.location.href);
+restoreNav(initialNav);
 refreshLoginStatus();
-$("#ticker-input").focus();

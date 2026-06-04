@@ -31,6 +31,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from portfolio import holdings_weights  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_JSON = REPO_ROOT / "data" / "current-holdings.json"
 CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
@@ -87,12 +90,13 @@ def compute_fragments(data: dict, claims: dict | None) -> dict[str, str]:
     }
 
     positions = index_by_symbol(data["positions"])
+    weights = holdings_weights(data)
     lots = index_by_symbol(data["tax_lot_summary"])
     for symbol in LOSER_SYMBOLS:
         pos = positions[symbol]
         lot = lots[symbol]
         fragments[f"pos.{symbol}.shares"] = f"{int(round(pos['quantity'])):,}"
-        fragments[f"pos.{symbol}.navpct"] = f"{pos['percent_of_nav']:.2f}%"
+        fragments[f"pos.{symbol}.navpct"] = f"{weights.get(symbol, pos['percent_of_nav']):.2f}%"
         fragments[f"pos.{symbol}.pnl"] = pnl_usd_short(pos["unrealized_pnl"])
         fragments[f"pos.{symbol}.lots"] = lot_range(lot)
         fragments[f"pos.{symbol}.cz3y"] = str(int(round(lot["cz_three_year_eligible_quantity"])))
@@ -115,6 +119,7 @@ def compute_fragments(data: dict, claims: dict | None) -> dict[str, str]:
 
 def render_markdown(data: dict) -> str:
     legend = data["sizing_legend"]
+    weights = holdings_weights(data)
     lines = [
         "# Current Holdings Snapshot",
         "",
@@ -129,9 +134,10 @@ def render_markdown(data: dict) -> str:
         "| --- | --- | ---: | ---: | ---: |",
     ]
     for pos in data["top_positions"][:TOP_POSITIONS_IN_SUMMARY]:
+        weight = weights.get(pos["symbol"], pos["percent_of_nav"])
         lines.append(
             f"| `{pos['symbol']}` | {pos['description']} | "
-            f"{pos['percent_of_nav']:.2f}% | "
+            f"{weight:.2f}% | "
             f"{pos['base_market_value']:,.0f} | "
             f"{pos['unrealized_pnl']:,.0f} |"
         )

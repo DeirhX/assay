@@ -215,6 +215,16 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--panel-2); }
 tr:last-child td { border-bottom: 0; }
+.segment-table th,
+.history-table th {
+  position: static;
+  top: auto;
+}
+.history-table th {
+  cursor: default;
+}
+.history-table tbody tr { cursor: default; }
+.history-table tbody tr:hover { background: transparent; }
 .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .dot.ERROR { background: var(--bad); } .dot.WARN { background: var(--warn); } .dot.INFO { background: var(--good); }

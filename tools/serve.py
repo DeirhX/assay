@@ -37,23 +37,12 @@ RESEARCH_DIR = DATA_DIR / "research"
 DEEP_DIR = RESEARCH_DIR / "deep"
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
-HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
-ROOT_STATIC_FILES = {
-    "site.css",
-    "privacy.css",
-    "privacy.js",
-    "next-steps.html",
-    "loser-position-recovery.html",
-    "amd-detail.html",
-    "arm-detail.html",
-    "sofi-detail.html",
-    "pypl-detail.html",
-    "eeft-detail.html",
-}
+ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from portfolio import holdings_payload  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 
@@ -225,7 +214,7 @@ def _segment_prompt(name: str) -> dict:
     definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
     if not definition:
         raise ValueError(f"unknown segment {slug}")
-    holdings = _holdings_payload()
+    holdings = holdings_payload()
     held = {
         p["symbol"]: p.get("percent_of_nav")
         for p in holdings.get("positions", [])
@@ -341,48 +330,13 @@ def _apply_target_proposal(segment: str, date: str, confirm: bool) -> dict:
     return {"applied": applied, "skipped": skipped, "proposal": proposal}
 
 
-def _holdings_payload():
-    data = _load(HOLDINGS_JSON) or {}
-    positions = data.get("positions", [])
-
-    # Weight by actual market value, not the broker's percent_of_nav field. That
-    # field is reliable for stocks but garbage for options (the SPY put is
-    # stamped 100% -- a margin/notional artifact, not its ~870 CZK market value).
-    # Recomputing from base_market_value over total invested reproduces the
-    # familiar stock weights (the broker uses NAV-minus-cash as denominator) and
-    # drops derivatives to their true tiny weight.
-    invested = sum(
-        p["base_market_value"]
-        for p in positions
-        if isinstance(p.get("base_market_value"), (int, float))
+def _is_root_static_file(clean: str) -> bool:
+    path = Path(clean)
+    return (
+        len(path.parts) == 1
+        and path.suffix in ROOT_STATIC_SUFFIXES
+        and (REPO_ROOT / clean).is_file()
     )
-
-    def weight(p):
-        bmv = p.get("base_market_value")
-        if not isinstance(bmv, (int, float)) or not invested:
-            return None
-        return bmv / invested * 100.0
-
-    return {
-        "net_asset_value": data.get("net_asset_value"),
-        "invested_value": invested,
-        "generated_at": data.get("generated_at"),
-        "sizing_legend": data.get("sizing_legend", {}),
-        "positions": [
-            {
-                "symbol": p["symbol"],
-                "description": p.get("description"),
-                "asset_class": p.get("asset_class"),
-                "percent_of_nav": weight(p),
-                "broker_percent_of_nav": p.get("percent_of_nav"),
-                "base_market_value": p.get("base_market_value"),
-                "currency": p.get("currency"),
-                "unrealized_pnl": p.get("unrealized_pnl"),
-                "issuer_country_code": p.get("issuer_country_code"),
-            }
-            for p in positions
-        ],
-    }
 
 
 def _segments_list():
@@ -622,7 +576,7 @@ class Handler(BaseHTTPRequestHandler):
         if clean.startswith("web/"):
             target = (WEB_DIR / clean.removeprefix("web/")).resolve()
             allowed_root = WEB_DIR
-        elif clean in ROOT_STATIC_FILES:
+        elif _is_root_static_file(clean):
             target = (REPO_ROOT / clean).resolve()
             allowed_root = REPO_ROOT
         else:
@@ -655,16 +609,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        query = parse_qs(parsed.query)
         if path == "/favicon.ico":
             self.send_response(204)
             self.end_headers()
             return None
         if not path.startswith("/api/"):
             return self._serve_static(path)
+        return self._handle_get_api(path, parse_qs(parsed.query))
 
+    def _handle_get_api(self, path: str, query: dict[str, list[str]]):
         if path == "/api/holdings":
-            return self._send_json(_holdings_payload())
+            return self._send_json(holdings_payload())
         if path == "/api/segments":
             return self._send_json({"segments": _segments_list()})
         if path.startswith("/api/segment-def/"):
@@ -722,97 +677,100 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         try:
-            if path == "/api/segment-draft":
-                body = self._read_body()
-                return self._send_json(_draft_segment(str(body.get("query") or "")))
-
-            if path.startswith("/api/segment-def/"):
-                name = _slugify(path.rsplit("/", 1)[-1])
-                body = self._read_body()
-                definition = _validate_segment_definition(body.get("definition") or body)
-                _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
-                return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
-
-            if path == "/api/deep-research/save":
-                body = self._read_body()
-                return self._send_json(_save_deep_artifact(body))
-
-            if path == "/api/deep-research/run":
-                body = self._read_body()
-                try:
-                    return self._send_json(_start_deep_research(body))
-                except RuntimeError as exc:
-                    return self._send_error_json(409, str(exc))
-
-            if path == "/api/deep-research/login":
-                try:
-                    return self._send_json(_start_login())
-                except RuntimeError as exc:
-                    return self._send_error_json(409, str(exc))
-
-            if path == "/api/deep-research/verify-login":
-                try:
-                    return self._send_json(_verify_login())
-                except RuntimeError as exc:
-                    return self._send_error_json(409, str(exc))
-
-            if path == "/api/deep-research/review":
-                body = self._read_body()
-                segment = str(body.get("segment") or "")
-                date = str(body.get("date") or "")
-                if not segment or not date:
-                    return self._send_error_json(400, "segment and date are required")
-                return self._send_json(review_deep_research.review(segment, date))
-
-            if path == "/api/target-proposal/apply":
-                body = self._read_body()
-                return self._send_json(_apply_target_proposal(
-                    str(body.get("segment") or ""),
-                    str(body.get("date") or ""),
-                    bool(body.get("confirm")),
-                ))
-
-            if path.startswith("/api/pull/"):
-                sym = path.rsplit("/", 1)[-1].upper()
-                if not sym.isascii() or not sym or len(sym) > 12:
-                    return self._send_error_json(400, "bad symbol")
-                with _PULL_LOCK:
-                    rec = research_pull.pull_ticker(sym)
-                return self._send_json(rec)
-
-            if path.startswith("/api/pull-segment/"):
-                name = path.rsplit("/", 1)[-1].lower()
-                if not (SEGMENT_DEF_DIR / f"{name}.json").exists():
-                    return self._send_error_json(404, f"unknown segment {name}")
-                with _PULL_LOCK:
-                    rec = research_pull.pull_segment(name)
-                return self._send_json(rec)
-
-            if path.startswith("/api/thesis/"):
-                sym = path.rsplit("/", 1)[-1].upper()
-                rec = _load(RESEARCH_DIR / f"{sym}.json")
-                if not rec:
-                    return self._send_error_json(404, f"pull {sym} before saving a thesis")
-                body = self._read_body()
-                import datetime as dt
-                rec["thesis"] = {
-                    "summary": body.get("summary", ""),
-                    "action": body.get("action", ""),
-                    "drivers": body.get("drivers", []),
-                    "downside_triggers": body.get("downside_triggers", []),
-                    "source_confidence": body.get("source_confidence", ""),
-                    "review_after": body.get("review_after", ""),
-                    "source_artifact": body.get("source_artifact", ""),
-                    "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-                }
-                (RESEARCH_DIR / f"{sym}.json").write_text(
-                    json.dumps(rec, indent=2) + "\n", encoding="utf-8"
-                )
-                return self._send_json(rec)
+            return self._handle_post_api(path)
         except research_pull.ProviderError as exc:  # type: ignore[attr-defined]
             return self._send_error_json(502, f"data source error: {exc}")
         except Exception as exc:  # noqa: BLE001
             return self._send_error_json(500, f"{type(exc).__name__}: {exc}")
+
+    def _handle_post_api(self, path: str):
+        if path == "/api/segment-draft":
+            body = self._read_body()
+            return self._send_json(_draft_segment(str(body.get("query") or "")))
+
+        if path.startswith("/api/segment-def/"):
+            name = _slugify(path.rsplit("/", 1)[-1])
+            body = self._read_body()
+            definition = _validate_segment_definition(body.get("definition") or body)
+            _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
+            return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
+
+        if path == "/api/deep-research/save":
+            body = self._read_body()
+            return self._send_json(_save_deep_artifact(body))
+
+        if path == "/api/deep-research/run":
+            body = self._read_body()
+            try:
+                return self._send_json(_start_deep_research(body))
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
+        if path == "/api/deep-research/login":
+            try:
+                return self._send_json(_start_login())
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
+        if path == "/api/deep-research/verify-login":
+            try:
+                return self._send_json(_verify_login())
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
+        if path == "/api/deep-research/review":
+            body = self._read_body()
+            segment = str(body.get("segment") or "")
+            date = str(body.get("date") or "")
+            if not segment or not date:
+                return self._send_error_json(400, "segment and date are required")
+            return self._send_json(review_deep_research.review(segment, date))
+
+        if path == "/api/target-proposal/apply":
+            body = self._read_body()
+            return self._send_json(_apply_target_proposal(
+                str(body.get("segment") or ""),
+                str(body.get("date") or ""),
+                bool(body.get("confirm")),
+            ))
+
+        if path.startswith("/api/pull/"):
+            sym = path.rsplit("/", 1)[-1].upper()
+            if not sym.isascii() or not sym or len(sym) > 12:
+                return self._send_error_json(400, "bad symbol")
+            with _PULL_LOCK:
+                rec = research_pull.pull_ticker(sym)
+            return self._send_json(rec)
+
+        if path.startswith("/api/pull-segment/"):
+            name = path.rsplit("/", 1)[-1].lower()
+            if not (SEGMENT_DEF_DIR / f"{name}.json").exists():
+                return self._send_error_json(404, f"unknown segment {name}")
+            with _PULL_LOCK:
+                rec = research_pull.pull_segment(name)
+            return self._send_json(rec)
+
+        if path.startswith("/api/thesis/"):
+            sym = path.rsplit("/", 1)[-1].upper()
+            rec = _load(RESEARCH_DIR / f"{sym}.json")
+            if not rec:
+                return self._send_error_json(404, f"pull {sym} before saving a thesis")
+            body = self._read_body()
+            import datetime as dt
+            rec["thesis"] = {
+                "summary": body.get("summary", ""),
+                "action": body.get("action", ""),
+                "drivers": body.get("drivers", []),
+                "downside_triggers": body.get("downside_triggers", []),
+                "source_confidence": body.get("source_confidence", ""),
+                "review_after": body.get("review_after", ""),
+                "source_artifact": body.get("source_artifact", ""),
+                "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            }
+            (RESEARCH_DIR / f"{sym}.json").write_text(
+                json.dumps(rec, indent=2) + "\n", encoding="utf-8"
+            )
+            return self._send_json(rec)
 
         return self._send_error_json(404, "unknown endpoint")
 
