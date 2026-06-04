@@ -167,6 +167,13 @@
               <button class="primary" id="pipe-save-report">Save report + sources</button>
               <span class="status" id="pipe-artifact-status"></span>
             </div>
+            <div class="subhead">Import a finished run by URL</div>
+            <div class="hint">If a run completed in Perplexity but didn't make it back (it paused, timed out, or you ran it by hand), paste its URL to pull the report + citations in. Reads only — no quota spent.</div>
+            <div class="thesis-actions">
+              <input id="pipe-import-url" placeholder="https://www.perplexity.ai/search/...">
+              <button class="ghost" id="pipe-import">Import from URL</button>
+              <span class="status" id="pipe-import-status"></span>
+            </div>
             <div class="subhead">Previous runs</div>
             <div class="hint">Click a saved run to load its report, citations, and review back into this wizard.</div>
             <button class="ghost" id="pipe-refresh-runs">Refresh runs</button>
