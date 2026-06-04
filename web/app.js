@@ -194,7 +194,7 @@ function renderDeepDive(rec) {
   const portfolio = rec.portfolio || {};
   const target = portfolio.target || {};
   const owned = portfolio.current_weight_pct ?? state.holdings[rec.symbol];
-  const decision = mDecision(rec);
+  const decision = rec.decision || "research";
 
   const card = el("div", "card");
   // header
@@ -296,18 +296,6 @@ function renderDeepDive(rec) {
 
   // thesis editor
   out.appendChild(renderThesis(rec));
-}
-
-function mDecision(rec) {
-  const p = rec.portfolio || {};
-  const t = p.target || {};
-  if (t.rule === "avoid") return "avoid";
-  if (t.rule === "reduce" || (["trim_only", "do_not_add"].includes(t.rule) && p.status === "above_band")) return "trim";
-  if (t.rule === "accumulate" && p.status === "below_band") return "add_candidate";
-  if (t.rule === "wait") return "watch";
-  if (["hold", "trim_only", "do_not_add"].includes(t.rule)) return "hold";
-  if (t.rule === "accumulate") return "accumulate";
-  return "research";
 }
 
 function renderHistory(rec) {
