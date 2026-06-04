@@ -420,7 +420,7 @@ function renderHistory(rec) {
     card.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
     return card;
   }
-  const table = el("table");
+  const table = el("table", "history-table");
   table.innerHTML =
     `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th></tr></thead>`;
   const tbody = el("tbody");
@@ -603,7 +603,7 @@ function renderSegment(rec) {
   out.innerHTML = "";
   const card = el("div", "card");
   card.appendChild(el("h2", "section", esc(rec.title) + " — peer comparison"));
-  const table = el("table");
+  const table = el("table", "segment-table");
   const thead = el("thead");
   const htr = el("tr");
   SEG_COLS.forEach(([key, label, num]) => {
