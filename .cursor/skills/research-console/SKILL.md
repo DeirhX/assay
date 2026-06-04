@@ -28,6 +28,8 @@ py -3 tools/research_pull.py --segment semiconductors
 - `tools/providers/sec_edgar.py` -- independent cross-check for US filers (XBRL
   companyfacts). Foreign ADRs are thin/absent; that gets flagged, not faked.
 - `tools/providers/fmp.py` -- optional, only if `FMP_API_KEY` is set.
+- `tools/portfolio.py` -- shared portfolio/target-model helper layer for
+  computed weights, target context, holdings payloads, and decision labels.
 - `tools/research_pull.py` -- merges sources, runs cross-checks, writes
   `data/research/<SYM>.json`, ignored ticker history snapshots under
   `data/cache/research-history/<SYM>/`, and `data/research/segments/<name>.json`.
