@@ -77,6 +77,11 @@ The website is the normal control plane:
 7. Inspect target-model proposals and explicitly approve only if you want the
    target model changed.
 
+The console encodes its current location in query parameters so browser
+Back/Forward and shared links work for the main views, e.g.
+`/?ticker=AMD`, `/?view=segment&segment=semiconductors`, and
+`/?view=pipeline&run=fintech-payments-2026-06-03`.
+
 CLI fallback:
 
 ```powershell

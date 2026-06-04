@@ -64,16 +64,105 @@ async function api(path, method = "GET", body = null) {
   return data;
 }
 
+// ---- location state --------------------------------------------------------
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "holdings"]);
+
+const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
+const cleanSlug = (raw) => (raw || "").trim();
+
+function navFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const view = VIEWS.has(params.get("view")) ? params.get("view") : "deepdive";
+  return {
+    view,
+    ticker: cleanSymbol(params.get("ticker")),
+    segment: cleanSlug(params.get("segment")),
+    run: cleanSlug(params.get("run")),
+  };
+}
+
+function urlForNav(nav) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  if (nav.view && nav.view !== "deepdive") url.searchParams.set("view", nav.view);
+  if (nav.ticker) url.searchParams.set("ticker", cleanSymbol(nav.ticker));
+  if (nav.segment) url.searchParams.set("segment", cleanSlug(nav.segment));
+  if (nav.run) url.searchParams.set("run", cleanSlug(nav.run));
+  return url;
+}
+
+function pushNav(partial, { replace = false } = {}) {
+  const next = {
+    ...navFromUrl(),
+    ticker: "",
+    segment: "",
+    run: "",
+    ...partial,
+  };
+  const method = replace ? "replaceState" : "pushState";
+  window.history[method](next, "", urlForNav(next));
+  return next;
+}
+
+function navForView(view) {
+  const nav = { view };
+  if (view === "deepdive") nav.ticker = cleanSymbol($("#ticker-input").value);
+  if (view === "segment") nav.segment = cleanSlug($("#segment-select").value);
+  if (view === "pipeline") {
+    nav.segment = cleanSlug($("#pipe-segment-select").value || $("#pipe-slug").value);
+    if (state.currentDeepRun) nav.run = state.currentDeepRun;
+  }
+  return nav;
+}
+
+function setActiveView(view) {
+  const active = VIEWS.has(view) ? view : "deepdive";
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  $("#view-" + active).classList.add("active");
+  if (active === "holdings") loadHoldings();
+  if (active === "pipeline") loadPipeline();
+  return active;
+}
+
+function setSegmentControls(segment) {
+  if (!segment) return;
+  const seg = $("#segment-select");
+  const pipe = $("#pipe-segment-select");
+  if (seg && Array.from(seg.options).some((o) => o.value === segment)) seg.value = segment;
+  if (pipe && Array.from(pipe.options).some((o) => o.value === segment)) pipe.value = segment;
+  const slug = $("#pipe-slug");
+  if (slug && !slug.value) slug.value = segment;
+}
+
+async function restoreNav(nav) {
+  const active = setActiveView(nav.view);
+  if (nav.ticker) $("#ticker-input").value = nav.ticker;
+  if (nav.segment || nav.run || active === "segment" || active === "pipeline") {
+    await loadSegmentList();
+    setSegmentControls(nav.segment);
+  }
+  if (active === "deepdive" && nav.ticker) {
+    await loadTickerFromCache(nav.ticker);
+  } else if (active === "segment" && nav.segment) {
+    await loadCachedSegment(nav.segment);
+  } else if (active === "pipeline" && nav.run) {
+    await loadDeepRun(nav.run, { push: false });
+  }
+  if (active === "deepdive") $("#ticker-input").focus();
+}
+
 // ---- tabs -----------------------------------------------------------------
 document.querySelectorAll(".tab").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    btn.classList.add("active");
-    $("#view-" + btn.dataset.view).classList.add("active");
-    if (btn.dataset.view === "holdings") loadHoldings();
-    if (btn.dataset.view === "pipeline") loadPipeline();
+    pushNav(navForView(btn.dataset.view));
+    restoreNav(navFromUrl());
   });
+});
+
+window.addEventListener("popstate", (event) => {
+  restoreNav(event.state || navFromUrl());
 });
 
 $("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
@@ -144,18 +233,43 @@ async function loadHoldings() {
 }
 
 function analyzeFromAnywhere(sym) {
-  document.querySelector('.tab[data-view="deepdive"]').click();
-  $("#ticker-input").value = sym;
-  pullTicker(sym);
+  const ticker = cleanSymbol(sym);
+  if (!ticker) return;
+  pushNav({ view: "deepdive", ticker });
+  setActiveView("deepdive");
+  $("#ticker-input").value = ticker;
+  pullTicker(ticker, { push: false });
 }
 
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
 $("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker($("#ticker-input").value); });
 
-async function pullTicker(raw) {
-  const sym = (raw || "").trim().toUpperCase();
+async function loadTickerFromCache(raw) {
+  const sym = cleanSymbol(raw);
   if (!sym) return;
+  const status = $("#dd-status");
+  status.classList.remove("err");
+  status.textContent = `Loading cached ${sym}...`;
+  try {
+    const rec = await api("/api/research/" + encodeURIComponent(sym));
+    const hist = await api("/api/history/" + encodeURIComponent(sym)).catch(() => ({ history: [] }));
+    rec.history = hist.history || [];
+    status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
+    renderDeepDive(rec);
+  } catch (e) {
+    status.textContent = `No cached research for ${sym}; press Analyze to pull live data.`;
+    status.classList.add("err");
+    $("#dd-result").innerHTML = "";
+  }
+}
+
+async function pullTicker(raw, { push = true } = {}) {
+  const sym = cleanSymbol(raw);
+  if (!sym) return;
+  if (push) pushNav({ view: "deepdive", ticker: sym });
+  setActiveView("deepdive");
+  $("#ticker-input").value = sym;
   const status = $("#dd-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling ${esc(sym)} from live sources...`;
@@ -402,15 +516,33 @@ async function loadSegmentList() {
         pipeSel.appendChild(p);
       }
     });
+    return segments;
   } catch (e) {
     sel.innerHTML = `<option>${esc(e.message)}</option>`;
     if (pipeSel) pipeSel.innerHTML = `<option>${esc(e.message)}</option>`;
+    return [];
   }
 }
 
-$("#segment-run").addEventListener("click", async () => {
-  const name = $("#segment-select").value;
+$("#segment-select").addEventListener("change", () => {
+  if ($("#view-segment").classList.contains("active")) {
+    pushNav({ view: "segment", segment: $("#segment-select").value }, { replace: true });
+  }
+});
+
+$("#pipe-segment-select").addEventListener("change", () => {
+  if ($("#view-pipeline").classList.contains("active")) {
+    pushNav({ view: "pipeline", segment: $("#pipe-segment-select").value }, { replace: true });
+  }
+});
+
+async function runSegmentPull(name, { push = true } = {}) {
   const status = $("#seg-status");
+  name = cleanSlug(name);
+  if (!name) return;
+  if (push) pushNav({ view: "segment", segment: name });
+  setActiveView("segment");
+  $("#segment-select").value = name;
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling every peer in "${esc(name)}" live — this takes a bit...`;
   $("#segment-run").disabled = true;
@@ -424,11 +556,15 @@ $("#segment-run").addEventListener("click", async () => {
   } finally {
     $("#segment-run").disabled = false;
   }
-});
+}
 
-$("#segment-load").addEventListener("click", async () => {
-  const name = $("#segment-select").value;
+async function loadCachedSegment(name, { push = false } = {}) {
   const status = $("#seg-status");
+  name = cleanSlug(name);
+  if (!name) return;
+  if (push) pushNav({ view: "segment", segment: name });
+  setActiveView("segment");
+  $("#segment-select").value = name;
   status.classList.remove("err");
   status.textContent = "Loading cached segment...";
   try {
@@ -439,7 +575,10 @@ $("#segment-load").addEventListener("click", async () => {
     status.textContent = e.message + " — run a live pull first.";
     status.classList.add("err");
   }
-});
+}
+
+$("#segment-run").addEventListener("click", () => runSegmentPull($("#segment-select").value));
+$("#segment-load").addEventListener("click", () => loadCachedSegment($("#segment-select").value, { push: true }));
 
 const SEG_COLS = [
   ["symbol", "Symbol", false],
@@ -520,9 +659,9 @@ function renderSegment(rec) {
 }
 
 // ---- pipeline -------------------------------------------------------------
-function loadPipeline() {
-  loadSegmentList();
-  refreshDeepRuns();
+async function loadPipeline() {
+  await loadSegmentList();
+  await refreshDeepRuns();
   if (!$("#pipe-date").value) $("#pipe-date").value = new Date().toISOString().slice(0, 10);
 }
 
@@ -564,6 +703,7 @@ $("#pipe-save-segment").addEventListener("click", async () => {
     status.textContent = `saved ${rec.name}`;
     await loadSegmentList();
     $("#pipe-segment-select").value = rec.name;
+    pushNav({ view: "pipeline", segment: rec.name }, { replace: true });
   } catch (e) {
     status.textContent = "save failed: " + e.message;
     status.classList.add("err");
@@ -578,6 +718,7 @@ $("#pipe-build-prompt").addEventListener("click", async () => {
     const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(pipeSegment()));
     $("#pipe-date").value = rec.date;
     $("#pipe-prompt").value = rec.prompt;
+    pushNav({ view: "pipeline", segment: rec.segment || pipeSegment() }, { replace: true });
     status.textContent = "prompt ready";
   } catch (e) {
     status.textContent = "prompt failed: " + e.message;
@@ -593,6 +734,8 @@ $("#pipe-run-deterministic").addEventListener("click", async () => {
   try {
     const rec = await api("/api/pull-segment/" + encodeURIComponent(name), "POST");
     status.textContent = `pulled ${rec.members.length} names`;
+    pushNav({ view: "segment", segment: name });
+    setActiveView("segment");
     renderSegment(rec);
   } catch (e) {
     status.textContent = "pull failed: " + e.message;
@@ -614,6 +757,7 @@ $("#pipe-save-report").addEventListener("click", async () => {
     });
     status.textContent = `saved ${rec.stem}`;
     state.currentDeepRun = rec.stem;
+    pushNav({ view: "pipeline", segment: pipeSegment(), run: rec.stem });
     await refreshDeepRuns();
   } catch (e) {
     status.textContent = "save failed: " + e.message;
@@ -630,6 +774,7 @@ $("#pipe-run-review").addEventListener("click", async () => {
     const date = $("#pipe-date").value.trim();
     const rec = await api("/api/deep-research/review", "POST", { segment, date });
     state.currentDeepRun = `${segment}-${date}`;
+    pushNav({ view: "pipeline", segment, run: state.currentDeepRun });
     status.textContent = `review generated: ${rec.warnings.length} warning(s), ${rec.proposal.changes.length} proposal change(s)`;
     renderReviewGate(rec);
     await refreshDeepRuns();
@@ -661,13 +806,16 @@ async function refreshDeepRuns() {
   }
 }
 
-async function loadDeepRun(stem) {
+async function loadDeepRun(stem, { push = true } = {}) {
   const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   state.currentDeepRun = stem;
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
     $("#pipe-segment-select").value = m[1];
     $("#pipe-date").value = m[2];
+    if (push) pushNav({ view: "pipeline", segment: m[1], run: stem });
+  } else if (push) {
+    pushNav({ view: "pipeline", run: stem });
   }
   if (rec.report) $("#pipe-report").value = rec.report;
   if (rec.sources) $("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
@@ -743,6 +891,6 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
 
 // ---- boot -----------------------------------------------------------------
 applyPrivacyMode(state.privacyMode);
-loadHoldings();
-loadSegmentList();
-$("#ticker-input").focus();
+const initialNav = navFromUrl();
+window.history.replaceState(initialNav, "", window.location.href);
+restoreNav(initialNav);
