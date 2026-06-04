@@ -15,7 +15,7 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 
 ### Pieces
 
-- `providers/yahoo.py` -- price/momentum (chart endpoint) + fundamentals
+- `providers/yahoo.py` -- price/momentum/history (chart endpoint) + fundamentals
   (quoteSummary, via the cookie+crumb handshake). Same source as `yfinance`,
   hit directly.
 - `providers/sec_edgar.py` -- the free, authoritative cross-check for **US
@@ -47,8 +47,9 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 
 ### Data outputs
 
-- `data/research/<SYMBOL>.json` -- per-ticker numbers + cross-checks + thesis.
-  Carries human judgement, so it can be committed.
+- `data/research/<SYMBOL>.json` -- per-ticker numbers + cross-checks + compact
+  1Y Yahoo daily-close price history + thesis. Carries human judgement, so it
+  can be committed.
 - `data/cache/research-history/<SYMBOL>/*.json` -- ignored numeric snapshots from
   repeated pulls. Used by the dossier's "Recent pulls" table.
 - `data/research/deep/<segment>-<date>.md` -- committed Perplexity Deep Research

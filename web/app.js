@@ -336,6 +336,9 @@ function renderDeepDive(rec) {
   card.appendChild(badges);
   out.appendChild(card);
 
+  const chart = renderPriceChart(rec);
+  if (chart) out.appendChild(chart);
+
   // decision context
   const dcard = el("div", "card");
   dcard.appendChild(el("h2", "section", "Decision context"));
@@ -410,6 +413,58 @@ function renderDeepDive(rec) {
 
   // thesis editor
   out.appendChild(renderThesis(rec));
+}
+
+function renderPriceChart(rec) {
+  const history = rec.price_history || {};
+  const points = (history.points || [])
+    .map((p) => ({ date: p.date, close: Number(p.close) }))
+    .filter((p) => p.date && Number.isFinite(p.close));
+  if (points.length < 2) return null;
+
+  const width = 760, height = 260;
+  const pad = { top: 18, right: 18, bottom: 34, left: 58 };
+  const innerW = width - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  let min = Math.min(...points.map((p) => p.close));
+  let max = Math.max(...points.map((p) => p.close));
+  if (min === max) {
+    min *= 0.98;
+    max *= 1.02;
+  }
+  const buffer = (max - min) * 0.06;
+  min -= buffer;
+  max += buffer;
+
+  const x = (i) => pad.left + (points.length === 1 ? 0 : (i / (points.length - 1)) * innerW);
+  const y = (v) => pad.top + ((max - v) / (max - min)) * innerH;
+  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(p.close).toFixed(1)}`).join(" ");
+  const area = `${pad.left},${height - pad.bottom} ${line} ${width - pad.right},${height - pad.bottom}`;
+  const first = points[0], last = points[points.length - 1];
+  const change = first.close ? (last.close / first.close - 1) * 100 : null;
+  const trend = pctClass(change);
+  const dateLabel = (value) => new Date(value + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const rangeLabel = [history.range, history.interval].filter(Boolean).join(" / ") || "daily closes";
+  const sourceLabel = [history.source || "unknown", rangeLabel, `${points.length} points`].join(" · ");
+
+  const card = el("div", "card price-chart-card");
+  card.innerHTML =
+    `<div class="chart-head">` +
+      `<div><h2 class="section">Price history</h2><div class="chart-source">${esc(sourceLabel)}</div></div>` +
+      `<div class="chart-last"><span>${esc(fmtPrice(last.close))}</span><strong class="${trend}">${esc(fmtPct(change))}</strong></div>` +
+    `</div>` +
+    `<svg class="price-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(rec.symbol)} one year price history">` +
+      `<line class="chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>` +
+      `<line class="chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>` +
+      `<text class="chart-label" x="${pad.left - 10}" y="${y(max - buffer).toFixed(1)}" text-anchor="end">${esc(fmtPrice(max - buffer))}</text>` +
+      `<text class="chart-label" x="${pad.left - 10}" y="${y(min + buffer).toFixed(1)}" text-anchor="end">${esc(fmtPrice(min + buffer))}</text>` +
+      `<text class="chart-label" x="${pad.left}" y="${height - 9}">${esc(dateLabel(first.date))}</text>` +
+      `<text class="chart-label" x="${width - pad.right}" y="${height - 9}" text-anchor="end">${esc(dateLabel(last.date))}</text>` +
+      `<polygon class="chart-area ${trend}" points="${area}"></polygon>` +
+      `<polyline class="chart-line ${trend}" points="${line}"></polyline>` +
+      `<circle class="chart-dot" cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.close).toFixed(1)}" r="3.5"></circle>` +
+    `</svg>`;
+  return card;
 }
 
 function renderHistory(rec) {

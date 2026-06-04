@@ -24,7 +24,7 @@ py -3 tools/research_pull.py --segment semiconductors
 
 ## Architecture (stdlib only -- no pip installs)
 
-- `tools/providers/yahoo.py` -- price/momentum + fundamentals (cookie+crumb).
+- `tools/providers/yahoo.py` -- price/momentum/history + fundamentals (cookie+crumb).
 - `tools/providers/sec_edgar.py` -- independent cross-check for US filers (XBRL
   companyfacts). Foreign ADRs are thin/absent; that gets flagged, not faked.
 - `tools/providers/fmp.py` -- optional, only if `FMP_API_KEY` is set.
@@ -33,7 +33,8 @@ py -3 tools/research_pull.py --segment semiconductors
 - `tools/research_pull.py` -- merges sources, runs cross-checks, writes
   `data/research/<SYM>.json`, ignored ticker history snapshots under
   `data/cache/research-history/<SYM>/`, and `data/research/segments/<name>.json`.
-  It also attaches portfolio/target-model context and segment research scores.
+  It also attaches portfolio/target-model context, segment research scores, and
+  compact Yahoo daily-close price history for the Deep Dive chart.
 - `tools/review_deep_research.py` -- reviews saved Perplexity Deep Research
   artifacts against sources, deterministic ticker data, holdings, and target rules.
 - `tools/serve.py` -- stdlib `http.server`; serves `web/` + the JSON API.
