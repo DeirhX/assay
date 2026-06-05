@@ -85,12 +85,13 @@ Hard-won facts baked into the worker (do not relearn these the hard way):
   a synthetic `element.click()`. Then click the `menuitemradio` named exactly
   `Deep research`. Beware: `has-text("Search")` also matches "Run deep**research**"
   (the Computer credit trap) — use exact role names.
-- **Dedicated profile.** The worker uses `PPLX_PROFILE_DIR`
-  (default `~/.cursor/pplx-automation-profile`), NOT the MCP's
-  `pplx-chrome-profile`. Sharing fails two ways: Chrome can't open one profile
-  twice (lock), and a profile written by a newer Chrome triggers a failing
-  "downgrade" when opened by the worker's Chromium. Log in once via the website's
-  **Set up login** button (or `--login`).
+- **Shared Perplexity profile.** The worker uses `PPLX_PROFILE_DIR`
+  (default `~/.cursor/pplx-chrome-profile`), matching the MCP
+  `user-playwright-pplx` browser profile. This keeps Perplexity on the same
+  browser identity that was manually logged in and successfully challenged.
+  Close the MCP browser before running automation, because Chromium profiles are
+  still single-writer locked. Use `PPLX_PROFILE_DIR` only when you intentionally
+  want an isolated profile.
 - One browser job at a time (profile lock + scarce quota). Validate plumbing with
   `--dry-run` (selects mode, never submits, spends no quota).
 

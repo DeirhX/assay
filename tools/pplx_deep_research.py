@@ -10,10 +10,12 @@ Honest caveats (read before trusting this):
   headless is detectable and flaky, so the default window mode is **headed but
   off-screen** (``--window-position`` far off the desktop). It is invisible to
   you but presents as a normal browser. ``headless`` is opt-in for experiments.
-* The browser profile cannot be opened twice. This worker uses its OWN profile
-  dir (``PPLX_PROFILE_DIR`` env, default ``~/.cursor/pplx-automation-profile``)
-  so it never fights the agent's ``user-playwright-pplx`` MCP browser. Log in
-  once via :func:`ensure_login` (the website's "Set up login" button).
+* The browser profile cannot be opened twice. By default this worker uses the
+  same profile as the ``user-playwright-pplx`` MCP browser
+  (``~/.cursor/pplx-chrome-profile``) so Perplexity sees the same logged-in
+  browser identity that worked manually. Close the MCP browser before running
+  automation, or override ``PPLX_PROFILE_DIR`` if you intentionally want an
+  isolated profile.
 * Deep Research is narrative synthesis. Treat its numbers as *claims to verify*,
   not ground truth. The review gate does that downstream.
 * This is browser automation of a web app -- gray area vs ToS, and the 20/day
@@ -108,14 +110,8 @@ _OPEN_LINKS_JS = """() => {
   return true;
 }"""
 
-_REAL_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
-)
-
-
 def default_profile_dir() -> Path:
-    return Path(os.environ.get("PPLX_PROFILE_DIR") or (Path.home() / ".cursor" / "pplx-automation-profile"))
+    return Path(os.environ.get("PPLX_PROFILE_DIR") or (Path.home() / ".cursor" / "pplx-chrome-profile"))
 
 
 def _noop(_msg: str) -> None:
@@ -140,7 +136,6 @@ def _launch(pw, *, window_mode: str, profile_dir: Path):
         headless=headless,
         args=args,
         ignore_default_args=["--enable-automation"],
-        user_agent=_REAL_UA,
         viewport={"width": 1320, "height": 900},
     )
 
@@ -170,6 +165,24 @@ _LOGIN_PROBE_JS = """() => {
     .map(e => (e.innerText||'').trim().toLowerCase());
   const signin = ctas.some(t => ['log in','sign in','sign up','login','log in or sign up'].includes(t));
   return { composer, signin };
+}"""
+
+# Human-verification (CAPTCHA / Cloudflare Turnstile / hCaptcha / reCAPTCHA)
+# detector. Keys off challenge iframes and known widget containers (reliable),
+# plus interstitial text (secondary). Deep Research report bodies don't contain
+# these phrases, so false positives are unlikely.
+_CAPTCHA_JS = """() => {
+  const sel = s => !!document.querySelector(s);
+  const frame = sel('iframe[src*="challenges.cloudflare.com"]')
+    || sel('iframe[src*="hcaptcha.com"]')
+    || sel('iframe[src*="recaptcha"]')
+    || sel('iframe[title*="captcha" i]')
+    || sel('iframe[title*="verify you are human" i]');
+  const widget = sel('.cf-turnstile') || sel('#challenge-form')
+    || sel('#cf-chl-widget') || sel('#turnstile-wrapper') || sel('#challenge-stage');
+  const body = (document.body && document.body.innerText || '').toLowerCase();
+  const text = /verify you are human|checking your browser|needs to review the security of your connection|complete the security check|confirm you are human|press (and|&) hold to confirm|unusual traffic from your/.test(body);
+  return !!(frame || widget || text);
 }"""
 
 
@@ -222,6 +235,59 @@ def _logged_in(page) -> bool:
     return bool(probe.get("composer"))
 
 
+def _set_window_visible(page, *, on_screen: bool) -> None:
+    """Reposition the headed automation window on/off screen at runtime via CDP,
+    so a human can solve a challenge in an otherwise off-screen browser. Best
+    effort: silently ignored under truly headless mode (there is no window)."""
+    left, top = (60, 60) if on_screen else (-2400, -2400)
+    try:
+        cdp = page.context.new_cdp_session(page)
+        win = cdp.send("Browser.getWindowForTarget")
+        cdp.send("Browser.setWindowBounds", {
+            "windowId": win["windowId"],
+            "bounds": {"left": left, "top": top, "width": 1340, "height": 1000,
+                       "windowState": "normal"},
+        })
+    except Exception:
+        pass
+    if on_screen:
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
+
+def _handle_captcha(page, *, window_mode: str, progress: Callable[[str], None],
+                    timeout_s: int = 300) -> bool:
+    """If a human-verification challenge is showing, surface the browser window
+    and wait for the human to clear it. Returns True if it was cleared (or none
+    was present), False if it timed out unsolved. Headless can't be surfaced, so
+    a human cannot help there -- that is the price of running truly windowless."""
+    try:
+        if not page.evaluate(_CAPTCHA_JS):
+            return True
+    except Exception:
+        return True  # if we can't even probe, don't wedge the run
+    progress("A human-verification check (CAPTCHA) appeared. The research browser "
+             "window has been brought to the front -- please solve it to continue.")
+    if window_mode != "headless":
+        _set_window_visible(page, on_screen=True)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            present = page.evaluate(_CAPTCHA_JS)
+        except Exception:
+            present = False
+        if not present:
+            progress("CAPTCHA solved. Resuming research off-screen...")
+            if window_mode == "offscreen":
+                _set_window_visible(page, on_screen=False)
+            return True
+    progress("CAPTCHA was not solved in time.")
+    return False
+
+
 def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
                  progress: Callable[[str], None] = _noop) -> dict:
     """Open a VISIBLE window and wait for the user to complete Perplexity login.
@@ -239,6 +305,8 @@ def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
             page = _page(ctx)
             page.goto(PPLX_HOME, wait_until="domcontentloaded", timeout=60000)
             _dismiss_cookies(page)
+            if not _handle_captcha(page, window_mode="visible", progress=progress):
+                return {"status": "timeout"}
             if _logged_in(page):
                 progress("Already logged in.")
                 return {"status": "logged_in"}
@@ -271,6 +339,8 @@ def check_login(profile_dir: Optional[Path] = None,
             page = _page(ctx)
             page.goto(PPLX_HOME, wait_until="domcontentloaded", timeout=60000)
             _dismiss_cookies(page)
+            if not _handle_captcha(page, window_mode="offscreen", progress=progress):
+                return {"status": "needs_captcha"}
             return {"status": "logged_in" if _logged_in(page) else "needs_login"}
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
@@ -313,11 +383,15 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
             progress("Opening the run URL...")
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             _dismiss_cookies(page)
+            if not _handle_captcha(page, window_mode=window_mode, progress=progress):
+                return {"status": "needs_captcha"}
             if not _logged_in(page):
                 return {"status": "needs_login"}
             deadline = time.time() + timeout_s
             stable = 0
             while time.time() < deadline:
+                if not _handle_captcha(page, window_mode=window_mode, progress=progress):
+                    return {"status": "needs_captcha"}
                 st = page.evaluate(_POLL_JS)
                 progress(f"running={st['running']} awaiting={st['awaiting']} "
                          f"done={st['done']} chars={st['len']}")
@@ -374,6 +448,7 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
       {"status": "done", "source_url", "report", "citations"}
       {"status": "dry_run_ok", "mode_verified": True}
       {"status": "needs_login"}
+      {"status": "needs_captcha"}   # human verification not solved in time
       {"status": "computer_trap", "url"}   # paid path -- aborted
       {"status": "needs_clarification", "source_url", "report"}  # gave up answering
       {"status": "mode_failed", "detail"}
@@ -394,6 +469,8 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
             progress("Opening Perplexity...")
             page.goto(PPLX_HOME, wait_until="domcontentloaded", timeout=60000)
             _dismiss_cookies(page)
+            if not _handle_captcha(page, window_mode=window_mode, progress=progress):
+                return {"status": "needs_captcha"}
             if not _logged_in(page):
                 return {"status": "needs_login"}
 
@@ -434,6 +511,8 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
             idle = 0
             nudges = 0
             while time.time() < deadline:
+                if not _handle_captcha(page, window_mode=window_mode, progress=progress):
+                    return {"status": "needs_captcha"}
                 st = page.evaluate(_POLL_JS)
                 progress(
                     f"running={st['running']} awaiting={st['awaiting']} "
