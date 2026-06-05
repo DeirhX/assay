@@ -1,4 +1,4 @@
-# Rebalancing Repo Orientation
+# Assay — Repo Orientation
 
 This repo is a portfolio research and rebalancing workspace. It is not an order
 generator and it does not trade. It keeps the standing plan, current sanitized
@@ -55,7 +55,7 @@ Expected validator behavior:
 Run the local console when you need fresh numeric data for a ticker or segment:
 
 ```powershell
-$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 "tools\serve.py"
 ```
 
