@@ -160,8 +160,12 @@
             </div>
 
             <div id="pipe-prompt-area">
-              <label>Research date</label>
-              <input id="pipe-date" placeholder="YYYY-MM-DD">
+              <label>Run date <span class="label-note">(report version, not data as-of)</span></label>
+              <div class="inline-form">
+                <input id="pipe-date" placeholder="YYYY-MM-DD" readonly>
+                <button class="linklike" id="pipe-date-edit" type="button">Change date</button>
+              </div>
+              <div class="hint" id="pipe-date-hint">Defaults to today and versions this run's saved files (<code>segment-date</code>). It's the day you ran the research — not the market data's as-of date.</div>
               <label>Prompt</label>
               <textarea id="pipe-prompt" rows="12" spellcheck="false"></textarea>
               <div class="hint" id="pipe-prompt-hint">Build a prompt from the segment to get started. Running Deep Research auto-saves the report and jumps to the next step.</div>
