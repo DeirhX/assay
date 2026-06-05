@@ -10,12 +10,14 @@ Honest caveats (read before trusting this):
   headless is detectable and flaky, so the default window mode is **headed but
   off-screen** (``--window-position`` far off the desktop). It is invisible to
   you but presents as a normal browser. ``headless`` is opt-in for experiments.
-* The browser profile cannot be opened twice. By default this worker uses the
-  same profile as the ``user-playwright-pplx`` MCP browser
-  (``~/.cursor/pplx-chrome-profile``) so Perplexity sees the same logged-in
-  browser identity that worked manually. Close the MCP browser before running
-  automation, or override ``PPLX_PROFILE_DIR`` if you intentionally want an
-  isolated profile.
+* The browser profile cannot be opened twice. This worker uses a **dedicated**
+  automation profile (``~/.cursor/pplx-automation-profile``) so it never fights
+  the ``user-playwright-pplx`` MCP browser for the same profile lock, and so the
+  profile's Chrome version never skews against the launcher. We launch the system
+  Chrome (``channel="chrome"``) by default for the same reason: it is the build
+  that owns this profile, so there is no "downgrade" crash, and a real Chrome is
+  stealthier against Cloudflare. Override ``PPLX_PROFILE_DIR`` to use a different
+  profile, or ``PPLX_CHROME_CHANNEL=""`` to force the bundled Chromium.
 * Deep Research is narrative synthesis. Treat its numbers as *claims to verify*,
   not ground truth. The review gate does that downstream.
 * This is browser automation of a web app -- gray area vs ToS, and the 20/day
@@ -111,7 +113,7 @@ _OPEN_LINKS_JS = """() => {
 }"""
 
 def default_profile_dir() -> Path:
-    return Path(os.environ.get("PPLX_PROFILE_DIR") or (Path.home() / ".cursor" / "pplx-chrome-profile"))
+    return Path(os.environ.get("PPLX_PROFILE_DIR") or (Path.home() / ".cursor" / "pplx-automation-profile"))
 
 
 def _noop(_msg: str) -> None:
@@ -131,13 +133,26 @@ def _launch(pw, *, window_mode: str, profile_dir: Path):
         args += ["--window-position=-2400,-2400", "--window-size=1340,1000"]
     elif window_mode == "visible":
         args += ["--window-position=60,60", "--window-size=1340,1000"]
-    return pw.chromium.launch_persistent_context(
-        str(profile_dir),
+    kwargs = dict(
         headless=headless,
         args=args,
         ignore_default_args=["--enable-automation"],
         viewport={"width": 1320, "height": 900},
     )
+    # The profile dir is a real Chrome user-data-dir. Chrome will NOT open a
+    # profile written by a newer build -- it attempts a "downgrade", fails on
+    # locked cache files, and the browser dies with TargetClosedError. Since the
+    # profile is created/updated by the system Chrome, launch that same Chrome by
+    # default (same-or-newer version -> no downgrade, login preserved, and a real
+    # Chrome is stealthier against Cloudflare than the bundled Chromium). Set
+    # PPLX_CHROME_CHANNEL="" to force Playwright's bundled Chromium instead.
+    channel = os.environ.get("PPLX_CHROME_CHANNEL", "chrome")
+    if channel:
+        try:
+            return pw.chromium.launch_persistent_context(str(profile_dir), channel=channel, **kwargs)
+        except Exception:
+            pass  # channel unavailable (no system Chrome) -> bundled Chromium
+    return pw.chromium.launch_persistent_context(str(profile_dir), **kwargs)
 
 
 def _page(ctx):
