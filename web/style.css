@@ -367,8 +367,20 @@ button.linklike[hidden] { display: none !important; }
 }
 .step-lock-note[hidden] { display: none !important; }
 
+.login-gate {
+  margin: 0 0 18px; padding: 16px 18px;
+  border: 1px solid rgba(245,199,107,.45); background: rgba(245,199,107,.08);
+  border-radius: var(--radius-soft);
+}
+.login-gate[hidden] { display: none !important; }
+.login-gate strong { display: block; color: var(--warn); font-size: 15px; margin-bottom: 4px; }
+.login-gate p { margin: 0 0 6px; color: var(--text); font-size: 14px; }
+.login-gate .hint { margin: 8px 2px 0; }
+#pipe-prompt-area[hidden] { display: none !important; }
+
 /* gated (not loading) button: signal "blocked", not "busy" */
 #pipe-apply-proposal:disabled { cursor: not-allowed; opacity: .45; }
+.step-next:disabled { cursor: not-allowed; opacity: .45; }
 
 .wizard-step { display: none; margin-top: 0; }
 .wizard-step.active { display: block; }

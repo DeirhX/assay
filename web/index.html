@@ -145,19 +145,37 @@
             <p>Build the prompt, then run it through a logged-in Perplexity session in an off-screen browser. The report and Links-tab citations are saved automatically.</p>
           </div>
           <div class="step-body">
-            <label>Research date</label>
-            <input id="pipe-date" placeholder="YYYY-MM-DD">
-            <label>Prompt</label>
-            <textarea id="pipe-prompt" rows="12" spellcheck="false"></textarea>
-            <div class="hint" id="pipe-prompt-hint">Build a prompt from the segment to get started. Running Deep Research auto-saves the report and jumps to the next step. Not logged in? Set it up once from Settings.</div>
-            <div class="thesis-actions">
-              <button class="primary" id="pipe-build-prompt">Build prompt</button>
-              <button class="primary" id="pipe-run-deep" hidden>Run Deep Research</button>
-              <button class="ghost" id="pipe-pplx-login" hidden>Set up Perplexity login</button>
+            <!-- Deep Research drives a logged-in Perplexity session, so insist on
+                 setting that up before exposing the prompt workflow. The escape
+                 hatches (deterministic pull, import on Step 3) stay reachable. -->
+            <div class="login-gate" id="pipe-login-gate" hidden>
+              <strong>Perplexity login required</strong>
+              <p>Deep Research runs your prompt through a logged-in Perplexity session in an off-screen browser. Set that up once before building a prompt — a visible login window opens, you sign in, and later runs reuse the session.</p>
+              <div class="thesis-actions">
+                <button class="primary" id="pipe-pplx-login">Set up Perplexity login</button>
+                <button class="ghost" id="pipe-login-recheck">Re-check login</button>
+              </div>
+              <div class="status" id="pipe-login-gate-status"></div>
+              <div class="hint">Rather run it yourself? Skip the automation and import a finished Perplexity run on the Report step, or pull deterministic data below.</div>
             </div>
-            <div class="status" id="pipe-prompt-status"></div>
+
+            <div id="pipe-prompt-area">
+              <label>Research date</label>
+              <input id="pipe-date" placeholder="YYYY-MM-DD">
+              <label>Prompt</label>
+              <textarea id="pipe-prompt" rows="12" spellcheck="false"></textarea>
+              <div class="hint" id="pipe-prompt-hint">Build a prompt from the segment to get started. Running Deep Research auto-saves the report and jumps to the next step.</div>
+              <div class="thesis-actions">
+                <button class="primary" id="pipe-build-prompt">Build prompt</button>
+                <button class="primary" id="pipe-run-deep" hidden>Run Deep Research</button>
+              </div>
+              <div class="status" id="pipe-prompt-status"></div>
+              <div class="step-secondary">
+                <button class="linklike" id="pipe-rebuild-prompt" hidden>Rebuild prompt from segment</button>
+              </div>
+            </div>
+
             <div class="step-secondary">
-              <button class="linklike" id="pipe-rebuild-prompt" hidden>Rebuild prompt from segment</button>
               <button class="linklike" id="pipe-run-deterministic">Or pull deterministic data instead →</button>
             </div>
           </div>
@@ -181,16 +199,34 @@
             </div>
 
             <div class="seg-pane" id="rep-pane-current">
-              <label>Perplexity URL</label>
-              <input id="pipe-source-url" placeholder="https://www.perplexity.ai/search/...">
-              <label>Report markdown/text</label>
-              <textarea id="pipe-report" rows="10" spellcheck="false"></textarea>
-              <label>Links-tab citations JSON</label>
-              <textarea id="pipe-sources" rows="8" spellcheck="false" placeholder='[{"label":"reuters","href":"https://..."}]'></textarea>
-              <div class="hint">Auto-filled after a run here. Ran it in your own browser instead? Paste the report and citations, then save.</div>
-              <div class="thesis-actions">
-                <button class="primary" id="pipe-save-report">Save report + sources</button>
-                <span class="status" id="pipe-artifact-status"></span>
+              <!-- PENDING: no report exists for this segment + date yet. The only
+                   forward action is to run it; the finished-report fields stay
+                   hidden until a run actually produces a result we can read. -->
+              <div id="rep-current-pending">
+                <div class="hint" id="rep-pending-note">No report yet for this segment + date. Run Deep Research to generate one — it auto-saves and the report shows up here for review.</div>
+                <div class="thesis-actions">
+                  <button class="primary" id="pipe-run-deep-report">Run Deep Research</button>
+                  <span class="status" id="pipe-report-run-status"></span>
+                </div>
+                <div class="step-secondary">
+                  <button class="linklike" id="rep-paste-manual">Already ran it elsewhere? Paste it manually →</button>
+                </div>
+              </div>
+
+              <!-- DONE: a report is known (from this run, an import, or a manual
+                   paste). Now the finished-report elements are shown for review. -->
+              <div id="rep-current-done" hidden>
+                <label>Perplexity URL</label>
+                <input id="pipe-source-url" placeholder="filled automatically after the run" readonly>
+                <label>Report markdown/text</label>
+                <textarea id="pipe-report" rows="10" spellcheck="false"></textarea>
+                <label>Links-tab citations JSON</label>
+                <textarea id="pipe-sources" rows="8" spellcheck="false" placeholder='[{"label":"reuters","href":"https://..."}]'></textarea>
+                <div class="hint" id="rep-done-hint">Review the report and citations from this run, then save to continue.</div>
+                <div class="thesis-actions">
+                  <button class="primary" id="pipe-save-report">Save report + sources</button>
+                  <span class="status" id="pipe-artifact-status"></span>
+                </div>
               </div>
             </div>
 
@@ -211,7 +247,7 @@
           </div>
           <div class="step-foot">
             <button class="ghost step-back" data-goto="2">← Back</button>
-            <button class="primary step-next" data-goto="4">Continue to Review →</button>
+            <button class="primary step-next" id="pipe-step3-next" data-goto="4">Continue to Review →</button>
           </div>
         </section>
 

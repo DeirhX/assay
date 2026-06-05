@@ -11,6 +11,7 @@ const state = {
   pipeStep: 1,
   segMode: "existing",
   repMode: "current",
+  repManual: false,
   savedRuns: new Set(),
 };
 
@@ -783,7 +784,8 @@ function setPipeStep(n, { silent = false } = {}) {
     p.classList.toggle("done", s < n);
     p.classList.toggle("locked", s > max);
   });
-  if (n === 2) updateStep2Actions();
+  if (n === 2) { updateStep2LoginGate(); refreshLoginStatus(); }
+  if (n === 3) updateRepSubstate();
   const w = $("#pipe-wizard");
   if (w && !silent) w.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -811,6 +813,7 @@ document.querySelectorAll("#pipe-wizard .step-next, #pipe-wizard .step-back").fo
 
 $("#pipe-restart").addEventListener("click", () => {
   state.currentDeepRun = null;
+  state.repManual = false;
   ["#pipe-report", "#pipe-sources", "#pipe-source-url", "#pipe-prompt"].forEach((sel) => {
     const elx = $(sel);
     if (elx) elx.value = "";
@@ -874,6 +877,39 @@ function setRepMode(mode) {
   $("#rep-pane-import").hidden = mode !== "import";
   $("#rep-mode-current").classList.toggle("active", mode === "current");
   $("#rep-mode-import").classList.toggle("active", mode === "import");
+  updateRepSubstate();
+}
+
+// A report "result" is known for the current segment + date once a run/import/
+// load has populated the report body and tagged it as the current run.
+function pipeHasRunResult() {
+  const stem = pipeCurrentStem();
+  return !!stem && state.currentDeepRun === stem && !!($("#pipe-report").value || "").trim();
+}
+
+// Step 3 "This run's report" is itself step-by-step: until a report actually
+// exists, show only the run action and keep the finished-report fields hidden.
+// The Perplexity URL is read-only for an automated run (it is filled by the
+// run); only a manual "I ran it elsewhere" paste makes it editable. Continue to
+// Review stays blocked until a report is saved on disk.
+function updateRepSubstate() {
+  const pending = $("#rep-current-pending");
+  const done = $("#rep-current-done");
+  if (!pending || !done) return;
+  const hasResult = pipeHasRunResult() || state.repManual;
+  pending.hidden = hasResult;
+  done.hidden = !hasResult;
+  const url = $("#pipe-source-url");
+  if (url) {
+    const editable = state.repManual && !pipeHasRunResult();
+    url.toggleAttribute("readonly", !editable);
+  }
+  const next = $("#pipe-step3-next");
+  if (next) {
+    const ok = pipeHasSavedReport();
+    next.disabled = !ok;
+    next.title = ok ? "" : pipeLockReason(4);
+  }
 }
 
 $("#rep-mode-current").addEventListener("click", () => setRepMode("current"));
@@ -937,10 +973,28 @@ function updateStep2Actions() {
   $("#pipe-rebuild-prompt").hidden = !hasPrompt;
 }
 
+// Deep Research only works through a logged-in Perplexity session. When we are
+// not logged in, block the prompt workflow behind the login gate and insist the
+// user sets it up first. The deterministic pull and the Step 3 import path stay
+// reachable, so this gates the prompt, not the whole step.
+function updateStep2LoginGate() {
+  const gate = $("#pipe-login-gate");
+  const area = $("#pipe-prompt-area");
+  const blocked = !state.pplxLoggedIn;
+  if (gate) gate.hidden = !blocked;
+  if (area) area.hidden = blocked;
+  if (!blocked) updateStep2Actions();
+}
+
 async function buildPrompt() {
   const status = $("#pipe-prompt-status");
   const seg = pipeSegment();
   status.classList.remove("err");
+  if (!state.pplxLoggedIn) {
+    updateStep2LoginGate();
+    $("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
+    return;
+  }
   if (!seg) {
     status.classList.add("err");
     status.textContent = "pick or approve a segment on Step 1 first";
@@ -1008,14 +1062,28 @@ async function pollDeepJob(jobId, statusEl, onDone) {
   }
 }
 
-$("#pipe-run-deep").addEventListener("click", async () => {
-  const status = $("#pipe-prompt-status");
+// Shared by the Step 2 run button and the Step 3 "Run Deep Research" action.
+// Login and prompt are prerequisites that live on Step 2, so if either is
+// missing we bounce the user back there instead of failing in place.
+async function runDeepResearch(status) {
   status.classList.remove("err");
   const segment = pipeSegment();
   const date = $("#pipe-date").value.trim() || undefined;
   const prompt = $("#pipe-prompt").value.trim();
   if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
-  if (!prompt) { status.classList.add("err"); status.textContent = "build or paste a prompt first"; return; }
+  if (!state.pplxLoggedIn) {
+    setPipeStep(2);
+    updateStep2LoginGate();
+    $("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
+    return;
+  }
+  if (!prompt) {
+    setPipeStep(2);
+    const ps = $("#pipe-prompt-status");
+    ps.classList.add("err");
+    ps.textContent = "Build a prompt on Step 2 first.";
+    return;
+  }
   status.innerHTML = `<span class="spinner"></span> starting deep research (off-screen browser)...`;
   try {
     const job = await api("/api/deep-research/run", "POST", { segment, date, prompt });
@@ -1023,7 +1091,7 @@ $("#pipe-run-deep").addEventListener("click", async () => {
       const stem = (done.artifact && done.artifact.stem) || `${segment}-${done.date || date}`;
       const r = done.result || {};
       const n = (r.citations && r.citations.length) || 0;
-      status.textContent = `done: ${stem} - ${r.report_chars || 0} chars, ${n} sources. Review the saved report on the next step.`;
+      status.textContent = `done: ${stem} - ${r.report_chars || 0} chars, ${n} sources. Review the saved report below.`;
       await refreshDeepRuns();
       await loadDeepRun(stem);
       setPipeStep(3);
@@ -1034,6 +1102,15 @@ $("#pipe-run-deep").addEventListener("click", async () => {
     status.textContent = "run failed: " + e.message;
     await refreshLoginStatus();
   }
+}
+
+$("#pipe-run-deep").addEventListener("click", () => runDeepResearch($("#pipe-prompt-status")));
+$("#pipe-run-deep-report").addEventListener("click", () => runDeepResearch($("#pipe-report-run-status")));
+$("#rep-paste-manual").addEventListener("click", () => {
+  state.repManual = true;
+  setRepMode("current");
+  const r = $("#pipe-report");
+  if (r) r.focus();
 });
 
 $("#pipe-import").addEventListener("click", async () => {
@@ -1070,8 +1147,7 @@ async function refreshLoginStatus() {
     st = { logged_in: false };
   }
   state.pplxLoggedIn = !!st.logged_in;
-  const btn = $("#pipe-pplx-login");
-  if (btn) btn.hidden = state.pplxLoggedIn;
+  updateStep2LoginGate();
   const txt = $("#settings-login-state");
   if (txt) {
     const when = st.updated_at ? " (confirmed " + st.updated_at.slice(0, 10) + ")" : "";
@@ -1098,7 +1174,23 @@ async function runPplxLogin(statusEl) {
   await refreshLoginStatus();
 }
 
-$("#pipe-pplx-login").addEventListener("click", () => runPplxLogin($("#pipe-prompt-status")));
+$("#pipe-pplx-login").addEventListener("click", () => runPplxLogin($("#pipe-login-gate-status")));
+
+$("#pipe-login-recheck").addEventListener("click", async () => {
+  const txt = $("#pipe-login-gate-status");
+  txt.classList.remove("err");
+  txt.innerHTML = `<span class="spinner"></span> checking (off-screen browser, ~10s)...`;
+  try {
+    await api("/api/deep-research/verify-login", "POST");
+    await refreshLoginStatus();
+    txt.textContent = state.pplxLoggedIn
+      ? "Logged in — prompt unlocked."
+      : "Still not logged in. Use Set up Perplexity login.";
+  } catch (e) {
+    txt.classList.add("err");
+    txt.textContent = "check failed: " + e.message;
+  }
+});
 
 $("#settings-toggle").addEventListener("click", () => {
   const panel = $("#settings-panel");
@@ -1146,6 +1238,7 @@ $("#pipe-save-report").addEventListener("click", async () => {
     });
     status.textContent = `saved ${rec.stem} — continuing to Review`;
     state.currentDeepRun = rec.stem;
+    state.repManual = false;
     pushNav({ view: "pipeline", segment: pipeSegment(), run: rec.stem });
     await refreshDeepRuns();
     setPipeStep(4);
@@ -1183,6 +1276,7 @@ async function refreshDeepRuns() {
     const { runs } = await api("/api/deep-runs");
     state.savedRuns = new Set((runs || []).map((r) => r.stem));
     refreshPipeLocks();
+    updateRepSubstate();
     out.innerHTML = "";
     const list = el("div", "run-list");
     (runs || []).forEach((run) => {
@@ -1201,6 +1295,7 @@ async function refreshDeepRuns() {
 async function loadDeepRun(stem, { push = true } = {}) {
   const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   state.currentDeepRun = stem;
+  state.repManual = false;
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
     $("#pipe-segment-select").value = m[1];
