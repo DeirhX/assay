@@ -819,6 +819,7 @@ $("#pipe-restart").addEventListener("click", () => {
     if (elx) elx.value = "";
   });
   updateStep2Actions();
+  lockRunDate();
   setRepMode("current");
   pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
   setPipeStep(1);
@@ -830,6 +831,22 @@ $("#pipe-segment-select").addEventListener("change", () => {
 });
 
 $("#pipe-date").addEventListener("change", refreshPipeLocks);
+
+// The run date is auto-filled (today, or the loaded run's date) and read-only by
+// default so it stops reading like a free-text "data as-of" field. Overriding is
+// an explicit opt-in for the rare case of pinning a specific historical run.
+function lockRunDate() {
+  const inp = $("#pipe-date");
+  if (inp) inp.setAttribute("readonly", "");
+  const btn = $("#pipe-date-edit");
+  if (btn) btn.hidden = false;
+}
+$("#pipe-date-edit").addEventListener("click", () => {
+  const inp = $("#pipe-date");
+  inp.removeAttribute("readonly");
+  inp.focus();
+  $("#pipe-date-edit").hidden = true;
+});
 
 async function loadPipeline() {
   await loadSegmentList();
