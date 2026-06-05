@@ -1424,7 +1424,14 @@ function renderReviewGate(rec) {
     card.appendChild(el("div", "badges",
       Object.keys(b).map((k) => `<span class="badge ${k === "weak" && b[k] ? "off" : "on"}">${esc(k)}: ${b[k]}</span>`).join("")));
   }
-  if (rec.warnings && rec.warnings.length) {
+  const findings = rec.findings || (rec.proposal && rec.proposal.findings) || null;
+  if (findings && findings.length) {
+    const cls = { BLOCK: "ERROR", WARN: "WARN", FYI: "INFO" };
+    const checks = el("div", "checks");
+    findings.forEach((f) => checks.appendChild(
+      el("div", `check ${cls[f.level] || "INFO"}`, `<span class="sev">${esc(f.level)}</span><span>${esc(f.message)}</span>`)));
+    card.appendChild(checks);
+  } else if (rec.warnings && rec.warnings.length) {
     const checks = el("div", "checks");
     rec.warnings.forEach((w) => checks.appendChild(el("div", "check WARN", `<span class="sev">WARN</span><span>${esc(w)}</span>`)));
     card.appendChild(checks);
@@ -1440,10 +1447,16 @@ function renderReviewGate(rec) {
   }
   const proposal = rec.proposal || {};
   const changes = proposal.changes || [];
+  const blocked = rec.blocked_symbols || proposal.blocked_symbols || [];
+  const applicable = changes.filter((c) => !blocked.includes(c.symbol));
   card.appendChild(el("h2", "section", "Target-model proposal"));
   if (changes.length) {
     const pre = el("pre", "json-preview", esc(JSON.stringify(changes, null, 2)));
     card.appendChild(pre);
+    if (blocked.length) {
+      card.appendChild(el("div", "hint",
+        `Apply is blocked for ${blocked.map(esc).join(", ")} (ERROR-level data). Re-pull and fix the data first.`));
+    }
   } else {
     card.appendChild(el("div", "hint", "No target-model changes proposed."));
   }
@@ -1452,9 +1465,10 @@ function renderReviewGate(rec) {
     card.appendChild(el("pre", "markdown-preview", esc(rec.markdown.slice(0, 8000))));
   }
   out.appendChild(card);
-  // Apply only becomes available once the review produced concrete changes.
+  // Apply only becomes available once the review produced a change we're allowed
+  // to apply -- i.e. at least one proposed symbol that isn't data-blocked.
   const applyBtn = $("#pipe-apply-proposal");
-  if (applyBtn) applyBtn.disabled = !(changes && changes.length);
+  if (applyBtn) applyBtn.disabled = !applicable.length;
 }
 
 $("#pipe-apply-proposal").addEventListener("click", async () => {
