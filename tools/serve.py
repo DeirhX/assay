@@ -536,6 +536,12 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
                     error=("Perplexity kept asking clarifying questions. Open "
                            f"{res.get('source_url')} , answer it there, then paste "
                            "the finished report on the Report step."))
+    elif status == "timeout":
+        url = res.get("source_url") or ""
+        detail = "Deep Research timed out before a finished report could be confirmed."
+        if url:
+            detail += f" If the Perplexity page later finishes, import this URL: {url}"
+        _update_job(job_id, state="error", error=detail)
     else:
         _update_job(job_id, state="error",
                     error=res.get("detail") or f"deep research {status}")

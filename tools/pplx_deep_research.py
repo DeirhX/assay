@@ -550,7 +550,29 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                 idle += 1
                 time.sleep(poll_interval_s)
             else:
-                return {"status": "timeout"}
+                # Perplexity sometimes finishes but our completion markers miss it
+                # (for example a stale Stop button or changed "done" copy). Before
+                # closing the browser and losing the page, make one final harvest
+                # attempt. This mirrors fetch_by_url's "read what's there" behavior
+                # and prevents a completed run from being reported as a hard timeout.
+                progress("Timed out waiting for completion markers; checking the page one last time...")
+                try:
+                    final_st = page.evaluate(_POLL_JS)
+                except Exception:
+                    final_st = {"awaiting": False, "len": 0}
+                report, citations = _scrape(page)
+                report_len = len((report or "").strip())
+                if ("/search/" in page.url and not final_st.get("awaiting")
+                        and (report_len >= 4000 or citations)):
+                    progress("Recovered a finished-looking report after timeout; saving it.")
+                    return {
+                        "status": "done",
+                        "source_url": page.url,
+                        "report": report,
+                        "citations": citations,
+                    }
+                return {"status": "timeout", "source_url": page.url,
+                        "report_chars": report_len}
 
             progress("Scraping report and citations...")
             report, citations = _scrape(page)
