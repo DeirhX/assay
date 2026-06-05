@@ -6,7 +6,7 @@ On-demand deep analysis for a single ticker or a whole industry segment. Stdlib
 only -- no pip installs.
 
 ```powershell
-$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py            # UI + API at http://127.0.0.1:8765 (localhost only)
 
 py -3 tools/research_pull.py --ticker NVDA       # CLI: one deep dive

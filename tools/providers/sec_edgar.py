@@ -29,7 +29,7 @@ _TICKER_MAP_TTL = 7 * 86400  # refresh weekly
 
 # Contact UA per SEC fair-access policy. Override with SEC_USER_AGENT.
 _UA = os.environ.get(
-    "SEC_USER_AGENT", "finance-rebalancing research (contact: set SEC_USER_AGENT)"
+    "SEC_USER_AGENT", "assay research (contact: set SEC_USER_AGENT)"
 )
 _HEADERS = {"User-Agent": _UA}
 

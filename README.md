@@ -1,12 +1,17 @@
-# Rebalancing Research Site
+# Assay
 
-Research and execution checklist for the portfolio rebalancing work.
+*Weigh the metal, not the hype — test every number before you trust it.*
+
+Assay is a single-user portfolio research and rebalancing workbench. Like a
+metallurgical assay tests whether a bar is really gold, it tests whether the
+numbers behind a position — price, market cap, multiples, target weights — hold
+up before you act on them.
 
 Start here if you are new to the repo:
 
 `ORIENTATION.md`
 
-It has two layers:
+It has three layers:
 
 1. **Static pages** (committed HTML) for the standing plan and per-stock detail.
 2. **Interactive Research Console** (`web/` + `tools/serve.py`) for on-demand,
@@ -26,7 +31,7 @@ Short version:
 
 ```powershell
 # Serve the local Research Console.
-$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py
 
 # Validate target model and committed valuation claims.
@@ -45,7 +50,7 @@ A local, single-user app for launching deep analysis on demand. Run it:
 
 ```powershell
 # optional but polite: identify yourself to the SEC fair-access API
-$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py
 # then open http://127.0.0.1:8765
 ```

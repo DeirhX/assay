@@ -11,7 +11,7 @@ multiple free sources, cross-checked, with human judgement kept separate.
 ## Run It
 
 ```powershell
-$env:SEC_USER_AGENT = "finance-rebalancing research (you@example.com)"
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py            # http://127.0.0.1:8765  (localhost only)
 ```
 
