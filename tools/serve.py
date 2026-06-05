@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import sys
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,6 +57,12 @@ _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
 _DEEP_JOBS: dict[str, dict] = {}
 _DEEP_JOBS_LOCK = threading.Lock()
 _DEEP_ACTIVE = {"running": False}
+
+# Dev live-reload. Off unless started with --reload. _BOOT_TOKEN is recomputed
+# each time the process (re)starts, so the browser can tell an API restart apart
+# from a no-op poll and reload itself even when no static asset changed.
+_RELOAD = False
+_BOOT_TOKEN = f"{time.time():.3f}"
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -307,7 +315,7 @@ def _save_deep_artifact(body: dict) -> dict:
     return {"stem": stem, "report": f"data/research/deep/{stem}.md", "sources": f"data/research/deep/{stem}.sources.json"}
 
 
-def _apply_target_proposal(segment: str, date: str, confirm: bool) -> dict:
+def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
     if not confirm:
         raise ValueError("confirm=true is required")
     segment = _slugify(segment)
@@ -319,12 +327,19 @@ def _apply_target_proposal(segment: str, date: str, confirm: bool) -> dict:
     if not model:
         raise ValueError("target model not found")
     targets = model.setdefault("targets", {})
+    # Never derive a target band from a ticker whose deterministic data failed an
+    # ERROR-level check -- the review gate marks those as blocked. Override only on
+    # an explicit allow_blocked, after the data has actually been fixed.
+    blocked = set(proposal.get("blocked_symbols", [])) if not allow_blocked else set()
     applied = []
     skipped = []
     for change in proposal.get("changes", []):
         sym = _safe_symbol(change.get("symbol", ""))
         if change.get("action") != "add_target":
             skipped.append({"symbol": sym, "reason": "unsupported action"})
+            continue
+        if sym in blocked:
+            skipped.append({"symbol": sym, "reason": "blocked: ERROR-level deterministic data; resolve before applying"})
             continue
         if sym in targets:
             skipped.append({"symbol": sym, "reason": "target already exists"})
@@ -351,6 +366,98 @@ def _is_root_static_file(clean: str) -> bool:
         and path.suffix in ROOT_STATIC_SUFFIXES
         and (REPO_ROOT / clean).is_file()
     )
+
+
+# ---- dev live-reload ------------------------------------------------------
+def _assets_version() -> str:
+    """Opaque token that changes whenever a served asset changes OR the server
+    restarts. The browser reloads when this differs from what it last saw."""
+    latest = 0.0
+    for p in WEB_DIR.rglob("*"):
+        if p.is_file():
+            m = p.stat().st_mtime
+            if m > latest:
+                latest = m
+    for p in REPO_ROOT.iterdir():  # root mini-site assets (site.css, *.html)
+        if p.is_file() and p.suffix in ROOT_STATIC_SUFFIXES:
+            m = p.stat().st_mtime
+            if m > latest:
+                latest = m
+    return f"{latest:.3f}-{_BOOT_TOKEN}"
+
+
+def _server_sources() -> list[Path]:
+    """Python files whose edits warrant restarting the API process."""
+    return sorted((REPO_ROOT / "tools").glob("*.py"))
+
+
+def _any_active_deep_job() -> bool:
+    if _DEEP_ACTIVE.get("running"):
+        return True
+    with _DEEP_JOBS_LOCK:
+        return any(j.get("state") in ("queued", "running") for j in _DEEP_JOBS.values())
+
+
+def _reload_watcher() -> None:
+    """Child-side watcher. When server code changes, exit with code 3 so the
+    supervisor respawns a fresh process. Guards: never restart on code that fails
+    to compile (keep serving the last good version), and never interrupt an
+    in-flight Deep Research run (defer the exit until it ends)."""
+    mtimes = {p: p.stat().st_mtime for p in _server_sources() if p.exists()}
+    pending = False
+    waited = False
+    while True:
+        time.sleep(1.0)
+        for p in _server_sources():
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            if mtimes.get(p) == m:
+                continue
+            mtimes[p] = m
+            try:
+                compile(p.read_text(encoding="utf-8"), str(p), "exec")
+            except SyntaxError as exc:
+                sys.stderr.write(f"[reload] {p.name}: syntax error, staying on current code ({exc.msg} line {exc.lineno})\n")
+                continue
+            sys.stderr.write(f"[reload] {p.name} changed\n")
+            pending = True
+        if not pending:
+            continue
+        if _any_active_deep_job():
+            if not waited:
+                sys.stderr.write("[reload] change pending; holding restart until deep-research job(s) finish\n")
+                waited = True
+            continue
+        sys.stderr.write("[reload] restarting to apply changes\n")
+        sys.stderr.flush()
+        os._exit(3)
+
+
+def _run_reloader() -> int:
+    """Supervisor (parent). Runs the server as a child and respawns it whenever
+    the child exits with code 3 (a requested reload). Keeps a stable PID and the
+    console, so Ctrl+C and stdout behave normally across reloads -- unlike execv,
+    which on Windows detaches into a new, console-less process."""
+    import subprocess
+
+    child_env = dict(os.environ, _REBAL_RELOAD_CHILD="1")
+    argv = [sys.executable, *sys.argv]
+    print("[reload] supervisor watching tools/*.py — edits restart the API in place")
+    while True:
+        proc = subprocess.Popen(argv, env=child_env)
+        try:
+            code = proc.wait()
+        except KeyboardInterrupt:
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            return 0
+        if code == 3:
+            continue  # requested reload -> respawn with the new code
+        return code  # clean exit or crash -> stop supervising
 
 
 def _segments_list():
@@ -727,6 +834,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", _CONTENT_TYPES.get(target.suffix, "application/octet-stream"))
         self.send_header("Content-Length", str(len(body)))
+        # Localhost dev tool: never cache static assets, so an edit + refresh (or
+        # the live-reload) always shows the latest code instead of a stale copy.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -755,6 +865,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._handle_get_api(path, parse_qs(parsed.query))
 
     def _handle_get_api(self, path: str, query: dict[str, list[str]]):
+        if path == "/api/dev/livereload":
+            return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
         if path == "/api/holdings":
             return self._send_json(holdings_payload())
         if path == "/api/segments":
@@ -885,6 +997,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(body.get("segment") or ""),
                 str(body.get("date") or ""),
                 bool(body.get("confirm")),
+                allow_blocked=bool(body.get("allow_blocked")),
             ))
 
         if path.startswith("/api/pull/"):
@@ -934,13 +1047,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--reload", action="store_true",
+                        help="dev: auto-restart on tools/*.py edits and live-reload the browser on asset changes")
     args = parser.parse_args()
+
+    # In --reload mode the first invocation is the supervisor; it re-launches
+    # itself as a child (marked via env) that actually serves and self-restarts.
+    if args.reload and os.environ.get("_REBAL_RELOAD_CHILD") != "1":
+        return _run_reloader()
+
+    global _RELOAD
+    _RELOAD = args.reload
 
     _load_secrets_env()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     print(f"Rebalancing research server on {url}  (Ctrl+C to stop)")
     print("  Static UI + JSON API. Localhost only. Pulls run live data sources.")
+    if _RELOAD:
+        print("  Dev reload ON: editing tools/*.py restarts the API; web/ + site.css edits reload the browser.")
+        threading.Thread(target=_reload_watcher, daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

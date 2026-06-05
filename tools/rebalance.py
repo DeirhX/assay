@@ -39,6 +39,7 @@ TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
 
 EPS = 0.01  # weights are 2-decimal percents; tolerate rounding noise
 IMPLAUSIBLE_WEIGHT = 50.0  # a single line over half of NAV is almost certainly a data bug
+COVERAGE_WARN_PCT = 1.0  # an untargeted held name at/above this size is a real gap, not a stub
 
 VALID_RULES = {"accumulate", "trim_only", "do_not_add", "reduce", "hold", "wait", "avoid"}
 NO_BUY_RULES = {"trim_only", "do_not_add", "reduce", "avoid"}
@@ -220,8 +221,21 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
         + sum(mid(s) for s in sleeves.values() if _band_ok(s.get("low"), s.get("high")))
     )
     managed_syms = set(targets) | seen_in_sleeve.keys()
-    untargeted_cur = sum(w for sym, w in weights.items() if sym not in managed_syms)
-    n_untargeted = sum(1 for sym in weights if sym not in managed_syms)
+    untargeted = sorted(
+        ((sym, w) for sym, w in weights.items() if sym not in managed_syms),
+        key=lambda kv: -kv[1],
+    )
+    untargeted_cur = sum(w for _, w in untargeted)
+    n_untargeted = len(untargeted)
+
+    # Standing coverage invariant: a held position with no band/rule is governed
+    # by nothing -- drift can't be computed and it silently rides outside the
+    # plan. Name each one (WARN if it's a meaningful size, INFO if a stub).
+    for sym, w in untargeted:
+        sev = "WARN" if w >= COVERAGE_WARN_PCT else "INFO"
+        add(sev, f"coverage:{sym}",
+            f"held at {w:.2f}% of NAV but absent from target-model.json "
+            f"(no band/rule governs it; add a target or a sleeve).")
 
     if managed_target_mid + cash_target > 100.0 + EPS:
         add("WARN", "model",

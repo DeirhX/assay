@@ -69,6 +69,9 @@ SOURCE_BUCKETS = {
 }
 
 SEV_RANK = {"ERROR": 0, "WARN": 1, "INFO": 2}
+# Review-gate tiers: BLOCK halts an apply, WARN needs a deliberate decision, FYI
+# is hygiene. ERROR-level deterministic data maps to BLOCK.
+LEVEL_RANK = {"BLOCK": 0, "WARN": 1, "FYI": 2}
 
 
 def load_json(path: Path, default: Any = None) -> Any:
@@ -204,8 +207,16 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
     weights = current_weights(holdings)
 
     rows: list[dict[str, Any]] = []
-    warnings: list[str] = []
+    findings: list[dict[str, Any]] = []
     proposal_changes: list[dict[str, Any]] = []
+
+    # Funding-order names are meant to be sold to fund buys, so only these rules
+    # genuinely conflict with a report that says hold/add. A name parked at `hold`
+    # (e.g. SOFI) does not -- comparing to the actual rule kills that false alarm.
+    SELL_DOWN_RULES = {"reduce", "trim_only", "do_not_add", "avoid"}
+
+    def add_finding(level: str, message: str, symbol: str | None = None) -> None:
+        findings.append({"level": level, "symbol": symbol, "message": message})
 
     for member in segment_def.get("members", []):
         sym = str(member.get("symbol", "")).upper()
@@ -215,12 +226,12 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
         checks = rec.get("cross_checks", [])
         worst = worst_severity(checks)
         target = targets.get(sym)
+        rule = target.get("rule", "") if target else ""
         report_action = infer_report_action(report_text, sym)
         held_pct = weights.get(sym)
         conflict = ""
 
         if target:
-            rule = target.get("rule", "")
             if report_action in {"add"} and rule in {"reduce", "do_not_add", "trim_only", "avoid"}:
                 conflict = f"report leans {report_action}, but target rule is {rule}"
             elif report_action in {"trim", "sell"} and rule == "accumulate":
@@ -241,11 +252,13 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
             })
 
         if conflict:
-            warnings.append(f"{sym}: {conflict}.")
-        if sym in funding_order and report_action in {"add", "hold"}:
-            warnings.append(f"{sym}: report action may conflict with funding_order role.")
+            add_finding("WARN", f"{sym}: {conflict}.", sym)
+        if sym in funding_order and report_action in {"add", "hold"} and rule in SELL_DOWN_RULES:
+            add_finding("WARN", f"{sym}: report says {report_action}, but it's a funding source (rule {rule}).", sym)
         if worst == "ERROR":
-            warnings.append(f"{sym}: deterministic data has ERROR-level checks; do not use exact valuation blindly.")
+            add_finding("BLOCK",
+                        f"{sym}: deterministic data has ERROR-level checks — valuation withheld; resolve before acting on {sym}.",
+                        sym)
 
         rows.append({
             "symbol": sym,
@@ -264,11 +277,15 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
         })
 
     if source_info["count"] < 5:
-        warnings.append("Source count is low; treat the report as thinly supported.")
+        add_finding("FYI", "Source count is low; treat the report as thinly supported.")
     if not source_info["primary_like_sources"]:
-        warnings.append("No primary/IR-like sources found; require primary-source follow-up before model changes.")
+        add_finding("WARN", "No primary/IR-like sources found; require primary-source follow-up before model changes.")
     if source_info["weak_sources"]:
-        warnings.append("Weak/social sources present; treat them as pointers, not evidence.")
+        add_finding("FYI", "Weak/social sources present; treat them as pointers, not evidence.")
+
+    findings.sort(key=lambda f: LEVEL_RANK.get(f["level"], 9))
+    warnings = [f["message"] for f in findings]  # flat list, kept for back-compat
+    blocked_symbols = sorted({f["symbol"] for f in findings if f["level"] == "BLOCK" and f["symbol"]})
 
     proposal = {
         "schema_version": 1,
@@ -279,9 +296,11 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
         "message": "Human review required. This file is a proposal, not an allocation change.",
         "changes": proposal_changes,
         "warnings": warnings,
+        "findings": findings,
+        "blocked_symbols": blocked_symbols,
     }
 
-    review_md = render_markdown(segment_def, date, paths["report"], source_info, rows, warnings, proposal)
+    review_md = render_markdown(segment_def, date, paths["report"], source_info, rows, findings, proposal)
     result = {
         "segment": segment,
         "date": date,
@@ -290,6 +309,8 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
         "source_summary": source_info,
         "rows": rows,
         "warnings": warnings,
+        "findings": findings,
+        "blocked_symbols": blocked_symbols,
         "proposal": proposal,
         "markdown": review_md,
     }
@@ -305,7 +326,7 @@ def render_markdown(
     report_path: Path,
     source_info: dict[str, Any],
     rows: list[dict[str, Any]],
-    warnings: list[str],
+    findings: list[dict[str, Any]],
     proposal: dict[str, Any],
 ) -> str:
     title = segment_def.get("title") or "Segment"
@@ -344,8 +365,24 @@ def render_markdown(
         )
 
     lines.extend(["", "## Warnings", ""])
-    if warnings:
-        lines.extend(f"- {w}" for w in warnings)
+    if findings:
+        groups = {
+            "BLOCK": ("Blocking — resolve before applying", []),
+            "WARN": ("Warnings — decide deliberately", []),
+            "FYI": ("FYI", []),
+        }
+        for f in findings:
+            groups.get(f["level"], groups["FYI"])[1].append(f["message"])
+        for level in ("BLOCK", "WARN", "FYI"):
+            heading, msgs = groups[level]
+            if not msgs:
+                continue
+            lines.append(f"### {heading}")
+            lines.extend(f"- {m}" for m in msgs)
+            lines.append("")
+        if proposal.get("blocked_symbols"):
+            lines.append(f"> Apply is blocked for: {', '.join('`' + s + '`' for s in proposal['blocked_symbols'])}.")
+            lines.append("")
     else:
         lines.append("- No review-gate warnings.")
 
