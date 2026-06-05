@@ -20,10 +20,13 @@
 [hidden] { display: none !important; }
 body {
   margin: 0;
+  min-height: 100vh;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background:
     radial-gradient(circle at top left, rgba(130, 170, 255, 0.08), transparent 34rem),
     var(--bg);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: var(--text);
   line-height: 1.5;
 }
@@ -377,6 +380,16 @@ button.linklike[hidden] { display: none !important; }
 .login-gate p { margin: 0 0 6px; color: var(--text); font-size: 14px; }
 .login-gate .hint { margin: 8px 2px 0; }
 #pipe-prompt-area[hidden] { display: none !important; }
+
+.reuse-gate {
+  margin: 0 0 18px; padding: 16px 18px;
+  border: 1px solid rgba(107,211,138,.45); background: rgba(107,211,138,.08);
+  border-radius: var(--radius-soft);
+}
+.reuse-gate[hidden] { display: none !important; }
+.reuse-gate strong { display: block; color: var(--good); font-size: 15px; margin-bottom: 4px; }
+.reuse-gate p { margin: 0 0 6px; color: var(--text); font-size: 14px; }
+.reuse-gate .hint { margin: 8px 2px 0; }
 
 #pipe-source-url[readonly] { opacity: .7; cursor: default; }
 

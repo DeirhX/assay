@@ -14,6 +14,7 @@ const state = {
   repManual: false,
   promptSegment: null,
   savedRuns: new Set(),
+  deepRuns: [],
 };
 
 // ---- tiny helpers ---------------------------------------------------------
@@ -25,6 +26,20 @@ const el = (tag, cls, html) => {
   return n;
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Coarse "x ago" for cache/report freshness labels. Returns "" for junk input.
+function relAge(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const secs = Math.max(0, (Date.now() - then) / 1000);
+  if (secs < 90) return "just now";
+  const mins = secs / 60;
+  if (mins < 90) return `${Math.round(mins)}m ago`;
+  const hrs = mins / 60;
+  if (hrs < 36) return `${Math.round(hrs)}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
 
 const fmtPrice = (v) => (v == null ? "n/a" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const fmtX = (v) => (v == null ? "n/a" : Number(v).toFixed(1) + "x");
@@ -571,7 +586,12 @@ async function loadSegmentList() {
     segments.forEach((s) => {
       const o = el("option");
       o.value = s.name;
-      o.textContent = `${s.title} (${s.count})${s.status === "draft" ? " · draft" : ""}${s.cached ? " · cached" : ""}`;
+      let cacheTag = "";
+      if (s.cached) {
+        const age = relAge(s.cached_at);
+        cacheTag = age ? ` · cached ${age}` : " · cached";
+      }
+      o.textContent = `${s.title} (${s.count})${s.status === "draft" ? " · draft" : ""}${cacheTag}`;
       sel.appendChild(o);
       if (pipeSel) {
         const p = o.cloneNode(true);
@@ -785,7 +805,7 @@ function setPipeStep(n, { silent = false } = {}) {
     p.classList.toggle("done", s < n);
     p.classList.toggle("locked", s > max);
   });
-  if (n === 2) { updateStep2LoginGate(); refreshLoginStatus(); }
+  if (n === 2) { updateStep2LoginGate(); refreshLoginStatus(); updateExistingReportNotice(); }
   if (n === 3) updateRepSubstate();
   const w = $("#pipe-wizard");
   if (w && !silent) w.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -828,6 +848,7 @@ $("#pipe-restart").addEventListener("click", () => {
 $("#pipe-segment-select").addEventListener("change", () => {
   pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
   refreshPipeLocks();
+  updateExistingReportNotice();
 });
 
 
@@ -972,6 +993,41 @@ function updateStep2Actions() {
   $("#pipe-run-deep").hidden = !hasPrompt;
   $("#pipe-rebuild-prompt").hidden = !hasPrompt;
 }
+
+// Most recent saved run for `seg` that actually has a report on disk. Stems are
+// `${seg}-YYYY-MM-DD`; the date check stops a segment like "ai" from matching
+// "ai-software-...". Lexical desc sort on the stem orders by date newest-first.
+function latestReportForSegment(seg) {
+  if (!seg) return null;
+  const prefix = seg + "-";
+  const matches = (state.deepRuns || [])
+    .filter((r) => r.files && r.files.report && r.stem.startsWith(prefix)
+      && /^\d{4}-\d{2}-\d{2}$/.test(r.stem.slice(prefix.length)))
+    .sort((a, b) => (a.stem < b.stem ? 1 : -1));
+  return matches[0] || null;
+}
+
+// Deep Research spends quota, so if we already have a report for this segment,
+// surface it on Step 2 and let the user reuse it instead of running a new one.
+// This needs no login (reuse is read-only), so it sits above the login gate.
+function updateExistingReportNotice() {
+  const box = $("#pipe-existing");
+  if (!box) return;
+  const run = latestReportForSegment(pipeSegment());
+  if (!run) { box.hidden = true; box.dataset.stem = ""; return; }
+  const date = (run.stem.match(/-(\d{4}-\d{2}-\d{2})$/) || [])[1] || "";
+  box.dataset.stem = run.stem;
+  $("#pipe-existing-text").textContent =
+    `This segment already has a saved Deep Research report${date ? ` from ${date}` : ""}. Reuse it instead of spending a new run?`;
+  box.hidden = false;
+}
+
+$("#pipe-existing-use").addEventListener("click", async () => {
+  const stem = $("#pipe-existing").dataset.stem;
+  if (!stem) return;
+  await loadDeepRun(stem);
+  setPipeStep(3);
+});
 
 // Deep Research only works through a logged-in Perplexity session. When we are
 // not logged in, block the prompt workflow behind the login gate and insist the
@@ -1312,9 +1368,11 @@ async function refreshDeepRuns() {
   if (!out) return;
   try {
     const { runs } = await api("/api/deep-runs");
-    state.savedRuns = new Set((runs || []).map((r) => r.stem));
+    state.deepRuns = runs || [];
+    state.savedRuns = new Set(state.deepRuns.map((r) => r.stem));
     refreshPipeLocks();
     updateRepSubstate();
+    updateExistingReportNotice();
     out.innerHTML = "";
     const list = el("div", "run-list");
     (runs || []).forEach((run) => {

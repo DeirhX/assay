@@ -357,6 +357,12 @@ def _segments_list():
     out = []
     for path in sorted(SEGMENT_DEF_DIR.glob("*.json")):
         definition = _load(path) or {}
+        # "cached" == a deterministic ticker-data pull exists for this segment.
+        # Surface its as_of so the UI can show freshness instead of a bare flag.
+        cache_path = SEGMENT_OUT_DIR / path.name
+        cached_at = None
+        if cache_path.exists():
+            cached_at = (_load(cache_path) or {}).get("as_of")
         out.append({
             "name": path.stem,
             "title": definition.get("title", path.stem.title()),
@@ -364,7 +370,8 @@ def _segments_list():
             "status": definition.get("status", "approved"),
             "overlap_allowed": definition.get("overlap_allowed", True),
             "count": len(definition.get("members", [])),
-            "cached": (SEGMENT_OUT_DIR / path.name).exists(),
+            "cached": cache_path.exists(),
+            "cached_at": cached_at,
         })
     return out
 

@@ -145,6 +145,18 @@
             <p>Build the prompt, then run it through a logged-in Perplexity session in an off-screen browser. The report and Links-tab citations are saved automatically.</p>
           </div>
           <div class="step-body">
+            <!-- Reuse beats re-running: a Deep Research run spends quota, so if a
+                 report already exists for this segment, offer it first. No login
+                 needed (reuse is read-only), so it sits above the login gate. -->
+            <div class="reuse-gate" id="pipe-existing" hidden>
+              <strong>Existing Deep Research found</strong>
+              <p id="pipe-existing-text"></p>
+              <div class="thesis-actions">
+                <button class="primary" id="pipe-existing-use">Use existing report →</button>
+              </div>
+              <div class="hint">Or run a fresh one below — that spends a Deep Research quota.</div>
+            </div>
+
             <!-- Deep Research drives a logged-in Perplexity session, so insist on
                  setting that up before exposing the prompt workflow. The escape
                  hatches (deterministic pull, import on Step 3) stay reachable. -->
