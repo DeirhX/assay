@@ -9,6 +9,9 @@ const state = {
   privacyMode: localStorage.getItem("financeRebalancingPrivacyMode") === "1",
   pplxLoggedIn: false,
   pipeStep: 1,
+  segMode: "existing",
+  repMode: "current",
+  savedRuns: new Set(),
 };
 
 // ---- tiny helpers ---------------------------------------------------------
@@ -716,8 +719,60 @@ function renderSegment(rec) {
 }
 
 // ---- pipeline -------------------------------------------------------------
-function setPipeStep(n) {
+// The pipeline is a strict sequence, not four free-floating panels. You may
+// always step BACK to revisit earlier work, but you can only advance to a step
+// once its prerequisite exists. The reachable frontier is derived from real
+// data, so it stays honest no matter how you got here (URL, reload, back/fwd).
+//   1 Segment      -> always available
+//   2 Deep Research, 3 Report  -> need a chosen/approved segment
+//   4 Review & apply           -> need a saved or loaded report artifact
+function pipeCurrentStem() {
+  const seg = pipeSegment();
+  const date = ($("#pipe-date").value || "").trim();
+  return seg && date ? `${seg}-${date}` : "";
+}
+
+// Step 4 needs a report saved on disk for THIS exact segment + date — that is
+// the only thing the review gate can actually read. Anything weaker (a sticky
+// "a run was loaded once" flag) lets you switch to an empty segment and hit a
+// dead gate, which is exactly the bug being fixed.
+function pipeHasSavedReport() {
+  const stem = pipeCurrentStem();
+  return !!stem && state.savedRuns.has(stem);
+}
+
+function pipeUnlockedMax() {
+  if (pipeHasSavedReport()) return 4;
+  if (pipeSegment()) return 3;
+  return 1;
+}
+
+function pipeLockReason(n) {
+  if (n >= 4) return "Save or import a report for this segment + date first — the review gate has nothing to read otherwise.";
+  if (n >= 2) return "Choose or approve a segment on Step 1 first.";
+  return "";
+}
+
+let _pipeLockTimer = null;
+function showPipeLock(n) {
+  const note = $("#pipe-lock-note");
+  if (!note) return;
+  note.textContent = pipeLockReason(n);
+  note.hidden = false;
+  clearTimeout(_pipeLockTimer);
+  _pipeLockTimer = setTimeout(() => { note.hidden = true; }, 4500);
+}
+
+function setPipeStep(n, { silent = false } = {}) {
   n = Math.max(1, Math.min(4, Number(n) || 1));
+  const max = pipeUnlockedMax();
+  if (n > max) {
+    if (!silent) showPipeLock(n);
+    n = max;
+  } else if (!silent) {
+    const note = $("#pipe-lock-note");
+    if (note) note.hidden = true;
+  }
   state.pipeStep = n;
   document.querySelectorAll("#pipe-wizard .wizard-step").forEach((s) => {
     s.classList.toggle("active", Number(s.dataset.step) === n);
@@ -726,27 +781,106 @@ function setPipeStep(n) {
     const s = Number(p.dataset.step);
     p.classList.toggle("active", s === n);
     p.classList.toggle("done", s < n);
+    p.classList.toggle("locked", s > max);
   });
+  if (n === 2) updateStep2Actions();
   const w = $("#pipe-wizard");
-  if (w) w.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (w && !silent) w.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// Re-evaluate the locked frontier after data changes (segment picked, report
+// saved/loaded, pipeline reset) without forcing a navigation.
+function refreshPipeLocks() {
+  setPipeStep(state.pipeStep, { silent: true });
 }
 
 document.querySelectorAll("#pipe-stepper .step-pill").forEach((p) => {
-  p.addEventListener("click", () => setPipeStep(p.dataset.step));
+  p.addEventListener("click", () => {
+    const s = Number(p.dataset.step);
+    if (s > pipeUnlockedMax()) { showPipeLock(s); return; }
+    setPipeStep(s);
+  });
 });
 document.querySelectorAll("#pipe-wizard .step-next, #pipe-wizard .step-back").forEach((b) => {
-  b.addEventListener("click", () => setPipeStep(b.dataset.goto));
+  b.addEventListener("click", () => {
+    const goto = Number(b.dataset.goto);
+    if (b.classList.contains("step-next") && goto > pipeUnlockedMax()) { showPipeLock(goto); return; }
+    setPipeStep(goto);
+  });
 });
+
+$("#pipe-restart").addEventListener("click", () => {
+  state.currentDeepRun = null;
+  ["#pipe-report", "#pipe-sources", "#pipe-source-url", "#pipe-prompt"].forEach((sel) => {
+    const elx = $(sel);
+    if (elx) elx.value = "";
+  });
+  updateStep2Actions();
+  setRepMode("current");
+  pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
+  setPipeStep(1);
+});
+
+$("#pipe-segment-select").addEventListener("change", () => {
+  pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
+  refreshPipeLocks();
+});
+
+$("#pipe-date").addEventListener("change", refreshPipeLocks);
 
 async function loadPipeline() {
   await loadSegmentList();
   await refreshDeepRuns();
   refreshLoginStatus();
+  setSegMode(state.segMode);
+  setRepMode(state.repMode);
+  updateStep2Actions();
   setPipeStep(state.pipeStep);
   if (!$("#pipe-date").value) $("#pipe-date").value = new Date().toISOString().slice(0, 10);
 }
 
+// Step 1 shows exactly one path at a time: an approved-segment dropdown, or a
+// new-segment drafter that only reveals its editor + approve action after a draft.
+function setSegMode(mode) {
+  mode = mode === "new" ? "new" : "existing";
+  state.segMode = mode;
+  $("#seg-pane-existing").hidden = mode !== "existing";
+  $("#seg-pane-new").hidden = mode !== "new";
+  $("#seg-mode-existing").classList.toggle("active", mode === "existing");
+  $("#seg-mode-new").classList.toggle("active", mode === "new");
+  const cont = $("#pipe-step1-continue");
+  const note = $("#pipe-step1-note");
+  if (mode === "existing") {
+    cont.hidden = false;
+    note.textContent = "Pick a segment, then continue.";
+  } else {
+    // In "new" mode the single forward action is Approve & continue, revealed
+    // only after a draft exists -- so the footer Continue is out of the way.
+    cont.hidden = true;
+    note.textContent = "Draft a theme, review it, then approve to continue.";
+    $("#seg-draft-editor").hidden = !$("#pipe-slug").value.trim();
+  }
+}
+
+$("#seg-mode-existing").addEventListener("click", () => setSegMode("existing"));
+$("#seg-mode-new").addEventListener("click", () => setSegMode("new"));
+
+// Step 3 is one-lane too: review the report this run produced (or paste one you
+// ran yourself), OR import an existing run. Never both at once.
+function setRepMode(mode) {
+  mode = mode === "import" ? "import" : "current";
+  state.repMode = mode;
+  $("#rep-pane-current").hidden = mode !== "current";
+  $("#rep-pane-import").hidden = mode !== "import";
+  $("#rep-mode-current").classList.toggle("active", mode === "current");
+  $("#rep-mode-import").classList.toggle("active", mode === "import");
+}
+
+$("#rep-mode-current").addEventListener("click", () => setRepMode("current"));
+$("#rep-mode-import").addEventListener("click", () => setRepMode("import"));
+
 function pipeSegment() {
+  if (state.segMode === "new") return $("#pipe-slug").value.trim() || $("#pipe-segment-select").value;
   return $("#pipe-segment-select").value || $("#pipe-slug").value.trim();
 }
 
@@ -765,7 +899,8 @@ $("#pipe-draft").addEventListener("click", async () => {
     $("#pipe-slug").value = rec.slug;
     $("#pipe-segment-json").value = JSON.stringify(rec.definition, null, 2);
     $("#pipe-prompt").value = rec.llm_prompt || "";
-    status.textContent = rec.warnings && rec.warnings.length ? rec.warnings.join(" ") : "draft ready; edit and approve when sane";
+    $("#seg-draft-editor").hidden = false;
+    status.textContent = rec.warnings && rec.warnings.length ? rec.warnings.join(" ") : "draft ready; review it, then approve to continue";
   } catch (e) {
     status.textContent = "draft failed: " + e.message;
     status.classList.add("err");
@@ -784,6 +919,7 @@ $("#pipe-save-segment").addEventListener("click", async () => {
     status.textContent = `saved ${rec.name} — continuing to Deep Research`;
     await loadSegmentList();
     $("#pipe-segment-select").value = rec.name;
+    setSegMode("existing");
     pushNav({ view: "pipeline", segment: rec.name }, { replace: true });
     setPipeStep(2);
   } catch (e) {
@@ -792,21 +928,41 @@ $("#pipe-save-segment").addEventListener("click", async () => {
   }
 });
 
-$("#pipe-build-prompt").addEventListener("click", async () => {
+// Step 2 shows one primary action at a time: "Build prompt" until a prompt
+// exists, then "Run Deep Research". Rebuild + deterministic pull are secondary.
+function updateStep2Actions() {
+  const hasPrompt = !!$("#pipe-prompt").value.trim();
+  $("#pipe-build-prompt").hidden = hasPrompt;
+  $("#pipe-run-deep").hidden = !hasPrompt;
+  $("#pipe-rebuild-prompt").hidden = !hasPrompt;
+}
+
+async function buildPrompt() {
   const status = $("#pipe-prompt-status");
+  const seg = pipeSegment();
   status.classList.remove("err");
+  if (!seg) {
+    status.classList.add("err");
+    status.textContent = "pick or approve a segment on Step 1 first";
+    return;
+  }
   status.textContent = "building prompt...";
   try {
-    const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(pipeSegment()));
+    const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(seg));
     $("#pipe-date").value = rec.date;
     $("#pipe-prompt").value = rec.prompt;
-    pushNav({ view: "pipeline", segment: rec.segment || pipeSegment() }, { replace: true });
-    status.textContent = "prompt ready";
+    pushNav({ view: "pipeline", segment: rec.segment || seg }, { replace: true });
+    status.textContent = "prompt ready — review it, then run Deep Research";
+    updateStep2Actions();
   } catch (e) {
     status.textContent = "prompt failed: " + e.message;
     status.classList.add("err");
   }
-});
+}
+
+$("#pipe-build-prompt").addEventListener("click", buildPrompt);
+$("#pipe-rebuild-prompt").addEventListener("click", buildPrompt);
+$("#pipe-prompt").addEventListener("input", updateStep2Actions);
 
 $("#pipe-run-deterministic").addEventListener("click", async () => {
   const status = $("#pipe-prompt-status");
@@ -1025,13 +1181,15 @@ async function refreshDeepRuns() {
   if (!out) return;
   try {
     const { runs } = await api("/api/deep-runs");
+    state.savedRuns = new Set((runs || []).map((r) => r.stem));
+    refreshPipeLocks();
     out.innerHTML = "";
     const list = el("div", "run-list");
     (runs || []).forEach((run) => {
       const row = el("button", "run-row", "");
       const files = Object.keys(run.files || {}).sort().join(", ");
       row.innerHTML = `<strong>${esc(run.stem)}</strong><span>${esc(files)}</span>`;
-      row.addEventListener("click", () => loadDeepRun(run.stem));
+      row.addEventListener("click", async () => { await loadDeepRun(run.stem); setPipeStep(3); });
       list.appendChild(row);
     });
     out.appendChild(list);
@@ -1061,6 +1219,8 @@ async function loadDeepRun(stem, { push = true } = {}) {
     rows: [],
     source_summary: rec.proposal ? null : undefined,
   });
+  setRepMode("current");
+  refreshPipeLocks();
 }
 
 function renderReviewGate(rec) {
@@ -1101,13 +1261,17 @@ function renderReviewGate(rec) {
     card.appendChild(el("pre", "markdown-preview", esc(rec.markdown.slice(0, 8000))));
   }
   out.appendChild(card);
+  // Apply only becomes available once the review produced concrete changes.
+  const applyBtn = $("#pipe-apply-proposal");
+  if (applyBtn) applyBtn.disabled = !(changes && changes.length);
 }
 
 $("#pipe-apply-proposal").addEventListener("click", async () => {
   const status = $("#pipe-apply-status");
-  const m = (state.currentDeepRun || "").match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
-  if (!m) {
-    status.textContent = "select or generate a run first";
+  const segment = pipeSegment();
+  const date = ($("#pipe-date").value || "").trim();
+  if (!segment || !date) {
+    status.textContent = "run the review gate first";
     status.classList.add("err");
     return;
   }
@@ -1115,7 +1279,7 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
   status.classList.remove("err");
   status.textContent = "applying proposal...";
   try {
-    const rec = await api("/api/target-proposal/apply", "POST", { segment: m[1], date: m[2], confirm: true });
+    const rec = await api("/api/target-proposal/apply", "POST", { segment, date, confirm: true });
     status.textContent = `applied: ${rec.applied.join(", ") || "none"}; skipped: ${rec.skipped.length}`;
   } catch (e) {
     status.textContent = "apply failed: " + e.message;

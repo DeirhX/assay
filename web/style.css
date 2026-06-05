@@ -312,6 +312,32 @@ tr:last-child td { border-bottom: 0; }
 
 /* ---- pipeline wizard ---- */
 .wizard { max-width: 900px; margin: 16px auto 0; scroll-margin-top: 80px; }
+
+/* segment mode: one path at a time */
+.seg-mode {
+  display: flex; gap: 4px; padding: 4px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 999px; margin-bottom: 18px;
+}
+.seg-mode-btn {
+  flex: 1 1 0; height: 36px; border: 0; background: transparent;
+  color: var(--muted); font-size: 14px; font-weight: 700; cursor: pointer;
+  border-radius: 999px; white-space: nowrap;
+}
+.seg-mode-btn:hover { color: var(--text); }
+.seg-mode-btn.active { background: var(--accent); color: #0c1322; }
+.seg-pane[hidden] { display: none !important; }
+.seg-pane > label:first-child { margin-top: 0; }
+
+/* secondary / tertiary actions that must not compete with the primary button */
+.step-secondary { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; }
+button.linklike {
+  background: none; border: 0; padding: 0; height: auto;
+  color: var(--muted); font: inherit; font-size: 13px; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+button.linklike:hover { color: var(--accent); }
+button.linklike[hidden] { display: none !important; }
 .stepper { list-style: none; display: flex; gap: 10px; padding: 0; margin: 0 0 16px; }
 .step-pill {
   flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 9px;
@@ -330,6 +356,19 @@ tr:last-child td { border-bottom: 0; }
 .step-pill.active .step-dot { background: var(--accent); color: #0c1322; border-color: transparent; }
 .step-pill.done { color: var(--text); }
 .step-pill.done .step-dot { background: rgba(107,211,138,.16); border-color: rgba(107,211,138,.5); color: var(--good); }
+.step-pill.locked { opacity: .42; cursor: not-allowed; }
+.step-pill.locked:hover { color: var(--muted); border-color: var(--border); }
+.step-pill.locked .step-dot { opacity: .8; }
+
+.step-lock-note {
+  margin: -6px 2px 16px; padding: 8px 12px;
+  border: 1px solid rgba(245,199,107,.4); background: rgba(245,199,107,.08);
+  border-radius: var(--radius-soft); color: var(--warn); font-size: 13px;
+}
+.step-lock-note[hidden] { display: none !important; }
+
+/* gated (not loading) button: signal "blocked", not "busy" */
+#pipe-apply-proposal:disabled { cursor: not-allowed; opacity: .45; }
 
 .wizard-step { display: none; margin-top: 0; }
 .wizard-step.active { display: block; }
