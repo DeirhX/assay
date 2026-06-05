@@ -114,11 +114,12 @@ Honest constraints:
 - **Headless is blocked** -- Perplexity sits behind Cloudflare and a headless
   browser gets challenge-walled (no composer). The default is headed-off-screen
   for that reason; `window_mode: "headless"` exists only for experiments.
-- **Dedicated profile.** The worker uses its own profile
-  (`PPLX_PROFILE_DIR`, default `~/.cursor/pplx-automation-profile`), distinct
-  from the agent's `user-playwright-pplx` MCP profile, to avoid a Chrome
-  profile-lock fight and Chrome-version "downgrade" errors. Log in once via the
-  button. Only one browser job (run or login) runs at a time.
+- **Shared Perplexity profile.** The worker defaults to the same profile as the
+  `user-playwright-pplx` MCP browser (`~/.cursor/pplx-chrome-profile`) so
+  Perplexity sees the same trusted, logged-in browser identity. Close the MCP
+  browser before running automation, or override `PPLX_PROFILE_DIR` if you
+  intentionally want an isolated profile. Only one browser job (run or login)
+  runs at a time.
 - **Quota is shared** with your manual Perplexity usage; don't smoke-test against
   it. Use `--dry-run` (selects the mode but never submits) to validate plumbing.
 - Deep Research output is narrative synthesis -- the review gate still treats its

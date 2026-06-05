@@ -378,9 +378,7 @@ button.linklike[hidden] { display: none !important; }
 .login-gate .hint { margin: 8px 2px 0; }
 #pipe-prompt-area[hidden] { display: none !important; }
 
-.label-note { color: var(--muted); font-weight: 400; font-size: 12px; }
-#pipe-date[readonly], #pipe-source-url[readonly] { opacity: .7; cursor: default; }
-#pipe-date-hint code { background: rgba(130,170,255,.12); padding: 0 4px; border-radius: 4px; }
+#pipe-source-url[readonly] { opacity: .7; cursor: default; }
 
 /* gated (not loading) button: signal "blocked", not "busy" */
 #pipe-apply-proposal:disabled { cursor: not-allowed; opacity: .45; }

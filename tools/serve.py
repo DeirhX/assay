@@ -523,6 +523,11 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
         _set_auth_state(False, "run hit login wall")
         _update_job(job_id, state="needs_login",
                     message="Not logged in. Use 'Set up Perplexity login' once, then re-run.")
+    elif status == "needs_captcha":
+        _update_job(job_id, state="error",
+                    error=("A human-verification check (CAPTCHA) appeared and was not "
+                           "solved in time. Re-run, and when the browser window pops to "
+                           "the front, complete the check to continue."))
     elif status == "computer_trap":
         _update_job(job_id, state="error",
                     error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
@@ -639,6 +644,11 @@ def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
         _set_auth_state(False, "import hit login wall")
         _update_job(job_id, state="needs_login",
                     message="Not logged in. Use 'Set up Perplexity login' once, then import.")
+    elif status == "needs_captcha":
+        _update_job(job_id, state="error",
+                    error=("A human-verification check (CAPTCHA) appeared and was not "
+                           "solved in time. Re-run the import and complete the check "
+                           "when the browser window appears."))
     elif status == "needs_clarification":
         _update_job(job_id, state="error",
                     error="That run is still awaiting a clarifying answer. Answer it in "

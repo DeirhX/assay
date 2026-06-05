@@ -12,6 +12,7 @@ const state = {
   segMode: "existing",
   repMode: "current",
   repManual: false,
+  promptSegment: null,
   savedRuns: new Set(),
 };
 
@@ -819,7 +820,6 @@ $("#pipe-restart").addEventListener("click", () => {
     if (elx) elx.value = "";
   });
   updateStep2Actions();
-  lockRunDate();
   setRepMode("current");
   pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
   setPipeStep(1);
@@ -830,23 +830,6 @@ $("#pipe-segment-select").addEventListener("change", () => {
   refreshPipeLocks();
 });
 
-$("#pipe-date").addEventListener("change", refreshPipeLocks);
-
-// The run date is auto-filled (today, or the loaded run's date) and read-only by
-// default so it stops reading like a free-text "data as-of" field. Overriding is
-// an explicit opt-in for the rare case of pinning a specific historical run.
-function lockRunDate() {
-  const inp = $("#pipe-date");
-  if (inp) inp.setAttribute("readonly", "");
-  const btn = $("#pipe-date-edit");
-  if (btn) btn.hidden = false;
-}
-$("#pipe-date-edit").addEventListener("click", () => {
-  const inp = $("#pipe-date");
-  inp.removeAttribute("readonly");
-  inp.focus();
-  $("#pipe-date-edit").hidden = true;
-});
 
 async function loadPipeline() {
   await loadSegmentList();
@@ -1000,7 +983,23 @@ function updateStep2LoginGate() {
   const blocked = !state.pplxLoggedIn;
   if (gate) gate.hidden = !blocked;
   if (area) area.hidden = blocked;
-  if (!blocked) updateStep2Actions();
+  if (!blocked) { updateStep2Actions(); maybeAutoBuildPrompt(); }
+}
+
+// Step 2 builds the prompt for you the moment you land on it (and rebuilds it if
+// you arrived with a different segment than the one the current prompt is for).
+// The textarea is just there to tweak the result before running. "Build prompt"
+// stays as a manual fallback for when auto-build fails. A manual edit for the
+// same segment is preserved (not clobbered) because the prompt is non-empty and
+// not stale.
+async function maybeAutoBuildPrompt() {
+  if (state.pipeStep !== 2 || !state.pplxLoggedIn || state._autoBuilding) return;
+  const seg = pipeSegment();
+  if (!seg) return;
+  const stale = !!state.promptSegment && state.promptSegment !== seg;
+  if ($("#pipe-prompt").value.trim() && !stale) return;
+  state._autoBuilding = true;
+  try { await buildPrompt(); } finally { state._autoBuilding = false; }
 }
 
 async function buildPrompt() {
@@ -1022,6 +1021,7 @@ async function buildPrompt() {
     const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(seg));
     $("#pipe-date").value = rec.date;
     $("#pipe-prompt").value = rec.prompt;
+    state.promptSegment = rec.segment || seg;
     pushNav({ view: "pipeline", segment: rec.segment || seg }, { replace: true });
     status.textContent = "prompt ready — review it, then run Deep Research";
     updateStep2Actions();
@@ -1073,10 +1073,31 @@ async function pollDeepJob(jobId, statusEl, onDone) {
       await onDone(job);
       return;
     }
+    if (job.state === "needs_login") {
+      // The run proved the cached login flag was stale, so resync the gate and
+      // hand the user an actual login button instead of an instruction to read.
+      state.pplxLoggedIn = false;
+      updateStep2LoginGate();
+      renderNeedsLogin(statusEl, job.message || job.error);
+      return;
+    }
     statusEl.classList.add("err");
     statusEl.textContent = job.error || job.message || job.state;
     return;
   }
+}
+
+// Render a "not logged in" run/import outcome as an actionable prompt: the
+// message plus a real "Set up Perplexity login" button that opens the login
+// window in place. After it succeeds, refreshLoginStatus reopens the prompt.
+function renderNeedsLogin(statusEl, message) {
+  statusEl.classList.remove("err");
+  statusEl.innerHTML = "";
+  statusEl.appendChild(document.createTextNode((message || "Not logged in.") + " "));
+  const btn = el("button", "ghost", "Set up Perplexity login");
+  btn.type = "button";
+  btn.addEventListener("click", () => runPplxLogin(statusEl));
+  statusEl.appendChild(btn);
 }
 
 // Shared by the Step 2 run button and the Step 3 "Run Deep Research" action.
