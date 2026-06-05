@@ -847,7 +847,14 @@ class Handler(BaseHTTPRequestHandler):
             date = str(body.get("date") or "")
             if not segment or not date:
                 return self._send_error_json(400, "segment and date are required")
-            return self._send_json(review_deep_research.review(segment, date))
+            # review() raises SystemExit (a BaseException) when the report or
+            # segment definition is missing. That is NOT caught by do_POST's
+            # `except Exception`, so it would kill the worker thread and return
+            # nothing to the browser. Translate it into a clean 400 instead.
+            try:
+                return self._send_json(review_deep_research.review(segment, date))
+            except SystemExit as exc:
+                return self._send_error_json(400, str(exc) or "missing report for this segment + date")
 
         if path == "/api/target-proposal/apply":
             body = self._read_body()
