@@ -659,6 +659,9 @@ async function openAnalysisConfig() {
   const cfg = payload.config;
   const available = payload.available || {};
   const labels = payload.labels || {};
+  let models = {};  // provider id -> [{value,label}], filled in async below
+  const optsFor = (pid) =>
+    (models[pid] || []).map((m) => `<option value="${esc(m.value)}">${esc(m.label || m.value)}</option>`).join("");
 
   const overlay = el("div", "modal-overlay");
   const panel = el("div", "modal");
@@ -678,7 +681,8 @@ async function openAnalysisConfig() {
         `<div class="backend-rank">${i + 1}</div>` +
         `<label class="backend-name"><input type="checkbox" ${p.enabled ? "checked" : ""} data-k="enabled" data-i="${i}"> ${esc(labels[p.id] || p.id)}</label>` +
         `<span class="abadge ${ok ? "ok" : "bad"}">${ok ? "available" : "not found"}</span>` +
-        `<input class="backend-model" type="text" placeholder="model (default)" value="${esc(p.model || "")}" data-k="model" data-i="${i}">`;
+        `<input class="backend-model" type="text" placeholder="model (default)" value="${esc(p.model || "")}" data-k="model" data-i="${i}" list="bk-models-${esc(p.id)}" autocomplete="off">` +
+        `<datalist id="bk-models-${esc(p.id)}">${optsFor(p.id)}</datalist>`;
       const up = el("button", "ghost backend-up", "&#8593;");
       up.type = "button";
       up.disabled = i === 0;
@@ -731,6 +735,16 @@ async function openAnalysisConfig() {
 
   render();
   document.body.appendChild(overlay);
+
+  // Fill the autocomplete lists without re-rendering, so any in-progress edits
+  // and the current row order survive.
+  api("/api/analysis-models").then((r) => {
+    models = r.models || {};
+    cfg.providers.forEach((p) => {
+      const dl = panel.querySelector("#bk-models-" + CSS.escape(p.id));
+      if (dl) dl.innerHTML = optsFor(p.id);
+    });
+  }).catch(() => {});
 }
 
 function renderBusiness(rec) {

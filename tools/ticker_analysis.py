@@ -31,6 +31,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -176,6 +177,49 @@ def _version_key(d: Path) -> tuple:
 
 def available_backends() -> dict[str, bool]:
     return {"claude": _claude_exe() is not None, "cursor": _cursor_argv_base() is not None}
+
+
+# Model suggestions for the config UI's autocomplete. Cursor exposes a real
+# list; Claude Code has no list command, so we offer the documented aliases.
+# Either way the UI keeps free-text entry, so an unlisted model still works.
+_CLAUDE_MODEL_SUGGESTIONS = [
+    {"value": "opus", "label": "opus (latest)"},
+    {"value": "sonnet", "label": "sonnet (latest)"},
+    {"value": "haiku", "label": "haiku (latest)"},
+]
+_MODELS_CACHE: dict[str, list[dict[str, str]]] | None = None
+
+
+def _cursor_models() -> list[dict[str, str]]:
+    base = _cursor_argv_base()
+    if not base:
+        return []
+    try:
+        proc = subprocess.run(base + ["--list-models"], capture_output=True,
+                              text=True, timeout=30, encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return []
+    if proc.returncode != 0:
+        return []
+    out: list[dict[str, str]] = []
+    for line in (proc.stdout or "").splitlines():
+        m = re.match(r"^\s*([A-Za-z0-9._-]+)\s+-\s+(.+?)\s*$", line)
+        if m:
+            out.append({"value": m.group(1), "label": m.group(2)})
+    return out
+
+
+def provider_models(force: bool = False) -> dict[str, list[dict[str, str]]]:
+    """Per-provider model suggestions for the config autocomplete. Cached for the
+    process lifetime since listing Cursor's models shells out (~seconds)."""
+    global _MODELS_CACHE
+    if _MODELS_CACHE is not None and not force:
+        return _MODELS_CACHE
+    _MODELS_CACHE = {
+        "claude": list(_CLAUDE_MODEL_SUGGESTIONS),
+        "cursor": _cursor_models(),
+    }
+    return _MODELS_CACHE
 
 
 # --------------------------------------------------------------------------- #

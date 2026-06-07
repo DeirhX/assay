@@ -1070,6 +1070,9 @@ class Handler(BaseHTTPRequestHandler):
                 "available": ticker_analysis.available_backends(),
                 "labels": ticker_analysis.PROVIDER_LABELS,
             })
+        if path == "/api/analysis-models":
+            force = (query.get("refresh") or ["0"])[0] in ("1", "true")
+            return self._send_json({"models": ticker_analysis.provider_models(force=force)})
         if path == "/api/deep-research/login-status":
             return self._send_json(_get_auth_state())
         if path == "/api/deep-job":
