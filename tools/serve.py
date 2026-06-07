@@ -431,6 +431,87 @@ def _start_analysis(symbol: str, refresh: bool) -> dict:
     return _job_public(job)
 
 
+# --------------------------------------------------------------------------- #
+# Deep-dive Q&A: archived, continuable follow-up threads per ticker. Stored next
+# to the analyses (gitignored cache) so they survive restarts and can be resumed.
+# --------------------------------------------------------------------------- #
+def _qa_path(symbol: str) -> Path:
+    return ANALYSIS_DIR / f"{_safe_symbol(symbol)}.qa.json"
+
+
+def _load_qa(symbol: str) -> dict:
+    sym = _safe_symbol(symbol)
+    data = _load(_qa_path(sym))
+    if not isinstance(data, dict):
+        return {"symbol": sym, "turns": []}
+    data.setdefault("symbol", sym)
+    if not isinstance(data.get("turns"), list):
+        data["turns"] = []
+    return data
+
+
+def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        sym = _safe_symbol(symbol)
+        rec = _load(RESEARCH_DIR / f"{sym}.json")
+        if rec is None:
+            progress("pulling deterministic data…")
+            with _PULL_LOCK:
+                rec = research_pull.pull_ticker(sym)
+        thread = _load_qa(sym)
+        latest = _latest_analysis(sym)
+        note = latest.get("report") if latest else None
+        _update_job(job_id, state="running", message="thinking…")
+        result = ticker_analysis.ask(rec, thread.get("turns") or [], question, note=note, progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    if not result.get("ok"):
+        _update_job(job_id, state="error", error=result.get("error") or "all Q&A backends failed")
+        return
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    thread.setdefault("created_at", now)
+    thread["updated_at"] = now
+    thread["turns"].append({"role": "user", "text": question, "ts": now})
+    thread["turns"].append({
+        "role": "assistant", "text": result["report"], "ts": now,
+        "backend": result.get("backend"), "backend_label": result.get("backend_label"),
+        "model": result.get("model"),
+    })
+    try:
+        _write_json(_qa_path(sym), thread)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"answer produced but not saved: {type(exc).__name__}: {exc}")
+        return
+    _update_job(job_id, state="done", message=f"answered via {result.get('backend_label')}",
+                result={"symbol": sym, "turns": len(thread["turns"])})
+
+
+def _qa_running(symbol: str) -> bool:
+    return jobs.find(
+        lambda j: j.get("kind") == "ticker_qa"
+        and j.get("symbol") == symbol
+        and j.get("state") in ("queued", "running")
+    )
+
+
+def _start_qa(symbol: str, question: str) -> dict:
+    sym = _safe_symbol(symbol)
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("empty question")
+    if _qa_running(sym):
+        raise RuntimeError(f"a question for {sym} is already being answered")
+    job = _new_job("ticker_qa", symbol=sym)
+    threading.Thread(target=_run_qa_job, args=(job["id"], sym, question), daemon=True).start()
+    return _job_public(job)
+
+
 def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
     if not confirm:
         raise ValueError("confirm=true is required")
@@ -1149,6 +1230,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_error_json(400, str(exc))
             rec = _latest_analysis(sym)
             return self._send_json(rec) if rec else self._send_error_json(404, f"no analysis for {sym}")
+        if path.startswith("/api/qa/"):
+            try:
+                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            return self._send_json(_load_qa(sym))
         if path.startswith("/api/history/"):
             sym = path.rsplit("/", 1)[-1].upper()
             return self._send_json({"symbol": sym, "history": research_pull.history_for(sym)})
@@ -1205,6 +1292,22 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body()
             try:
                 return self._send_json(_start_analysis(sym, bool(body.get("refresh"))))
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
+        if path.startswith("/api/qa/"):
+            try:
+                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            body = self._read_body()
+            if body.get("clear"):
+                _write_json(_qa_path(sym), {"symbol": sym, "turns": []})
+                return self._send_json(_load_qa(sym))
+            try:
+                return self._send_json(_start_qa(sym, str(body.get("question") or "")))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
 

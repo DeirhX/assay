@@ -380,12 +380,10 @@ def _finish(pid: str, provider: dict, proc: subprocess.CompletedProcess) -> dict
 _RUNNERS: dict[str, Callable[..., dict]] = {"claude": _run_claude, "cursor": _run_cursor}
 
 
-def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
-            progress: Callable[[str], None] | None = None) -> dict[str, Any]:
-    """Run the analysis through the configured backends in order, falling back on
+def _run_with_fallback(prompt: str, cfg: dict,
+                       progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Run a prompt through the configured backends in order, falling back on
     quota/auth failure. Returns the first success, or an aggregate error."""
-    cfg = cfg or load_config()
-    prompt = build_prompt(rec)
     attempts: list[str] = []
     for provider in cfg.get("providers", []):
         if not provider.get("enabled"):
@@ -409,6 +407,60 @@ def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
             progress(f"{PROVIDER_LABELS.get(pid, pid)} unavailable, trying next…")
     return {"ok": False, "error": "; ".join(attempts) or "no enabled backends available",
             "attempts": attempts}
+
+
+def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
+            progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Generate the structured in-depth note over the deterministic dossier."""
+    cfg = cfg or load_config()
+    return _run_with_fallback(build_prompt(rec), cfg, progress)
+
+
+def build_qa_prompt(rec: dict[str, Any], history: list[dict] | None,
+                    question: str, note: str | None = None) -> str:
+    """A follow-up Q&A prompt: same deterministic DATA as the note, plus the
+    prior conversation (bounded) and, if present, the latest analyst note for
+    continuity. Keeps the model grounded and the thread coherent."""
+    sym = rec.get("symbol", "?")
+    data = json.dumps(_compact_record(rec), indent=2, default=str)
+    convo = ""
+    # Keep the last ~6 exchanges so the prompt stays bounded as a thread grows;
+    # long prior answers are truncated (full text still lives on disk).
+    for t in [t for t in (history or []) if t.get("text")][-12:]:
+        who = "Q" if t.get("role") == "user" else "A"
+        txt = t["text"].strip()
+        if who == "A" and len(txt) > 1500:
+            txt = txt[:1500] + " …[truncated]"
+        convo += f"{who}: {txt}\n\n"
+    note_block = ""
+    if note:
+        note_block = "PRIOR ANALYST NOTE (context only; may be stale):\n" + note.strip()[:4000] + "\n\n"
+    convo_block = ("CONVERSATION SO FAR:\n" + convo) if convo else ""
+    return f"""You are a skeptical, evidence-driven equity analyst answering a follow-up question about ${sym} for a self-directed investor. Improve their decision; do not cheerlead.
+
+GROUND RULES
+- Answer ONLY from the DATA block (use the conversation and analyst note for continuity, not as new facts). Do not invent figures. If something needed isn't present, say "not in the data".
+- Be concise and direct. Answer the specific question asked; skip boilerplate restatement of the whole thesis.
+- Tag every company ticker with a leading $ on first mention (e.g. $AMD).
+- If the data has cross-check warnings, factor that uncertainty into your answer.
+
+{note_block}{convo_block}NEW QUESTION:
+{question.strip()}
+
+DATA
+```json
+{data}
+```
+
+Answer in Markdown."""
+
+
+def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
+        note: str | None = None, cfg: dict | None = None,
+        progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Answer a follow-up question about a ticker via the configured backends."""
+    cfg = cfg or load_config()
+    return _run_with_fallback(build_qa_prompt(rec, history, question, note), cfg, progress)
 
 
 if __name__ == "__main__":

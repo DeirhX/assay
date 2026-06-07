@@ -581,6 +581,7 @@ function renderDeepDive(rec) {
   out.appendChild(card);
 
   out.appendChild(renderAnalysisCard(rec));
+  out.appendChild(renderQaCard(rec));
 
   const biz = renderBusiness(rec);
   if (biz) out.appendChild(biz);
@@ -810,6 +811,114 @@ function highlightFirstMatch(host, re, cls) {
     return true;
   }
   return false;
+}
+
+// Archived, continuable Q&A about the ticker. Same cheap CLI backends as the
+// in-depth note; the whole thread is persisted server-side so it can be resumed
+// across sessions. Renders the archive, then an input to ask the next question.
+function renderQaCard(rec) {
+  const sym = rec.symbol;
+  const card = el("div", "card qa-card");
+  const head = el("div", "analysis-head");
+  head.appendChild(el("h2", "section", "Ask about " + esc(sym)));
+  const clearBtn = el("button", "ghost", "Clear thread");
+  clearBtn.type = "button";
+  clearBtn.title = "Discard the archived Q&A and start fresh";
+  head.appendChild(clearBtn);
+  card.appendChild(head);
+
+  const thread = el("div", "qa-thread");
+  const status = el("div", "dd-status analysis-status");
+  const form = el("div", "qa-form");
+  const input = el("textarea", "qa-input");
+  input.rows = 2;
+  input.placeholder = `Ask a follow-up about ${sym} \u2014 grounded in the data above. Ctrl/\u2318+Enter to send.`;
+  const askBtn = el("button", "primary", "Ask");
+  askBtn.type = "button";
+  form.appendChild(input);
+  form.appendChild(askBtn);
+  card.appendChild(thread);
+  card.appendChild(status);
+  card.appendChild(form);
+
+  function renderThread(turns) {
+    thread.innerHTML = "";
+    if (!turns.length) {
+      clearBtn.hidden = true;
+      thread.appendChild(el("p", "hint",
+        "No questions yet. Ask anything about the numbers, momentum, valuation, or how it sits " +
+        "in your portfolio. The thread is archived so you can pick it up later."));
+      return;
+    }
+    clearBtn.hidden = false;
+    turns.forEach((t) => {
+      if (t.role === "user") {
+        const q = el("div", "qa-turn qa-q");
+        q.appendChild(el("div", "qa-role", "You"));
+        q.appendChild(el("div", "qa-text", esc(t.text)));
+        thread.appendChild(q);
+      } else {
+        const a = el("div", "qa-turn qa-a");
+        const meta = [t.backend_label, (t.model && t.model !== "(default)") ? t.model : null,
+                      t.ts ? relTime(t.ts) : null].filter(Boolean).map(esc).join(" \u00b7 ");
+        a.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
+        const prose = el("div", "prose qa-prose");
+        prose.innerHTML = mdToHtml(t.text || "");
+        linkifyTickers(prose);
+        a.appendChild(prose);
+        thread.appendChild(a);
+      }
+    });
+  }
+
+  async function load() {
+    let data;
+    try { data = await api("/api/qa/" + encodeURIComponent(sym)); }
+    catch (_e) { data = { turns: [] }; }
+    await ensureTickerSet();
+    renderThread(data.turns || []);
+  }
+
+  async function ask() {
+    const q = input.value.trim();
+    if (!q) return;
+    askBtn.disabled = true;
+    input.disabled = true;
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> thinking&hellip;`;
+    try {
+      const start = await api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q });
+      await pollDeepJob(start.id, status, async () => {
+        status.textContent = "";
+        input.value = "";
+        await load();
+      });
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "question failed: " + e.message;
+    } finally {
+      askBtn.disabled = false;
+      input.disabled = false;
+    }
+  }
+
+  askBtn.addEventListener("click", ask);
+  input.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); ask(); }
+  });
+  clearBtn.addEventListener("click", async () => {
+    if (!confirm(`Clear the archived Q&A thread for ${sym}?`)) return;
+    try {
+      const data = await api("/api/qa/" + encodeURIComponent(sym), "POST", { clear: true });
+      renderThread(data.turns || []);
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "clear failed: " + e.message;
+    }
+  });
+
+  load();
+  return card;
 }
 
 // Lightweight modal to edit the CLI backend policy: which agents run, in what
