@@ -43,6 +43,15 @@ function relAge(iso) {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
+// Local date + hour:minute for snapshot/sync stamps (generated_at is ISO UTC).
+function fmtStamp(iso) {
+  if (!iso) return "n/a";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso).slice(0, 16).replace("T", " ");
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 const fmtPrice = (v) => (v == null ? "n/a" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const fmtX = (v) => (v == null ? "n/a" : Number(v).toFixed(1) + "x");
 const fmtPct = (v) => (v == null ? "n/a" : (v >= 0 ? "+" : "") + Number(v).toFixed(1) + "%");
@@ -193,6 +202,26 @@ window.addEventListener("popstate", (event) => {
 
 $("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
 
+$("#hold-sync").addEventListener("click", async () => {
+  const btn = $("#hold-sync");
+  const status = $("#hold-status");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  status.classList.remove("err");
+  status.textContent = "Re-pulling portfolio from IBKR (read-only, can take a minute)…";
+  try {
+    await api("/api/holdings/sync", "POST", {});
+    await loadHoldings();
+  } catch (e) {
+    status.textContent = "Sync failed: " + e.message;
+    status.classList.add("err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+});
+
 // ---- holdings -------------------------------------------------------------
 async function loadHoldings() {
   const status = $("#hold-status");
@@ -205,8 +234,9 @@ async function loadHoldings() {
     (h.positions || []).forEach((p) => { state.holdings[p.symbol] = p.percent_of_nav; });
     status.innerHTML =
       `NAV ${sensitive(`${Math.round(h.net_asset_value || 0).toLocaleString()} CZK`, "total NAV")} · ` +
-      `invested ${sensitive(`${Math.round(h.invested_value || 0).toLocaleString()} CZK`, "invested value")} · ` +
-      `snapshot ${(h.generated_at || "").slice(0, 10)}`;
+      `invested ${sensitive(`${Math.round(h.invested_value || 0).toLocaleString()} CZK`, "invested value")}`;
+    const synced = $("#hold-synced");
+    if (synced) synced.textContent = h.generated_at ? `Last synced ${fmtStamp(h.generated_at)}` : "No snapshot yet";
     out.innerHTML = "";
 
     const rows = (h.positions || [])
@@ -362,6 +392,9 @@ function renderDeepDive(rec) {
   card.appendChild(badges);
   out.appendChild(card);
 
+  const biz = renderBusiness(rec);
+  if (biz) out.appendChild(biz);
+
   const chart = renderPriceChart(rec);
   if (chart) out.appendChild(chart);
 
@@ -385,10 +418,16 @@ function renderDeepDive(rec) {
   dcard.appendChild(dgrid);
   out.appendChild(dcard);
 
-  // cross-checks (the trust layer)
+  // cross-checks (the trust layer) -- the console's judgement on the data.
+  // Collapsible, but defaults open whenever there is something to read so the
+  // findings aren't hidden behind a click.
   const checks = rec.cross_checks || [];
-  const trust = el("div", "card");
-  trust.appendChild(el("h2", "section", "Data trust" + dataQualityTag(checks)));
+  const hasErrors = !!(rec.errors && rec.errors.length);
+  const meta = checks.length ? `${checks.length} check${checks.length === 1 ? "" : "s"}` : "no checks";
+  const { details: trust, body: trustBody } = collapsibleCard(
+    "Data trust" + dataQualityTag(checks),
+    { meta, open: checks.length > 0 || hasErrors },
+  );
   const list = el("div", "checks");
   if (!checks.length) {
     list.appendChild(el("div", "check INFO", `<span class="sev">INFO</span><span>No cross-checks produced.</span>`));
@@ -397,9 +436,9 @@ function renderDeepDive(rec) {
     list.appendChild(el("div", "check " + c.severity,
       `<span class="sev">${c.severity}</span><span><span class="metric">${esc(c.metric)}:</span> ${esc(c.message)}</span>`));
   });
-  trust.appendChild(list);
-  if (rec.errors && rec.errors.length) {
-    trust.appendChild(el("div", "status err", "source errors: " + rec.errors.map(esc).join("; ")));
+  trustBody.appendChild(list);
+  if (hasErrors) {
+    trustBody.appendChild(el("div", "status err", "source errors: " + rec.errors.map(esc).join("; ")));
   }
   out.appendChild(trust);
 
@@ -441,8 +480,47 @@ function renderDeepDive(rec) {
   out.appendChild(renderThesis(rec));
 }
 
-function renderPriceChart(rec) {
-  const history = rec.price_history || {};
+function renderBusiness(rec) {
+  const p = rec.profile || {};
+  if (!p.summary && !p.sector && !p.industry) return null;
+
+  const card = el("div", "card biz-card");
+  card.appendChild(el("h2", "section", "Business"));
+
+  const bits = [];
+  if (p.sector) bits.push(esc(p.sector));
+  if (p.industry) bits.push(esc(p.industry));
+  if (p.country) bits.push(esc(p.country));
+  if (p.employees) bits.push(`${Number(p.employees).toLocaleString()} employees`);
+  if (bits.length) card.appendChild(el("div", "biz-meta", bits.join(" · ")));
+  if (p.website) {
+    const host = String(p.website).replace(/^https?:\/\//, "").replace(/\/$/, "");
+    card.appendChild(el("div", "biz-meta",
+      `<a href="${esc(p.website)}" target="_blank" rel="noopener">${esc(host)} \u2197</a>`));
+  }
+
+  if (p.summary) {
+    const body = el("p", "biz-summary clamp", esc(p.summary));
+    card.appendChild(body);
+    if (p.summary.length > 320) {
+      const toggle = el("button", "linklike biz-toggle", "Show more");
+      toggle.type = "button";
+      toggle.addEventListener("click", () => {
+        const open = body.classList.toggle("expanded");
+        toggle.textContent = open ? "Show less" : "Show more";
+      });
+      card.appendChild(toggle);
+    }
+  }
+  return card;
+}
+
+const PRICE_RANGES = [
+  ["1mo", "1M"], ["3mo", "3M"], ["6mo", "6M"],
+  ["1y", "1Y"], ["5y", "5Y"], ["max", "Max"],
+];
+
+function chartSvg(rec, history) {
   const points = (history.points || [])
     .map((p) => ({ date: p.date, close: Number(p.close) }))
     .filter((p) => p.date && Number.isFinite(p.close));
@@ -469,37 +547,132 @@ function renderPriceChart(rec) {
   const first = points[0], last = points[points.length - 1];
   const change = first.close ? (last.close / first.close - 1) * 100 : null;
   const trend = pctClass(change);
-  const dateLabel = (value) => new Date(value + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const spanDays = (new Date(last.date) - new Date(first.date)) / 86400000;
+  const dateLabel = (value) => {
+    const d = new Date(value + "T00:00:00Z");
+    return spanDays > 420
+      ? d.toLocaleDateString(undefined, { month: "short", year: "numeric" })
+      : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  };
   const rangeLabel = [history.range, history.interval].filter(Boolean).join(" / ") || "daily closes";
   const sourceLabel = [history.source || "unknown", rangeLabel, `${points.length} points`].join(" · ");
 
-  const card = el("div", "card price-chart-card");
-  card.innerHTML =
-    `<div class="chart-head">` +
-      `<div><h2 class="section">Price history</h2><div class="chart-source">${esc(sourceLabel)}</div></div>` +
-      `<div class="chart-last"><span>${esc(fmtPrice(last.close))}</span><strong class="${trend}">${esc(fmtPct(change))}</strong></div>` +
-    `</div>` +
-    `<svg class="price-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(rec.symbol)} one year price history">` +
+  const lo = min + buffer, hi = max - buffer;
+  const yTicks = 4;  // top, two interior, bottom
+  const yAxis = Array.from({ length: yTicks }, (_, i) => {
+    const v = hi - (i / (yTicks - 1)) * (hi - lo);
+    const yp = y(v).toFixed(1);
+    const interior = i > 0 && i < yTicks - 1;
+    return (
+      (interior ? `<line class="chart-grid" x1="${pad.left}" y1="${yp}" x2="${width - pad.right}" y2="${yp}"></line>` : "") +
+      `<text class="chart-label" x="${pad.left - 10}" y="${yp}" text-anchor="end" dominant-baseline="middle">${esc(fmtPrice(v))}</text>`
+    );
+  }).join("");
+
+  const svg =
+    `<svg class="price-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(rec.symbol)} ${esc(rangeLabel)} price history">` +
       `<line class="chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>` +
       `<line class="chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>` +
-      `<text class="chart-label" x="${pad.left - 10}" y="${y(max - buffer).toFixed(1)}" text-anchor="end">${esc(fmtPrice(max - buffer))}</text>` +
-      `<text class="chart-label" x="${pad.left - 10}" y="${y(min + buffer).toFixed(1)}" text-anchor="end">${esc(fmtPrice(min + buffer))}</text>` +
+      yAxis +
       `<text class="chart-label" x="${pad.left}" y="${height - 9}">${esc(dateLabel(first.date))}</text>` +
       `<text class="chart-label" x="${width - pad.right}" y="${height - 9}" text-anchor="end">${esc(dateLabel(last.date))}</text>` +
       `<polygon class="chart-area ${trend}" points="${area}"></polygon>` +
       `<polyline class="chart-line ${trend}" points="${line}"></polyline>` +
       `<circle class="chart-dot" cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.close).toFixed(1)}" r="3.5"></circle>` +
     `</svg>`;
+  const lastHtml = `<span>${esc(fmtPrice(last.close))}</span><strong class="${trend}">${esc(fmtPct(change))}</strong>`;
+  return { svg, sourceLabel, lastHtml };
+}
+
+function renderPriceChart(rec) {
+  const stored = rec.price_history || {};
+  if (!chartSvg(rec, stored)) return null;
+
+  const card = el("div", "card price-chart-card");
+  const head = el("div", "chart-head");
+  head.innerHTML =
+    `<div><h2 class="section">Price history</h2><div class="chart-source"></div></div>` +
+    `<div class="chart-last"></div>`;
+  card.appendChild(head);
+  const ranges = el("div", "chart-ranges");
+  card.appendChild(ranges);
+  const body = el("div", "chart-body");
+  // The canvas keeps the last drawn chart while a new range loads, so the card's
+  // height never changes; a transparent overlay just dims it and shows a spinner.
+  const canvas = el("div", "chart-canvas");
+  const overlay = el("div", "chart-overlay", `<span class="spinner"></span>`);
+  body.appendChild(canvas);
+  body.appendChild(overlay);
+  card.appendChild(body);
+
+  const srcEl = head.querySelector(".chart-source");
+  const lastEl = head.querySelector(".chart-last");
+  const cache = { "1y": stored };  // stored series is the 1y window; reuse it
+  let active = "1y";
+
+  function paint(history) {
+    const drawn = chartSvg(rec, history);
+    if (!drawn) {
+      canvas.innerHTML = `<div class="hint">No price data for this range.</div>`;
+      srcEl.textContent = "";
+      lastEl.innerHTML = "";
+      return;
+    }
+    canvas.innerHTML = drawn.svg;
+    srcEl.textContent = drawn.sourceLabel;
+    lastEl.innerHTML = drawn.lastHtml;
+  }
+
+  async function select(key, label, btn) {
+    active = key;
+    [...ranges.children].forEach((b) => b.classList.toggle("active", b === btn));
+    if (cache[key]) { paint(cache[key]); return; }
+    body.classList.add("loading");  // dim + spinner; chart stays put underneath
+    try {
+      const ph = await api(`/api/price-history/${encodeURIComponent(rec.symbol)}?range=${encodeURIComponent(key)}`);
+      cache[key] = ph;
+      if (active === key) paint(ph);
+    } catch (e) {
+      if (active === key) srcEl.innerHTML = `<span class="err">Could not load ${esc(label)}: ${esc(e.message)}</span>`;
+    } finally {
+      if (active === key) body.classList.remove("loading");
+    }
+  }
+
+  PRICE_RANGES.forEach(([key, label]) => {
+    const btn = el("button", "chart-range" + (key === "1y" ? " active" : ""), esc(label));
+    btn.type = "button";
+    btn.addEventListener("click", () => select(key, label, btn));
+    ranges.appendChild(btn);
+  });
+
+  paint(stored);
   return card;
 }
 
+// A <details>-based card. `open` decides the initial state; the meta sits on the
+// summary line so a collapsed card still tells you what's inside.
+function collapsibleCard(titleHtml, { meta = "", open = false } = {}) {
+  const details = el("details", "card collapse");
+  details.open = !!open;
+  const summary = el("summary", "collapse-head");
+  summary.innerHTML =
+    `<span class="collapse-title">${titleHtml}</span>` +
+    (meta ? `<span class="collapse-meta">${meta}</span>` : "") +
+    `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
+  details.appendChild(summary);
+  const body = el("div", "collapse-body");
+  details.appendChild(body);
+  return { details, body };
+}
+
 function renderHistory(rec) {
-  const card = el("div", "card");
-  card.appendChild(el("h2", "section", "Recent pulls"));
   const rows = rec.history || [];
+  const meta = rows.length ? `${rows.length} snapshot${rows.length === 1 ? "" : "s"}` : "none yet";
+  const { details, body } = collapsibleCard("Recent pulls", { meta });
   if (!rows.length) {
-    card.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
-    return card;
+    body.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
+    return details;
   }
   const table = el("table", "history-table");
   table.innerHTML =
@@ -517,8 +690,8 @@ function renderHistory(rec) {
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
-  card.appendChild(table);
-  return card;
+  body.appendChild(table);
+  return details;
 }
 
 function dataQualityTag(checks) {
@@ -1515,13 +1688,28 @@ function mdToHtml(md) {
   let table = [];
   const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  const flushTable = () => { if (table.length) { out.push(`<pre class="md-table">${esc(table.join("\n"))}</pre>`); table = []; } };
+  const flushTable = () => {
+    if (!table.length) return;
+    const rows = table.map((l) => l.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim()));
+    const isSep = (r) => r.length && r.every((c) => /^:?-+:?$/.test(c.replace(/\s/g, "")));
+    if (rows.length >= 2 && isSep(rows[1])) {
+      const head = rows[0];
+      const body = rows.slice(2).filter((r) => !isSep(r));
+      let html = '<table class="md-tbl"><thead><tr>' + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead>";
+      if (body.length) html += "<tbody>" + body.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+      out.push(html + "</table>");
+    } else {
+      out.push(`<pre class="md-table">${esc(table.join("\n"))}</pre>`);
+    }
+    table = [];
+  };
   String(md).replace(/\r\n/g, "\n").split("\n").forEach((raw) => {
     const line = raw.replace(/\s+$/, "");
     let m;
     if (line.trim().startsWith("|")) { flushPara(); closeList(); table.push(line); return; }
     flushTable();
     if (!line.trim()) { flushPara(); closeList(); return; }
+    if (/^-{3,}$/.test(line.trim())) { flushPara(); closeList(); out.push("<hr>"); return; }
     if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
       flushPara(); closeList();
       out.push(`<h${Math.min(m[1].length + 1, 6)}>${inline(m[2])}</h${Math.min(m[1].length + 1, 6)}>`);
@@ -1553,38 +1741,75 @@ function markActiveAnalysis(stem) {
     row.classList.toggle("active", row.dataset.stem === stem));
 }
 
+// A labelled card for the parts the console synthesizes on top of the raw run
+// (prompt, review gate, citations) -- visually distinct from the report itself.
+function synthBox(title, note) {
+  const box = el("section", "synth-box");
+  box.innerHTML =
+    `<div class="synth-box-head"><span class="synth-box-title">${esc(title)}</span>` +
+    (note ? `<span class="synth-box-note">${esc(note)}</span>` : "") +
+    `</div><div class="synth-box-body"></div>`;
+  return box;
+}
+
 async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
   list.innerHTML = '<div class="hint">Loading…</div>';
-  let runs;
+  let runs = [];
+  let reports = [];
   try {
-    runs = (await api("/api/deep-runs")).runs || [];
+    [runs, reports] = await Promise.all([
+      api("/api/deep-runs").then((d) => d.runs || []),
+      api("/api/reports").then((d) => d.reports || []).catch(() => []),
+    ]);
   } catch (e) {
     list.innerHTML = `<div class="status err">could not load analyses: ${esc(e.message)}</div>`;
     return;
   }
   state.analysesRuns = runs;
-  if (!runs.length) {
-    list.innerHTML = '<div class="hint">No saved analyses yet. Run one from the Pipeline tab.</div>';
+
+  list.innerHTML = "";
+  if (runs.length) {
+    list.appendChild(el("div", "analyses-group-label", "Deep Research"));
+    runs.forEach((r) => {
+      const row = el("button", "analysis-row");
+      row.dataset.stem = r.stem;
+      const age = relAge(r.generated_at);
+      row.innerHTML =
+        `<div class="analysis-row-title">${esc(r.title || r.stem)}</div>` +
+        `<div class="analysis-row-meta">${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources</div>` +
+        (analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "");
+      row.addEventListener("click", () => loadAnalysis(r.stem));
+      list.appendChild(row);
+    });
+  }
+  if (reports.length) {
+    list.appendChild(el("div", "analyses-group-label", "Written reports"));
+    reports.forEach((rp) => {
+      const a = el("a", "analysis-row report-row");
+      a.href = rp.href;
+      const tag = rp.kind === "ticker" ? (rp.symbol || "ticker") : "thematic";
+      a.innerHTML =
+        `<div class="analysis-row-title">${esc(rp.title)} <span class="open-ext">↗</span></div>` +
+        `<div class="analysis-row-meta">${esc(tag)} · static page</div>`;
+      list.appendChild(a);
+    });
+  }
+  if (!runs.length && !reports.length) {
+    list.innerHTML = '<div class="hint">No analyses yet. Run one from the Pipeline tab.</div>';
     $("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
     return;
   }
-  list.innerHTML = "";
-  runs.forEach((r) => {
-    const row = el("button", "analysis-row");
-    row.dataset.stem = r.stem;
-    const age = relAge(r.generated_at);
-    row.innerHTML =
-      `<div class="analysis-row-title">${esc(r.title || r.stem)}</div>` +
-      `<div class="analysis-row-meta">${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources</div>` +
-      (analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "");
-    row.addEventListener("click", () => loadAnalysis(r.stem));
-    list.appendChild(row);
-  });
-  const urlRun = navFromUrl().run;
-  const toOpen = (urlRun && runs.some((r) => r.stem === urlRun)) ? urlRun : runs[0].stem;
-  await loadAnalysis(toOpen, { push: false });
+
+  if (runs.length) {
+    const urlRun = navFromUrl().run;
+    const toOpen = (urlRun && runs.some((r) => r.stem === urlRun)) ? urlRun : runs[0].stem;
+    await loadAnalysis(toOpen, { push: false });
+  } else {
+    $("#analyses-reader").innerHTML =
+      '<div class="hint">No Deep Research runs yet — pick a written report on the left, or run one from the Pipeline tab.</div>';
+  }
 }
 
 async function loadAnalysis(stem, { push = true } = {}) {
@@ -1606,34 +1831,56 @@ async function loadAnalysis(stem, { push = true } = {}) {
   const citations = sources.citations || [];
   const age = relAge(meta.generated_at);
 
+  let prompt = "";
+  if (meta.segment) {
+    try {
+      prompt = (await api("/api/deep-prompt?segment=" + encodeURIComponent(meta.segment))).prompt || "";
+    } catch (_e) { /* prompt is best-effort context */ }
+  }
+
   reader.innerHTML = "";
-  const head = el("div", "analysis-header");
+
+  // Synthesized summary header (title + metadata the console attaches on top).
+  const head = el("div", "analysis-header synth");
   let sub = `Deep Research${meta.date ? " · " + esc(meta.date) : ""}${age ? " · " + esc(age) : ""} · ${citations.length} sources`;
   if (sources.source_url)
     sub += ` · <a href="${esc(sources.source_url)}" target="_blank" rel="noopener">open in Perplexity ↗</a>`;
   head.innerHTML =
+    `<div class="synth-tag">Console summary</div>` +
     `<h2>${esc(meta.title || stem)}</h2>` +
     `<div class="analysis-sub">${sub}</div>` +
     (analysisBadges(meta) ? `<div class="analysis-row-badges">${analysisBadges(meta)}</div>` : "");
   reader.appendChild(head);
 
+  // The report itself — verbatim Perplexity output, framed as a document.
   if (rec.report) {
-    const sec = el("section", "analysis-section");
-    sec.appendChild(el("h3", null, "Report"));
-    sec.appendChild(el("div", "prose", mdToHtml(rec.report)));
-    reader.appendChild(sec);
+    const doc = el("section", "report-doc");
+    doc.innerHTML =
+      `<div class="report-doc-head"><span class="report-doc-title">Deep Research report</span>` +
+      `<span class="report-doc-note">Verbatim Perplexity output — treat numbers as claims to verify</span></div>`;
+    doc.appendChild(el("div", "report-doc-body prose", mdToHtml(rec.report)));
+    reader.appendChild(doc);
+  }
+
+  // Everything below this line is generated/extracted by the console, not the report.
+  reader.appendChild(el("div", "synth-divider", "<span>Synthesized by the console</span>"));
+
+  if (prompt) {
+    const box = synthBox("Prompt", "What the console asks Perplexity for this segment");
+    const det = el("details", "prompt-details");
+    det.innerHTML = `<summary>Show prompt</summary><pre class="prompt-text">${esc(prompt)}</pre>`;
+    box.querySelector(".synth-box-body").appendChild(det);
+    reader.appendChild(box);
   }
 
   if (rec.review) {
-    const sec = el("section", "analysis-section");
-    sec.appendChild(el("h3", null, "Review gate"));
-    sec.appendChild(el("div", "prose", mdToHtml(rec.review)));
-    reader.appendChild(sec);
+    const box = synthBox("Review gate", "Local cross-check of the report against your holdings");
+    box.querySelector(".synth-box-body").appendChild(el("div", "prose", mdToHtml(rec.review)));
+    reader.appendChild(box);
   }
 
   if (citations.length) {
-    const sec = el("section", "analysis-section");
-    sec.appendChild(el("h3", null, `Sources (${citations.length})`));
+    const box = synthBox(`Sources (${citations.length})`, "Citations extracted from the run");
     const ul = el("ol", "cite-list");
     citations.forEach((c) => {
       const li = el("li", "cite");
@@ -1648,8 +1895,8 @@ async function loadAnalysis(stem, { push = true } = {}) {
         (desc ? `<div class="cite-desc">${esc(desc)}</div>` : "");
       ul.appendChild(li);
     });
-    sec.appendChild(ul);
-    reader.appendChild(sec);
+    box.querySelector(".synth-box-body").appendChild(ul);
+    reader.appendChild(box);
   }
 
   reader.scrollTop = 0;

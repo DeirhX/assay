@@ -183,10 +183,30 @@ def _round(x: float | None) -> float | None:
     return None if x is None else round(x, 2)
 
 
+def _profile(ap: dict[str, Any]) -> dict[str, Any] | None:
+    """Business overview from Yahoo's assetProfile module: what the company
+    actually does, plus the sector/industry/HQ/headcount tags. Returns None if
+    Yahoo gave us nothing usable so the caller can skip the section entirely."""
+    if not ap:
+        return None
+    employees = ap.get("fullTimeEmployees")
+    if isinstance(employees, dict):  # occasionally wrapped like the numbers
+        employees = employees.get("raw")
+    out = {
+        "summary": (ap.get("longBusinessSummary") or "").strip() or None,
+        "sector": ap.get("sector") or None,
+        "industry": ap.get("industry") or None,
+        "country": ap.get("country") or None,
+        "website": ap.get("website") or None,
+        "employees": int(employees) if isinstance(employees, (int, float)) else None,
+    }
+    return out if any(out.values()) else None
+
+
 def fundamentals(symbol: str) -> dict[str, Any]:
     """Market cap, multiples, shares, margins, revenue from quoteSummary."""
     opener, crumb = _session()
-    modules = "price,summaryDetail,defaultKeyStatistics,financialData"
+    modules = "assetProfile,price,summaryDetail,defaultKeyStatistics,financialData"
     url = (
         f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/"
         f"{urllib.parse.quote(symbol)}?modules={modules}"
@@ -213,6 +233,7 @@ def fundamentals(symbol: str) -> dict[str, Any]:
     sd = res.get("summaryDetail", {})
     ks = res.get("defaultKeyStatistics", {})
     fd = res.get("financialData", {})
+    ap = res.get("assetProfile", {})
 
     rev = _raw(fd.get("totalRevenue"))
     gross_margin = _raw(fd.get("grossMargins"))
@@ -221,6 +242,7 @@ def fundamentals(symbol: str) -> dict[str, Any]:
     return {
         "name": price.get("longName") or price.get("shortName"),
         "currency": price.get("currency"),
+        "profile": _profile(ap),
         "price": metric(_raw(price.get("regularMarketPrice")), src),
         "market_cap_usd_b": metric(usd_b(_raw(sd.get("marketCap"))), src),
         "shares_out_b": metric(

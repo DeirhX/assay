@@ -42,8 +42,29 @@ def fundamentals(symbol: str) -> dict[str, Any] | None:
     mcap = p.get("mktCap")
     return {
         "name": p.get("companyName"),
+        "profile": _profile(p),
         "price": metric(p.get("price"), src),
         "market_cap_usd_b": metric((mcap / 1e9) if mcap else None, src),
         "pe_ttm": metric(r.get("peRatioTTM"), src),
         "ps": metric(r.get("priceToSalesRatioTTM"), src),
     }
+
+
+def _profile(p: dict[str, Any]) -> dict[str, Any] | None:
+    """Business overview from FMP's /profile -- the fallback for names Yahoo's
+    assetProfile leaves blank. Same shape as the Yahoo profile so research_pull
+    can merge them field-by-field. Returns None when nothing usable came back."""
+    employees = p.get("fullTimeEmployees")
+    try:
+        employees = int(employees) if employees not in (None, "") else None
+    except (TypeError, ValueError):
+        employees = None
+    out = {
+        "summary": (p.get("description") or "").strip() or None,
+        "sector": p.get("sector") or None,
+        "industry": p.get("industry") or None,
+        "country": p.get("country") or None,
+        "website": p.get("website") or None,
+        "employees": employees,
+    }
+    return out if any(out.values()) else None

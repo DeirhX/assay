@@ -10,10 +10,10 @@
   <header class="topbar">
     <h1>Research Console</h1>
     <div class="tabs">
+      <button class="tab" data-view="analyses">Analyses</button>
       <button class="tab active" data-view="deepdive">Deep dive</button>
       <button class="tab" data-view="segment">Segment</button>
       <button class="tab" data-view="pipeline">Pipeline</button>
-      <button class="tab" data-view="analyses">Analyses</button>
       <button class="tab" data-view="holdings">Holdings</button>
     </div>
     <div class="spacer"></div>
@@ -21,9 +21,6 @@
     <button class="ghost privacy-inline" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">Settings</button>
     <nav>
       <a href="/next-steps.html">Plan</a>
-      <a href="/loser-position-recovery.html">Losers</a>
-      <a href="/amd-detail.html">AMD</a>
-      <a href="/arm-detail.html">ARM</a>
     </nav>
   </header>
 
@@ -308,6 +305,10 @@
 
     <!-- HOLDINGS -->
     <section class="view" id="view-holdings">
+      <div class="hold-controls">
+        <button class="primary" id="hold-sync" type="button">Resync from IBKR</button>
+        <span class="hint" id="hold-synced"></span>
+      </div>
       <div class="status" id="hold-status"></div>
       <div id="hold-result"></div>
     </section>

@@ -220,11 +220,34 @@ h2.section { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; 
   margin-bottom: 8px;
 }
 .chart-source { color: var(--muted); font-size: 12px; }
+.chart-ranges { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; }
+.chart-range {
+  background: var(--panel-2, rgba(127, 127, 127, .08));
+  border: 1px solid var(--border); color: var(--muted);
+  padding: 3px 11px; height: auto; font-size: 12px; font-weight: 600;
+  border-radius: 999px; cursor: pointer; line-height: 1.4;
+}
+.chart-range:hover { color: var(--text); border-color: var(--muted); }
+.chart-range.active {
+  background: var(--accent); border-color: var(--accent);
+  color: #fff;
+}
+.chart-body { position: relative; min-height: 200px; }
+.chart-canvas { transition: opacity .12s ease; }
+.chart-body.loading .chart-canvas { opacity: .4; }
+.chart-overlay {
+  position: absolute; inset: 0; display: none;
+  align-items: center; justify-content: center; pointer-events: none;
+}
+.chart-body.loading .chart-overlay { display: flex; }
+.chart-overlay .spinner { width: 24px; height: 24px; border-width: 3px; }
+.chart-source .err { color: var(--bad); }
 .chart-last { text-align: right; font-variant-numeric: tabular-nums; }
 .chart-last span { display: block; font-size: 22px; font-weight: 800; }
 .chart-last strong { font-size: 13px; }
 .price-chart { width: 100%; height: auto; display: block; margin-top: 8px; }
 .chart-axis { stroke: var(--border); stroke-width: 1; }
+.chart-grid { stroke: var(--border); stroke-width: 1; opacity: .45; stroke-dasharray: 3 4; }
 .chart-label { fill: var(--muted); font-size: 11px; }
 .chart-area { opacity: .12; }
 .chart-area.good, .chart-line.good { fill: var(--good); stroke: var(--good); }
@@ -341,6 +364,39 @@ button.linklike {
 }
 button.linklike:hover { color: var(--accent); }
 button.linklike[hidden] { display: none !important; }
+
+/* business overview on the deep-dive */
+.biz-card .biz-meta { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.biz-card .biz-meta a { color: var(--accent); text-decoration: none; }
+.biz-card .biz-meta a:hover { text-decoration: underline; }
+.biz-summary {
+  margin: 12px 0 0; color: var(--text); font-size: 14px; line-height: 1.6;
+}
+.biz-summary.clamp {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.biz-summary.clamp.expanded { -webkit-line-clamp: unset; overflow: visible; }
+.biz-toggle { margin-top: 8px; }
+
+/* collapsible <details> cards (Recent pulls, Data trust) */
+details.collapse { padding: 0; }
+details.collapse > .collapse-head {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  padding: 16px 20px; list-style: none; user-select: none;
+}
+details.collapse > .collapse-head::-webkit-details-marker { display: none; }
+.collapse-head .collapse-title {
+  font-size: 15px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
+}
+.collapse-head .collapse-meta { color: var(--muted); font-size: 12px; }
+.collapse-head .collapse-caret {
+  margin-left: auto; color: var(--muted); font-size: 18px; line-height: 1;
+  transition: transform .15s ease;
+}
+details.collapse[open] > .collapse-head .collapse-caret { transform: rotate(90deg); }
+.collapse-head:hover .collapse-title { color: var(--accent); }
+.collapse-body { padding: 0 20px 18px; }
 .stepper { list-style: none; display: flex; gap: 10px; padding: 0; margin: 0 0 16px; }
 .step-pill {
   flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 9px;
@@ -446,14 +502,26 @@ button.linklike[hidden] { display: none !important; }
 
 @media (max-width: 620px) { .dossier-grid { grid-template-columns: 1fr; } }
 
+.hold-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+.hold-controls .hint { margin: 0; }
+#hold-synced { color: var(--muted); font-size: 13px; }
+
 /* ---- analyses ----------------------------------------------------------- */
 .analyses-head h2 { margin: 0 0 4px; font-size: 20px; }
 .analyses-head .hint { max-width: 760px; }
 .analyses-layout {
-  display: grid; grid-template-columns: 320px 1fr; gap: 18px; margin-top: 16px;
+  display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; margin-top: 16px;
   align-items: start;
 }
 .analyses-list { display: flex; flex-direction: column; gap: 8px; }
+.analyses-group-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  margin: 12px 2px 2px; font-weight: 600;
+}
+.analyses-group-label:first-child { margin-top: 0; }
+a.analysis-row { text-decoration: none; }
+a.analysis-row:hover { text-decoration: none; }
+.analysis-row .open-ext { color: var(--muted); font-size: 12px; }
 .analysis-row {
   display: block; width: 100%; text-align: left; cursor: pointer;
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft);
@@ -473,20 +541,62 @@ button.linklike[hidden] { display: none !important; }
 
 .analyses-reader {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft);
-  padding: 22px 26px; min-height: 240px;
+  padding: 22px 26px; min-height: 240px; min-width: 0; overflow-wrap: break-word;
 }
-.analysis-header { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 6px; }
+.analysis-header { padding-bottom: 14px; margin-bottom: 6px; }
 .analysis-header h2 { margin: 0 0 6px; font-size: 22px; }
 .analysis-sub { color: var(--muted); font-size: 13px; }
 .analysis-sub a { color: var(--accent); }
 .analysis-header .analysis-row-badges { margin-top: 10px; }
-.analysis-section { margin-top: 22px; }
-.analysis-section > h3 {
-  margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--muted);
+.synth-tag {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em; font-weight: 700;
+  color: var(--accent); margin-bottom: 6px;
 }
 
-.prose { color: var(--text); font-size: 14.5px; line-height: 1.65; }
+/* The report = verbatim Perplexity output, framed as a contained document. */
+.report-doc {
+  margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius-soft);
+  background: var(--panel-2); overflow: hidden;
+}
+.report-doc-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 11px 18px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.02);
+}
+.report-doc-title { font-weight: 700; font-size: 14px; }
+.report-doc-note { color: var(--muted); font-size: 12px; }
+.report-doc-body { padding: 20px 24px; }
+
+/* Labelled separator between the report and everything we bolt on. */
+.synth-divider {
+  display: flex; align-items: center; gap: 12px; margin: 28px 0 12px;
+  color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+}
+.synth-divider::before, .synth-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
+
+/* Synthesized parts (prompt, review gate, sources) -- accent-tinted boxes so
+   they never read as part of the report. */
+.synth-box {
+  margin: 14px 0; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-soft); background: rgba(130,170,255,.05);
+}
+.synth-box-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.synth-box-title { font-weight: 600; font-size: 13px; }
+.synth-box-note { color: var(--muted); font-size: 12px; }
+.synth-box-body { padding: 14px 16px; }
+.synth-box-body > .prose:first-child, .synth-box-body > .cite-list { margin-top: 0; }
+.prompt-details summary { cursor: pointer; color: var(--accent); font-size: 13px; user-select: none; }
+.prompt-text {
+  white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; overflow-x: auto; margin: 10px 0 0;
+}
+
+.prose { color: var(--text); font-size: 14.5px; line-height: 1.65; min-width: 0; overflow-wrap: break-word; }
 .prose h2, .prose h3, .prose h4, .prose h5 { margin: 20px 0 8px; line-height: 1.3; }
 .prose h2 { font-size: 18px; }
 .prose h3 { font-size: 16px; }
@@ -502,8 +612,18 @@ button.linklike[hidden] { display: none !important; }
 }
 .prose .md-table {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px 12px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  padding: 10px 12px; overflow-x: auto; max-width: 100%; font-size: 12.5px; line-height: 1.5; color: var(--muted);
 }
+.prose hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
+.prose table.md-tbl {
+  border-collapse: collapse; width: 100%; max-width: 100%; margin: 14px 0; font-size: 13.5px;
+  display: block; overflow-x: auto;
+}
+.prose table.md-tbl th, .prose table.md-tbl td {
+  border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top;
+}
+.prose table.md-tbl th { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.prose table.md-tbl tbody tr:nth-child(even) td { background: rgba(255,255,255,.02); }
 
 .cite-list { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; }
 .cite { font-size: 13.5px; }

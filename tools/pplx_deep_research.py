@@ -84,6 +84,79 @@ _MODE_PILL_NAMES = ("Search", "Deep research", "Research", "Auto", "Pro Search",
 
 _REPORT_JS = "() => (document.querySelector('main')?.innerText || '')"
 
+# Serialize the answer body to Markdown so headings, bold, lists, and the
+# comparison table survive (innerText flattens all of that into a wall of text,
+# which is what stripped the formatting off saved reports). Perplexity renders
+# the answer into #markdown-content-0; citation chips carry data-pplx-citation
+# and table cells duplicate each value in an aria-hidden ghost span -- both are
+# stripped before walking the tree.
+_REPORT_MD_JS = r"""() => {
+  // Two render formats exist: the standard chat answer (#markdown-content-0) and
+  // the "document" viewer (a Radix tab panel where #markdown-content-0 holds only
+  // a short blurb). Pick the tightest container that holds the most headings so
+  // both formats serialize their full body.
+  function pickRoot() {
+    let best = null, bestH = 2, bestLen = Infinity;
+    document.querySelectorAll('main div, main section, main article, #markdown-content-0').forEach(e => {
+      const h = e.querySelectorAll('h2, h3').length;
+      if (h < 3) return;
+      const len = (e.innerText || '').length;
+      if (h > bestH || (h === bestH && len < bestLen)) { best = e; bestH = h; bestLen = len; }
+    });
+    return best || document.querySelector('#markdown-content-0')
+      || document.querySelector('main .prose') || document.querySelector('main');
+  }
+  const root = pickRoot();
+  if (!root) return '';
+  const node = root.cloneNode(true);
+  node.querySelectorAll('[data-pplx-citation],[aria-hidden="true"],.citation-nbsp,script,style')
+      .forEach(e => e.remove());
+
+  const inline = (el) => { let s = ''; el.childNodes.forEach(n => { s += ser(n); }); return s; };
+  const cell = (el) => inline(el).replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|');
+
+  function ser(n) {
+    if (n.nodeType === 3) return n.nodeValue;
+    if (n.nodeType !== 1) return '';
+    const tag = n.tagName.toLowerCase();
+    switch (tag) {
+      case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
+        return '\n\n' + '#'.repeat(+tag[1]) + ' ' + inline(n).trim() + '\n\n';
+      case 'p': return '\n\n' + inline(n).trim() + '\n\n';
+      case 'strong': case 'b': { const t = inline(n).trim(); return t ? '**' + t + '**' : ''; }
+      case 'em': case 'i': { const t = inline(n).trim(); return t ? '*' + t + '*' : ''; }
+      case 'code': return '`' + inline(n) + '`';
+      case 'br': return '  \n';
+      case 'hr': return '\n\n---\n\n';
+      case 'a': {
+        const t = inline(n).trim(); const href = n.getAttribute('href') || '';
+        if (!t) return '';
+        return /^https?:/i.test(href) ? '[' + t + '](' + href + ')' : t;
+      }
+      case 'ul': case 'ol': {
+        let i = 1, out = '\n';
+        n.querySelectorAll(':scope > li').forEach(li => {
+          out += (tag === 'ol' ? (i++ + '. ') : '- ') + inline(li).replace(/\s+/g, ' ').trim() + '\n';
+        });
+        return out + '\n';
+      }
+      case 'table': {
+        const rows = [...n.querySelectorAll('tr')];
+        if (!rows.length) return '';
+        const head = [...rows[0].querySelectorAll('th,td')].map(cell);
+        const out = ['| ' + head.join(' | ') + ' |', '| ' + head.map(() => '---').join(' | ') + ' |'];
+        rows.slice(1).forEach(r => {
+          const cells = [...r.querySelectorAll('th,td')].map(cell);
+          if (cells.length) out.push('| ' + cells.join(' | ') + ' |');
+        });
+        return '\n\n' + out.join('\n') + '\n\n';
+      }
+      default: return inline(n);
+    }
+  }
+  return ser(node).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}"""
+
 # Extract unique source anchors from the Links tab (collapsed in the answer body).
 _LINKS_JS = """() => {
   const main = document.querySelector('main') || document;
@@ -364,8 +437,20 @@ def check_login(profile_dir: Optional[Path] = None,
 
 
 def _scrape(page):
-    """Pull the report text and de-duped external citations from the open run."""
-    report = page.evaluate(_REPORT_JS)
+    """Pull the report (as Markdown, preserving headings/lists/tables) and the
+    de-duped external citations from the open run. Falls back to flat innerText
+    only if the Markdown serializer comes back empty (DOM changed)."""
+    try:
+        page.wait_for_selector("main h2, #markdown-content-0", timeout=6000)
+    except Exception:
+        pass
+    report = ""
+    try:
+        report = page.evaluate(_REPORT_MD_JS) or ""
+    except Exception:
+        report = ""
+    if len(report.strip()) < 400:
+        report = page.evaluate(_REPORT_JS)
     citations = []
     try:
         if page.evaluate(_OPEN_LINKS_JS):
@@ -390,6 +475,9 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
     url = (url or "").strip()
     if "perplexity.ai" not in url:
         return {"status": "error", "detail": "not a perplexity.ai URL"}
+    # A "?sm=r" (shared-mode) suffix makes Perplexity show a login wall even to the
+    # thread owner; the bare thread URL opens as ourselves. Drop the query.
+    url = url.split("?")[0]
     profile_dir = profile_dir or default_profile_dir()
     with sync_playwright() as pw:
         ctx = _launch(pw, window_mode=window_mode, profile_dir=profile_dir)
