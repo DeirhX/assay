@@ -37,6 +37,7 @@ WEB_DIR = REPO_ROOT / "web"
 DATA_DIR = REPO_ROOT / "data"
 RESEARCH_DIR = DATA_DIR / "research"
 DEEP_DIR = RESEARCH_DIR / "deep"
+ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
@@ -49,6 +50,7 @@ from portfolio import holdings_payload  # noqa: E402
 from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
+import ticker_analysis  # noqa: E402
 
 # Selectable chart windows -> (Yahoo range, interval). Longer windows step to a
 # coarser interval so we don't ship thousands of daily points for a 10y view.
@@ -358,6 +360,104 @@ def _save_deep_artifact(body: dict) -> dict:
     _write_text(DEEP_DIR / f"{stem}.md", report + "\n")
     _write_json(DEEP_DIR / f"{stem}.sources.json", sources)
     return {"stem": stem, "report": f"data/research/deep/{stem}.md", "sources": f"data/research/deep/{stem}.sources.json"}
+
+
+# --------------------------------------------------------------------------- #
+# On-demand single-ticker analysis (cheap CLI tier: Claude -> Cursor fallback)
+# --------------------------------------------------------------------------- #
+def _save_analysis_artifact(symbol: str, report: str, meta: dict) -> dict:
+    """Persist a CLI analysis as dated markdown + a sidecar of provenance, so it
+    survives restarts and can be shown next to the dossier."""
+    sym = _safe_symbol(symbol)
+    date = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    stem = f"{sym}-{date}"
+    info = {
+        "symbol": sym,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "backend": meta.get("backend"),
+        "backend_label": meta.get("backend_label"),
+        "model": meta.get("model"),
+        "attempts": meta.get("attempts") or [],
+    }
+    _write_text(ANALYSIS_DIR / f"{stem}.md", report.strip() + "\n")
+    _write_json(ANALYSIS_DIR / f"{stem}.meta.json", info)
+    return {"stem": stem, "meta": info}
+
+
+def _latest_analysis(symbol: str) -> dict | None:
+    """Most recent saved analysis for a symbol (markdown + provenance), or None."""
+    sym = _safe_symbol(symbol)
+    md = sorted(ANALYSIS_DIR.glob(f"{sym}-*.md"), reverse=True)
+    if not md:
+        return None
+    path = md[0]
+    meta = _load(path.with_name(path.stem + ".meta.json")) or {}
+    return {
+        "symbol": sym,
+        "stem": path.stem,
+        "report": path.read_text(encoding="utf-8"),
+        "meta": meta,
+    }
+
+
+def _run_analysis_job(job_id: str, symbol: str, refresh: bool) -> None:
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        sym = _safe_symbol(symbol)
+        rec = _load(RESEARCH_DIR / f"{sym}.json")
+        if rec is None or refresh:
+            progress("pulling fresh deterministic data…")
+            with _PULL_LOCK:
+                rec = research_pull.pull_ticker(sym)
+        _update_job(job_id, state="running", message="analysing…")
+        result = ticker_analysis.analyze(rec, progress=progress)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    if not result.get("ok"):
+        _update_job(job_id, state="error",
+                    error=result.get("error") or "all analysis backends failed")
+        return
+    try:
+        saved = _save_analysis_artifact(sym, result["report"], result)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"analysis produced but not saved: {type(exc).__name__}: {exc}")
+        return
+    _update_job(job_id, state="done", message=f"analysed via {result.get('backend_label')}",
+                result={
+                    "symbol": sym,
+                    "backend": result.get("backend"),
+                    "backend_label": result.get("backend_label"),
+                    "model": result.get("model"),
+                    "report_chars": len(result["report"]),
+                },
+                artifact=saved)
+
+
+# At most one analysis per symbol in flight; the CLIs are cheap but not free.
+def _analysis_running(symbol: str) -> bool:
+    with _DEEP_JOBS_LOCK:
+        return any(
+            j.get("kind") == "ticker_analysis"
+            and j.get("symbol") == symbol
+            and j.get("state") in ("queued", "running")
+            for j in _DEEP_JOBS.values()
+        )
+
+
+def _start_analysis(symbol: str, refresh: bool) -> dict:
+    sym = _safe_symbol(symbol)
+    if _analysis_running(sym):
+        raise RuntimeError(f"an analysis for {sym} is already running")
+    # Unlike Perplexity runs, CLI analyses don't touch the shared browser, so we
+    # do NOT take _claim_active -- they may run alongside a deep-research job.
+    job = _new_job("ticker_analysis", symbol=sym, refresh=bool(refresh))
+    threading.Thread(target=_run_analysis_job,
+                     args=(job["id"], sym, bool(refresh)), daemon=True).start()
+    return _job_public(job)
 
 
 def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
@@ -1052,6 +1152,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"reports": _static_reports()})
         if path == "/api/tickers":
             return self._send_json({"tickers": _known_tickers()})
+        if path == "/api/analysis-config":
+            return self._send_json({
+                "config": ticker_analysis.load_config(),
+                "available": ticker_analysis.available_backends(),
+                "labels": ticker_analysis.PROVIDER_LABELS,
+            })
         if path == "/api/deep-research/login-status":
             return self._send_json(_get_auth_state())
         if path == "/api/deep-job":
@@ -1089,6 +1195,13 @@ class Handler(BaseHTTPRequestHandler):
             sym = path.rsplit("/", 1)[-1].upper()
             rec = _load(RESEARCH_DIR / f"{sym}.json")
             return self._send_json(rec) if rec else self._send_error_json(404, f"no cached research for {sym}")
+        if path.startswith("/api/analysis/"):
+            try:
+                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            rec = _latest_analysis(sym)
+            return self._send_json(rec) if rec else self._send_error_json(404, f"no analysis for {sym}")
         if path.startswith("/api/history/"):
             sym = path.rsplit("/", 1)[-1].upper()
             return self._send_json({"symbol": sym, "history": research_pull.history_for(sym)})
@@ -1136,6 +1249,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(_sync_holdings())
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
+
+        if path.startswith("/api/analyze/"):
+            try:
+                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            body = self._read_body()
+            try:
+                return self._send_json(_start_analysis(sym, bool(body.get("refresh"))))
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
+        if path == "/api/analysis-config":
+            body = self._read_body()
+            return self._send_json({
+                "config": ticker_analysis.save_config(body.get("config") or body),
+                "available": ticker_analysis.available_backends(),
+                "labels": ticker_analysis.PROVIDER_LABELS,
+            })
 
         if path == "/api/deep-research/save":
             body = self._read_body()
