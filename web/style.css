@@ -710,7 +710,11 @@ a.tlink:hover { border-bottom-style: solid; }
 .qa-usage { margin-top: 9px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .qa-usage .qa-cache-hit { color: var(--good); }
 .qa-form { display: flex; gap: 10px; align-items: flex-end; }
-.qa-input { flex: 1 1 auto; min-width: 0; resize: vertical; min-height: 44px; }
+.qa-input {
+  flex: 1 1 auto; min-width: 0; resize: vertical; min-height: 46px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft);
+  color: var(--text); padding: 10px 12px; font-size: 14px; line-height: 1.5;
+}
 .qa-form button { flex: 0 0 auto; }
 
 /* ---- generic modal (analysis backend config) --------------------------- */
