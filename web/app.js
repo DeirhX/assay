@@ -382,10 +382,11 @@ async function openTicker(sym) {
   status.textContent = `Loading ${ticker}…`;
   try {
     const rec = await api("/api/research/" + encodeURIComponent(ticker));
-    const hist = await api("/api/history/" + encodeURIComponent(ticker)).catch(() => ({ history: [] }));
-    rec.history = hist.history || [];
     status.textContent = `Cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()} — press Analyze to refresh`;
+    // Paint everything that's already on file now; the recent-pulls change log is
+    // a separate fetch that streams in under its own progress bar (see below).
     renderDeepDive(rec);
+    hydrateHistory(rec);
   } catch (_e) {
     await pullTicker(ticker, { push: false });  // nothing cached -> pull live
   }
@@ -504,10 +505,9 @@ async function loadTickerFromCache(raw) {
   status.textContent = `Loading cached ${sym}...`;
   try {
     const rec = await api("/api/research/" + encodeURIComponent(sym));
-    const hist = await api("/api/history/" + encodeURIComponent(sym)).catch(() => ({ history: [] }));
-    rec.history = hist.history || [];
     status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
     renderDeepDive(rec);
+    hydrateHistory(rec);
   } catch (e) {
     status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
@@ -537,10 +537,9 @@ async function pullTicker(raw, { push = true } = {}) {
   $("#ticker-go").disabled = true;
   try {
     const rec = await api("/api/pull/" + encodeURIComponent(sym), "POST");
-    const hist = await api("/api/history/" + encodeURIComponent(sym)).catch(() => ({ history: [] }));
-    rec.history = hist.history || [];
     status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
     renderDeepDive(rec);
+    hydrateHistory(rec);
   } catch (e) {
     status.textContent = "Pull failed: " + e.message;
     status.classList.add("err");
@@ -683,10 +682,32 @@ function renderDeepDive(rec) {
   mom.appendChild(mgrid);
   out.appendChild(mom);
 
-  out.appendChild(renderHistory(rec));
+  // Recent-pulls change log lives in a stable slot so the background history
+  // fetch can swap it in place without disturbing the rest of the dossier.
+  const histSlot = el("div", "dd-slot");
+  histSlot.dataset.slot = "history";
+  histSlot.dataset.symbol = rec.symbol;
+  histSlot.appendChild(renderHistory(rec));
+  out.appendChild(histSlot);
 
   // thesis editor
   out.appendChild(renderThesis(rec));
+}
+
+// Fetch the recent-pulls change log out of band and drop it into its slot. Kept
+// off the critical render path so a cached dossier paints immediately; guarded by
+// symbol so a fast re-navigation to another ticker can't get the wrong table.
+async function hydrateHistory(rec) {
+  try {
+    const hist = await api("/api/history/" + encodeURIComponent(rec.symbol));
+    rec.history = hist.history || [];
+  } catch (_e) {
+    rec.history = [];
+  }
+  const slot = $("#dd-result [data-slot='history']");
+  if (!slot || slot.dataset.symbol !== rec.symbol) return;
+  slot.innerHTML = "";
+  slot.appendChild(renderHistory(rec));
 }
 
 // In-depth, on-demand analysis via the local agent CLIs (Claude -> Cursor).
@@ -1305,6 +1326,17 @@ function collapsibleCard(titleHtml, { meta = "", open = false } = {}) {
 }
 
 function renderHistory(rec) {
+  // undefined == not fetched yet (streaming in). Show the section shell with a
+  // progress bar overlaid so the rest of the dossier isn't held hostage to it.
+  if (rec.history === undefined) {
+    const card = el("div", "card section-loading");
+    card.appendChild(el("h2", "section", "Recent pulls"));
+    const body = el("div", "section-body");
+    body.appendChild(el("div", "hint", "Fetching the change log\u2026"));
+    body.appendChild(el("div", "section-overlay", `<div class="progress-bar"><span></span></div>`));
+    card.appendChild(body);
+    return card;
+  }
   const rows = rec.history || [];
   const meta = rows.length ? `${rows.length} snapshot${rows.length === 1 ? "" : "s"}` : "none yet";
   const { details, body } = collapsibleCard("Recent pulls", { meta });
