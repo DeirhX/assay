@@ -507,8 +507,10 @@ details.collapse[open] > .collapse-head .collapse-caret { transform: rotate(90de
 #hold-synced { color: var(--muted); font-size: 13px; }
 
 /* ---- analyses ----------------------------------------------------------- */
+.analyses-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .analyses-head h2 { margin: 0 0 4px; font-size: 20px; }
 .analyses-head .hint { max-width: 760px; }
+.analyses-head #analyses-new { flex: 0 0 auto; white-space: nowrap; }
 .analyses-layout {
   display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; margin-top: 16px;
   align-items: start;
@@ -538,6 +540,21 @@ a.analysis-row:hover { text-decoration: none; }
 }
 .abadge.ok { color: var(--good); border-color: rgba(107,211,138,.4); }
 .abadge.bad { color: var(--bad); border-color: rgba(255,122,122,.4); }
+.abadge.muted { color: var(--muted); }
+
+/* segment launchpad rows in the Analyses pane */
+.seg-row .analysis-row-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.seg-run {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--accent);
+  border: 1px solid rgba(130,170,255,.4); border-radius: 999px; padding: 1px 8px;
+  opacity: .85; transition: background .15s, opacity .15s;
+}
+.seg-run:hover { background: rgba(130,170,255,.14); opacity: 1; }
+.analysis-row.sub-run {
+  margin-left: 16px; padding: 8px 12px; background: transparent;
+  border-style: dashed; border-color: var(--border);
+}
+.analysis-row.sub-run:hover { background: var(--panel); border-style: solid; }
 
 .analyses-reader {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft);
@@ -622,8 +639,28 @@ a.analysis-row:hover { text-decoration: none; }
 .prose table.md-tbl th, .prose table.md-tbl td {
   border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top;
 }
-.prose table.md-tbl th { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.prose table.md-tbl th {
+  background: var(--panel-2); color: var(--text); font-weight: 600;
+  position: static; top: auto; text-transform: none; cursor: default;
+  letter-spacing: normal; font-size: inherit; white-space: normal;
+}
 .prose table.md-tbl tbody tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+
+/* auto-linked tickers inside reports / business summary */
+a.tlink {
+  color: var(--accent); text-decoration: none; cursor: pointer;
+  border-bottom: 1px dotted rgba(130,170,255,.5); font-weight: 600;
+}
+a.tlink:hover { border-bottom-style: solid; }
+
+/* select-to-analyze chip (assert an arbitrary symbol from report text) */
+.sel-analyze {
+  position: fixed; z-index: 60; height: auto; padding: 4px 11px;
+  font-size: 12px; font-weight: 600; line-height: 1.3; border: 0; cursor: pointer;
+  border-radius: 999px; background: var(--accent); color: #fff;
+  box-shadow: 0 6px 18px rgba(0,0,0,.35); white-space: nowrap;
+}
+.sel-analyze[hidden] { display: none; }
 
 .cite-list { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; }
 .cite { font-size: 13.5px; }
