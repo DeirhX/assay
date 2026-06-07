@@ -716,7 +716,7 @@ function renderAnalysisCard(rec) {
     body.innerHTML = "";
     try {
       const start = await api("/api/analyze/" + encodeURIComponent(sym), "POST", { refresh: !!refresh });
-      await pollDeepJob(start.id, status, async () => { await show(); });
+      await pollDeepJob(start.id, status, async () => { await show(); }, `Analyzing ${sym}`);
     } catch (e) {
       status.classList.add("err");
       status.textContent = "analysis failed: " + e.message;
@@ -874,7 +874,15 @@ function renderQaCard(rec) {
   head.appendChild(clearBtn);
   card.appendChild(head);
 
+  const emptyHint = el("p", "hint",
+    "No questions yet. Ask anything about the numbers, momentum, valuation, or how it sits " +
+    "in your portfolio. The thread is archived so you can pick it up later.");
+  const threadWrap = el("details", "qa-collapse");
+  threadWrap.open = true;
+  const threadSummary = el("summary", "qa-collapse-head collapse-head");
   const thread = el("div", "qa-thread");
+  threadWrap.appendChild(threadSummary);
+  threadWrap.appendChild(thread);
   const status = el("div", "dd-status analysis-status");
   const form = el("div", "qa-form");
   const input = el("textarea", "qa-input");
@@ -884,20 +892,27 @@ function renderQaCard(rec) {
   askBtn.type = "button";
   form.appendChild(input);
   form.appendChild(askBtn);
-  card.appendChild(thread);
-  card.appendChild(status);
+  card.appendChild(emptyHint);
+  card.appendChild(threadWrap);
   card.appendChild(form);
+  card.appendChild(status);
 
   function renderThread(turns) {
     thread.innerHTML = "";
     if (!turns.length) {
       clearBtn.hidden = true;
-      thread.appendChild(el("p", "hint",
-        "No questions yet. Ask anything about the numbers, momentum, valuation, or how it sits " +
-        "in your portfolio. The thread is archived so you can pick it up later."));
+      emptyHint.hidden = false;
+      threadWrap.hidden = true;
       return;
     }
     clearBtn.hidden = false;
+    emptyHint.hidden = true;
+    threadWrap.hidden = false;
+    const exchanges = turns.filter((t) => t.role === "user").length;
+    threadSummary.innerHTML =
+      `<span class="collapse-title">Conversation history</span>` +
+      `<span class="collapse-meta">${exchanges} question${exchanges === 1 ? "" : "s"}</span>` +
+      `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
     turns.forEach((t) => {
       if (t.role === "user") {
         const q = el("div", "qa-turn qa-q");
@@ -928,32 +943,63 @@ function renderQaCard(rec) {
     renderThread(data.turns || []);
   }
 
+  let currentJobId = null;
+  let busy = false;
+
+  function setBusy(on) {
+    busy = on;
+    if (on) {
+      askBtn.textContent = "Cancel";
+      askBtn.classList.remove("primary");
+      askBtn.classList.add("ghost");
+      askBtn.title = "Stop this question and ask something else";
+    } else {
+      askBtn.textContent = "Ask";
+      askBtn.classList.add("primary");
+      askBtn.classList.remove("ghost");
+      askBtn.title = "";
+      currentJobId = null;
+    }
+  }
+
   async function ask() {
+    if (busy) return;
     const q = input.value.trim();
     if (!q) return;
-    askBtn.disabled = true;
-    input.disabled = true;
+    setBusy(true);
     status.classList.remove("err");
     status.innerHTML = `<span class="spinner"></span> thinking&hellip;`;
     try {
       const start = await api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q });
+      currentJobId = start.id;
       await pollDeepJob(start.id, status, async () => {
         status.textContent = "";
         input.value = "";
         await load();
-      });
+      }, `Q&A \u00b7 ${sym}`);
     } catch (e) {
       status.classList.add("err");
       status.textContent = "question failed: " + e.message;
     } finally {
-      askBtn.disabled = false;
-      input.disabled = false;
+      setBusy(false);
     }
   }
 
-  askBtn.addEventListener("click", ask);
+  // Cancel the in-flight question (kills the CLI subprocess server-side). The
+  // poll loop observes the cancelled state on its next tick and winds down,
+  // re-enabling the Ask button so a different question can be asked.
+  async function cancelAsk() {
+    if (!currentJobId) return;
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> cancelling&hellip;`;
+    try {
+      await api("/api/deep-job/cancel", "POST", { id: currentJobId });
+    } catch (_e) { /* poll loop still winds the job down */ }
+  }
+
+  askBtn.addEventListener("click", () => (busy ? cancelAsk() : ask()));
   input.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); ask(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); if (!busy) ask(); }
   });
   clearBtn.addEventListener("click", async () => {
     if (!confirm(`Clear the archived Q&A thread for ${sym}?`)) return;
@@ -1022,7 +1068,7 @@ async function openAnalysisConfig() {
 
     const opts = el("div", "backend-opts");
     opts.innerHTML =
-      `<label><input type="checkbox" id="cfg-web" ${cfg.allow_web ? "checked" : ""}> Allow web tools (slower, fresher; off keeps it grounded in the data)</label>` +
+      `<label><input type="checkbox" id="cfg-web" ${cfg.allow_web ? "checked" : ""}> Allow web research (Claude WebSearch + WebFetch, cited; slower &amp; fresher \u2014 off keeps it grounded purely in the data)</label>` +
       `<label>Timeout <input type="number" id="cfg-timeout" min="30" max="1200" value="${Number(cfg.timeout_sec) || 300}"> s</label>`;
     panel.appendChild(opts);
 
@@ -1901,38 +1947,91 @@ $("#pipe-run-deterministic").addEventListener("click", async () => {
   }
 });
 
-async function pollDeepJob(jobId, statusEl, onDone) {
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 4000));
-    let job;
-    try {
-      job = await api("/api/deep-job?id=" + encodeURIComponent(jobId));
-    } catch (e) {
-      statusEl.classList.add("err");
-      statusEl.textContent = "lost the job: " + e.message;
-      return;
-    }
-    if (job.state === "queued" || job.state === "running") {
-      statusEl.classList.remove("err");
-      statusEl.innerHTML = `<span class="spinner"></span> ${esc(job.message || job.state)}`;
-      continue;
-    }
-    if (job.state === "done") {
-      statusEl.classList.remove("err");
-      await onDone(job);
-      return;
-    }
-    if (job.state === "needs_login") {
-      // The run proved the cached login flag was stale, so resync the gate and
-      // hand the user an actual login button instead of an instruction to read.
-      state.pplxLoggedIn = false;
-      updateStep2LoginGate();
-      renderNeedsLogin(statusEl, job.message || job.error);
-      return;
-    }
-    statusEl.classList.add("err");
-    statusEl.textContent = job.error || job.message || job.state;
+// ---- Global "task running" pill --------------------------------------------
+// A page-level affordance so a long LLM job (analysis, Q&A, deep research) is
+// visible even when the originating card is scrolled off screen. Driven by the
+// shared pollDeepJob loop; multiple concurrent jobs collapse into one pill with
+// a "+N" badge for the rest.
+const activeTasks = new Map(); // jobId -> { label, message }
+let _pillEl = null;
+
+function ensureTaskPill() {
+  if (_pillEl) return _pillEl;
+  _pillEl = el("div", "global-pill");
+  _pillEl.hidden = true;
+  document.body.appendChild(_pillEl);
+  return _pillEl;
+}
+
+function renderTaskPill() {
+  const pill = ensureTaskPill();
+  const tasks = [...activeTasks.values()];
+  if (!tasks.length) {
+    pill.hidden = true;
+    pill.innerHTML = "";
     return;
+  }
+  const t = tasks[tasks.length - 1]; // surface the most recently started
+  const label = t.message ? `${t.label} \u2014 ${t.message}` : t.label;
+  const more = tasks.length > 1 ? `<span class="global-pill-count">+${tasks.length - 1}</span>` : "";
+  pill.hidden = false;
+  pill.innerHTML =
+    `<span class="spinner"></span><span class="global-pill-text">${esc(label)}</span>${more}`;
+}
+
+function taskStart(id, label) { activeTasks.set(id, { label, message: "" }); renderTaskPill(); }
+function taskUpdate(id, message) {
+  const t = activeTasks.get(id);
+  if (t) { t.message = message || ""; renderTaskPill(); }
+}
+function taskEnd(id) { activeTasks.delete(id); renderTaskPill(); }
+
+// `label` is optional: pass it for LLM jobs that should surface in the global
+// pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
+async function pollDeepJob(jobId, statusEl, onDone, label) {
+  if (label) taskStart(jobId, label);
+  try {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 4000));
+      let job;
+      try {
+        job = await api("/api/deep-job?id=" + encodeURIComponent(jobId));
+      } catch (e) {
+        statusEl.classList.add("err");
+        statusEl.textContent = "lost the job: " + e.message;
+        return;
+      }
+      if (job.state === "queued" || job.state === "running") {
+        statusEl.classList.remove("err");
+        statusEl.innerHTML = `<span class="spinner"></span> ${esc(job.message || job.state)}`;
+        if (label) taskUpdate(jobId, job.message || job.state);
+        continue;
+      }
+      if (job.state === "done") {
+        statusEl.classList.remove("err");
+        await onDone(job);
+        return;
+      }
+      if (job.state === "cancelled") {
+        // Clean stop on user request -- not an error.
+        statusEl.classList.remove("err");
+        statusEl.textContent = "";
+        return;
+      }
+      if (job.state === "needs_login") {
+        // The run proved the cached login flag was stale, so resync the gate and
+        // hand the user an actual login button instead of an instruction to read.
+        state.pplxLoggedIn = false;
+        updateStep2LoginGate();
+        renderNeedsLogin(statusEl, job.message || job.error);
+        return;
+      }
+      statusEl.classList.add("err");
+      statusEl.textContent = job.error || job.message || job.state;
+      return;
+    }
+  } finally {
+    if (label) taskEnd(jobId);
   }
 }
 
@@ -1982,7 +2081,7 @@ async function runDeepResearch(status) {
       await refreshDeepRuns();
       await loadDeepRun(stem);
       setPipeStep(3);
-    });
+    }, `Deep research \u00b7 ${segment}`);
     await refreshLoginStatus();
   } catch (e) {
     status.classList.add("err");
@@ -2018,7 +2117,7 @@ $("#pipe-import").addEventListener("click", async () => {
       status.textContent = `imported: ${stem} - ${r.report_chars || 0} chars, ${n} sources.`;
       await refreshDeepRuns();
       await loadDeepRun(stem);
-    });
+    }, `Importing \u00b7 ${segment}`);
     await refreshLoginStatus();
   } catch (e) {
     status.classList.add("err");

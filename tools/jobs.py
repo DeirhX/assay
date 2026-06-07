@@ -67,8 +67,30 @@ def public(job: dict) -> dict:
         "result": job.get("result"),
         "artifact": job.get("artifact"),
         "error": job.get("error"),
+        "cancelled": bool(job.get("cancelled")),
         "updated_at": job.get("updated_at"),
     }
+
+
+def cancel_job(job_id: str) -> bool:
+    """Flag a job for cooperative cancellation. The runner is responsible for
+    noticing (via ``is_cancelled``) and tearing down its subprocess; here we just
+    set the intent so concurrency checks stop counting it as live. Returns False
+    if the job is unknown or already finished."""
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("state") not in ("queued", "running"):
+            return False
+        job["cancelled"] = True
+        job["message"] = "cancelling…"
+        job["updated_at"] = _now()
+        return True
+
+
+def is_cancelled(job_id: str) -> bool:
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        return bool(job and job.get("cancelled"))
 
 
 def get_public(job_id: str) -> dict | None:
