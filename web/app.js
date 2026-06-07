@@ -462,18 +462,24 @@ async function renderViewedTickers() {
     const ana = r.has_analysis
       ? `<span class="abadge ok">analysis${r.analyzed_at ? " · " + esc(new Date(r.analyzed_at).toLocaleDateString()) : ""}</span>`
       : `<span class="abadge muted">no analysis</span>`;
-    const main =
-      `<span class="viewed-sym">${esc(r.symbol)}</span>` +
-      `<span class="viewed-name">${esc(r.name || "")}</span>` +
-      `<span class="viewed-when muted">${esc(when)}</span>` + ana;
-    let verdict = "";
+    let stancePill = "", verdictText = "";
     if (r.verdict) {
       const st = detectStance(r.verdict);
-      const rest = st ? r.verdict.replace(st.re, "").replace(/^[\s,:;.\u2014\u2013-]+/, "") : r.verdict;
-      const pill = st ? `<span class="verdict-stance ${st.cls}">${esc(st.label)}</span>` : "";
-      verdict = `<span class="viewed-verdict">${pill}<span class="viewed-verdict-text">${esc(rest)}</span></span>`;
+      if (st) {
+        stancePill = `<span class="verdict-stance ${st.cls}">${esc(st.label)}</span>`;
+        verdictText = r.verdict.replace(st.re, "").replace(/^[\s,:;.\u2014\u2013-]+/, "");
+      } else {
+        verdictText = r.verdict;
+      }
     }
-    const row = el("button", "viewed-row", `<span class="viewed-main">${main}</span>${verdict}`);
+    const html =
+      `<span class="viewed-sym">${esc(r.symbol)}</span>` +
+      `<span class="viewed-name">${esc(r.name || "")}</span>` +
+      `<span class="viewed-stance-cell">${stancePill}</span>` +
+      `<span class="viewed-when muted">${esc(when)}</span>` +
+      `<span class="viewed-badge">${ana}</span>` +
+      (verdictText ? `<span class="viewed-verdict-text">${esc(verdictText)}</span>` : "");
+    const row = el("button", "viewed-row", html);
     row.type = "button";
     row.addEventListener("click", () => openTicker(r.symbol));
     listWrap.appendChild(row);

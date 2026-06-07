@@ -757,24 +757,33 @@ a.tlink:hover { border-bottom-style: solid; }
 .viewed-sort .chip.active { color: var(--text); border-color: var(--accent); }
 .viewed-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
 .viewed-row {
-  display: flex; flex-direction: column; gap: 6px;
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr) auto auto auto;
+  grid-template-areas:
+    "sym name stance when badge"
+    "sym verdict verdict verdict verdict";
+  align-items: center; gap: 3px 12px;
   text-align: left; background: var(--panel-2); border: 1px solid var(--border);
   border-radius: var(--radius-soft); padding: 9px 12px; cursor: pointer; color: var(--text); font: inherit;
 }
-.viewed-main {
-  display: grid; grid-template-columns: 64px minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
-}
 .viewed-row:hover { border-color: var(--accent); }
-.viewed-sym { font-weight: 700; color: var(--accent); }
-.viewed-name { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.viewed-when { font-size: 12px; white-space: nowrap; }
-.viewed-verdict { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
-.viewed-verdict .verdict-stance { flex: 0 0 auto; font-size: 11px; }
+.viewed-sym { grid-area: sym; align-self: center; font-weight: 700; color: var(--accent); }
+.viewed-name { grid-area: name; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewed-stance-cell { grid-area: stance; }
+.viewed-stance-cell .verdict-stance { font-size: 11px; }
+.viewed-when { grid-area: when; font-size: 12px; white-space: nowrap; text-align: right; }
+.viewed-badge { grid-area: badge; }
 .viewed-verdict-text {
-  color: var(--muted); font-size: 12.5px; line-height: 1.45; min-width: 0;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  grid-area: verdict; color: var(--muted); font-size: 12.5px; line-height: 1.4; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 @media (max-width: 640px) {
-  .viewed-main { grid-template-columns: 56px minmax(0, 1fr) auto; }
+  .viewed-row {
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "sym name badge"
+      "sym stance stance"
+      "sym verdict verdict";
+  }
   .viewed-when { display: none; }
 }
