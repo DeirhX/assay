@@ -40,13 +40,27 @@ DEEP_DIR = RESEARCH_DIR / "deep"
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import holdings_payload  # noqa: E402
+from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
+
+# Selectable chart windows -> (Yahoo range, interval). Longer windows step to a
+# coarser interval so we don't ship thousands of daily points for a 10y view.
+PRICE_HISTORY_RANGES: dict[str, tuple[str, str]] = {
+    "1mo": ("1mo", "1d"),
+    "3mo": ("3mo", "1d"),
+    "6mo": ("6mo", "1d"),
+    "1y": ("1y", "1d"),
+    "2y": ("2y", "1wk"),
+    "5y": ("5y", "1wk"),
+    "max": ("max", "1mo"),
+}
 
 _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
 
@@ -385,6 +399,99 @@ def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_bloc
     _write_json(TARGET_MODEL_JSON, model)
     _write_json(proposal_path, proposal)
     return {"applied": applied, "skipped": skipped, "proposal": proposal}
+
+
+# Root-level static pages that are the SPA shell or the topbar landing, not
+# stand-alone analyses -- excluded from the Analyses tab's "Written reports".
+STATIC_REPORT_EXCLUDE = {"index.html", "next-steps.html"}
+
+
+def _static_reports() -> list[dict]:
+    """The hand-authored mini-site report pages (ticker deep-dives + thematic
+    reviews) served from the repo root. Discovered from disk so new ones show up
+    in the Analyses tab without touching the top menu."""
+    reports = []
+    for path in sorted(REPO_ROOT.glob("*.html")):
+        if path.name in STATIC_REPORT_EXCLUDE:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        m = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+        stem = path.stem
+        symbol = stem[:-len("-detail")].upper() if stem.endswith("-detail") else None
+        reports.append({
+            "href": "/" + path.name,
+            "file": path.name,
+            "title": (m.group(1).strip() if m else path.name),
+            "symbol": symbol,
+            "kind": "ticker" if symbol else "thematic",
+            "modified": dt.datetime.fromtimestamp(
+                path.stat().st_mtime, dt.timezone.utc).isoformat(timespec="seconds"),
+        })
+    reports.sort(key=lambda r: (r["kind"] != "ticker", r["title"].lower()))
+    return reports
+
+
+def _sync_holdings() -> dict:
+    """Re-pull the portfolio from the external read-only IBKR Flex reader and
+    refresh data/current-holdings.json. The reader lives outside this repo (see
+    the ibkr-holdings skill); its folder must be given via IBKR_PORTFOLIO_DIR.
+    Read-only: the Flex query cannot trade. Returns the fresh holdings payload."""
+    import subprocess
+
+    ibkr_dir = os.environ.get("IBKR_PORTFOLIO_DIR", "").strip()
+    if not ibkr_dir:
+        raise ValueError("IBKR_PORTFOLIO_DIR is not set; point it at the IBKR Flex reader folder")
+    base = Path(ibkr_dir)
+    script = base / "ibkr_portfolio.py"
+    if not script.exists():
+        raise ValueError(f"ibkr_portfolio.py not found in {ibkr_dir}")
+
+    # "py -3" mirrors the documented, known-good launcher on Windows; fall back to
+    # this server's interpreter if the launcher is unavailable or off-Windows.
+    launcher = ["py", "-3"] if sys.platform == "win32" else [sys.executable]
+    tail = [str(script), "--json", "--out", "portfolio.json", "--snapshot-dir", "snapshots"]
+    try:
+        try:
+            proc = subprocess.run(launcher + tail, cwd=str(base), capture_output=True, text=True, timeout=240)
+        except FileNotFoundError:
+            proc = subprocess.run([sys.executable] + tail, cwd=str(base), capture_output=True, text=True, timeout=240)
+    except subprocess.TimeoutExpired:
+        raise ValueError("IBKR reader timed out after 240s")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise ValueError("IBKR reader failed: " + (detail[-1] if detail else f"exit {proc.returncode}"))
+
+    fresh = _load(base / "portfolio.json")
+    if not isinstance(fresh, dict) or "positions" not in fresh or fresh.get("net_asset_value") is None:
+        raise ValueError("IBKR reader produced no usable portfolio.json")
+
+    current = _load(HOLDINGS_JSON) or {}
+    _write_json(HOLDINGS_JSON, _merge_holdings_snapshot(current, fresh))
+    return holdings_payload()
+
+
+def _merge_holdings_snapshot(existing: dict, fresh: dict) -> dict:
+    """Refresh the curated snapshot from a fresh pull WITHOUT widening its shape.
+    Only top-level keys already present in the curated file are updated, and for
+    list-of-dict sections each item is restricted to field names already seen in
+    the curated file. This guarantees a refresh can never introduce new fields
+    (e.g. account identifiers the sanitization deliberately omits). Keys the
+    reader doesn't emit (privacy/source markers, sizing_legend) are preserved."""
+    if not existing:  # nothing to model the shape on -> trust the pull as-is
+        return fresh
+    out = dict(existing)
+    for key, cur_val in existing.items():
+        if key not in fresh:
+            continue
+        new_val = fresh[key]
+        if (isinstance(cur_val, list) and cur_val and isinstance(cur_val[0], dict)
+                and isinstance(new_val, list)):
+            allowed = set().union(*(set(d) for d in cur_val if isinstance(d, dict)))
+            out[key] = [{k: v for k, v in item.items() if k in allowed}
+                        for item in new_val if isinstance(item, dict)]
+        else:
+            out[key] = new_val
+    return out
 
 
 def _is_root_static_file(clean: str) -> bool:
@@ -905,6 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(rec) if rec else self._send_error_json(404, f"unknown segment {name}")
         if path == "/api/deep-runs":
             return self._send_json({"runs": _deep_runs()})
+        if path == "/api/reports":
+            return self._send_json({"reports": _static_reports()})
         if path == "/api/deep-research/login-status":
             return self._send_json(_get_auth_state())
         if path == "/api/deep-job":
@@ -945,6 +1054,18 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/history/"):
             sym = path.rsplit("/", 1)[-1].upper()
             return self._send_json({"symbol": sym, "history": research_pull.history_for(sym)})
+        if path.startswith("/api/price-history/"):
+            sym = path.rsplit("/", 1)[-1].upper()
+            rng_key = (query.get("range") or ["1y"])[0].lower()
+            rng, interval = PRICE_HISTORY_RANGES.get(rng_key, PRICE_HISTORY_RANGES["1y"])
+            try:
+                result = yahoo.chart(sym, rng=rng, interval=interval)
+                ph = yahoo.price_history_from_chart(result, rng=rng, interval=interval)
+            except Exception as exc:  # noqa: BLE001 - surface provider failure to UI
+                return self._send_error_json(502, f"price history failed for {sym}: {exc}")
+            if not ph:
+                return self._send_error_json(404, f"no price history for {sym}")
+            return self._send_json(ph)
         if path.startswith("/api/segment/"):
             name = path.rsplit("/", 1)[-1].lower()
             rec = _load(SEGMENT_OUT_DIR / f"{name}.json")
@@ -971,6 +1092,12 @@ class Handler(BaseHTTPRequestHandler):
             definition = _validate_segment_definition(body.get("definition") or body)
             _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
             return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
+
+        if path == "/api/holdings/sync":
+            try:
+                return self._send_json(_sync_holdings())
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
 
         if path == "/api/deep-research/save":
             body = self._read_body()

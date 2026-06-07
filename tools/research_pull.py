@@ -74,6 +74,20 @@ def _val(node: dict[str, Any] | None) -> float | None:
     return node.get("value") if isinstance(node, dict) else None
 
 
+def _merge_profile(*profiles: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Combine business profiles field-by-field, first non-empty wins. Pass the
+    preferred source first (Yahoo), then fallbacks (FMP): Yahoo fills what it has,
+    FMP backfills the gaps. Returns None if every source was empty."""
+    out: dict[str, Any] = {}
+    for prof in profiles:
+        if not prof:
+            continue
+        for key, value in prof.items():
+            if value and not out.get(key):
+                out[key] = value
+    return out or None
+
+
 def _collect(*sources: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     """metric_key -> list of per-source nodes that supplied it."""
     out: dict[str, list[dict[str, Any]]] = {}
@@ -265,6 +279,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
     record: dict[str, Any] = {
         "symbol": symbol,
         "name": name,
+        "profile": _merge_profile((y or {}).get("profile"), (f or {}).get("profile")),
         "as_of": _now(),
         "currency": (y or {}).get("currency") or mo.get("currency") or "USD",
         "price": {"value": mo.get("last"), "source": "yahoo"} if mo.get("last") else (y or {}).get("price"),
