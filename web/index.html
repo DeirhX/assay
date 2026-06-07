@@ -13,6 +13,7 @@
       <button class="tab active" data-view="deepdive">Deep dive</button>
       <button class="tab" data-view="segment">Segment</button>
       <button class="tab" data-view="pipeline">Pipeline</button>
+      <button class="tab" data-view="analyses">Analyses</button>
       <button class="tab" data-view="holdings">Holdings</button>
     </div>
     <div class="spacer"></div>
@@ -288,6 +289,20 @@
             <button class="ghost" id="pipe-restart">Start a new segment ↺</button>
           </div>
         </section>
+      </div>
+    </section>
+
+    <!-- ANALYSES -->
+    <section class="view" id="view-analyses">
+      <div class="analyses-head">
+        <h2>Deep Research analyses</h2>
+        <p class="hint">Every saved Perplexity Deep Research run, newest first. Pick one to read its report, sources, and review gate. New runs are produced from the Pipeline tab.</p>
+      </div>
+      <div class="analyses-layout">
+        <aside class="analyses-list" id="analyses-list"></aside>
+        <article class="analyses-reader" id="analyses-reader">
+          <div class="hint">Select an analysis on the left to read it.</div>
+        </article>
       </div>
     </section>
 
