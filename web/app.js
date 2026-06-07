@@ -17,6 +17,7 @@ const state = {
   deepRuns: [],
   analysesRuns: [],
   currentAnalysis: null,
+  tickerSet: new Set(),
 };
 
 // ---- tiny helpers ---------------------------------------------------------
@@ -202,6 +203,54 @@ window.addEventListener("popstate", (event) => {
 
 $("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
 
+$("#analyses-new").addEventListener("click", () => startPipeline());
+
+// Ticker links inside rendered reports / summaries are SPA-internal: intercept
+// and route to the deep-dive instead of a full navigation.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest ? e.target.closest("a.tlink") : null;
+  if (!a) return;
+  e.preventDefault();
+  if (a.dataset.ticker) openTicker(a.dataset.ticker);
+});
+
+// Select-to-analyze: highlighting a ticker-shaped token in a report/summary pops
+// a chip to open it -- the escape hatch for symbols we never auto-linked and have
+// no data for. The user asserts it's a ticker; openTicker live-pulls on a miss.
+let _selChip = null;
+function hideSelChip() { if (_selChip) _selChip.hidden = true; }
+function maybeShowSelChip() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return hideSelChip();
+  const raw = sel.toString().trim();
+  if (!/^[A-Za-z][A-Za-z.\-]{0,6}$/.test(raw)) return hideSelChip();  // ticker-shaped only
+  const node = sel.anchorNode;
+  const host = node && (node.nodeType === 3 ? node.parentElement : node);
+  if (!host || !host.closest(".report-doc-body, .biz-summary, .prose")) return hideSelChip();
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height)) return hideSelChip();
+  if (!_selChip) {
+    _selChip = el("button", "sel-analyze");
+    _selChip.type = "button";
+    _selChip.addEventListener("mousedown", (e) => e.preventDefault());  // keep selection
+    _selChip.addEventListener("click", () => { const t = _selChip.dataset.ticker; hideSelChip(); if (t) openTicker(t); });
+    document.body.appendChild(_selChip);
+  }
+  const sym = raw.toUpperCase();
+  _selChip.dataset.ticker = sym;
+  _selChip.textContent = `Analyze ${sym} \u2197`;
+  _selChip.hidden = false;
+  _selChip.style.top = `${Math.max(8, rect.top - 36)}px`;
+  _selChip.style.left = `${Math.min(window.innerWidth - 150, Math.max(8, rect.left))}px`;
+}
+document.addEventListener("mouseup", () => setTimeout(maybeShowSelChip, 0));
+document.addEventListener("keyup", (e) => { if (e.shiftKey || e.key === "Shift") setTimeout(maybeShowSelChip, 0); });
+document.addEventListener("scroll", hideSelChip, true);
+window.addEventListener("resize", hideSelChip);
+document.addEventListener("mousedown", (e) => {
+  if (_selChip && !_selChip.hidden && !(e.target.closest && e.target.closest(".sel-analyze"))) hideSelChip();
+});
+
 $("#hold-sync").addEventListener("click", async () => {
   const btn = $("#hold-sync");
   const status = $("#hold-status");
@@ -297,6 +346,29 @@ function analyzeFromAnywhere(sym) {
   pullTicker(ticker, { push: false });
 }
 
+// Cache-first open for in-report ticker links: show what we already have
+// instantly, and only hit the network (live pull) when there's no cached
+// dossier. Browsing a report shouldn't trigger a slow pull per click.
+async function openTicker(sym) {
+  const ticker = cleanSymbol(sym);
+  if (!ticker) return;
+  pushNav({ view: "deepdive", ticker });
+  setActiveView("deepdive");
+  $("#ticker-input").value = ticker;
+  const status = $("#dd-status");
+  status.classList.remove("err");
+  status.textContent = `Loading ${ticker}…`;
+  try {
+    const rec = await api("/api/research/" + encodeURIComponent(ticker));
+    const hist = await api("/api/history/" + encodeURIComponent(ticker)).catch(() => ({ history: [] }));
+    rec.history = hist.history || [];
+    status.textContent = `Cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()} — press Analyze to refresh`;
+    renderDeepDive(rec);
+  } catch (_e) {
+    await pullTicker(ticker, { push: false });  // nothing cached -> pull live
+  }
+}
+
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
 $("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker($("#ticker-input").value); });
@@ -314,9 +386,19 @@ async function loadTickerFromCache(raw) {
     status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
     renderDeepDive(rec);
   } catch (e) {
-    status.textContent = `No cached research for ${sym}; press Analyze to pull live data.`;
+    status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
-    $("#dd-result").innerHTML = "";
+    const out = $("#dd-result");
+    out.innerHTML = "";
+    const card = el("div", "card empty-ticker");
+    card.innerHTML =
+      `<h2 class="section">${esc(sym)}</h2>` +
+      `<p class="hint">We haven't pulled <strong>${esc(sym)}</strong> yet. If you're sure it's a valid ticker, fetch it live from Yahoo / SEC / FMP.</p>`;
+    const btn = el("button", "primary", `Pull live data for ${esc(sym)}`);
+    btn.type = "button";
+    btn.addEventListener("click", () => pullTicker(sym, { push: false }));
+    card.appendChild(btn);
+    out.appendChild(card);
   }
 }
 
@@ -502,6 +584,7 @@ function renderBusiness(rec) {
   if (p.summary) {
     const body = el("p", "biz-summary clamp", esc(p.summary));
     card.appendChild(body);
+    linkifyTickers(body);
     if (p.summary.length > 320) {
       const toggle = el("button", "linklike biz-toggle", "Show more");
       toggle.type = "button";
@@ -1031,6 +1114,12 @@ $("#pipe-segment-select").addEventListener("change", () => {
 
 async function loadPipeline() {
   await loadSegmentList();
+  // A launch from the Analyses pane stashes the segment to preselect here, since
+  // the dropdown only exists after loadSegmentList has populated it.
+  if (state.pipePreselect) {
+    setSegmentControls(state.pipePreselect);
+    state.pipePreselect = null;
+  }
   await refreshDeepRuns();
   refreshLoginStatus();
   setSegMode(state.segMode);
@@ -1671,6 +1760,91 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
 
 // ---- analyses -------------------------------------------------------------
 
+// ---- ticker auto-linking --------------------------------------------------
+// All-caps tokens that are common finance/English shorthand, not tickers. Bare
+// matches are additionally gated by the curated ticker set; this stoplist guards
+// the structural ($X, parenthetical) paths and trims obvious noise.
+const TICKER_STOP = new Set([
+  "US", "EU", "UK", "USA", "EV", "AI", "AR", "VR", "ML", "LLM", "GPU", "CPU", "API", "SDK",
+  "UI", "UX", "CEO", "CFO", "CTO", "COO", "IPO", "ETF", "ETFS", "NAV", "EPS", "PE", "PEG",
+  "ROE", "ROI", "ROIC", "FCF", "GAAP", "YOY", "QOQ", "CAGR", "ARR", "MRR", "TAM", "SAM", "SOM",
+  "FY", "H1", "H2", "Q1", "Q2", "Q3", "Q4", "USD", "EUR", "GBP", "JPY", "KPI", "OEM", "ESG",
+  "IRR", "WACC", "DCF", "EBITDA", "IT", "OK", "NO", "AND", "THE", "FOR", "WITH", "FROM",
+  "THAT", "THIS", "ARE", "NOT", "ALL", "ANY", "OS", "PC", "TV", "IOT", "SAAS", "B2B", "B2C",
+  "RD", "IP", "ID", "VS", "ETC", "CES", "FDA", "SEC", "GDP", "API",
+]);
+
+let _tickerSetLoaded = false;
+async function ensureTickerSet() {
+  if (_tickerSetLoaded) return state.tickerSet;
+  try {
+    const d = await api("/api/tickers");
+    state.tickerSet = new Set(d.tickers || []);
+  } catch (_e) { state.tickerSet = new Set(); }
+  _tickerSetLoaded = true;
+  return state.tickerSet;
+}
+
+function tickerAnchorHtml(raw) {
+  const s = String(raw).toUpperCase();
+  return `<a class="tlink" data-ticker="${esc(s)}" href="?view=deepdive&ticker=${encodeURIComponent(s)}" title="Open ${esc(s)} deep-dive">${esc(raw)}</a>`;
+}
+
+// Walk text nodes and turn ticker-shaped tokens into deep-dive links. Skips text
+// already inside <a>/<code>/<pre>. A token links if it's $-prefixed, wrapped in
+// (parens), or present in the curated set -- and never if in the stoplist.
+const _TICKER_TOKEN = /\b[A-Z]{2,5}(?:\.[A-Z]{1,2})?\b/g;
+function linkifyTextNode(node, set) {
+  const text = node.nodeValue;
+  let m, last = 0, frag = null;
+  _TICKER_TOKEN.lastIndex = 0;
+  while ((m = _TICKER_TOKEN.exec(text))) {
+    const tok = m[0];
+    const base = tok.split(".")[0];
+    const i = m.index;
+    const prev = text[i - 1] || "";
+    const after = text[i + tok.length] || "";
+    const dollar = prev === "$";  // explicit author intent -- overrides the stoplist
+    // A "$NOW" must link even though NOW is a stoplisted English word; bare and
+    // parenthetical tokens still respect the stoplist.
+    if (!dollar && (TICKER_STOP.has(tok) || TICKER_STOP.has(base))) continue;
+    const linkable = dollar || (prev === "(" && after === ")") || set.has(tok) || set.has(base);
+    if (!linkable) continue;
+    frag = frag || document.createDocumentFragment();
+    if (i > last) frag.appendChild(document.createTextNode(text.slice(last, i)));
+    const a = document.createElement("a");
+    a.className = "tlink";
+    a.dataset.ticker = tok;
+    a.href = `?view=deepdive&ticker=${encodeURIComponent(tok)}`;
+    a.title = `Open ${tok} deep-dive`;
+    a.textContent = tok;
+    frag.appendChild(a);
+    last = i + tok.length;
+  }
+  if (frag) {
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
+function linkifyTickers(root) {
+  if (!root) return;
+  const set = state.tickerSet || new Set();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || !/[A-Z]{2}/.test(n.nodeValue)) return NodeFilter.FILTER_REJECT;
+      for (let p = n.parentElement; p && p !== root.parentElement; p = p.parentElement) {
+        const tag = p.tagName;
+        if (tag === "A" || tag === "CODE" || tag === "PRE") return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach((n) => linkifyTextNode(n, set));
+}
+
 // Minimal, escape-first markdown renderer. The report text is from Perplexity
 // (untrusted), so everything is HTML-escaped before a controlled subset of
 // markup is re-introduced; links are restricted to http(s) so no javascript:.
@@ -1695,8 +1869,17 @@ function mdToHtml(md) {
     if (rows.length >= 2 && isSep(rows[1])) {
       const head = rows[0];
       const body = rows.slice(2).filter((r) => !isSep(r));
+      // Columns explicitly headed Ticker/Symbol get deterministic links on every
+      // cell -- highest-precision signal, no curated set or guessing required.
+      const tickerCols = new Set(
+        head.map((h, i) => (/^(ticker|symbol|tickers?|symbols?)$/i.test(h.trim()) ? i : -1)).filter((i) => i >= 0),
+      );
+      const cell = (c, ci) =>
+        (tickerCols.has(ci) && /^[A-Za-z][A-Za-z0-9.]{0,5}$/.test(c.trim()))
+          ? `<td>${tickerAnchorHtml(c.trim())}</td>`
+          : `<td>${inline(c)}</td>`;
       let html = '<table class="md-tbl"><thead><tr>' + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead>";
-      if (body.length) html += "<tbody>" + body.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+      if (body.length) html += "<tbody>" + body.map((r) => "<tr>" + r.map(cell).join("") + "</tr>").join("") + "</tbody>";
       out.push(html + "</table>");
     } else {
       out.push(`<pre class="md-table">${esc(table.join("\n"))}</pre>`);
@@ -1752,16 +1935,31 @@ function synthBox(title, note) {
   return box;
 }
 
+// Jump into the Pipeline wizard at step 1, optionally pre-selecting a segment.
+// The pipeline (a gated multi-step flow) stays the single home for running
+// research; the Analyses pane is just the launchpad into it.
+function startPipeline(segment) {
+  const seg = cleanSlug(segment || "");
+  state.pipeStep = 1;
+  state.segMode = "existing";
+  state.currentDeepRun = null;
+  state.pipePreselect = seg || null;
+  pushNav({ view: "pipeline", segment: seg || undefined });
+  setActiveView("pipeline");
+}
+
 async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
   list.innerHTML = '<div class="hint">Loading…</div>';
   let runs = [];
   let reports = [];
+  let segments = [];
   try {
-    [runs, reports] = await Promise.all([
+    [runs, reports, segments] = await Promise.all([
       api("/api/deep-runs").then((d) => d.runs || []),
       api("/api/reports").then((d) => d.reports || []).catch(() => []),
+      api("/api/segments").then((d) => d.segments || []).catch(() => []),
     ]);
   } catch (e) {
     list.innerHTML = `<div class="status err">could not load analyses: ${esc(e.message)}</div>`;
@@ -1769,20 +1967,62 @@ async function loadAnalyses() {
   }
   state.analysesRuns = runs;
 
+  // Group runs under their segment so each segment shows once (no more duplicate
+  // Segments + Deep Research lists). Runs arrive newest-first, so [0] is latest.
+  const runsBySeg = {};
+  runs.forEach((r) => { (runsBySeg[r.segment] = runsBySeg[r.segment] || []).push(r); });
+  const knownSegs = new Set(segments.map((s) => s.name));
+
   list.innerHTML = "";
-  if (runs.length) {
-    list.appendChild(el("div", "analyses-group-label", "Deep Research"));
-    runs.forEach((r) => {
-      const row = el("button", "analysis-row");
-      row.dataset.stem = r.stem;
-      const age = relAge(r.generated_at);
+
+  const runRow = (r, cls) => {
+    const row = el("button", "analysis-row" + (cls ? " " + cls : ""));
+    row.dataset.stem = r.stem;
+    const age = relAge(r.generated_at);
+    const meta = `${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources`;
+    const badges = analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "";
+    row.innerHTML = cls === "sub-run"
+      ? `<div class="analysis-row-meta">${meta}</div>${badges}`
+      : `<div class="analysis-row-title">${esc(r.title || r.stem)}</div><div class="analysis-row-meta">${meta}</div>${badges}`;
+    row.addEventListener("click", () => loadAnalysis(r.stem));
+    return row;
+  };
+
+  if (segments.length) {
+    list.appendChild(el("div", "analyses-group-label", "Segments"));
+    segments.forEach((s) => {
+      const segRuns = runsBySeg[s.name] || [];
+      const latest = segRuns[0];
+      const row = el("button", "analysis-row seg-row");
+      row.dataset.segment = s.name;
+      if (latest) row.dataset.stem = latest.stem;
+      const runCount = segRuns.length ? `${segRuns.length} run${segRuns.length === 1 ? "" : "s"}` : "no runs yet";
+      const cover = latest
+        ? `<span class="abadge ok">analysed · ${esc(latest.date)}</span>`
+        : `<span class="abadge muted">not analysed</span>`;
+      const moreBadges = latest && analysisBadges(latest) ? " " + analysisBadges(latest) : "";
       row.innerHTML =
-        `<div class="analysis-row-title">${esc(r.title || r.stem)}</div>` +
-        `<div class="analysis-row-meta">${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources</div>` +
-        (analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "");
-      row.addEventListener("click", () => loadAnalysis(r.stem));
+        `<div class="analysis-row-title">${esc(s.title || s.name)}` +
+          `<span class="seg-run" role="button" tabindex="0" title="Run a new Deep Research for this segment">+ run</span></div>` +
+        `<div class="analysis-row-meta">${s.count} name${s.count === 1 ? "" : "s"} · ${runCount}${s.status === "draft" ? " · draft" : ""}</div>` +
+        `<div class="analysis-row-badges">${cover}${moreBadges}</div>`;
+      row.addEventListener("click", () => { if (latest) loadAnalysis(latest.stem); else startPipeline(s.name); });
+      const runBtn = row.querySelector(".seg-run");
+      runBtn.addEventListener("click", (ev) => { ev.stopPropagation(); startPipeline(s.name); });
+      runBtn.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); startPipeline(s.name); }
+      });
       list.appendChild(row);
+      segRuns.slice(1).forEach((r) => list.appendChild(runRow(r, "sub-run")));  // older runs, nested
     });
+  }
+
+  // Runs whose segment no longer has a definition (renamed/removed) -- keep them
+  // reachable rather than dropping them on the floor.
+  const orphanRuns = runs.filter((r) => !knownSegs.has(r.segment));
+  if (orphanRuns.length) {
+    list.appendChild(el("div", "analyses-group-label", "Other runs"));
+    orphanRuns.forEach((r) => list.appendChild(runRow(r)));
   }
   if (reports.length) {
     list.appendChild(el("div", "analyses-group-label", "Written reports"));
@@ -1796,8 +2036,8 @@ async function loadAnalyses() {
       list.appendChild(a);
     });
   }
-  if (!runs.length && !reports.length) {
-    list.innerHTML = '<div class="hint">No analyses yet. Run one from the Pipeline tab.</div>';
+  if (!runs.length && !reports.length && !segments.length) {
+    list.innerHTML = '<div class="hint">No analyses or segments yet. Use “+ New analysis” to start one.</div>';
     $("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
     return;
   }
@@ -1808,13 +2048,14 @@ async function loadAnalyses() {
     await loadAnalysis(toOpen, { push: false });
   } else {
     $("#analyses-reader").innerHTML =
-      '<div class="hint">No Deep Research runs yet — pick a written report on the left, or run one from the Pipeline tab.</div>';
+      '<div class="hint">No Deep Research runs yet — pick a segment to run one, choose a written report, or hit “+ New analysis”.</div>';
   }
 }
 
 async function loadAnalysis(stem, { push = true } = {}) {
   const reader = $("#analyses-reader");
   if (!reader) return;
+  await ensureTickerSet();
   state.currentAnalysis = stem;
   markActiveAnalysis(stem);
   if (push) pushNav({ view: "analyses", run: stem }, { replace: true });
@@ -1858,8 +2099,10 @@ async function loadAnalysis(stem, { push = true } = {}) {
     doc.innerHTML =
       `<div class="report-doc-head"><span class="report-doc-title">Deep Research report</span>` +
       `<span class="report-doc-note">Verbatim Perplexity output — treat numbers as claims to verify</span></div>`;
-    doc.appendChild(el("div", "report-doc-body prose", mdToHtml(rec.report)));
+    const body = el("div", "report-doc-body prose", mdToHtml(rec.report));
+    doc.appendChild(body);
     reader.appendChild(doc);
+    linkifyTickers(body);
   }
 
   // Everything below this line is generated/extracted by the console, not the report.
@@ -1908,3 +2151,4 @@ const initialNav = navFromUrl();
 window.history.replaceState(initialNav, "", window.location.href);
 restoreNav(initialNav);
 refreshLoginStatus();
+ensureTickerSet();

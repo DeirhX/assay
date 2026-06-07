@@ -264,6 +264,9 @@ def _segment_prompt(name: str) -> dict:
         "Then tie conclusions to portfolio action: keep, trim, sell, add, start, or wait.\n"
         "Include source citations and distinguish facts from opinion.\n"
         "Call out which numeric claims need deterministic verification.\n"
+        "On first mention of any public company, append its primary exchange "
+        "ticker with a $ prefix, e.g. 'ServiceNow ($NOW)'. Include a comparison "
+        "table with a 'Ticker' column covering every company you discuss.\n"
         "Treat the tickers above as individual stocks and the complete scope; "
         "do not ask clarifying questions. If anything is ambiguous, state "
         "assumptions and proceed.\n"
@@ -429,6 +432,39 @@ def _static_reports() -> list[dict]:
         })
     reports.sort(key=lambda r: (r["kind"] != "ticker", r["title"].lower()))
     return reports
+
+
+_TICKER_SHAPE = re.compile(r"^[A-Z][A-Z0-9.]{0,5}$")
+
+
+def _known_tickers() -> list[str]:
+    """Curated universe of symbols we actually know about: pulled research
+    dossiers, held positions, and segment members. The UI uses this to decide
+    which bare uppercase tokens in a report are safe to turn into deep-dive
+    links -- a small, relevant set beats the full US/EU universe, which collides
+    badly with English words (NOW, ON, ALL, IT...)."""
+    syms: set[str] = set()
+
+    def add(value) -> None:
+        if isinstance(value, dict):
+            value = value.get("symbol")
+        if not value:
+            return
+        s = str(value).strip().upper()
+        if _TICKER_SHAPE.match(s):
+            syms.add(s)
+
+    for path in RESEARCH_DIR.glob("*.json"):
+        add(path.stem)
+    holdings = _load(HOLDINGS_JSON) or {}
+    for pos in (holdings.get("positions") or []):
+        add(pos)
+    for src_dir in (SEGMENT_DEF_DIR, SEGMENT_OUT_DIR):
+        for path in src_dir.glob("*.json"):
+            data = _load(path) or {}
+            for member in (data.get("members") or data.get("symbols") or []):
+                add(member)
+    return sorted(syms)
 
 
 def _sync_holdings() -> dict:
@@ -1014,6 +1050,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"runs": _deep_runs()})
         if path == "/api/reports":
             return self._send_json({"reports": _static_reports()})
+        if path == "/api/tickers":
+            return self._send_json({"tickers": _known_tickers()})
         if path == "/api/deep-research/login-status":
             return self._send_json(_get_auth_state())
         if path == "/api/deep-job":
