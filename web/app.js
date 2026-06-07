@@ -474,6 +474,8 @@ function renderDeepDive(rec) {
   card.appendChild(badges);
   out.appendChild(card);
 
+  out.appendChild(renderAnalysisCard(rec));
+
   const biz = renderBusiness(rec);
   if (biz) out.appendChild(biz);
 
@@ -560,6 +562,175 @@ function renderDeepDive(rec) {
 
   // thesis editor
   out.appendChild(renderThesis(rec));
+}
+
+// In-depth, on-demand analysis via the local agent CLIs (Claude -> Cursor).
+// Cheap reasoning pass over the deterministic numbers above; Perplexity Deep
+// Research stays reserved for whole-segment crawls. Shows the latest saved note
+// if one exists, otherwise a button to generate one.
+function renderAnalysisCard(rec) {
+  const sym = rec.symbol;
+  const card = el("div", "card analysis-card");
+  const head = el("div", "analysis-head");
+  head.appendChild(el("h2", "section", "In-depth analysis"));
+  const cfgBtn = el("button", "ghost", "&#9881; Backends");
+  cfgBtn.type = "button";
+  cfgBtn.title = "Configure analysis backends";
+  cfgBtn.addEventListener("click", openAnalysisConfig);
+  head.appendChild(cfgBtn);
+  card.appendChild(head);
+
+  const status = el("div", "dd-status analysis-status");
+  const body = el("div", "analysis-body");
+  card.appendChild(status);
+  card.appendChild(body);
+
+  async function run(refresh) {
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> starting&hellip;`;
+    body.innerHTML = "";
+    try {
+      const start = await api("/api/analyze/" + encodeURIComponent(sym), "POST", { refresh: !!refresh });
+      await pollDeepJob(start.id, status, async () => { await show(); });
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "analysis failed: " + e.message;
+    }
+  }
+
+  async function show() {
+    let a;
+    try {
+      a = await api("/api/analysis/" + encodeURIComponent(sym));
+    } catch (_e) {
+      status.textContent = "";
+      status.classList.remove("err");
+      body.innerHTML = "";
+      body.appendChild(el("p", "hint",
+        `No in-depth analysis for <strong>${esc(sym)}</strong> yet. ` +
+        `Runs locally via your agent CLI (Claude, then Cursor) over the data above &mdash; ` +
+        `a skeptical, portfolio-aware note in ~30&ndash;60s.`));
+      const btn = el("button", "primary", "Run in-depth analysis");
+      btn.type = "button";
+      btn.addEventListener("click", () => run(false));
+      body.appendChild(btn);
+      return;
+    }
+    await ensureTickerSet();
+    const meta = a.meta || {};
+    const when = meta.generated_at ? new Date(meta.generated_at).toLocaleString() : "";
+    status.textContent = "";
+    status.classList.remove("err");
+    body.innerHTML =
+      `<div class="analysis-meta">` +
+      `<span class="abadge ok">${esc(meta.backend_label || "CLI")}</span>` +
+      (meta.model && meta.model !== "(default)" ? `<span class="muted">${esc(meta.model)}</span>` : "") +
+      (when ? `<span class="muted">${esc(when)}</span>` : "") +
+      `</div><div class="prose analysis-prose"></div>`;
+    const prose = body.querySelector(".analysis-prose");
+    prose.innerHTML = mdToHtml(a.report || "");
+    linkifyTickers(prose);
+    const actions = el("div", "analysis-actions");
+    const re = el("button", "ghost", "&#8635; Regenerate");
+    re.type = "button";
+    re.addEventListener("click", () => run(false));
+    const reFresh = el("button", "ghost", "&#8635; Refresh data + analyse");
+    reFresh.type = "button";
+    reFresh.addEventListener("click", () => run(true));
+    actions.appendChild(re);
+    actions.appendChild(reFresh);
+    body.appendChild(actions);
+  }
+
+  show();
+  return card;
+}
+
+// Lightweight modal to edit the CLI backend policy: which agents run, in what
+// order (= fallback order), their model override, and whether web tools are on.
+async function openAnalysisConfig() {
+  let payload;
+  try {
+    payload = await api("/api/analysis-config");
+  } catch (e) {
+    alert("Could not load analysis config: " + e.message);
+    return;
+  }
+  const cfg = payload.config;
+  const available = payload.available || {};
+  const labels = payload.labels || {};
+
+  const overlay = el("div", "modal-overlay");
+  const panel = el("div", "modal");
+  overlay.appendChild(panel);
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+  function render() {
+    panel.innerHTML =
+      `<div class="modal-head"><h2 class="section">Analysis backends</h2></div>` +
+      `<p class="hint">Tried top-to-bottom; the first that succeeds wins, and a quota/auth miss falls through to the next. Perplexity Deep Research is separate (whole-segment runs).</p>`;
+    const list = el("div", "backend-list");
+    cfg.providers.forEach((p, i) => {
+      const row = el("div", "backend-row");
+      const ok = available[p.id];
+      row.innerHTML =
+        `<div class="backend-rank">${i + 1}</div>` +
+        `<label class="backend-name"><input type="checkbox" ${p.enabled ? "checked" : ""} data-k="enabled" data-i="${i}"> ${esc(labels[p.id] || p.id)}</label>` +
+        `<span class="abadge ${ok ? "ok" : "bad"}">${ok ? "available" : "not found"}</span>` +
+        `<input class="backend-model" type="text" placeholder="model (default)" value="${esc(p.model || "")}" data-k="model" data-i="${i}">`;
+      const up = el("button", "ghost backend-up", "&#8593;");
+      up.type = "button";
+      up.disabled = i === 0;
+      up.title = "Move up (try sooner)";
+      up.addEventListener("click", () => {
+        [cfg.providers[i - 1], cfg.providers[i]] = [cfg.providers[i], cfg.providers[i - 1]];
+        render();
+      });
+      row.appendChild(up);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    const opts = el("div", "backend-opts");
+    opts.innerHTML =
+      `<label><input type="checkbox" id="cfg-web" ${cfg.allow_web ? "checked" : ""}> Allow web tools (slower, fresher; off keeps it grounded in the data)</label>` +
+      `<label>Timeout <input type="number" id="cfg-timeout" min="30" max="1200" value="${Number(cfg.timeout_sec) || 300}"> s</label>`;
+    panel.appendChild(opts);
+
+    const status = el("div", "dd-status");
+    const actions = el("div", "modal-actions");
+    const save = el("button", "primary", "Save");
+    const cancel = el("button", "ghost", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", close);
+    save.type = "button";
+    save.addEventListener("click", async () => {
+      panel.querySelectorAll("[data-k]").forEach((inp) => {
+        const i = Number(inp.dataset.i);
+        if (inp.dataset.k === "enabled") cfg.providers[i].enabled = inp.checked;
+        else cfg.providers[i].model = inp.value.trim();
+      });
+      cfg.allow_web = panel.querySelector("#cfg-web").checked;
+      cfg.timeout_sec = Number(panel.querySelector("#cfg-timeout").value) || 300;
+      status.classList.remove("err");
+      status.innerHTML = `<span class="spinner"></span> saving&hellip;`;
+      try {
+        await api("/api/analysis-config", "POST", { config: cfg });
+        close();
+      } catch (e) {
+        status.classList.add("err");
+        status.textContent = "save failed: " + e.message;
+      }
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    panel.appendChild(actions);
+    panel.appendChild(status);
+  }
+
+  render();
+  document.body.appendChild(overlay);
 }
 
 function renderBusiness(rec) {
