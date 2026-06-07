@@ -103,6 +103,9 @@ const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "holdings"
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
+// Segment names are server slugs: lowercase alphanumerics + hyphens. Guards
+// against junk (e.g. a "Failed to fetch" error string) being used as a segment.
+const isSegmentSlug = (s) => /^[a-z0-9][a-z0-9-]*$/.test(s || "");
 
 function navFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -1135,8 +1138,12 @@ async function loadSegmentList() {
     });
     return segments;
   } catch (e) {
-    sel.innerHTML = `<option>${esc(e.message)}</option>`;
-    if (pipeSel) pipeSel.innerHTML = `<option>${esc(e.message)}</option>`;
+    // Disabled + empty value so a transient /api/segments failure can't poison
+    // the dropdown with a selectable bogus name (e.g. "Failed to fetch") that a
+    // later load would send to /api/segment/<name>.
+    const opt = `<option value="" disabled selected>couldn't load segments: ${esc(e.message)}</option>`;
+    sel.innerHTML = opt;
+    if (pipeSel) pipeSel.innerHTML = opt;
     return [];
   }
 }
@@ -1157,6 +1164,11 @@ async function runSegmentPull(name, { push = true } = {}) {
   const status = $("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
+  if (!isSegmentSlug(name)) {
+    status.textContent = "Pick a segment from the list first.";
+    status.classList.add("err");
+    return;
+  }
   if (push) pushNav({ view: "segment", segment: name });
   setActiveView("segment");
   $("#segment-select").value = name;
@@ -1179,6 +1191,11 @@ async function loadCachedSegment(name, { push = false } = {}) {
   const status = $("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
+  if (!isSegmentSlug(name)) {
+    status.textContent = "Pick a segment from the list first.";
+    status.classList.add("err");
+    return;
+  }
   if (push) pushNav({ view: "segment", segment: name });
   setActiveView("segment");
   $("#segment-select").value = name;
