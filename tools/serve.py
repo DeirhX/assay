@@ -624,6 +624,29 @@ def _known_tickers() -> list[str]:
     return sorted(syms)
 
 
+def _verdict_line(report: str) -> str | None:
+    """The one-liner under an analysis '## Verdict' heading (stance + confidence
+    + justification), stripped of markdown. Used as the recents-list summary."""
+    if not report:
+        return None
+    lines = report.splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r"^#{1,6}\s+verdict\b", line.strip(), re.I):
+            buf: list[str] = []
+            for nxt in lines[i + 1:]:
+                s = nxt.strip()
+                if not s:
+                    if buf:
+                        break
+                    continue
+                if re.match(r"^#{1,6}\s", s):
+                    break
+                buf.append(s)
+            text = re.sub(r"\*\*?|`", "", " ".join(buf)).strip()
+            return text or None
+    return None
+
+
 def _ticker_index() -> list[dict]:
     """Every ticker we have material on -- a pulled dossier and/or a saved CLI
     analysis -- with timestamps. The UI merges this with the browser's local
@@ -653,6 +676,15 @@ def _ticker_index() -> list[dict]:
         if ts and (not row["analyzed_at"] or ts > row["analyzed_at"]):
             row["analyzed_at"] = ts
         row["has_analysis"] = True
+    # Attach the verdict one-liner from each analyzed ticker's latest note so the
+    # recents list summarizes the call (Accumulate/Hold/Trim/Avoid + why).
+    for row in out.values():
+        if row.get("has_analysis"):
+            latest = _latest_analysis(row["symbol"])
+            if latest:
+                vl = _verdict_line(latest.get("report") or "")
+                if vl:
+                    row["verdict"] = vl
     return sorted(out.values(), key=lambda r: r["symbol"])
 
 
