@@ -736,6 +736,7 @@ function renderAnalysisCard(rec) {
     const prose = body.querySelector(".analysis-prose");
     prose.innerHTML = mdToHtml(a.report || "");
     linkifyTickers(prose);
+    decorateVerdict(prose);
     const actions = el("div", "analysis-actions");
     const re = el("button", "ghost", "&#8635; Regenerate");
     re.type = "button";
@@ -758,6 +759,57 @@ function renderAnalysisCard(rec) {
 
   show();
   return card;
+}
+
+// Stances the analysis prompt asks for (Accumulate / Hold / Trim / Avoid) plus
+// common synonyms. The earliest occurrence in the verdict block wins, so a
+// stance word buried in the justification (e.g. "Hold ... better to avoid
+// adding") never overrides the leading call.
+const VERDICT_STANCES = [
+  { re: /\b(accumulate|accumulating|overweight|add(?:ing)?|buy|buying)\b/i, cls: "v-good", label: "Accumulate" },
+  { re: /\b(trim|trimming|reduce|reducing|underweight|lighten)\b/i, cls: "v-warn", label: "Trim" },
+  { re: /\b(avoid|sell|selling|exit|exiting)\b/i, cls: "v-bad", label: "Avoid" },
+  { re: /\b(hold|holding|neutral|maintain)\b/i, cls: "v-hold", label: "Hold" },
+];
+
+// Colour-codes the verdict: a pill on the heading + the inline stance word, so
+// the recommendation is unmissable when scanning the analysis.
+function decorateVerdict(root) {
+  const heads = [...root.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+  const vh = heads.find((h) => /^\s*verdict\b/i.test(h.textContent || ""));
+  if (!vh) return;
+  const block = [];
+  for (let n = vh.nextElementSibling; n && !/^H[1-6]$/.test(n.tagName); n = n.nextElementSibling) block.push(n);
+  const text = block.map((n) => n.textContent).join(" ");
+  let best = null;
+  VERDICT_STANCES.forEach((s) => {
+    const m = text.match(s.re);
+    if (m && (best === null || m.index < best.index)) best = { cls: s.cls, label: s.label, re: s.re, index: m.index };
+  });
+  if (!best) return;
+  const pill = el("span", "verdict-pill " + best.cls, esc(best.label));
+  vh.appendChild(document.createTextNode(" "));
+  vh.appendChild(pill);
+  for (const elBlock of block) {
+    if (highlightFirstMatch(elBlock, best.re, "verdict-stance " + best.cls)) break;
+  }
+}
+
+// Wraps the first regex match found in a text node under `host`. Returns true on
+// a hit so callers can stop after the first occurrence.
+function highlightFirstMatch(host, re, cls) {
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const m = node.nodeValue.match(re);
+    if (!m) continue;
+    const tail = node.splitText(m.index);
+    tail.nodeValue = tail.nodeValue.slice(m[0].length);
+    const span = el("span", cls, esc(m[0]));
+    tail.parentNode.insertBefore(span, tail);
+    return true;
+  }
+  return false;
 }
 
 // Lightweight modal to edit the CLI backend policy: which agents run, in what
