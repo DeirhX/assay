@@ -713,3 +713,28 @@ a.tlink:hover { border-bottom-style: solid; }
 .backend-opts { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; font-size: 13px; color: var(--text); }
 .backend-opts label { display: flex; align-items: center; gap: 8px; }
 .backend-opts input[type="number"] { width: 80px; padding: 4px 8px; }
+
+/* ---- viewed tickers (recents) ------------------------------------------ */
+.viewed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.viewed-head h2.section { margin: 0; }
+.viewed-sort { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.viewed-sort .chip {
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.viewed-sort .chip:hover { border-color: var(--accent); }
+.viewed-sort .chip.active { color: var(--text); border-color: var(--accent); }
+.viewed-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.viewed-row {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
+  text-align: left; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius-soft); padding: 9px 12px; cursor: pointer; color: var(--text); font: inherit;
+}
+.viewed-row:hover { border-color: var(--accent); }
+.viewed-sym { font-weight: 700; color: var(--accent); }
+.viewed-name { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewed-when { font-size: 12px; white-space: nowrap; }
+@media (max-width: 640px) {
+  .viewed-row { grid-template-columns: 56px minmax(0, 1fr) auto; }
+  .viewed-when { display: none; }
+}

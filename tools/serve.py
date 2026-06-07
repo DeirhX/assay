@@ -538,6 +538,38 @@ def _known_tickers() -> list[str]:
     return sorted(syms)
 
 
+def _ticker_index() -> list[dict]:
+    """Every ticker we have material on -- a pulled dossier and/or a saved CLI
+    analysis -- with timestamps. The UI merges this with the browser's local
+    view-history to offer a quick "jump back to a ticker" list. Server-side so a
+    fresh browser still sees the tickers of interest, not an empty list."""
+    out: dict[str, dict] = {}
+    for path in RESEARCH_DIR.glob("*.json"):
+        rec = _load(path) or {}
+        sym = path.stem.upper()
+        out[sym] = {
+            "symbol": sym,
+            "name": rec.get("name") or sym,
+            "as_of": rec.get("as_of"),
+            "analyzed_at": None,
+            "has_analysis": False,
+        }
+    for path in ANALYSIS_DIR.glob("*.meta.json"):
+        meta = _load(path) or {}
+        sym = (meta.get("symbol") or "").upper()
+        if not sym:
+            continue
+        row = out.setdefault(sym, {
+            "symbol": sym, "name": sym, "as_of": None,
+            "analyzed_at": None, "has_analysis": False,
+        })
+        ts = meta.get("generated_at")
+        if ts and (not row["analyzed_at"] or ts > row["analyzed_at"]):
+            row["analyzed_at"] = ts
+        row["has_analysis"] = True
+    return sorted(out.values(), key=lambda r: r["symbol"])
+
+
 def _sync_holdings() -> dict:
     """Re-pull the portfolio from the external read-only IBKR Flex reader and
     refresh data/current-holdings.json. The reader lives outside this repo (see
@@ -1064,6 +1096,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"reports": _static_reports()})
         if path == "/api/tickers":
             return self._send_json({"tickers": _known_tickers()})
+        if path == "/api/ticker-index":
+            return self._send_json({"tickers": _ticker_index()})
         if path == "/api/analysis-config":
             return self._send_json({
                 "config": ticker_analysis.load_config(),
