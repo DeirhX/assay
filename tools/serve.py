@@ -286,7 +286,35 @@ def _deep_runs() -> list[dict]:
             continue
         rec = runs.setdefault(stem, {"stem": stem, "files": {}})
         rec["files"][suffix] = str(path.relative_to(REPO_ROOT))
+    for rec in runs.values():
+        _enrich_deep_run(rec)
     return sorted(runs.values(), key=lambda r: r["stem"], reverse=True)
+
+
+def _enrich_deep_run(rec: dict) -> None:
+    """Attach human-facing metadata so a run can stand on its own in a list:
+    a real title (from the segment definition), the run date, how many sources
+    backed it, and whether a review / applicable proposal exists."""
+    stem = rec["stem"]
+    m = re.match(r"^(.*)-(\d{4}-\d{2}-\d{2})$", stem)
+    segment = m.group(1) if m else stem
+    date = m.group(2) if m else ""
+    seg_def = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
+    title = seg_def.get("title") or segment.replace("-", " ").title()
+    sources = _load(DEEP_DIR / f"{stem}.sources.json") or {}
+    proposal = _load(DEEP_DIR / f"{stem}.target-proposal.json") or {}
+    rec.update({
+        "segment": segment,
+        "date": date,
+        "title": title,
+        "source_count": len(sources.get("citations") or []),
+        "source_url": sources.get("source_url") or "",
+        "generated_at": sources.get("extracted_at") or "",
+        "has_review": "review" in rec["files"],
+        "has_proposal": "proposal" in rec["files"],
+        "change_count": len(proposal.get("changes") or []),
+        "blocked_symbols": proposal.get("blocked_symbols") or [],
+    })
 
 
 def _save_deep_artifact(body: dict) -> dict:

@@ -15,6 +15,8 @@ const state = {
   promptSegment: null,
   savedRuns: new Set(),
   deepRuns: [],
+  analysesRuns: [],
+  currentAnalysis: null,
 };
 
 // ---- tiny helpers ---------------------------------------------------------
@@ -87,7 +89,7 @@ async function api(path, method = "GET", body = null) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["deepdive", "segment", "pipeline", "holdings"]);
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "holdings"]);
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -135,6 +137,7 @@ function navForView(view) {
     nav.segment = cleanSlug($("#pipe-segment-select").value || $("#pipe-slug").value);
     if (state.currentDeepRun) nav.run = state.currentDeepRun;
   }
+  if (view === "analyses" && state.currentAnalysis) nav.run = state.currentAnalysis;
   return nav;
 }
 
@@ -145,6 +148,7 @@ function setActiveView(view) {
   $("#view-" + active).classList.add("active");
   if (active === "holdings") loadHoldings();
   if (active === "pipeline") loadPipeline();
+  if (active === "analyses") loadAnalyses();
   return active;
 }
 
@@ -1491,6 +1495,165 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
     status.classList.add("err");
   }
 });
+
+// ---- analyses -------------------------------------------------------------
+
+// Minimal, escape-first markdown renderer. The report text is from Perplexity
+// (untrusted), so everything is HTML-escaped before a controlled subset of
+// markup is re-introduced; links are restricted to http(s) so no javascript:.
+function mdToHtml(md) {
+  if (!md) return "";
+  const inline = (s) =>
+    esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const out = [];
+  let list = null;
+  let para = [];
+  let table = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  const flushTable = () => { if (table.length) { out.push(`<pre class="md-table">${esc(table.join("\n"))}</pre>`); table = []; } };
+  String(md).replace(/\r\n/g, "\n").split("\n").forEach((raw) => {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    if (line.trim().startsWith("|")) { flushPara(); closeList(); table.push(line); return; }
+    flushTable();
+    if (!line.trim()) { flushPara(); closeList(); return; }
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {
+      flushPara(); closeList();
+      out.push(`<h${Math.min(m[1].length + 1, 6)}>${inline(m[2])}</h${Math.min(m[1].length + 1, 6)}>`);
+    } else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      flushPara(); if (list !== "ul") { closeList(); list = "ul"; out.push("<ul>"); }
+      out.push(`<li>${inline(m[1])}</li>`);
+    } else if ((m = line.match(/^\s*\d+\.\s+(.*)$/))) {
+      flushPara(); if (list !== "ol") { closeList(); list = "ol"; out.push("<ol>"); }
+      out.push(`<li>${inline(m[1])}</li>`);
+    } else {
+      closeList(); para.push(line);
+    }
+  });
+  flushPara(); closeList(); flushTable();
+  return out.join("\n");
+}
+
+function analysisBadges(r) {
+  const parts = [];
+  if (r.has_review) parts.push('<span class="abadge ok">reviewed</span>');
+  if (r.change_count) parts.push(`<span class="abadge">${r.change_count} proposed</span>`);
+  if (r.blocked_symbols && r.blocked_symbols.length)
+    parts.push(`<span class="abadge bad">blocked: ${esc(r.blocked_symbols.join(", "))}</span>`);
+  return parts.join(" ");
+}
+
+function markActiveAnalysis(stem) {
+  document.querySelectorAll("#analyses-list .analysis-row").forEach((row) =>
+    row.classList.toggle("active", row.dataset.stem === stem));
+}
+
+async function loadAnalyses() {
+  const list = $("#analyses-list");
+  if (!list) return;
+  list.innerHTML = '<div class="hint">Loading…</div>';
+  let runs;
+  try {
+    runs = (await api("/api/deep-runs")).runs || [];
+  } catch (e) {
+    list.innerHTML = `<div class="status err">could not load analyses: ${esc(e.message)}</div>`;
+    return;
+  }
+  state.analysesRuns = runs;
+  if (!runs.length) {
+    list.innerHTML = '<div class="hint">No saved analyses yet. Run one from the Pipeline tab.</div>';
+    $("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
+    return;
+  }
+  list.innerHTML = "";
+  runs.forEach((r) => {
+    const row = el("button", "analysis-row");
+    row.dataset.stem = r.stem;
+    const age = relAge(r.generated_at);
+    row.innerHTML =
+      `<div class="analysis-row-title">${esc(r.title || r.stem)}</div>` +
+      `<div class="analysis-row-meta">${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources</div>` +
+      (analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "");
+    row.addEventListener("click", () => loadAnalysis(r.stem));
+    list.appendChild(row);
+  });
+  const urlRun = navFromUrl().run;
+  const toOpen = (urlRun && runs.some((r) => r.stem === urlRun)) ? urlRun : runs[0].stem;
+  await loadAnalysis(toOpen, { push: false });
+}
+
+async function loadAnalysis(stem, { push = true } = {}) {
+  const reader = $("#analyses-reader");
+  if (!reader) return;
+  state.currentAnalysis = stem;
+  markActiveAnalysis(stem);
+  if (push) pushNav({ view: "analyses", run: stem }, { replace: true });
+  reader.innerHTML = '<div class="hint">Loading…</div>';
+  let rec;
+  try {
+    rec = await api("/api/deep-run/" + encodeURIComponent(stem));
+  } catch (e) {
+    reader.innerHTML = `<div class="status err">${esc(e.message)}</div>`;
+    return;
+  }
+  const meta = state.analysesRuns.find((r) => r.stem === stem) || {};
+  const sources = rec.sources || {};
+  const citations = sources.citations || [];
+  const age = relAge(meta.generated_at);
+
+  reader.innerHTML = "";
+  const head = el("div", "analysis-header");
+  let sub = `Deep Research${meta.date ? " · " + esc(meta.date) : ""}${age ? " · " + esc(age) : ""} · ${citations.length} sources`;
+  if (sources.source_url)
+    sub += ` · <a href="${esc(sources.source_url)}" target="_blank" rel="noopener">open in Perplexity ↗</a>`;
+  head.innerHTML =
+    `<h2>${esc(meta.title || stem)}</h2>` +
+    `<div class="analysis-sub">${sub}</div>` +
+    (analysisBadges(meta) ? `<div class="analysis-row-badges">${analysisBadges(meta)}</div>` : "");
+  reader.appendChild(head);
+
+  if (rec.report) {
+    const sec = el("section", "analysis-section");
+    sec.appendChild(el("h3", null, "Report"));
+    sec.appendChild(el("div", "prose", mdToHtml(rec.report)));
+    reader.appendChild(sec);
+  }
+
+  if (rec.review) {
+    const sec = el("section", "analysis-section");
+    sec.appendChild(el("h3", null, "Review gate"));
+    sec.appendChild(el("div", "prose", mdToHtml(rec.review)));
+    reader.appendChild(sec);
+  }
+
+  if (citations.length) {
+    const sec = el("section", "analysis-section");
+    sec.appendChild(el("h3", null, `Sources (${citations.length})`));
+    const ul = el("ol", "cite-list");
+    citations.forEach((c) => {
+      const li = el("li", "cite");
+      let host = c.href || "";
+      try { host = new URL(c.href).hostname.replace(/^www\./, ""); } catch (_e) {}
+      const parts = String(c.label || "").split("\n").map((s) => s.trim()).filter(Boolean);
+      const name = parts.find((p) => !/^https?:/i.test(p)) || host;
+      const desc = parts.find((p) => !/^https?:/i.test(p) && p !== name) || "";
+      li.innerHTML =
+        (c.href ? `<a href="${esc(c.href)}" target="_blank" rel="noopener">${esc(name)}</a>` : esc(name)) +
+        `<span class="cite-host">${esc(host)}</span>` +
+        (desc ? `<div class="cite-desc">${esc(desc)}</div>` : "");
+      ul.appendChild(li);
+    });
+    sec.appendChild(ul);
+    reader.appendChild(sec);
+  }
+
+  reader.scrollTop = 0;
+}
 
 // ---- boot -----------------------------------------------------------------
 applyPrivacyMode(state.privacyMode);
