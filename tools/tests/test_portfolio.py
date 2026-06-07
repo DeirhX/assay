@@ -1,0 +1,128 @@
+"""Tests for weight computation and target-band decision logic.
+
+The broker's percent_of_nav lies for options; weights must be recomputed from
+market value. Band status and decision labels drive every trim/add suggestion,
+so they get exhaustive branch coverage."""
+
+from __future__ import annotations
+
+import unittest
+
+import _support  # noqa: F401
+import portfolio as pf
+
+
+HOLDINGS = {
+    "positions": [
+        {"symbol": "AAA", "base_market_value": 100.0},
+        {"symbol": "BBB", "base_market_value": 300.0},
+        {"symbol": "OPT", "base_market_value": None},  # option-ish, no MV
+    ]
+}
+
+
+class Weights(unittest.TestCase):
+    def test_position_weight_is_mv_over_invested(self):
+        self.assertEqual(pf.position_weight_pct({"base_market_value": 100.0}, 400.0), 25.0)
+
+    def test_position_weight_none_when_no_mv_or_zero_invested(self):
+        self.assertIsNone(pf.position_weight_pct({"base_market_value": None}, 400.0))
+        self.assertIsNone(pf.position_weight_pct({"base_market_value": 100.0}, 0.0))
+
+    def test_holdings_weights_recomputed_and_skips_null_mv(self):
+        w = pf.holdings_weights(HOLDINGS)
+        self.assertEqual(w["AAA"], 25.0)
+        self.assertEqual(w["BBB"], 75.0)
+        self.assertNotIn("OPT", w)
+
+    def test_invested_value_sums_only_numeric(self):
+        self.assertEqual(pf.invested_value(HOLDINGS["positions"]), 400.0)
+
+
+class TargetContext(unittest.TestCase):
+    MODEL = {
+        "targets": {"AMD": {"low": 10, "high": 12, "rule": "trim_only"}},
+        "sleeves": {"fintech": {"low": 5, "high": 8, "rule": "accumulate",
+                                "members": ["SOFI", "PYPL"]}},
+    }
+
+    def test_top_level_target(self):
+        ctx = pf.target_context(self.MODEL, "AMD")
+        self.assertEqual(ctx["kind"], "target")
+        self.assertEqual(ctx["rule"], "trim_only")
+
+    def test_sleeve_membership(self):
+        ctx = pf.target_context(self.MODEL, "SOFI")
+        self.assertEqual(ctx["kind"], "sleeve")
+        self.assertEqual(ctx["sleeve"], "fintech")
+        self.assertNotIn("members", ctx)  # membership list stripped from the view
+
+    def test_unmanaged_symbol(self):
+        self.assertEqual(pf.target_context(self.MODEL, "TSLA")["kind"], "none")
+
+
+class BandStatus(unittest.TestCase):
+    MODEL = {"targets": {"X": {"low": 10, "high": 12, "rule": "trim_only"}}}
+
+    def _ctx(self, weight):
+        holdings = {"positions": [{"symbol": "X", "base_market_value": weight},
+                                  {"symbol": "_", "base_market_value": 100.0 - weight}]}
+        return pf.portfolio_context("X", holdings=holdings, model=self.MODEL)
+
+    def test_above_band(self):
+        ctx = self._ctx(14.7)
+        self.assertEqual(ctx["status"], "above_band")
+        self.assertLess(ctx["gap_to_band_pct"], 0)  # high - current, negative when over
+
+    def test_below_band(self):
+        ctx = self._ctx(5.0)
+        self.assertEqual(ctx["status"], "below_band")
+        self.assertAlmostEqual(ctx["gap_to_band_pct"], 5.0)  # low - current
+
+    def test_in_band(self):
+        ctx = self._ctx(11.0)
+        self.assertEqual(ctx["status"], "in_band")
+        self.assertEqual(ctx["gap_to_band_pct"], 0.0)
+
+    def test_held_no_target(self):
+        holdings = {"positions": [{"symbol": "Z", "base_market_value": 50.0},
+                                  {"symbol": "_", "base_market_value": 50.0}]}
+        ctx = pf.portfolio_context("Z", holdings=holdings, model={"targets": {}})
+        self.assertEqual(ctx["status"], "held_no_target")
+
+    def test_not_held(self):
+        ctx = pf.portfolio_context("NOPE", holdings={"positions": []}, model={"targets": {}})
+        self.assertEqual(ctx["status"], "not_held")
+
+
+class DecisionLabel(unittest.TestCase):
+    def lbl(self, rule, status):
+        return pf.decision_label({"target": {"rule": rule}, "status": status})
+
+    def test_avoid(self):
+        self.assertEqual(self.lbl("avoid", "in_band"), "avoid")
+
+    def test_reduce_is_trim(self):
+        self.assertEqual(self.lbl("reduce", "above_band"), "trim")
+
+    def test_trim_only_above_band_is_trim(self):
+        self.assertEqual(self.lbl("trim_only", "above_band"), "trim")
+
+    def test_trim_only_in_band_is_hold(self):
+        self.assertEqual(self.lbl("trim_only", "in_band"), "hold")
+
+    def test_accumulate_below_band_is_add_candidate(self):
+        self.assertEqual(self.lbl("accumulate", "below_band"), "add_candidate")
+
+    def test_accumulate_in_band_is_accumulate(self):
+        self.assertEqual(self.lbl("accumulate", "in_band"), "accumulate")
+
+    def test_wait_is_watch(self):
+        self.assertEqual(self.lbl("wait", "in_band"), "watch")
+
+    def test_unknown_rule_is_research(self):
+        self.assertEqual(self.lbl(None, "not_held"), "research")
+
+
+if __name__ == "__main__":
+    unittest.main()

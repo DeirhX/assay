@@ -45,11 +45,12 @@ AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from portfolio import holdings_payload  # noqa: E402
+from portfolio import holdings_payload, holdings_weights  # noqa: E402
 from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
+import rebalance  # noqa: E402
 import jobs  # noqa: E402
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -211,15 +212,10 @@ def _segment_prompt(name: str) -> dict:
     definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
     if not definition:
         raise ValueError(f"unknown segment {slug}")
-    holdings = holdings_payload()
-    held = {
-        p["symbol"]: p.get("percent_of_nav")
-        for p in holdings.get("positions", [])
-        if p.get("percent_of_nav") is not None
-    }
+    held = holdings_weights()  # single source of truth (percent of invested book)
     symbols = [m["symbol"] for m in definition.get("members", [])]
     held_lines = [
-        f"- {sym}: {held[sym]:.2f}% NAV"
+        f"- {sym}: {held[sym]:.2f}% of book"
         for sym in symbols
         if sym in held
     ]
@@ -1210,6 +1206,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
         if path == "/api/holdings":
             return self._send_json(holdings_payload())
+        if path == "/api/rebalance":
+            model = _load(TARGET_MODEL_JSON)
+            holdings = _load(HOLDINGS_JSON)
+            if not model:
+                return self._send_error_json(404, "no target model — data/target-model.json missing")
+            if not holdings:
+                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+            return self._send_json(rebalance.plan(model, holdings))
         if path == "/api/segments":
             return self._send_json({"segments": _segments_list()})
         if path.startswith("/api/segment-def/"):

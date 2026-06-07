@@ -30,15 +30,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import portfolio  # noqa: E402  -- single source of truth for position weights
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
 TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
 
 EPS = 0.01  # weights are 2-decimal percents; tolerate rounding noise
-IMPLAUSIBLE_WEIGHT = 50.0  # a single line over half of NAV is almost certainly a data bug
 COVERAGE_WARN_PCT = 1.0  # an untargeted held name at/above this size is a real gap, not a stub
 
 VALID_RULES = {"accumulate", "trim_only", "do_not_add", "reduce", "hold", "wait", "avoid"}
@@ -66,16 +69,15 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def current_weights(holdings: dict[str, Any]) -> dict[str, float]:
-    """symbol -> percent_of_nav, only for plausible, non-null weights."""
-    out: dict[str, float] = {}
-    for pos in holdings.get("positions", []):
-        pct = pos.get("percent_of_nav")
-        sym = pos.get("symbol")
-        if sym is None or pct is None:
-            continue
-        if 0.0 <= float(pct) <= IMPLAUSIBLE_WEIGHT:
-            out[sym] = float(pct)
-    return out
+    """symbol -> weight (percent of invested book).
+
+    Single source of truth: delegates to ``portfolio.holdings_weights``, which
+    recomputes from market value. We deliberately do NOT read the broker's
+    ``percent_of_nav`` field -- it is notional-poisoned for options (a 2-lot put
+    can be tagged 100%). The validator, the CLI, and the web planner all share
+    this one definition so they can never disagree about "the weight".
+    """
+    return portfolio.holdings_weights(holdings)
 
 
 def _band_ok(low: Any, high: Any) -> bool:
@@ -106,17 +108,16 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
     cash_target = float(model.get("cash_target_pct", 0.0) or 0.0)
 
     # --- holdings hygiene (independent of the model) ---
+    # Weights come from base_market_value (see current_weights), so validate that
+    # field -- not the broker's misleading percent_of_nav tag.
     for pos in holdings.get("positions", []):
         sym = pos.get("symbol", "?")
-        pct = pos.get("percent_of_nav")
-        if pct is None:
-            add("INFO", f"holdings:{sym}", "position has no percent_of_nav (skipped in weights).")
-        elif float(pct) > IMPLAUSIBLE_WEIGHT:
-            add("WARN", f"holdings:{sym}",
-                f"implausible weight {pct:g}% of NAV -- looks like a data bug "
-                f"(option/notional mislabel?); excluded from weights.")
-        elif float(pct) < 0.0:
-            add("WARN", f"holdings:{sym}", f"negative weight {pct:g}% of NAV.")
+        bmv = pos.get("base_market_value")
+        if not isinstance(bmv, (int, float)):
+            add("INFO", f"holdings:{sym}", "position has no base_market_value (skipped in weights).")
+        elif bmv < 0.0:
+            add("INFO", f"holdings:{sym}",
+                "negative market value (short leg) -- counts negatively toward weights.")
 
     # --- sleeves ---
     seen_in_sleeve: dict[str, str] = {}
@@ -234,7 +235,7 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
     for sym, w in untargeted:
         sev = "WARN" if w >= COVERAGE_WARN_PCT else "INFO"
         add(sev, f"coverage:{sym}",
-            f"held at {w:.2f}% of NAV but absent from target-model.json "
+            f"held at {w:.2f}% of book but absent from target-model.json "
             f"(no band/rule governs it; add a target or a sleeve).")
 
     if managed_target_mid + cash_target > 100.0 + EPS:
@@ -329,18 +330,107 @@ def advice(model: dict[str, Any], holdings: dict[str, Any]) -> None:
         return
     for name, rule, cur, low, high, amt in trims:
         verb = "REVIEW (over ceiling)" if rule == "accumulate?" else "TRIM/SELL"
-        print(f"  {verb:21} {name:11} ~{amt:4.1f}% NAV  (now {cur:5.2f}% -> band {low:g}-{high:g})")
+        print(f"  {verb:21} {name:11} ~{amt:4.1f}% book (now {cur:5.2f}% -> band {low:g}-{high:g})")
     for name, rule, cur, low, high, amt in buys:
-        print(f"  {'ADD/BUY':21} {name:11} ~{amt:4.1f}% NAV  (now {cur:5.2f}% -> band {low:g}-{high:g})")
+        print(f"  {'ADD/BUY':21} {name:11} ~{amt:4.1f}% book (now {cur:5.2f}% -> band {low:g}-{high:g})")
     freed = sum(r[5] for r in trims if not r[1].endswith("?"))
     wanted = sum(r[5] for r in buys)
-    print(f"  Named trims free ~{freed:.1f}% NAV; buys want ~{wanted:.1f}% NAV.", end="")
+    print(f"  Named trims free ~{freed:.1f}% book; buys want ~{wanted:.1f}% book.", end="")
     if wanted - freed > EPS:
         print(f" ~{wanted - freed:.1f}% more must come from cash or the untargeted 'hold' bucket.")
     else:
         print(" trims cover the buys.")
     if funding_order:
         print(f"  Funding order: {', '.join(funding_order)}, then cash, then the hold bucket.")
+
+
+def _suggest(rule: str, status: str, cur: float, low: float, high: float) -> tuple[str | None, float]:
+    """The minimal band-closing action for one position, as (action, delta_pct)
+    where delta is signed (negative = sell). Mirrors ``advice()`` so the UI and
+    the CLI never disagree about what to do."""
+    if status == "ABOVE":
+        if rule in NO_BUY_RULES:
+            return "trim", high - cur          # sell down to the ceiling
+        if rule == "accumulate":
+            return "review", high - cur        # over ceiling on a buy rule: flag, don't auto-count
+    elif status == "BELOW":
+        if rule in {"accumulate", "hold"}:
+            return "buy", low - cur            # buy up to the floor
+    return None, 0.0
+
+
+def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
+    """Structured drift + suggested-action data for the UI rebalance planner.
+
+    Shares ``current_weights`` with ``check_model`` so the interactive view, the
+    CLI preview, and the validator agree on every number. Weights are percent of
+    the *invested* book (market value over invested value), so amounts are sized
+    off invested value -- making ``current_czk`` equal the actual market value,
+    not an inflated NAV-based figure. This is advice, not orders."""
+    weights = current_weights(holdings)
+    positions = holdings.get("positions", []) if isinstance(holdings, dict) else []
+    invested = portfolio.invested_value(positions)
+    nav = holdings.get("net_asset_value") if isinstance(holdings, dict) else None
+    targets: dict[str, Any] = model.get("targets", {})
+    sleeves: dict[str, Any] = model.get("sleeves", {})
+    cash_target = float(model.get("cash_target_pct", 0.0) or 0.0)
+
+    def czk(pct: float | None) -> int | None:
+        if not invested or pct is None:
+            return None
+        return round(pct / 100.0 * invested)
+
+    rows: list[dict[str, Any]] = []
+
+    def add_row(key, name, kind, rule, cur, low, high, note, members=None, interactive=True):
+        status = _status(cur, low, high)
+        action, delta = _suggest(rule, status, cur, low, high)
+        mid = (low + high) / 2.0
+        rows.append({
+            "key": key, "name": name, "kind": kind, "rule": rule,
+            "held": cur > EPS,
+            "current_pct": round(cur, 2), "current_czk": czk(cur),
+            "low": low, "high": high, "mid": round(mid, 2),
+            "status": status, "drift_pct": round(cur - mid, 2),
+            "action": action,
+            "suggest_delta_pct": round(delta, 2), "suggest_delta_czk": czk(delta),
+            "note": note, "members": members, "interactive": interactive,
+        })
+
+    for sym, t in targets.items():
+        if _band_ok(t.get("low"), t.get("high")):
+            add_row(sym, sym, "target", str(t.get("rule")), weights.get(sym, 0.0),
+                    float(t["low"]), float(t["high"]), t.get("note"))
+
+    for name, sl in sleeves.items():
+        if not _band_ok(sl.get("low"), sl.get("high")):
+            continue
+        members = sl.get("members", [])
+        cur = sum(weights.get(m, 0.0) for m in members)
+        member_rows = [{"symbol": m, "current_pct": round(weights.get(m, 0.0), 2),
+                        "current_czk": czk(weights.get(m, 0.0))} for m in members]
+        add_row(f"[{name}]", name, "sleeve", str(sl.get("rule", "accumulate")), cur,
+                float(sl["low"]), float(sl["high"]), sl.get("note"),
+                members=member_rows, interactive=False)
+
+    managed = set(targets) | {m for sl in sleeves.values() for m in sl.get("members", [])}
+    untargeted = sorted(((s, w) for s, w in weights.items() if s not in managed),
+                        key=lambda kv: -kv[1])
+    untargeted_pct = sum(w for _, w in untargeted)
+
+    return {
+        "as_of": model.get("as_of"),
+        "snapshot": holdings.get("generated_at") if isinstance(holdings, dict) else None,
+        "nav": nav,
+        "invested": invested,
+        "currency": (holdings.get("base_currency") if isinstance(holdings, dict) else None) or "CZK",
+        "cash_target_pct": cash_target,
+        "funding_order": model.get("funding_order", []),
+        "rows": rows,
+        "untargeted": [{"symbol": s, "current_pct": round(w, 2), "current_czk": czk(w)}
+                       for s, w in untargeted],
+        "untargeted_pct": round(untargeted_pct, 2),
+    }
 
 
 def report(findings: list[Finding], strict: bool) -> int:

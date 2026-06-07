@@ -1,5 +1,24 @@
 # Tools
 
+## Tests
+
+Stdlib `unittest`, no dependencies. They cover the parts where a silent bug
+costs money: the trust engine (`research_pull` cross-checks, market-cap
+reconciliation/quarantine, metric/profile merge, peer score), the target-band
+decision logic (`portfolio`, `rebalance` model validation), the identifier
+guards (`store`), the job registry incl. cooperative cancel (`jobs`), and the
+analysis layer's web-tool wiring, timeouts, grounding-rule switch, config
+validation, and cancellable subprocess (`ticker_analysis`).
+
+```powershell
+py -3 -m unittest discover -s tools/tests -p "test_*.py" -t tools/tests
+```
+
+They run offline (no network, no live CLI) in ~1s. The config test sandboxes
+`CONFIG_PATH` to a temp dir, so your real `analysis-config.json` is never
+touched; the integration smoke test reuses a real committed `data/research/*.json`
+dossier and skips cleanly if none is present.
+
 ## serve.py + research_pull.py + providers/ (Interactive Research Console)
 
 On-demand deep analysis for a single ticker or a whole industry segment. Stdlib
