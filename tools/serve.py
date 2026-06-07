@@ -27,7 +27,6 @@ import re
 import sys
 import threading
 import time
-import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -51,6 +50,18 @@ from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
+import jobs  # noqa: E402
+# Disk + identifier helpers and the job registry now live in their own modules;
+# alias them so the rest of this file's call sites stay unchanged.
+from store import (  # noqa: E402
+    load as _load, write_json as _write_json, write_text as _write_text,
+    slugify as _slugify, safe_symbol as _safe_symbol,
+)
+from jobs import (  # noqa: E402
+    new_job as _new_job, update_job as _update_job, public as _job_public,
+    claim_active as _claim_active, release_active as _release_active,
+    any_active as _any_active_deep_job,
+)
 
 # Selectable chart windows -> (Yahoo range, interval). Longer windows step to a
 # coarser interval so we don't ship thousands of daily points for a 10y view.
@@ -66,13 +77,8 @@ PRICE_HISTORY_RANGES: dict[str, tuple[str, str]] = {
 
 _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
 
-# Deep Research browser jobs. Only ONE may run at a time: the Playwright worker
-# opens a persistent Chrome profile (can't be opened twice) and each run spends
-# scarce Pro quota. Jobs are in-memory and disappear on restart -- artifacts on
-# disk are the durable record.
-_DEEP_JOBS: dict[str, dict] = {}
-_DEEP_JOBS_LOCK = threading.Lock()
-_DEEP_ACTIVE = {"running": False}
+# The deep-research / login / analysis job registry lives in jobs.py; the single
+# active-browser slot is jobs.claim_active / jobs.release_active.
 
 # Dev live-reload. Off unless started with --reload. _BOOT_TOKEN is recomputed
 # each time the process (re)starts, so the browser can tell an API restart apart
@@ -87,39 +93,6 @@ _CONTENT_TYPES = {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
 }
-
-
-def _load(path: Path):
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def _write_json(path: Path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _write_text(path: Path, payload: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
-
-
-def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
-    if not slug or len(slug) > 64:
-        raise ValueError("bad segment slug")
-    return slug
-
-
-def _safe_symbol(value: str) -> str:
-    sym = (value or "").upper().strip()
-    if not sym or len(sym) > 16 or not re.match(r"^[A-Z0-9.=-]+$", sym):
-        raise ValueError(f"bad symbol: {value!r}")
-    return sym
 
 
 def _segment_path(name: str) -> Path:
@@ -439,13 +412,11 @@ def _run_analysis_job(job_id: str, symbol: str, refresh: bool) -> None:
 
 # At most one analysis per symbol in flight; the CLIs are cheap but not free.
 def _analysis_running(symbol: str) -> bool:
-    with _DEEP_JOBS_LOCK:
-        return any(
-            j.get("kind") == "ticker_analysis"
-            and j.get("symbol") == symbol
-            and j.get("state") in ("queued", "running")
-            for j in _DEEP_JOBS.values()
-        )
+    return jobs.find(
+        lambda j: j.get("kind") == "ticker_analysis"
+        and j.get("symbol") == symbol
+        and j.get("state") in ("queued", "running")
+    )
 
 
 def _start_analysis(symbol: str, refresh: bool) -> dict:
@@ -662,13 +633,6 @@ def _server_sources() -> list[Path]:
     return sorted((REPO_ROOT / "tools").glob("*.py"))
 
 
-def _any_active_deep_job() -> bool:
-    if _DEEP_ACTIVE.get("running"):
-        return True
-    with _DEEP_JOBS_LOCK:
-        return any(j.get("state") in ("queued", "running") for j in _DEEP_JOBS.values())
-
-
 def _reload_watcher() -> None:
     """Child-side watcher. When server code changes, exit with code 3 so the
     supervisor respawns a fresh process. Guards: never restart on code that fails
@@ -784,58 +748,6 @@ def _verify_login() -> dict:
         return _get_auth_state()
     finally:
         _release_active()
-
-
-def _job_public(job: dict) -> dict:
-    """The UI-safe view of a job (no giant report body)."""
-    return {
-        "id": job["id"],
-        "kind": job["kind"],
-        "state": job["state"],
-        "message": job.get("message", ""),
-        "segment": job.get("segment"),
-        "date": job.get("date"),
-        "result": job.get("result"),
-        "artifact": job.get("artifact"),
-        "error": job.get("error"),
-        "updated_at": job.get("updated_at"),
-    }
-
-
-def _update_job(job_id: str, **fields) -> None:
-    with _DEEP_JOBS_LOCK:
-        job = _DEEP_JOBS.get(job_id)
-        if not job:
-            return
-        job.update(fields)
-        job["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-
-
-def _release_active() -> None:
-    with _DEEP_JOBS_LOCK:
-        _DEEP_ACTIVE["running"] = False
-
-
-def _claim_active() -> bool:
-    with _DEEP_JOBS_LOCK:
-        if _DEEP_ACTIVE["running"]:
-            return False
-        _DEEP_ACTIVE["running"] = True
-        return True
-
-
-def _new_job(kind: str, **fields) -> dict:
-    job = {
-        "id": uuid.uuid4().hex[:8],
-        "kind": kind,
-        "state": "queued",
-        "message": "",
-        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        **fields,
-    }
-    with _DEEP_JOBS_LOCK:
-        _DEEP_JOBS[job["id"]] = job
-    return job
 
 
 def _clarify_answer_for(segment: str) -> str:
@@ -1162,12 +1074,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(_get_auth_state())
         if path == "/api/deep-job":
             job_id = (query.get("id") or [""])[0]
-            with _DEEP_JOBS_LOCK:
-                job = _DEEP_JOBS.get(job_id)
-                job = dict(job) if job else None
-            if not job:
+            pub = jobs.get_public(job_id)
+            if not pub:
                 return self._send_error_json(404, f"unknown job {job_id}")
-            return self._send_json(_job_public(job))
+            return self._send_json(pub)
         if path == "/api/deep-prompt":
             name = (query.get("segment") or [""])[0]
             try:
