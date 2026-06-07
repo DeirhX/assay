@@ -466,9 +466,16 @@ def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
         note = latest.get("report") if latest else None
         _update_job(job_id, state="running", message="thinking…")
         result = ticker_analysis.ask(rec, thread.get("turns") or [], question,
-                                     note=note, session=thread.get("session"), progress=progress)
+                                     note=note, session=thread.get("session"), progress=progress,
+                                     cancel=lambda: jobs.is_cancelled(job_id))
     except Exception as exc:  # noqa: BLE001
         _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    # Cancelled mid-flight: the subprocess was killed and the answer discarded;
+    # leave the archived thread untouched so the user can ask something else.
+    if result.get("cancelled") or jobs.is_cancelled(job_id):
+        _update_job(job_id, state="cancelled", message="cancelled")
         return
 
     if not result.get("ok"):
@@ -502,6 +509,7 @@ def _qa_running(symbol: str) -> bool:
         lambda j: j.get("kind") == "ticker_qa"
         and j.get("symbol") == symbol
         and j.get("state") in ("queued", "running")
+        and not j.get("cancelled")
     )
 
 
@@ -1347,6 +1355,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_error_json(400, str(exc))
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
+
+        if path == "/api/deep-job/cancel":
+            body = self._read_body()
+            job_id = str(body.get("id") or "").strip()
+            if not job_id:
+                return self._send_error_json(400, "missing job id")
+            ok = jobs.cancel_job(job_id)
+            return self._send_json({"id": job_id, "cancelled": ok})
 
         if path == "/api/analysis-config":
             body = self._read_body()

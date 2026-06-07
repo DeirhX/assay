@@ -15,10 +15,16 @@ Two backends, tried in configured order with automatic fallback:
   (it does not read the prompt from stdin). Request-based, also cheap.
 
 Design choices / honest caveats:
-* Tools are disabled (claude ``--tools ""``) / read-only (cursor ``--mode ask``)
-  so a backend can't shell out, edit files, or hang on a permission prompt. The
-  analysis is grounded ONLY in the numbers we hand it -- if a figure is missing
-  it is told to say so, not to guess.
+* By default tools are disabled (claude ``--tools ""``) / read-only
+  (cursor ``--mode ask``) so a backend can't shell out, edit files, or hang on a
+  permission prompt; the note is grounded ONLY in the numbers we hand it -- if a
+  figure is missing it is told to say so, not to guess.
+* Optional web research (config ``allow_web``): Claude gets ONLY the scoped
+  ``WebSearch`` / ``WebFetch`` tools, pre-approved via ``--allowedTools`` so the
+  headless ``-p`` run can't be silently denied on a permission prompt it can't
+  answer. The prompt then switches to web-aware ground rules that REQUIRE a
+  source URL for every web-derived fact. We still never enable Bash/Edit/Write
+  -- an analyst note has no business shelling out or touching the filesystem.
 * Backends consume YOUR interactive coding quota. Cheap != free; that's why this
   is gated behind an explicit button, not run on every page view.
 * Windows is a first-class target. ``cursor-agent`` ships as a PowerShell/.cmd
@@ -35,6 +41,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -269,13 +276,53 @@ def _compact_record(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_prompt(rec: dict[str, Any]) -> str:
+def _data_rule(allow_web: bool) -> str:
+    """The grounding rule swaps depending on whether web tools are live."""
+    if not allow_web:
+        return ('- Use ONLY the numbers in the DATA block below. Do not invent figures or cite '
+                'prices/multiples not present. If something important is missing, say "not in the '
+                'data" rather than guessing.')
+    return (
+        "- Anchor all position math and the valuation multiples in the DATA block; never invent "
+        "those figures. You MAY use the WebSearch / WebFetch tools for fresher qualitative context "
+        "the DATA lacks: recent news, the latest earnings/guidance, analyst actions, regulatory or "
+        "competitive developments.\n"
+        "- Every web-derived fact MUST be followed by its source URL in parentheses, and prefer "
+        "primary sources (company IR, SEC/EDGAR filings) over aggregators. Date any time-sensitive "
+        'claim. If a web claim can\'t be verified, drop it rather than guess.\n'
+        "- Keep web findings clearly distinct from the deterministic DATA so the reader knows which "
+        "is which."
+    )
+
+
+def _qa_data_rule(allow_web: bool) -> str:
+    if not allow_web:
+        return ('- Answer ONLY from the DATA block (use the conversation and analyst note for '
+                'continuity, not as new facts). Do not invent figures. If something needed isn\'t '
+                'present, say "not in the data".')
+    return (
+        "- Anchor figures in the DATA block (don't invent them) and use the conversation/analyst "
+        "note for continuity. You MAY use WebSearch / WebFetch for fresher facts the DATA lacks "
+        "(recent news, latest earnings/guidance, analyst actions).\n"
+        "- Cite every web-derived fact with its source URL in parentheses, preferring primary "
+        "sources; date time-sensitive claims. Drop anything you can't verify."
+    )
+
+
+def _sources_section(allow_web: bool) -> str:
+    if not allow_web:
+        return ""
+    return ("\n\n## Sources\nBullet every web source you used as `[title](url) — what it backed up`. "
+            'Write "None — analysis is from the provided data only." if you did not search.')
+
+
+def build_prompt(rec: dict[str, Any], *, allow_web: bool = False) -> str:
     sym = rec.get("symbol", "?")
     data = json.dumps(_compact_record(rec), indent=2, default=str)
     return f"""You are a skeptical, evidence-driven equity analyst writing an in-depth note on ${sym} for a self-directed investor who already holds a diversified portfolio. Your job is to improve the quality of their decision, not to cheerlead.
 
 GROUND RULES
-- Use ONLY the numbers in the DATA block below. Do not invent figures or cite prices/multiples not present. If something important is missing, say "not in the data" rather than guessing.
+{_data_rule(allow_web)}
 - Be concise and direct. No hype, no filler, no flattery. Prefer specifics over adjectives.
 - Surface the bear case honestly and weight it against the bull case.
 - Tag every company ticker with a leading $ on first mention (e.g. $AMD, $NVDA) so they can be auto-linked.
@@ -302,7 +349,7 @@ Interpret the multiples vs the growth. Priced for perfection, fair, or cheap? St
 2-3 tight bullets.
 
 ## What would change the thesis
-2-3 concrete, observable triggers (numbers, events) that would flip your verdict.
+2-3 concrete, observable triggers (numbers, events) that would flip your verdict.{_sources_section(allow_web)}
 
 DATA
 ```json
@@ -319,29 +366,113 @@ def _looks_like_quota(text: str) -> bool:
     return any(h in low for h in _QUOTA_HINTS)
 
 
-def _run_claude(prompt: str, provider: dict, cfg: dict) -> dict[str, Any]:
+# Built-in agent tools we expose when web research is on. WebSearch does
+# query->results; WebFetch pulls a specific URL (earnings releases, SEC filings,
+# IR pages). We deliberately stop there: Bash/Edit/Write/Read add risk and zero
+# value to a read-only analyst note.
+_CLAUDE_WEB_TOOLS = ["WebSearch", "WebFetch"]
+
+
+def _claude_tool_args(cfg: dict) -> list[str]:
+    """Tool + permission flags for the claude CLI.
+
+    web off -> no tools at all (pure reasoning over our deterministic data).
+    web on  -> ONLY the web tools, and ``--allowedTools`` pre-approves them so a
+               headless ``-p`` run doesn't silently deny them on a permission
+               prompt it has no way to answer (the gotcha that makes naive
+               web-enabling a no-op).
+    """
+    if not cfg.get("allow_web"):
+        return ["--tools", ""]
+    return ["--tools", *_CLAUDE_WEB_TOOLS, "--allowedTools", *_CLAUDE_WEB_TOOLS]
+
+
+def _run_timeout(cfg: dict) -> int:
+    """Web research makes extra round-trips (search -> fetch -> reason), so give
+    it more headroom than a pure reasoning pass over local numbers."""
+    base = int(cfg.get("timeout_sec", 300))
+    return max(base, 600) if cfg.get("allow_web") else base
+
+
+class _Cancelled(Exception):
+    """Raised when a cancellable run is torn down on user request."""
+
+
+def _run_proc(argv: list[str], *, input_text: str | None, timeout: int,
+              cancel: Callable[[], bool] | None) -> subprocess.CompletedProcess:
+    """``subprocess.run`` that can be cancelled mid-flight.
+
+    Without a ``cancel`` callback this is just ``subprocess.run``. With one, we
+    drive the child via a worker thread and poll ``cancel()`` ~2x/sec; when it
+    flips True we kill the process and raise ``_Cancelled`` -- so a cancelled
+    Q&A actually stops burning CLI quota instead of running to completion in the
+    background. Propagates ``TimeoutExpired`` like ``subprocess.run`` does."""
+    if cancel is None:
+        return subprocess.run(argv, input=input_text, capture_output=True, text=True,
+                              timeout=timeout, encoding="utf-8", errors="replace")
+
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    holder: dict[str, Any] = {}
+
+    def _pump() -> None:
+        try:
+            holder["out"], holder["err"] = proc.communicate(input=input_text, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            holder["timeout"] = True
+            proc.kill()
+            try:
+                proc.communicate()
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as exc:  # noqa: BLE001
+            holder["exc"] = exc
+
+    worker = threading.Thread(target=_pump, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if cancel():
+            proc.kill()
+            worker.join(timeout=5)
+            raise _Cancelled()
+        worker.join(timeout=0.5)
+
+    if holder.get("exc"):
+        raise holder["exc"]
+    if holder.get("timeout"):
+        raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode or 0,
+                                       holder.get("out", ""), holder.get("err", ""))
+
+
+def _run_claude(prompt: str, provider: dict, cfg: dict,
+                cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     exe = _claude_exe()
     if not exe:
         return {"ok": False, "fatal": False, "error": "claude CLI not found on PATH"}
     argv = [exe, "-p", "--output-format", "text"]
-    if not cfg.get("allow_web"):
-        argv += ["--tools", ""]
+    argv += _claude_tool_args(cfg)
     if provider.get("model"):
         argv += ["--model", provider["model"]]
     argv += list(provider.get("extra_args") or [])
+    timeout = _run_timeout(cfg)
     try:
-        proc = subprocess.run(
-            argv, input=prompt, capture_output=True, text=True,
-            timeout=cfg.get("timeout_sec", 300), encoding="utf-8", errors="replace",
-        )
+        proc = _run_proc(argv, input_text=prompt, timeout=timeout, cancel=cancel)
+    except _Cancelled:
+        return {"ok": False, "fatal": True, "cancelled": True, "error": "cancelled"}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "fatal": True, "error": f"claude timed out after {cfg.get('timeout_sec', 300)}s"}
+        return {"ok": False, "fatal": True, "error": f"claude timed out after {timeout}s"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "fatal": False, "error": f"claude failed to launch: {type(exc).__name__}: {exc}"}
     return _finish("claude", provider, proc)
 
 
-def _run_cursor(prompt: str, provider: dict, cfg: dict) -> dict[str, Any]:
+def _run_cursor(prompt: str, provider: dict, cfg: dict,
+                cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     base = _cursor_argv_base()
     if not base:
         return {"ok": False, "fatal": False, "error": "cursor-agent CLI not found / unresolved"}
@@ -354,13 +485,13 @@ def _run_cursor(prompt: str, provider: dict, cfg: dict) -> dict[str, Any]:
     if provider.get("model"):
         argv += ["--model", provider["model"]]
     argv += list(provider.get("extra_args") or [])
+    timeout = _run_timeout(cfg)
     try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True,
-            timeout=cfg.get("timeout_sec", 300), encoding="utf-8", errors="replace",
-        )
+        proc = _run_proc(argv, input_text=None, timeout=timeout, cancel=cancel)
+    except _Cancelled:
+        return {"ok": False, "fatal": True, "cancelled": True, "error": "cancelled"}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "fatal": True, "error": f"cursor-agent timed out after {cfg.get('timeout_sec', 300)}s"}
+        return {"ok": False, "fatal": True, "error": f"cursor-agent timed out after {timeout}s"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "fatal": False, "error": f"cursor-agent failed to launch: {type(exc).__name__}: {exc}"}
     return _finish("cursor", provider, proc)
@@ -382,7 +513,8 @@ _RUNNERS: dict[str, Callable[..., dict]] = {"claude": _run_claude, "cursor": _ru
 
 
 def _run_with_fallback(prompt: str, cfg: dict,
-                       progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+                       progress: Callable[[str], None] | None = None,
+                       cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Run a prompt through the configured backends in order, falling back on
     quota/auth failure. Returns the first success, or an aggregate error."""
     attempts: list[str] = []
@@ -395,10 +527,14 @@ def _run_with_fallback(prompt: str, cfg: dict,
             continue
         if progress:
             progress(f"asking {PROVIDER_LABELS.get(pid, pid)}…")
-        res = runner(prompt, provider, cfg)
+        res = runner(prompt, provider, cfg, cancel)
         if res.get("ok"):
             res["attempts"] = attempts
             return res
+        if res.get("cancelled"):
+            # User pulled the plug: don't fall through to the next backend and
+            # spend more quota on a request they no longer want.
+            return {"ok": False, "cancelled": True, "error": "cancelled", "attempts": attempts}
         attempts.append(res.get("error", f"{pid} failed"))
         if res.get("fatal"):
             # A real failure (timeout / bad output), not a quota miss: stop here
@@ -411,14 +547,16 @@ def _run_with_fallback(prompt: str, cfg: dict,
 
 
 def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
-            progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+            progress: Callable[[str], None] | None = None,
+            cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Generate the structured in-depth note over the deterministic dossier."""
     cfg = cfg or load_config()
-    return _run_with_fallback(build_prompt(rec), cfg, progress)
+    return _run_with_fallback(build_prompt(rec, allow_web=cfg.get("allow_web", False)),
+                              cfg, progress, cancel)
 
 
 def build_qa_prompt(rec: dict[str, Any], history: list[dict] | None,
-                    question: str, note: str | None = None) -> str:
+                    question: str, note: str | None = None, *, allow_web: bool = False) -> str:
     """A follow-up Q&A prompt: same deterministic DATA as the note, plus the
     prior conversation (bounded) and, if present, the latest analyst note for
     continuity. Keeps the model grounded and the thread coherent."""
@@ -440,7 +578,7 @@ def build_qa_prompt(rec: dict[str, Any], history: list[dict] | None,
     return f"""You are a skeptical, evidence-driven equity analyst answering a follow-up question about ${sym} for a self-directed investor. Improve their decision; do not cheerlead.
 
 GROUND RULES
-- Answer ONLY from the DATA block (use the conversation and analyst note for continuity, not as new facts). Do not invent figures. If something needed isn't present, say "not in the data".
+{_qa_data_rule(allow_web)}
 - Be concise and direct. Answer the specific question asked; skip boilerplate restatement of the whole thesis.
 - Tag every company ticker with a leading $ on first mention (e.g. $AMD).
 - If the data has cross-check warnings, factor that uncertainty into your answer.
@@ -453,16 +591,19 @@ DATA
 {data}
 ```
 
-Answer in Markdown."""
+Answer in Markdown.{' End with a "Sources" line listing any URLs you used.' if allow_web else ''}"""
 
 
-def _qa_followup_text(question: str) -> str:
+def _qa_followup_text(question: str, allow_web: bool = False) -> str:
     """The minimal payload for a RESUMED Claude session: the DATA, ground rules
     and prior turns already live in the session, so we send only the question.
     That's the whole point -- the heavy prefix is served from the prompt cache."""
+    web = (" You may use WebSearch/WebFetch for fresher facts; cite every web fact with its URL."
+           if allow_web else
+           ' If something needed is not there, say "not in the data".')
     return (f"{question.strip()}\n\n"
-            "(Answer using the data and context already in this conversation. If something "
-            'needed is not there, say "not in the data". Be concise; tag tickers with a leading $.)')
+            "(Answer using the data and context already in this conversation." + web +
+            " Be concise; tag tickers with a leading $.)")
 
 
 def _norm_usage(u: dict | None) -> dict[str, int]:
@@ -504,7 +645,8 @@ def _finish_claude_json(pid: str, provider: dict, proc: subprocess.CompletedProc
 
 def _run_claude_qa(rec: dict[str, Any], history: list[dict] | None, question: str,
                    note: str | None, provider: dict, cfg: dict, resume_id: str | None,
-                   progress: Callable[[str], None] | None) -> dict[str, Any]:
+                   progress: Callable[[str], None] | None,
+                   cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Claude Q&A with prompt-cache reuse via session resume. On a warm session
     we send only the question (cache-read prefix); otherwise we open a new
     session with the full grounded prompt and fall back to that if a resume
@@ -518,24 +660,28 @@ def _run_claude_qa(rec: dict[str, Any], history: list[dict] | None, question: st
         # stable across runs (its help literally cites prompt-cache reuse).
         argv = [exe, "-p", "--output-format", "json", "--exclude-dynamic-system-prompt-sections"]
         argv += session_args
-        if not cfg.get("allow_web"):
-            argv += ["--tools", ""]
+        argv += _claude_tool_args(cfg)
         if provider.get("model"):
             argv += ["--model", provider["model"]]
         argv += list(provider.get("extra_args") or [])
+        timeout = _run_timeout(cfg)
         try:
-            proc = subprocess.run(argv, input=prompt_text, capture_output=True, text=True,
-                                  timeout=cfg.get("timeout_sec", 300), encoding="utf-8", errors="replace")
+            proc = _run_proc(argv, input_text=prompt_text, timeout=timeout, cancel=cancel)
+        except _Cancelled:
+            return None, {"ok": False, "fatal": True, "cancelled": True, "error": "cancelled"}
         except subprocess.TimeoutExpired:
-            return None, {"ok": False, "fatal": True, "error": f"claude timed out after {cfg.get('timeout_sec', 300)}s"}
+            return None, {"ok": False, "fatal": True, "error": f"claude timed out after {timeout}s"}
         except Exception as exc:  # noqa: BLE001
             return None, {"ok": False, "fatal": False, "error": f"claude failed to launch: {type(exc).__name__}: {exc}"}
         return proc, None
 
+    allow_web = bool(cfg.get("allow_web"))
     if resume_id:
         if progress:
             progress(f"asking {PROVIDER_LABELS['claude']} (resuming cached session)…")
-        proc, err = invoke(_qa_followup_text(question), ["--resume", resume_id])
+        proc, err = invoke(_qa_followup_text(question, allow_web), ["--resume", resume_id])
+        if err is not None and err.get("cancelled"):
+            return err
         if err is None:
             res = _finish_claude_json("claude", provider, proc, resume_id)
             if res.get("ok"):
@@ -546,7 +692,8 @@ def _run_claude_qa(rec: dict[str, Any], history: list[dict] | None, question: st
     sid = str(uuid.uuid4())
     if progress:
         progress(f"asking {PROVIDER_LABELS['claude']}…")
-    proc, err = invoke(build_qa_prompt(rec, history, question, note), ["--session-id", sid])
+    proc, err = invoke(build_qa_prompt(rec, history, question, note, allow_web=allow_web),
+                       ["--session-id", sid])
     if err:
         return err
     return _finish_claude_json("claude", provider, proc, sid)
@@ -554,13 +701,14 @@ def _run_claude_qa(rec: dict[str, Any], history: list[dict] | None, question: st
 
 def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
         note: str | None = None, session: dict | None = None, cfg: dict | None = None,
-        progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+        progress: Callable[[str], None] | None = None,
+        cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Answer a follow-up question, preferring a resumed (cache-warm) Claude
     session. ``session`` is the thread's last session {provider,id}; only a
     Claude session is resumable. Non-session providers get the full context.
     Returns the usual result plus ``session`` and ``usage`` for Claude."""
     cfg = cfg or load_config()
-    full_prompt = build_qa_prompt(rec, history, question, note)
+    full_prompt = build_qa_prompt(rec, history, question, note, allow_web=cfg.get("allow_web", False))
     attempts: list[str] = []
     for provider in cfg.get("providers", []):
         if not provider.get("enabled"):
@@ -568,16 +716,18 @@ def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
         pid = provider.get("id")
         if pid == "claude":
             resume_id = (session or {}).get("id") if (session or {}).get("provider") == "claude" else None
-            res = _run_claude_qa(rec, history, question, note, provider, cfg, resume_id, progress)
+            res = _run_claude_qa(rec, history, question, note, provider, cfg, resume_id, progress, cancel)
         elif pid == "cursor":
             if progress:
                 progress(f"asking {PROVIDER_LABELS['cursor']}…")
-            res = _run_cursor(full_prompt, provider, cfg)
+            res = _run_cursor(full_prompt, provider, cfg, cancel)
         else:
             continue
         if res.get("ok"):
             res["attempts"] = attempts
             return res
+        if res.get("cancelled"):
+            return {"ok": False, "cancelled": True, "error": "cancelled", "attempts": attempts}
         attempts.append(res.get("error", f"{pid} failed"))
         if res.get("fatal"):
             break
@@ -599,14 +749,19 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Run an in-depth single-ticker analysis via a local agent CLI.")
     ap.add_argument("symbol")
     ap.add_argument("--backends", action="store_true", help="just report which backends resolve")
+    ap.add_argument("--web", action="store_true", help="enable scoped web research (WebSearch/WebFetch) for this run")
     args = ap.parse_args()
     if args.backends:
         print(json.dumps(available_backends(), indent=2))
         sys.exit(0)
+    cfg = load_config()
+    if args.web:
+        cfg["allow_web"] = True
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import research_pull  # noqa: E402
     record = research_pull.pull_ticker(args.symbol.upper(), write=False)
-    result = analyze(record, progress=lambda m: print(f"[{dt.datetime.now():%H:%M:%S}] {m}", file=sys.stderr))
+    result = analyze(record, cfg=cfg,
+                     progress=lambda m: print(f"[{dt.datetime.now():%H:%M:%S}] {m}", file=sys.stderr))
     if result.get("ok"):
         print(result["report"])
         print(f"\n--- via {result['backend_label']} ({result['model']}) ---", file=sys.stderr)
