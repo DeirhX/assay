@@ -696,6 +696,23 @@ a.tlink:hover { border-bottom-style: solid; }
 .analysis-prose hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .analysis-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 
+/* deep-dive Q&A thread */
+.qa-thread { display: flex; flex-direction: column; gap: 12px; margin: 4px 0 14px; }
+.qa-turn { border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 10px 13px; min-width: 0; }
+.qa-q { background: var(--panel-2); border-left: 3px solid var(--accent); }
+.qa-a { background: rgba(107,211,138,.05); border-left: 3px solid rgba(107,211,138,.4); }
+.qa-role { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 5px; }
+.qa-role .muted { font-weight: 600; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.qa-text { white-space: pre-wrap; overflow-wrap: break-word; font-size: 14px; }
+.qa-prose { min-width: 0; overflow-wrap: break-word; }
+.qa-prose > :first-child { margin-top: 0; }
+.qa-prose > :last-child { margin-bottom: 0; }
+.qa-usage { margin-top: 9px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.qa-usage .qa-cache-hit { color: var(--good); }
+.qa-form { display: flex; gap: 10px; align-items: flex-end; }
+.qa-input { flex: 1 1 auto; min-width: 0; resize: vertical; min-height: 44px; }
+.qa-form button { flex: 0 0 auto; }
+
 /* ---- generic modal (analysis backend config) --------------------------- */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 100;
