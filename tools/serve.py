@@ -465,7 +465,8 @@ def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
         latest = _latest_analysis(sym)
         note = latest.get("report") if latest else None
         _update_job(job_id, state="running", message="thinking…")
-        result = ticker_analysis.ask(rec, thread.get("turns") or [], question, note=note, progress=progress)
+        result = ticker_analysis.ask(rec, thread.get("turns") or [], question,
+                                     note=note, session=thread.get("session"), progress=progress)
     except Exception as exc:  # noqa: BLE001
         _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
         return
@@ -477,11 +478,15 @@ def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     thread.setdefault("created_at", now)
     thread["updated_at"] = now
+    # Track the resumable session at thread level. A non-session provider (Cursor)
+    # returns no session, so this resets to None -- the next Claude turn then
+    # opens a fresh session seeded with the full history, keeping context correct.
+    thread["session"] = result.get("session")
     thread["turns"].append({"role": "user", "text": question, "ts": now})
     thread["turns"].append({
         "role": "assistant", "text": result["report"], "ts": now,
         "backend": result.get("backend"), "backend_label": result.get("backend_label"),
-        "model": result.get("model"),
+        "model": result.get("model"), "usage": result.get("usage") or {},
     })
     try:
         _write_json(_qa_path(sym), thread)

@@ -820,6 +820,24 @@ function highlightFirstMatch(host, re, cls) {
   return false;
 }
 
+// Token + prompt-cache accounting for a Claude Q&A turn. A non-zero "cache read"
+// means the heavy prefix (DATA + prior turns) was served from cache, not re-billed.
+function qaUsageHtml(u) {
+  if (!u || typeof u !== "object") return "";
+  const r = u.cache_read_input_tokens, w = u.cache_creation_input_tokens;
+  const inp = u.input_tokens, out = u.output_tokens;
+  if ([r, w, inp, out].every((v) => v == null)) return "";
+  const fmt = (n) => (n == null ? "0" : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n));
+  const parts = [];
+  if (r != null || w != null) {
+    const hit = (r || 0) > 0;
+    parts.push(`<span class="${hit ? "qa-cache-hit" : ""}">cache ${fmt(r)} read \u00b7 ${fmt(w)} write</span>`);
+  }
+  if (inp != null) parts.push(`${fmt(inp)} new in`);
+  if (out != null) parts.push(`${fmt(out)} out`);
+  return `<div class="qa-usage" title="Anthropic prompt-cache + token usage for this turn">${parts.join(" \u00b7 ")}</div>`;
+}
+
 // Archived, continuable Q&A about the ticker. Same cheap CLI backends as the
 // in-depth note; the whole thread is persisted server-side so it can be resumed
 // across sessions. Renders the archive, then an input to ask the next question.
@@ -873,6 +891,8 @@ function renderQaCard(rec) {
         prose.innerHTML = mdToHtml(t.text || "");
         linkifyTickers(prose);
         a.appendChild(prose);
+        const usage = qaUsageHtml(t.usage);
+        if (usage) a.insertAdjacentHTML("beforeend", usage);
         thread.appendChild(a);
       }
     });

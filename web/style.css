@@ -707,6 +707,8 @@ a.tlink:hover { border-bottom-style: solid; }
 .qa-prose { min-width: 0; overflow-wrap: break-word; }
 .qa-prose > :first-child { margin-top: 0; }
 .qa-prose > :last-child { margin-bottom: 0; }
+.qa-usage { margin-top: 9px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.qa-usage .qa-cache-hit { color: var(--good); }
 .qa-form { display: flex; gap: 10px; align-items: flex-end; }
 .qa-input { flex: 1 1 auto; min-width: 0; resize: vertical; min-height: 44px; }
 .qa-form button { flex: 0 0 auto; }

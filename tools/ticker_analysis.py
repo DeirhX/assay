@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -455,12 +456,135 @@ DATA
 Answer in Markdown."""
 
 
+def _qa_followup_text(question: str) -> str:
+    """The minimal payload for a RESUMED Claude session: the DATA, ground rules
+    and prior turns already live in the session, so we send only the question.
+    That's the whole point -- the heavy prefix is served from the prompt cache."""
+    return (f"{question.strip()}\n\n"
+            "(Answer using the data and context already in this conversation. If something "
+            'needed is not there, say "not in the data". Be concise; tag tickers with a leading $.)')
+
+
+def _norm_usage(u: dict | None) -> dict[str, int]:
+    """Keep just the token counters worth showing (incl. prompt-cache read/write)."""
+    if not isinstance(u, dict):
+        return {}
+    keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    return {k: int(u[k]) for k in keys if isinstance(u.get(k), (int, float))}
+
+
+def _finish_claude_json(pid: str, provider: dict, proc: subprocess.CompletedProcess,
+                        session_id: str) -> dict[str, Any]:
+    """Parse ``claude --output-format json``: pull the answer, the session id (so
+    the next turn can resume + reuse the cache) and the token/cache usage."""
+    raw = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0 or not raw:
+        blob = err or raw or f"exit {proc.returncode}"
+        return {"ok": False, "fatal": not _looks_like_quota(blob),
+                "error": f"{PROVIDER_LABELS[pid]}: {blob.splitlines()[-1] if blob.splitlines() else blob}"}
+    text, usage, sid = raw, {}, session_id
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        if data.get("is_error"):
+            msg = str(data.get("result") or data.get("error") or "claude error")
+            return {"ok": False, "fatal": not _looks_like_quota(msg), "error": f"{PROVIDER_LABELS[pid]}: {msg}"}
+        text = (data.get("result") or "").strip()
+        usage = data.get("usage") or {}
+        sid = data.get("session_id") or session_id
+    if not text:
+        return {"ok": False, "fatal": True, "error": f"{PROVIDER_LABELS[pid]}: empty result"}
+    return {"ok": True, "report": text, "backend": pid, "backend_label": PROVIDER_LABELS[pid],
+            "model": provider.get("model") or "(default)",
+            "session": {"provider": pid, "id": sid}, "usage": _norm_usage(usage)}
+
+
+def _run_claude_qa(rec: dict[str, Any], history: list[dict] | None, question: str,
+                   note: str | None, provider: dict, cfg: dict, resume_id: str | None,
+                   progress: Callable[[str], None] | None) -> dict[str, Any]:
+    """Claude Q&A with prompt-cache reuse via session resume. On a warm session
+    we send only the question (cache-read prefix); otherwise we open a new
+    session with the full grounded prompt and fall back to that if a resume
+    fails (expired/cleaned session)."""
+    exe = _claude_exe()
+    if not exe:
+        return {"ok": False, "fatal": False, "error": "claude CLI not found on PATH"}
+
+    def invoke(prompt_text: str, session_args: list[str]):
+        # --exclude-dynamic-system-prompt-sections keeps the cacheable prefix
+        # stable across runs (its help literally cites prompt-cache reuse).
+        argv = [exe, "-p", "--output-format", "json", "--exclude-dynamic-system-prompt-sections"]
+        argv += session_args
+        if not cfg.get("allow_web"):
+            argv += ["--tools", ""]
+        if provider.get("model"):
+            argv += ["--model", provider["model"]]
+        argv += list(provider.get("extra_args") or [])
+        try:
+            proc = subprocess.run(argv, input=prompt_text, capture_output=True, text=True,
+                                  timeout=cfg.get("timeout_sec", 300), encoding="utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            return None, {"ok": False, "fatal": True, "error": f"claude timed out after {cfg.get('timeout_sec', 300)}s"}
+        except Exception as exc:  # noqa: BLE001
+            return None, {"ok": False, "fatal": False, "error": f"claude failed to launch: {type(exc).__name__}: {exc}"}
+        return proc, None
+
+    if resume_id:
+        if progress:
+            progress(f"asking {PROVIDER_LABELS['claude']} (resuming cached session)…")
+        proc, err = invoke(_qa_followup_text(question), ["--resume", resume_id])
+        if err is None:
+            res = _finish_claude_json("claude", provider, proc, resume_id)
+            if res.get("ok"):
+                return res
+        if progress:
+            progress("cached session unavailable; starting a fresh one…")
+
+    sid = str(uuid.uuid4())
+    if progress:
+        progress(f"asking {PROVIDER_LABELS['claude']}…")
+    proc, err = invoke(build_qa_prompt(rec, history, question, note), ["--session-id", sid])
+    if err:
+        return err
+    return _finish_claude_json("claude", provider, proc, sid)
+
+
 def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
-        note: str | None = None, cfg: dict | None = None,
+        note: str | None = None, session: dict | None = None, cfg: dict | None = None,
         progress: Callable[[str], None] | None = None) -> dict[str, Any]:
-    """Answer a follow-up question about a ticker via the configured backends."""
+    """Answer a follow-up question, preferring a resumed (cache-warm) Claude
+    session. ``session`` is the thread's last session {provider,id}; only a
+    Claude session is resumable. Non-session providers get the full context.
+    Returns the usual result plus ``session`` and ``usage`` for Claude."""
     cfg = cfg or load_config()
-    return _run_with_fallback(build_qa_prompt(rec, history, question, note), cfg, progress)
+    full_prompt = build_qa_prompt(rec, history, question, note)
+    attempts: list[str] = []
+    for provider in cfg.get("providers", []):
+        if not provider.get("enabled"):
+            continue
+        pid = provider.get("id")
+        if pid == "claude":
+            resume_id = (session or {}).get("id") if (session or {}).get("provider") == "claude" else None
+            res = _run_claude_qa(rec, history, question, note, provider, cfg, resume_id, progress)
+        elif pid == "cursor":
+            if progress:
+                progress(f"asking {PROVIDER_LABELS['cursor']}…")
+            res = _run_cursor(full_prompt, provider, cfg)
+        else:
+            continue
+        if res.get("ok"):
+            res["attempts"] = attempts
+            return res
+        attempts.append(res.get("error", f"{pid} failed"))
+        if res.get("fatal"):
+            break
+        if progress:
+            progress(f"{PROVIDER_LABELS.get(pid, pid)} unavailable, trying next…")
+    return {"ok": False, "error": "; ".join(attempts) or "no enabled backends available",
+            "attempts": attempts}
 
 
 if __name__ == "__main__":
