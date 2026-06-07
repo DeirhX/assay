@@ -107,6 +107,19 @@ const cleanSlug = (raw) => (raw || "").trim();
 // against junk (e.g. a "Failed to fetch" error string) being used as a segment.
 const isSegmentSlug = (s) => /^[a-z0-9][a-z0-9-]*$/.test(s || "");
 
+// Trigger a client-side download of text content as a file.
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = el("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function navFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const view = VIEWS.has(params.get("view")) ? params.get("view") : "deepdive";
@@ -730,8 +743,16 @@ function renderAnalysisCard(rec) {
     const reFresh = el("button", "ghost", "&#8635; Refresh data + analyse");
     reFresh.type = "button";
     reFresh.addEventListener("click", () => run(true));
+    const exportBtn = el("button", "ghost", "&#8615; Export .md");
+    exportBtn.type = "button";
+    exportBtn.title = "Download this analysis as a Markdown file";
+    exportBtn.addEventListener("click", () => {
+      const day = (meta.generated_at ? new Date(meta.generated_at) : new Date()).toISOString().slice(0, 10);
+      downloadText(`${sym}-analysis-${day}.md`, a.report || "");
+    });
     actions.appendChild(re);
     actions.appendChild(reFresh);
+    actions.appendChild(exportBtn);
     body.appendChild(actions);
   }
 
