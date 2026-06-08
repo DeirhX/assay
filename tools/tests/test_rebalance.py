@@ -1,0 +1,213 @@
+"""Tests for the rebalance validator: weight filtering, band status, and the
+model sanity checks that catch infeasible / self-contradictory target models
+before they infect the plan."""
+
+from __future__ import annotations
+
+import unittest
+
+import _support  # noqa: F401
+import rebalance as rb
+
+
+def findings_for(model, holdings):
+    out = rb.check_model(model, holdings)
+    return {(f.severity, f.area): f.message for f in out}
+
+
+class CurrentWeights(unittest.TestCase):
+    def test_weight_is_market_value_over_invested(self):
+        holdings = {"positions": [
+            {"symbol": "A", "base_market_value": 250.0},
+            {"symbol": "B", "base_market_value": 750.0},
+        ]}
+        w = rb.current_weights(holdings)
+        self.assertAlmostEqual(w["A"], 25.0)
+        self.assertAlmostEqual(w["B"], 75.0)
+
+    def test_is_the_same_function_as_portfolio(self):
+        import portfolio
+        holdings = {"positions": [
+            {"symbol": "A", "base_market_value": 100.0},
+            {"symbol": "B", "base_market_value": 300.0},
+        ]}
+        # One source of truth: rebalance must not invent its own weight.
+        self.assertEqual(rb.current_weights(holdings), portfolio.holdings_weights(holdings))
+
+    def test_ignores_poisoned_broker_percent_of_nav(self):
+        # An option's broker tag can be 100% while its real weight is ~nil. The
+        # weight must come from market value, never the tag.
+        holdings = {"positions": [
+            {"symbol": "OPT", "base_market_value": 1.0, "percent_of_nav": 100.0},
+            {"symbol": "STK", "base_market_value": 99.0, "percent_of_nav": 99.0},
+        ]}
+        w = rb.current_weights(holdings)
+        self.assertAlmostEqual(w["OPT"], 1.0)   # 1/100, not the 100 tag
+        self.assertAlmostEqual(w["STK"], 99.0)
+
+
+class BandHelpers(unittest.TestCase):
+    def test_band_ok(self):
+        self.assertTrue(rb._band_ok(5, 10))
+        self.assertFalse(rb._band_ok(10, 5))      # inverted
+        self.assertFalse(rb._band_ok("5", 10))    # wrong type
+        self.assertFalse(rb._band_ok(-1, 10))     # out of range
+
+    def test_status(self):
+        self.assertEqual(rb._status(4.0, 5.0, 10.0), "BELOW")
+        self.assertEqual(rb._status(7.0, 5.0, 10.0), "IN")
+        self.assertEqual(rb._status(12.0, 5.0, 10.0), "ABOVE")
+
+
+class CheckModel(unittest.TestCase):
+    def test_reduce_rule_on_unheld_position_is_error(self):
+        model = {"targets": {"XYZ": {"low": 1, "high": 3, "rule": "reduce"}}}
+        holdings = {"positions": []}
+        f = findings_for(model, holdings)
+        self.assertIn(("ERROR", "XYZ"), f)
+        self.assertIn("not held", f[("ERROR", "XYZ")])
+
+    def test_no_buy_floor_above_current_is_error(self):
+        model = {"targets": {"ABC": {"low": 10, "high": 12, "rule": "trim_only"}}}
+        # ABC = 4 / (4 + 96) = 4% of book, below the 10% floor.
+        holdings = {"positions": [
+            {"symbol": "ABC", "base_market_value": 4.0},
+            {"symbol": "REST", "base_market_value": 96.0},
+        ]}
+        f = findings_for(model, holdings)
+        self.assertIn(("ERROR", "ABC"), f)  # reaching the floor needs buying, forbidden
+
+    def test_duplicate_symbol_across_sleeves_is_error(self):
+        model = {"sleeves": {
+            "a": {"low": 1, "high": 5, "rule": "accumulate", "members": ["DUP"]},
+            "b": {"low": 1, "high": 5, "rule": "accumulate", "members": ["DUP"]},
+        }}
+        f = findings_for(model, {"positions": []})
+        self.assertTrue(any(sev == "ERROR" and "also listed" in msg
+                            for (sev, _area), msg in f.items()))
+
+    def test_infeasible_minimums_is_error(self):
+        model = {"targets": {
+            "A": {"low": 60, "high": 70, "rule": "accumulate"},
+            "B": {"low": 50, "high": 60, "rule": "accumulate"},
+        }, "cash_target_pct": 5}
+        f = findings_for(model, {"positions": []})
+        self.assertTrue(any(sev == "ERROR" and area == "model" and "infeasible" in msg
+                            for (sev, area), msg in f.items()))
+
+    def test_untargeted_held_name_warns_coverage(self):
+        model = {"targets": {}}
+        holdings = {"positions": [{"symbol": "ORPHAN", "base_market_value": 3.0}]}
+        f = findings_for(model, holdings)
+        self.assertIn(("WARN", "coverage:ORPHAN"), f)
+
+    def test_clean_model_has_no_errors(self):
+        model = {
+            "targets": {"AMD": {"low": 10, "high": 14, "rule": "trim_only"}},
+            "cash_target_pct": 5,
+        }
+        # AMD = 12 / (12 + 88) = 12% of book, inside [10, 14].
+        holdings = {"positions": [
+            {"symbol": "AMD", "base_market_value": 12.0},
+            {"symbol": "REST", "base_market_value": 88.0},
+        ]}
+        out = rb.check_model(model, holdings)
+        self.assertFalse([f for f in out if f.severity == "ERROR"])
+
+
+class Suggest(unittest.TestCase):
+    def test_trim_when_above_no_buy_rule(self):
+        action, delta = rb._suggest("trim_only", "ABOVE", 14.7, 10.0, 12.0)
+        self.assertEqual(action, "trim")
+        self.assertAlmostEqual(delta, 12.0 - 14.7)  # sell to the ceiling, negative
+
+    def test_buy_when_below_accumulate_or_hold(self):
+        for rule in ("accumulate", "hold"):
+            action, delta = rb._suggest(rule, "BELOW", 2.0, 4.0, 5.0)
+            self.assertEqual(action, "buy")
+            self.assertAlmostEqual(delta, 4.0 - 2.0)  # buy up to the floor, positive
+
+    def test_accumulate_over_ceiling_is_review_not_trim(self):
+        action, delta = rb._suggest("accumulate", "ABOVE", 13.0, 10.0, 12.0)
+        self.assertEqual(action, "review")            # flag, never auto-counted as freed cash
+        self.assertAlmostEqual(delta, 12.0 - 13.0)
+
+    def test_in_band_and_wait_are_no_action(self):
+        self.assertEqual(rb._suggest("accumulate", "IN", 5.0, 4.0, 6.0), (None, 0.0))
+        self.assertEqual(rb._suggest("wait", "BELOW", 0.0, 1.0, 2.0), (None, 0.0))
+
+
+class Plan(unittest.TestCase):
+    def _plan(self):
+        model = {
+            "as_of": "2026-06-03",
+            "cash_target_pct": 5.0,
+            "funding_order": ["EEFT"],
+            "targets": {
+                "AMD": {"low": 10, "high": 12, "rule": "trim_only", "note": "oversized"},
+                "NVDA": {"low": 3, "high": 4, "rule": "accumulate"},
+                "SOFI": {"low": 3, "high": 4.4, "rule": "hold"},
+                # REST soaks up the book so the others hit round percentages; a
+                # wide hold band keeps it in-band and out of the way.
+                "REST": {"low": 70, "high": 80, "rule": "hold"},
+                "BAD": {"low": 10, "high": 5, "rule": "hold"},   # inverted band -> skipped
+            },
+            "sleeves": {
+                "analog": {"low": 5, "high": 6, "rule": "accumulate", "members": ["TXN", "ADI"]},
+            },
+        }
+        # invested = 147 + 8 + 40 + 60 + 745 = 1000, so a name's CZK == its bmv.
+        holdings = {
+            "net_asset_value": 1100.0,   # NAV includes ~100 cash; weights use invested
+            "base_currency": "CZK",
+            "generated_at": "2026-06-03T10:00:00+00:00",
+            "positions": [
+                {"symbol": "AMD", "base_market_value": 147.0},   # 14.7%
+                {"symbol": "NVDA", "base_market_value": 8.0},    # 0.8%
+                {"symbol": "SOFI", "base_market_value": 40.0},   # 4.0%
+                {"symbol": "ORPHAN", "base_market_value": 60.0},  # 6.0%, untargeted
+                {"symbol": "REST", "base_market_value": 745.0},  # 74.5%
+            ],
+        }
+        return rb.plan(model, holdings)
+
+    def test_skips_invalid_band(self):
+        keys = {r["key"] for r in self._plan()["rows"]}
+        self.assertNotIn("BAD", keys)
+
+    def test_czk_sizing_uses_invested_not_nav(self):
+        p = self._plan()
+        self.assertEqual(p["invested"], 1000.0)
+        amd = next(r for r in p["rows"] if r["key"] == "AMD")
+        # current_czk must equal the actual market value (147), not 14.7% of NAV.
+        self.assertEqual(amd["current_czk"], 147)
+        # trim 14.7 -> 12.0 = -2.7% of invested 1000 = -27
+        self.assertEqual(amd["suggest_delta_czk"], -27)
+
+    def test_below_band_accumulate_suggests_buy(self):
+        nvda = next(r for r in self._plan()["rows"] if r["key"] == "NVDA")
+        self.assertEqual(nvda["status"], "BELOW")
+        self.assertEqual(nvda["action"], "buy")
+        self.assertAlmostEqual(nvda["suggest_delta_pct"], 2.2, places=2)  # 0.8 -> 3.0
+
+    def test_sleeve_is_combined_and_not_interactive(self):
+        p = self._plan()
+        sl = next(r for r in p["rows"] if r["kind"] == "sleeve")
+        self.assertFalse(sl["interactive"])
+        self.assertEqual(sl["current_pct"], 0.0)        # neither TXN nor ADI held
+        self.assertEqual(len(sl["members"]), 2)
+
+    def test_untargeted_bucket(self):
+        p = self._plan()
+        self.assertEqual([u["symbol"] for u in p["untargeted"]], ["ORPHAN"])
+        self.assertAlmostEqual(p["untargeted_pct"], 6.0)
+
+    def test_in_band_name_has_no_action(self):
+        sofi = next(r for r in self._plan()["rows"] if r["key"] == "SOFI")
+        self.assertEqual(sofi["status"], "IN")
+        self.assertIsNone(sofi["action"])
+        self.assertEqual(sofi["suggest_delta_pct"], 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

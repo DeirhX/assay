@@ -96,7 +96,7 @@ def compute_fragments(data: dict, claims: dict | None) -> dict[str, str]:
         pos = positions[symbol]
         lot = lots[symbol]
         fragments[f"pos.{symbol}.shares"] = f"{int(round(pos['quantity'])):,}"
-        fragments[f"pos.{symbol}.navpct"] = f"{weights.get(symbol, pos['percent_of_nav']):.2f}%"
+        fragments[f"pos.{symbol}.navpct"] = f"{weights.get(symbol, 0.0):.2f}%"
         fragments[f"pos.{symbol}.pnl"] = pnl_usd_short(pos["unrealized_pnl"])
         fragments[f"pos.{symbol}.lots"] = lot_range(lot)
         fragments[f"pos.{symbol}.cz3y"] = str(int(round(lot["cz_three_year_eligible_quantity"])))
@@ -134,7 +134,7 @@ def render_markdown(data: dict) -> str:
         "| --- | --- | ---: | ---: | ---: |",
     ]
     for pos in data["top_positions"][:TOP_POSITIONS_IN_SUMMARY]:
-        weight = weights.get(pos["symbol"], pos["percent_of_nav"])
+        weight = weights.get(pos["symbol"], 0.0)
         lines.append(
             f"| `{pos['symbol']}` | {pos['description']} | "
             f"{weight:.2f}% | "

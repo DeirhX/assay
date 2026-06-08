@@ -92,14 +92,34 @@ function applyPrivacyMode(on) {
 async function api(path, method = "GET", body = null) {
   const opt = { method, headers: {} };
   if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-  const res = await fetch(path, opt);
+  let res;
+  try {
+    res = await fetch(path, opt);
+  } catch (netErr) {
+    // The server is down / unreachable -- always a genuine failure worth the
+    // central error center, regardless of who (if anyone) catches it locally.
+    const e = new Error(`can't reach the server (${method} ${path})`);
+    e._recorded = recordError("network", e.message, { detail: String(netErr && netErr.message || netErr) });
+    throw e;
+  }
   const data = await res.json().catch(() => ({ error: "bad response" }));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const e = new Error(data.error || `HTTP ${res.status}`);
+    e.status = res.status;
+    // 5xx is the server blowing up -- record centrally. 4xx is usually expected
+    // control flow (missing cache, validation) that callers handle inline, so we
+    // leave those to local status; if a 4xx goes uncaught it still surfaces via
+    // the global unhandledrejection handler below.
+    if (res.status >= 500) {
+      e._recorded = recordError("api", `${method} ${path}: ${e.message}`, { detail: `HTTP ${res.status}` });
+    }
+    throw e;
+  }
   return data;
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "holdings"]);
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "holdings"]);
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -179,6 +199,7 @@ function setActiveView(view) {
   if (active === "holdings") loadHoldings();
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
+  if (active === "rebalance") loadRebalance();
   return active;
 }
 
@@ -205,6 +226,9 @@ async function restoreNav(nav) {
     await loadCachedSegment(nav.segment);
   } else if (active === "pipeline" && nav.run) {
     await loadDeepRun(nav.run, { push: false });
+    // Deep-linking to a run means "show me this run" -- land on the review gate
+    // (Step 4) with its loaded report/review, not back on Step 1.
+    setPipeStep(4);
   } else if (active === "deepdive") {
     await renderViewedTickers();
   }
@@ -357,6 +381,261 @@ async function loadHoldings() {
     status.textContent = "Could not load holdings: " + e.message;
     status.classList.add("err");
   }
+}
+
+// ---- rebalance planner -----------------------------------------------------
+const REB_RULE_LABEL = {
+  trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
+  avoid: "avoid", accumulate: "accumulate", hold: "hold", wait: "wait",
+};
+const rebStatusClass = (s) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
+const rebActionClass = (a) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
+// Weights are percent of the invested book, so size money off invested value
+// (not NAV) — that keeps a row's CZK equal to its actual market value.
+const pctToCzk = (pct, base) => (typeof base === "number" && pct != null ? Math.round((pct / 100) * base) : null);
+// Default planned amount: prefill the minimal band-closing trade only for clear
+// trim/buy actions. "review" (accumulate over ceiling) and untargeted names are
+// judgement calls, so they start at zero — the human decides.
+const rebDefaultDelta = (r) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
+
+async function loadRebalance() {
+  const status = $("#reb-status");
+  const summary = $("#reb-summary");
+  const out = $("#reb-result");
+  status.classList.remove("err");
+  status.textContent = "Loading rebalance plan…";
+  summary.innerHTML = "";
+  out.innerHTML = "";
+  try {
+    const plan = await api("/api/rebalance");
+    status.textContent = "";
+    renderRebalance(plan);
+  } catch (e) {
+    summary.innerHTML = "";
+    out.innerHTML = "";
+    status.textContent = "Could not load rebalance plan: " + e.message;
+    status.classList.add("err");
+  }
+}
+
+function renderRebalance(plan) {
+  const summary = $("#reb-summary");
+  const out = $("#reb-result");
+  const nav = plan.nav;
+  // Weights are % of invested book, so money is sized off invested value.
+  const base = typeof plan.invested === "number" ? plan.invested : nav;
+  out.innerHTML = "";
+
+  summary.innerHTML =
+    `<div class="reb-meta">` +
+    `<span>NAV ${sensitive(`${fmtCZK(nav)} ${esc(plan.currency)}`, "total NAV")}</span>` +
+    `<span>invested ${sensitive(`${fmtCZK(plan.invested)} ${esc(plan.currency)}`, "invested book")}</span>` +
+    `<span>snapshot ${esc(fmtStamp(plan.snapshot))}</span>` +
+    `<span>target as of ${esc(plan.as_of || "n/a")}</span>` +
+    `<span>cash target ${plan.cash_target_pct}%</span>` +
+    (plan.funding_order && plan.funding_order.length
+      ? `<span>funding order ${plan.funding_order.map(esc).join(" \u2192 ")}</span>` : "") +
+    `</div>` +
+    `<div class="reb-stats">` +
+    `<div class="reb-stat"><span class="reb-stat-k">Cash freed by trims</span><span class="reb-stat-v" id="reb-stat-raised">—</span></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Cash needed for buys</span><span class="reb-stat-v" id="reb-stat-spent">—</span></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Net cash</span><span class="reb-stat-v" id="reb-stat-net">—</span></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Target bands closed</span><span class="reb-stat-v" id="reb-stat-closed">—</span></div>` +
+    `</div>`;
+
+  const cells = []; // live-updated derived references, one per interactive row
+
+  const headRow = (title) => {
+    const h = el("div", "reb-row reb-head-row");
+    h.innerHTML =
+      `<div class="reb-c reb-name">${esc(title)}</div>` +
+      `<div class="reb-c reb-cur">Current</div>` +
+      `<div class="reb-c reb-band">Band</div>` +
+      `<div class="reb-c reb-status">Status</div>` +
+      `<div class="reb-c reb-plan">Plan (% of book)</div>` +
+      `<div class="reb-c reb-proj">Projected</div>`;
+    return h;
+  };
+
+  const buildRow = (r) => {
+    const row = el("div", "reb-row reb-data-row");
+    const sym = el("span", "reb-sym", esc(r.name));
+    if (r.kind === "target" && r.held) {
+      sym.classList.add("reb-link");
+      sym.title = "Open dossier";
+      sym.addEventListener("click", () => analyzeFromAnywhere(r.name));
+    }
+    const nameCell = el("div", "reb-c reb-name");
+    nameCell.appendChild(sym);
+    nameCell.appendChild(el("span", "reb-rule", esc(REB_RULE_LABEL[r.rule] || r.rule)));
+    if (r.note) nameCell.title = r.note;
+
+    const curCell = el("div", "reb-c reb-cur",
+      `<span>${r.current_pct.toFixed(2)}%</span>` +
+      `<small>${sensitive(`${fmtCZK(r.current_czk)} CZK`, "position value")}</small>`);
+    const bandCell = el("div", "reb-c reb-band", `${r.low.toFixed(1)}–${r.high.toFixed(1)}%`);
+    const statusCell = el("div", "reb-c reb-status",
+      `<span class="chip ${rebStatusClass(r.status)}">${r.status}</span>`);
+
+    row.appendChild(nameCell);
+    row.appendChild(curCell);
+    row.appendChild(bandCell);
+    row.appendChild(statusCell);
+
+    if (r.interactive) {
+      const planCell = el("div", "reb-c reb-plan");
+      const wrap = el("div", "reb-plan-input-wrap");
+      const input = el("input", "reb-plan-input");
+      input.type = "number";
+      input.step = "0.1";
+      input.value = String(rebDefaultDelta(r));
+      input.title = r.action
+        ? `suggested ${fmtSignedWeight(r.suggest_delta_pct)} to reach the band edge`
+        : "in band — no action suggested";
+      wrap.appendChild(input);
+      wrap.appendChild(el("span", "reb-unit", "%"));
+      planCell.appendChild(wrap);
+      const czk = el("small", "reb-plan-czk");
+      planCell.appendChild(czk);
+      row.appendChild(planCell);
+
+      const projCell = el("div", "reb-c reb-proj");
+      const projPct = el("span", "reb-proj-pct");
+      const projBand = el("span", "chip reb-proj-band");
+      projCell.appendChild(projPct);
+      projCell.appendChild(projBand);
+      row.appendChild(projCell);
+
+      cells.push({ r, input, czk, projPct, projBand, row });
+      input.addEventListener("input", recompute);
+    } else {
+      // Sleeve: combined band, no single trade — the human spreads it across members.
+      const planCell = el("div", "reb-c reb-plan reb-plan-ro",
+        (r.action
+          ? `<span class="chip ${rebActionClass(r.action)}">${fmtSignedWeight(r.suggest_delta_pct)}</span>`
+          : `<span class="muted">in band</span>`) +
+        `<small>spread across members</small>`);
+      row.appendChild(planCell);
+      row.appendChild(el("div", "reb-c reb-proj", "<span class=\"muted\">—</span>"));
+    }
+    return row;
+  };
+
+  const targetRows = (plan.rows || []).filter((r) => r.kind === "target");
+  const sleeveRows = (plan.rows || []).filter((r) => r.kind === "sleeve");
+
+  const grid = el("div", "reb-tbl");
+  grid.appendChild(headRow("Targets"));
+  targetRows.forEach((r) => grid.appendChild(buildRow(r)));
+  out.appendChild(grid);
+
+  if (sleeveRows.length) {
+    const sgrid = el("div", "reb-tbl reb-tbl-sleeves");
+    sgrid.appendChild(headRow("Sleeves"));
+    sleeveRows.forEach((r) => {
+      sgrid.appendChild(buildRow(r));
+      if (r.members && r.members.length) {
+        const det = el("details", "reb-members");
+        const held = r.members.filter((m) => m.current_pct > 0).length;
+        det.appendChild(el("summary", null,
+          `${r.members.length} members · ${held} held`));
+        const ml = el("div", "reb-members-list");
+        r.members.forEach((m) => {
+          ml.appendChild(el("div", "reb-member",
+            `<span class="reb-member-sym">${esc(m.symbol)}</span>` +
+            `<span>${m.current_pct.toFixed(2)}%</span>` +
+            `<small>${sensitive(`${fmtCZK(m.current_czk)} CZK`, "position value")}</small>`));
+        });
+        det.appendChild(ml);
+        sgrid.appendChild(det);
+      }
+    });
+    out.appendChild(sgrid);
+  }
+
+  if (plan.untargeted && plan.untargeted.length) {
+    const det = el("details", "reb-untargeted");
+    det.appendChild(el("summary", null,
+      `Untargeted holdings — ${plan.untargeted.length} names, ` +
+      `${plan.untargeted_pct.toFixed(1)}% of NAV (no band; not in the plan)`));
+    const list = el("div", "reb-untargeted-list");
+    plan.untargeted.forEach((u) => {
+      const r = el("div", "reb-untargeted-row");
+      r.innerHTML =
+        `<span class="reb-link reb-member-sym">${esc(u.symbol)}</span>` +
+        `<span>${u.current_pct.toFixed(2)}%</span>` +
+        `<small>${sensitive(`${fmtCZK(u.current_czk)} CZK`, "position value")}</small>`;
+      r.querySelector(".reb-link").addEventListener("click", () => analyzeFromAnywhere(u.symbol));
+      list.appendChild(r);
+    });
+    det.appendChild(list);
+    out.appendChild(det);
+  }
+
+  out.appendChild(el("div", "hint",
+    "Suggested amounts move each name to the nearest band edge (the minimal action). " +
+    "Edit any Plan amount to simulate; \u201cReset to suggested\u201d restores them. " +
+    "Cash totals include the sleeves' suggested buys/sells (fixed — you allocate those across members). " +
+    "Net cash > 0 means trims fund the buys; < 0 means you'd need fresh cash (e.g. from the untargeted bucket)."));
+
+  function recompute() {
+    let raised = 0, spent = 0, closed = 0, total = 0;
+    cells.forEach(({ r, input, czk, projPct, projBand, row }) => {
+      total += 1;
+      let d = parseFloat(input.value);
+      if (!Number.isFinite(d)) d = 0;
+      const proj = r.current_pct + d;
+      const inBand = proj >= r.low - 0.01 && proj <= r.high + 0.01;
+      if (inBand) closed += 1;
+      if (d < 0) raised += -d; else spent += d;
+
+      czk.innerHTML = d
+        ? sensitive(`${d > 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(pctToCzk(d, base)))} CZK`, "planned trade size")
+        : "<span class=\"muted\">no change</span>";
+      projPct.textContent = `${proj.toFixed(2)}%`;
+      projBand.textContent = inBand ? "in band" : "out";
+      projBand.className = "chip reb-proj-band " + (inBand ? "good" : "warn");
+      row.classList.toggle("planned-sell", d < -0.001);
+      row.classList.toggle("planned-buy", d > 0.001);
+    });
+
+    // Sleeves aren't per-name editable (the human spreads them across members),
+    // but their suggested buys/sells are real capital the plan needs. Folding
+    // them in at the suggested amount keeps "cash needed" honest — otherwise the
+    // headline silently ignores ~15% of NAV in sleeve buys.
+    (plan.rows || []).filter((r) => r.kind === "sleeve").forEach((r) => {
+      const d = r.suggest_delta_pct || 0;
+      if (r.action === "trim") raised += -d;
+      else if (r.action === "buy") spent += d;
+    });
+
+    const raisedCzk = pctToCzk(raised, base);
+    const spentCzk = pctToCzk(spent, base);
+    const net = raised - spent;
+    const netCzk = pctToCzk(net, base);
+    $("#reb-stat-raised").innerHTML =
+      `${sensitive(`${fmtCZK(raisedCzk)} CZK`, "cash freed")} <small>${raised.toFixed(2)}%</small>`;
+    $("#reb-stat-spent").innerHTML =
+      `${sensitive(`${fmtCZK(spentCzk)} CZK`, "cash needed")} <small>${spent.toFixed(2)}%</small>`;
+    const netEl = $("#reb-stat-net");
+    netEl.innerHTML =
+      `${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(netCzk))} CZK`, "net cash")} ` +
+      `<small>${fmtSignedWeight(net)}</small>`;
+    netEl.classList.toggle("good", net >= -0.01);
+    netEl.classList.toggle("bad", net < -0.01);
+    const closedEl = $("#reb-stat-closed");
+    closedEl.textContent = `${closed}/${total}`;
+    closedEl.classList.toggle("good", total > 0 && closed === total);
+  }
+
+  const reset = $("#reb-reset");
+  if (reset) {
+    reset.onclick = () => {
+      cells.forEach(({ r, input }) => { input.value = String(rebDefaultDelta(r)); });
+      recompute();
+    };
+  }
+  recompute();
 }
 
 function analyzeFromAnywhere(sym) {
@@ -2018,6 +2297,93 @@ function taskUpdate(id, message) {
 }
 function taskEnd(id) { activeTasks.delete(id); renderTaskPill(); }
 
+// ---- Centralized error center ----------------------------------------------
+// Counterpart to the task pill: failures collect here instead of dying in a
+// scrolled-off card. A topbar badge shows the count; clicking opens a panel
+// listing each error with source, time, and a dismiss action. Sources funnel
+// in from api() (network/5xx), failed background jobs, and the global
+// unhandledrejection/error handlers.
+const errorLog = []; // newest last: { id, source, message, detail, time, count }
+const ERROR_LOG_MAX = 50;
+let _errorSeq = 0;
+
+function recordError(source, message, opts = {}) {
+  const msg = String(message || "unknown error").trim();
+  if (!msg) return null;
+  const now = Date.now();
+  // Collapse rapid duplicates (same source+message within 5s) into one entry
+  // with a bumped count, so a flapping poll loop can't bury the panel.
+  const dup = errorLog.find((e) => e.source === source && e.message === msg && now - e.time < 5000);
+  if (dup) {
+    dup.count += 1;
+    dup.time = now;
+    if (opts.detail) dup.detail = String(opts.detail);
+    renderErrorCenter();
+    return dup.id;
+  }
+  const id = "err-" + (++_errorSeq);
+  errorLog.push({ id, source, message: msg, detail: opts.detail ? String(opts.detail) : "", time: now, count: 1 });
+  while (errorLog.length > ERROR_LOG_MAX) errorLog.shift();
+  renderErrorCenter();
+  return id;
+}
+
+function dismissError(id) {
+  const i = errorLog.findIndex((e) => e.id === id);
+  if (i >= 0) errorLog.splice(i, 1);
+  renderErrorCenter();
+}
+
+function clearErrors() {
+  errorLog.length = 0;
+  renderErrorCenter();
+}
+
+function toggleErrorPanel(force) {
+  const panel = $("#error-panel");
+  if (!panel) return;
+  const show = force != null ? force : panel.hidden;
+  panel.hidden = !show;
+  const btn = $("#error-indicator");
+  if (btn) btn.setAttribute("aria-expanded", show ? "true" : "false");
+  if (show) renderErrorCenter();
+}
+
+const ERROR_SOURCE_LABEL = { api: "Server", network: "Network", task: "Task", js: "App" };
+
+function renderErrorCenter() {
+  const btn = $("#error-indicator");
+  if (btn) {
+    const n = errorLog.length;
+    btn.hidden = n === 0;
+    btn.textContent = n === 0 ? "" : `Errors ${n}`;
+    if (n === 0) toggleErrorPanel(false);
+  }
+  const list = $("#error-list");
+  if (!list) return;
+  if (!errorLog.length) {
+    list.innerHTML = `<div class="error-empty">No errors. Carry on.</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  // Newest first.
+  [...errorLog].reverse().forEach((e) => {
+    const row = el("div", "error-item");
+    const src = ERROR_SOURCE_LABEL[e.source] || e.source;
+    const times = e.count > 1 ? ` <span class="error-x">x${e.count}</span>` : "";
+    row.innerHTML =
+      `<div class="error-meta"><span class="error-src">${esc(src)}</span>` +
+      `<span class="error-time">${esc(relAge(new Date(e.time).toISOString())) || "just now"}</span>${times}</div>` +
+      `<div class="error-msg">${esc(e.message)}</div>` +
+      (e.detail ? `<div class="error-detail">${esc(e.detail)}</div>` : "");
+    const x = el("button", "error-dismiss", "&times;");
+    x.title = "Dismiss";
+    x.addEventListener("click", () => dismissError(e.id));
+    row.appendChild(x);
+    list.appendChild(row);
+  });
+}
+
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
 async function pollDeepJob(jobId, statusEl, onDone, label) {
@@ -2059,7 +2425,9 @@ async function pollDeepJob(jobId, statusEl, onDone, label) {
         return;
       }
       statusEl.classList.add("err");
-      statusEl.textContent = job.error || job.message || job.state;
+      const jobErr = job.error || job.message || job.state;
+      statusEl.textContent = jobErr;
+      recordError("task", `${label || "Background task"} failed: ${jobErr}`);
       return;
     }
   } finally {
@@ -2316,6 +2684,11 @@ async function loadDeepRun(stem, { push = true } = {}) {
   const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   state.currentDeepRun = stem;
   state.repManual = false;
+  // We just loaded this run off disk, so its report exists -- register it now so
+  // the Step 4 lock opens immediately, without waiting on the async deep-runs
+  // refresh (otherwise deep-linking to a run can bounce off a still-locked gate).
+  state.savedRuns = state.savedRuns || new Set();
+  state.savedRuns.add(stem);
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
     $("#pipe-segment-select").value = m[1];
@@ -2373,6 +2746,7 @@ function renderReviewGate(rec) {
   const changes = proposal.changes || [];
   const blocked = rec.blocked_symbols || proposal.blocked_symbols || [];
   const applicable = changes.filter((c) => !blocked.includes(c.symbol));
+  const noMembers = !(rec.rows && rec.rows.length);
   card.appendChild(el("h2", "section", "Target-model proposal"));
   if (changes.length) {
     const pre = el("pre", "json-preview", esc(JSON.stringify(changes, null, 2)));
@@ -2381,6 +2755,9 @@ function renderReviewGate(rec) {
       card.appendChild(el("div", "hint",
         `Apply is blocked for ${blocked.map(esc).join(", ")} (ERROR-level data). Re-pull and fix the data first.`));
     }
+  } else if (noMembers) {
+    card.appendChild(el("div", "hint err",
+      "This segment has no members, so there's nothing to review or apply. Add tickers to the segment definition, then re-pull and re-review."));
   } else {
     card.appendChild(el("div", "hint", "No target-model changes proposed."));
   }
@@ -2804,6 +3181,31 @@ async function loadAnalysis(stem, { push = true } = {}) {
 }
 
 // ---- boot -----------------------------------------------------------------
+// Catch-all for failures nobody handled locally: uncaught promise rejections
+// (e.g. a view loader with no try/catch) and runtime script errors. Anything
+// api() already logged carries _recorded, so we don't double-count it.
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason;
+  if (r && r._recorded) return;
+  const msg = (r && r.message) || String(r) || "unhandled promise rejection";
+  const stackLine = r && r.stack ? String(r.stack).split("\n")[1] : "";
+  recordError("js", msg, { detail: stackLine ? stackLine.trim() : "" });
+});
+window.addEventListener("error", (ev) => {
+  if (ev.error && ev.error._recorded) return;
+  const msg = ev.message || (ev.error && ev.error.message) || "script error";
+  const where = ev.filename ? `${String(ev.filename).split("/").pop()}:${ev.lineno || "?"}` : "";
+  recordError("js", msg, { detail: where });
+});
+
+const _errBtn = $("#error-indicator");
+if (_errBtn) _errBtn.addEventListener("click", () => toggleErrorPanel());
+const _errClear = $("#error-clear");
+if (_errClear) _errClear.addEventListener("click", () => clearErrors());
+const _errClose = $("#error-close");
+if (_errClose) _errClose.addEventListener("click", () => toggleErrorPanel(false));
+renderErrorCenter();
+
 applyPrivacyMode(state.privacyMode);
 const initialNav = navFromUrl();
 window.history.replaceState(initialNav, "", window.location.href);

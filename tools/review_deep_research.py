@@ -22,7 +22,11 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+import sys
 from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from portfolio import holdings_weights  # noqa: E402  -- single source of truth for weights
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -142,13 +146,9 @@ def source_summary(sources: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def current_weights(holdings: dict[str, Any]) -> dict[str, float]:
-    weights: dict[str, float] = {}
-    for pos in holdings.get("positions", []):
-        sym = pos.get("symbol")
-        pct = pos.get("percent_of_nav")
-        if sym and isinstance(pct, (int, float)) and 0 <= pct <= 50:
-            weights[str(sym).upper()] = float(pct)
-    return weights
+    """Single source of truth: see portfolio.holdings_weights (market value over
+    invested book). Do not read the broker's notional-poisoned percent_of_nav."""
+    return holdings_weights(holdings)
 
 
 def worst_severity(checks: list[dict[str, str]]) -> str:
@@ -217,6 +217,13 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
 
     def add_finding(level: str, message: str, symbol: str | None = None) -> None:
         findings.append({"level": level, "symbol": symbol, "message": message})
+
+    if not segment_def.get("members"):
+        add_finding(
+            "BLOCK",
+            "Segment has no members — nothing to cross-check or apply. "
+            "Add tickers to the segment definition, then re-pull and re-review.",
+        )
 
     for member in segment_def.get("members", []):
         sym = str(member.get("symbol", "")).upper()

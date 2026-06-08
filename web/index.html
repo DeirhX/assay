@@ -14,15 +14,28 @@
       <button class="tab active" data-view="deepdive">Deep dive</button>
       <button class="tab" data-view="segment">Segment</button>
       <button class="tab" data-view="pipeline">Pipeline</button>
+      <button class="tab" data-view="rebalance">Rebalance</button>
       <button class="tab" data-view="holdings">Holdings</button>
     </div>
     <div class="spacer"></div>
+    <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
     <button class="ghost privacy-inline" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">Settings</button>
     <nav>
       <a href="/next-steps.html">Plan</a>
     </nav>
   </header>
+
+  <div class="error-panel" id="error-panel" hidden>
+    <div class="error-panel-head">
+      <strong>Errors</strong>
+      <div class="error-panel-actions">
+        <button class="ghost" id="error-clear" type="button">Clear all</button>
+        <button class="ghost" id="error-close" type="button" aria-label="Close errors">Close</button>
+      </div>
+    </div>
+    <div class="error-list" id="error-list"></div>
+  </div>
 
   <div class="settings-panel" id="settings-panel" hidden>
     <div class="settings-head">
@@ -305,6 +318,20 @@
           <div class="hint">Select an analysis on the left to read it.</div>
         </article>
       </div>
+    </section>
+
+    <!-- REBALANCE -->
+    <section class="view" id="view-rebalance">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Rebalance planner</h2>
+          <p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders.</p>
+        </div>
+        <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset to suggested</button>
+      </div>
+      <div class="status" id="reb-status"></div>
+      <div id="reb-summary"></div>
+      <div id="reb-result"></div>
     </section>
 
     <!-- HOLDINGS -->

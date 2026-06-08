@@ -27,6 +27,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -45,11 +46,12 @@ AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from portfolio import holdings_payload  # noqa: E402
+from portfolio import holdings_payload, holdings_weights  # noqa: E402
 from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
+import rebalance  # noqa: E402
 import jobs  # noqa: E402
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -126,10 +128,21 @@ def _validate_segment_definition(raw: dict) -> dict:
                 cleaned[key] = str(item[key]).strip()
         cleaned_members.append(cleaned)
 
+    status = str(raw.get("status") or "draft").strip().lower() or "draft"
+    # A hollow segment (no members) is fine as a *draft* you're still filling in,
+    # but approving one is the bug that silently breaks the review gate: the pull
+    # runs against nothing, the proposal is empty, and Apply is dead with no
+    # explanation. Refuse to approve until tickers are identified.
+    if status == "approved" and not cleaned_members:
+        raise ValueError(
+            "cannot approve a segment with no members — identify its tickers "
+            "(use the LLM prompt, paste/edit members) before approving"
+        )
+
     cleaned = {
         "title": title,
         "kind": raw.get("kind") or "research",
-        "status": raw.get("status") or "draft",
+        "status": status,
         "overlap_allowed": bool(raw.get("overlap_allowed", True)),
         "comment": str(raw.get("comment") or "").strip(),
         "sleeves": sorted(sleeves) or ["other"],
@@ -211,15 +224,10 @@ def _segment_prompt(name: str) -> dict:
     definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
     if not definition:
         raise ValueError(f"unknown segment {slug}")
-    holdings = holdings_payload()
-    held = {
-        p["symbol"]: p.get("percent_of_nav")
-        for p in holdings.get("positions", [])
-        if p.get("percent_of_nav") is not None
-    }
+    held = holdings_weights()  # single source of truth (percent of invested book)
     symbols = [m["symbol"] for m in definition.get("members", [])]
     held_lines = [
-        f"- {sym}: {held[sym]:.2f}% NAV"
+        f"- {sym}: {held[sym]:.2f}% of book"
         for sym in symbols
         if sym in held
     ]
@@ -1154,6 +1162,16 @@ class Handler(BaseHTTPRequestHandler):
     def _send_error_json(self, status: int, message: str):
         self._send_json({"error": message}, status=status)
 
+    def _handle_unexpected(self, exc: Exception):
+        # Single funnel for unexpected handler failures (GET and POST): log the
+        # full traceback to the terminal so we can actually debug, but hand the
+        # browser a clean JSON envelope the frontend's error center understands.
+        if isinstance(exc, research_pull.ProviderError):  # type: ignore[attr-defined]
+            return self._send_error_json(502, f"data source error: {exc}")
+        sys.stderr.write(f"[serve] unhandled error on {self.command} {self.path}:\n")
+        traceback.print_exc()
+        return self._send_error_json(500, f"{type(exc).__name__}: {exc}")
+
     def _serve_static(self, rel: str):
         if rel in ("", "/"):
             rel = "index.html"
@@ -1201,15 +1219,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return None
-        if not path.startswith("/api/"):
-            return self._serve_static(path)
-        return self._handle_get_api(path, parse_qs(parsed.query))
+        try:
+            if not path.startswith("/api/"):
+                return self._serve_static(path)
+            return self._handle_get_api(path, parse_qs(parsed.query))
+        except Exception as exc:  # noqa: BLE001
+            return self._handle_unexpected(exc)
 
     def _handle_get_api(self, path: str, query: dict[str, list[str]]):
         if path == "/api/dev/livereload":
             return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
         if path == "/api/holdings":
             return self._send_json(holdings_payload())
+        if path == "/api/rebalance":
+            model = _load(TARGET_MODEL_JSON)
+            holdings = _load(HOLDINGS_JSON)
+            if not model:
+                return self._send_error_json(404, "no target model — data/target-model.json missing")
+            if not holdings:
+                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+            return self._send_json(rebalance.plan(model, holdings))
         if path == "/api/segments":
             return self._send_json({"segments": _segments_list()})
         if path.startswith("/api/segment-def/"):
@@ -1306,10 +1335,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             return self._handle_post_api(path)
-        except research_pull.ProviderError as exc:  # type: ignore[attr-defined]
-            return self._send_error_json(502, f"data source error: {exc}")
         except Exception as exc:  # noqa: BLE001
-            return self._send_error_json(500, f"{type(exc).__name__}: {exc}")
+            return self._handle_unexpected(exc)
 
     def _handle_post_api(self, path: str):
         if path == "/api/segment-draft":
@@ -1319,7 +1346,10 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/segment-def/"):
             name = _slugify(path.rsplit("/", 1)[-1])
             body = self._read_body()
-            definition = _validate_segment_definition(body.get("definition") or body)
+            try:
+                definition = _validate_segment_definition(body.get("definition") or body)
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
             _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
             return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
 
