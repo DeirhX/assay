@@ -11,3 +11,5 @@ data/research/segments/
 data/research/analysis/
 .playwright-mcp/
 __pycache__/
+node_modules/
+web/dist/
