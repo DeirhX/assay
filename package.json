@@ -1,0 +1,17 @@
+{
+  "name": "rebalancing-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Frontend toolchain for the local rebalancing research console. The Python server (tools/serve.py) still owns the API, jobs, and auth.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  }
+}

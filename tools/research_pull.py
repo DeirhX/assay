@@ -74,6 +74,20 @@ def _val(node: dict[str, Any] | None) -> float | None:
     return node.get("value") if isinstance(node, dict) else None
 
 
+def _merge_profile(*profiles: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Combine business profiles field-by-field, first non-empty wins. Pass the
+    preferred source first (Yahoo), then fallbacks (FMP): Yahoo fills what it has,
+    FMP backfills the gaps. Returns None if every source was empty."""
+    out: dict[str, Any] = {}
+    for prof in profiles:
+        if not prof:
+            continue
+        for key, value in prof.items():
+            if value and not out.get(key):
+                out[key] = value
+    return out or None
+
+
 def _collect(*sources: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     """metric_key -> list of per-source nodes that supplied it."""
     out: dict[str, list[dict[str, Any]]] = {}
@@ -160,6 +174,80 @@ def _cross_checks(
     return findings
 
 
+def _quarantine_metric(merged: dict[str, Any], key: str) -> None:
+    """Withhold a metric we can't trust: null the value but keep the node so the
+    consumer renders 'unreliable' instead of a confident wrong number."""
+    node = merged.get(key)
+    if not isinstance(node, dict):
+        return
+    node = dict(node)
+    node["value"] = None
+    node["display"] = "unreliable"
+    node["quarantined"] = True
+    merged[key] = node
+
+
+def _reconcile_market_cap(
+    merged: dict[str, Any],
+    y: dict[str, Any] | None,
+    s: dict[str, Any] | None,
+    f: dict[str, Any] | None,
+    price: float | None,
+    checks: list[dict[str, str]],
+) -> None:
+    """When Yahoo's ``price x shares`` disagrees with its reported market cap, the
+    merged value is untrustworthy. Try to correct it from an independent source
+    (FMP market cap, or ``price x`` SEC/FMP shares); if nothing resolves it,
+    quarantine market cap and the P/S that rides on it. Mutates merged + checks.
+    """
+    err = next(
+        (c for c in checks if c.get("severity") == "ERROR" and c.get("metric") == "market_cap"),
+        None,
+    )
+    if err is None:
+        return  # identity held -> nothing to reconcile
+
+    y_shares = _val(y.get("shares_out_b")) if y else None
+    y_mcap = _val(y.get("market_cap_usd_b")) if y else None
+    s_shares = _val(s.get("shares_out_b")) if s else None
+    f_mcap = _val(f.get("market_cap_usd_b")) if f else None
+    f_shares = _val(f.get("shares_out_b")) if f else None
+
+    # An independent anchor for the true market cap, most-trusted first.
+    anchor = anchor_label = None
+    if f_mcap:
+        anchor, anchor_label = f_mcap, "FMP market cap"
+    elif price and s_shares:
+        anchor, anchor_label = price * s_shares, "price x SEC shares"
+    elif price and f_shares:
+        anchor, anchor_label = price * f_shares, "price x FMP shares"
+
+    # The two conflicting Yahoo views of market cap.
+    views = []
+    if y_mcap:
+        views.append(y_mcap)
+    if price and y_shares:
+        views.append(price * y_shares)
+
+    if anchor and views:
+        best = min(views, key=lambda v: _rel(v, anchor))
+        if _rel(best, anchor) <= IDENTITY_TOL:
+            node = dict(merged.get("market_cap_usd_b") or {})
+            node["value"] = round(best, 3)
+            node["display"] = fmt_b(best)
+            node["source"] = "reconciled"
+            node["reconciled_via"] = anchor_label
+            merged["market_cap_usd_b"] = node
+            err["severity"] = "WARN"  # resolved -> no longer a blocking error
+            err["message"] += f" Reconciled to ${best:.0f}B via {anchor_label}."
+            return
+
+    # Unresolvable: withhold the affected metrics rather than surface a wrong one.
+    _quarantine_metric(merged, "market_cap_usd_b")
+    _quarantine_metric(merged, "ps")
+    err["message"] += " No independent source resolved it; market cap and P/S withheld."
+
+
 def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
     symbol = symbol.upper().strip()
     errors: list[str] = []
@@ -183,12 +271,15 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
     by_metric = _collect(y, s, f)
     merged = _merge_metrics(by_metric)
     checks = _cross_checks(symbol, mo, y, s)
+    price_val = mo.get("last") or (_val(y.get("price")) if y else None)
+    _reconcile_market_cap(merged, y, s, f, price_val, checks)
 
     name = (y or {}).get("name") or (s or {}).get("entity") or (f or {}).get("name") or symbol
     portfolio = portfolio_context(symbol)
     record: dict[str, Any] = {
         "symbol": symbol,
         "name": name,
+        "profile": _merge_profile((y or {}).get("profile"), (f or {}).get("profile")),
         "as_of": _now(),
         "currency": (y or {}).get("currency") or mo.get("currency") or "USD",
         "price": {"value": mo.get("last"), "source": "yahoo"} if mo.get("last") else (y or {}).get("price"),

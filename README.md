@@ -55,6 +55,33 @@ py -3 tools/serve.py
 # then open http://127.0.0.1:8765
 ```
 
+### Frontend (Vite + TypeScript)
+
+The client (`web/`) is built with Vite + TypeScript. The Python server still owns
+the API, jobs, auth, and the static report pages; Vite only builds the SPA.
+
+```powershell
+npm install          # once
+
+# Day-to-day development (hot reload):
+npm run dev          # Vite dev server on http://localhost:5173 (HMR),
+                     # proxying /api -> the Python server. Keep `py -3 tools/serve.py`
+                     # running alongside it for the API.
+                     # Note: Vite binds to localhost (IPv6); use localhost, not 127.0.0.1.
+
+# Production / serving via Python:
+npm run build        # emits web/dist/ ; tools/serve.py serves it automatically
+py -3 tools/serve.py # then open http://127.0.0.1:8765
+
+npm run typecheck    # tsc --noEmit (loose baseline today; tightened as code is
+                     # split into typed modules)
+```
+
+`web/app.ts` is the entry. It is the old `app.js` ported verbatim to TypeScript
+to stand up the toolchain; it carries `// @ts-nocheck` and gets typed as it is
+carved into modules. `web/dist/` and `node_modules/` are gitignored — run
+`npm run build` before serving in prod.
+
 What it does:
 
 - **Deep dive** any ticker: live price, momentum, market cap, P/E (ttm/fwd),
@@ -74,16 +101,19 @@ What it does:
   triggers) is saved per ticker, kept strictly separate from the fetched
   numbers, and never clobbered on re-pull.
 
-Stack: **stdlib only**. No Flask/FastAPI, no yfinance/pandas, nothing to
-`pip install` -- it talks to the same Yahoo and SEC sources directly via
-`urllib`, and serves on `http.server`. Binds to `127.0.0.1` only; it runs live
-network pulls on request, so do not expose it.
+Backend stack: **Python stdlib only**. No Flask/FastAPI, no yfinance/pandas,
+nothing to `pip install` -- it talks to the same Yahoo and SEC sources directly
+via `urllib`, and serves on `http.server`. Binds to `127.0.0.1` only; it runs
+live network pulls on request, so do not expose it.
+
+Frontend stack: **Vite + TypeScript** (see *Frontend* above). The "no build
+step" rule applied while this was a static page; it now has a real client with
+an async job model, so a build step earns its keep (HMR, types, modules).
 
 Optional FMP third opinion: put `FMP_API_KEY=...` in `secrets.env` (gitignored).
 
-> Note: this app deliberately overrides the older "keep the site static, no
-> build step" rule. The static pages still work as plain files; the server is a
-> dev-time convenience that regenerates and serves live research.
+> Note: the standing static pages (`next-steps.html`, per-stock detail) still
+> work as plain files. The Research Console is the built/served app.
 
 ## Pages
 

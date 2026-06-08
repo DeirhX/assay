@@ -47,6 +47,66 @@ def position_weight_pct(position: dict[str, Any], invested: float) -> float | No
     return bmv / invested * 100.0
 
 
+def parse_occ_symbol(symbol: str | None) -> tuple[str, float] | None:
+    """OCC option symbol -> (right, strike), e.g. 'SPY   260618P00655000'.
+
+    Layout: a 6-char space-padded root, then YYMMDD, then C/P, then an 8-digit
+    strike in thousandths. Strip the padding and read the fixed 15-char tail.
+    """
+    compact = (symbol or "").replace(" ", "")
+    if len(compact) < 15:
+        return None
+    core = compact[-15:]
+    right = core[6]
+    if right not in ("C", "P"):
+        return None
+    try:
+        return right, int(core[7:]) / 1000.0
+    except ValueError:
+        return None
+
+
+def option_exposure(position: dict[str, Any], invested: float) -> dict[str, Any] | None:
+    """Notional exposure as a signed % of invested if the option were exercised.
+
+    A long put is short the underlying on exercise (negative); a long call is long
+    (positive); shorts flip the sign. The premium value of an option says nothing
+    about what it does to the book -- a 2-lot SPY put worth ~870 CZK still hedges
+    ~9% of NAV. Multiplier and FX are inferred from the position's own numbers
+    rather than hardcoding 100 or a CZK/USD rate, so this survives index options
+    and currency changes.
+    """
+    parsed = parse_occ_symbol(position.get("symbol"))
+    qty = position.get("quantity")
+    mv = position.get("market_value")
+    mp = position.get("mark_price")
+    bmv = position.get("base_market_value")
+    if not parsed or not qty or not invested:
+        return None
+    right, strike = parsed
+
+    multiplier = 100.0
+    if mv and mp and qty:
+        inferred = abs(mv) / (abs(mp) * abs(qty))
+        if inferred > 1:
+            multiplier = round(inferred)
+
+    fx = (bmv / mv) if (bmv and mv) else None  # base currency per trading currency
+    if fx is None:
+        return None
+    notional_base = abs(qty) * multiplier * strike * fx
+    pct = notional_base / invested * 100.0
+    direction = (1 if right == "C" else -1) * (1 if qty > 0 else -1)
+    return {
+        "right": right,
+        "strike": strike,
+        "contracts": qty,
+        "multiplier": multiplier,
+        "notional_base": notional_base,
+        "exercise_pct": direction * pct,
+    }
+
+
 def holdings_weights(data: dict[str, Any] | None = None) -> dict[str, float]:
     data = data if data is not None else load_json(HOLDINGS_JSON)
     if not data:
@@ -84,6 +144,11 @@ def holdings_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
                 "currency": p.get("currency"),
                 "unrealized_pnl": p.get("unrealized_pnl"),
                 "issuer_country_code": p.get("issuer_country_code"),
+                "option": (
+                    option_exposure(p, invested)
+                    if p.get("asset_class") == "OPT"
+                    else None
+                ),
             }
             for p in positions
             if isinstance(p.get("symbol"), str)
