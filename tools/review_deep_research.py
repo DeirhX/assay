@@ -218,6 +218,13 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
     def add_finding(level: str, message: str, symbol: str | None = None) -> None:
         findings.append({"level": level, "symbol": symbol, "message": message})
 
+    if not segment_def.get("members"):
+        add_finding(
+            "BLOCK",
+            "Segment has no members — nothing to cross-check or apply. "
+            "Add tickers to the segment definition, then re-pull and re-review.",
+        )
+
     for member in segment_def.get("members", []):
         sym = str(member.get("symbol", "")).upper()
         if not sym:

@@ -92,9 +92,29 @@ function applyPrivacyMode(on) {
 async function api(path, method = "GET", body = null) {
   const opt = { method, headers: {} };
   if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-  const res = await fetch(path, opt);
+  let res;
+  try {
+    res = await fetch(path, opt);
+  } catch (netErr) {
+    // The server is down / unreachable -- always a genuine failure worth the
+    // central error center, regardless of who (if anyone) catches it locally.
+    const e = new Error(`can't reach the server (${method} ${path})`);
+    e._recorded = recordError("network", e.message, { detail: String(netErr && netErr.message || netErr) });
+    throw e;
+  }
   const data = await res.json().catch(() => ({ error: "bad response" }));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const e = new Error(data.error || `HTTP ${res.status}`);
+    e.status = res.status;
+    // 5xx is the server blowing up -- record centrally. 4xx is usually expected
+    // control flow (missing cache, validation) that callers handle inline, so we
+    // leave those to local status; if a 4xx goes uncaught it still surfaces via
+    // the global unhandledrejection handler below.
+    if (res.status >= 500) {
+      e._recorded = recordError("api", `${method} ${path}: ${e.message}`, { detail: `HTTP ${res.status}` });
+    }
+    throw e;
+  }
   return data;
 }
 
@@ -206,6 +226,9 @@ async function restoreNav(nav) {
     await loadCachedSegment(nav.segment);
   } else if (active === "pipeline" && nav.run) {
     await loadDeepRun(nav.run, { push: false });
+    // Deep-linking to a run means "show me this run" -- land on the review gate
+    // (Step 4) with its loaded report/review, not back on Step 1.
+    setPipeStep(4);
   } else if (active === "deepdive") {
     await renderViewedTickers();
   }
@@ -2274,6 +2297,93 @@ function taskUpdate(id, message) {
 }
 function taskEnd(id) { activeTasks.delete(id); renderTaskPill(); }
 
+// ---- Centralized error center ----------------------------------------------
+// Counterpart to the task pill: failures collect here instead of dying in a
+// scrolled-off card. A topbar badge shows the count; clicking opens a panel
+// listing each error with source, time, and a dismiss action. Sources funnel
+// in from api() (network/5xx), failed background jobs, and the global
+// unhandledrejection/error handlers.
+const errorLog = []; // newest last: { id, source, message, detail, time, count }
+const ERROR_LOG_MAX = 50;
+let _errorSeq = 0;
+
+function recordError(source, message, opts = {}) {
+  const msg = String(message || "unknown error").trim();
+  if (!msg) return null;
+  const now = Date.now();
+  // Collapse rapid duplicates (same source+message within 5s) into one entry
+  // with a bumped count, so a flapping poll loop can't bury the panel.
+  const dup = errorLog.find((e) => e.source === source && e.message === msg && now - e.time < 5000);
+  if (dup) {
+    dup.count += 1;
+    dup.time = now;
+    if (opts.detail) dup.detail = String(opts.detail);
+    renderErrorCenter();
+    return dup.id;
+  }
+  const id = "err-" + (++_errorSeq);
+  errorLog.push({ id, source, message: msg, detail: opts.detail ? String(opts.detail) : "", time: now, count: 1 });
+  while (errorLog.length > ERROR_LOG_MAX) errorLog.shift();
+  renderErrorCenter();
+  return id;
+}
+
+function dismissError(id) {
+  const i = errorLog.findIndex((e) => e.id === id);
+  if (i >= 0) errorLog.splice(i, 1);
+  renderErrorCenter();
+}
+
+function clearErrors() {
+  errorLog.length = 0;
+  renderErrorCenter();
+}
+
+function toggleErrorPanel(force) {
+  const panel = $("#error-panel");
+  if (!panel) return;
+  const show = force != null ? force : panel.hidden;
+  panel.hidden = !show;
+  const btn = $("#error-indicator");
+  if (btn) btn.setAttribute("aria-expanded", show ? "true" : "false");
+  if (show) renderErrorCenter();
+}
+
+const ERROR_SOURCE_LABEL = { api: "Server", network: "Network", task: "Task", js: "App" };
+
+function renderErrorCenter() {
+  const btn = $("#error-indicator");
+  if (btn) {
+    const n = errorLog.length;
+    btn.hidden = n === 0;
+    btn.textContent = n === 0 ? "" : `Errors ${n}`;
+    if (n === 0) toggleErrorPanel(false);
+  }
+  const list = $("#error-list");
+  if (!list) return;
+  if (!errorLog.length) {
+    list.innerHTML = `<div class="error-empty">No errors. Carry on.</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  // Newest first.
+  [...errorLog].reverse().forEach((e) => {
+    const row = el("div", "error-item");
+    const src = ERROR_SOURCE_LABEL[e.source] || e.source;
+    const times = e.count > 1 ? ` <span class="error-x">x${e.count}</span>` : "";
+    row.innerHTML =
+      `<div class="error-meta"><span class="error-src">${esc(src)}</span>` +
+      `<span class="error-time">${esc(relAge(new Date(e.time).toISOString())) || "just now"}</span>${times}</div>` +
+      `<div class="error-msg">${esc(e.message)}</div>` +
+      (e.detail ? `<div class="error-detail">${esc(e.detail)}</div>` : "");
+    const x = el("button", "error-dismiss", "&times;");
+    x.title = "Dismiss";
+    x.addEventListener("click", () => dismissError(e.id));
+    row.appendChild(x);
+    list.appendChild(row);
+  });
+}
+
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
 async function pollDeepJob(jobId, statusEl, onDone, label) {
@@ -2315,7 +2425,9 @@ async function pollDeepJob(jobId, statusEl, onDone, label) {
         return;
       }
       statusEl.classList.add("err");
-      statusEl.textContent = job.error || job.message || job.state;
+      const jobErr = job.error || job.message || job.state;
+      statusEl.textContent = jobErr;
+      recordError("task", `${label || "Background task"} failed: ${jobErr}`);
       return;
     }
   } finally {
@@ -2572,6 +2684,11 @@ async function loadDeepRun(stem, { push = true } = {}) {
   const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   state.currentDeepRun = stem;
   state.repManual = false;
+  // We just loaded this run off disk, so its report exists -- register it now so
+  // the Step 4 lock opens immediately, without waiting on the async deep-runs
+  // refresh (otherwise deep-linking to a run can bounce off a still-locked gate).
+  state.savedRuns = state.savedRuns || new Set();
+  state.savedRuns.add(stem);
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
     $("#pipe-segment-select").value = m[1];
@@ -2629,6 +2746,7 @@ function renderReviewGate(rec) {
   const changes = proposal.changes || [];
   const blocked = rec.blocked_symbols || proposal.blocked_symbols || [];
   const applicable = changes.filter((c) => !blocked.includes(c.symbol));
+  const noMembers = !(rec.rows && rec.rows.length);
   card.appendChild(el("h2", "section", "Target-model proposal"));
   if (changes.length) {
     const pre = el("pre", "json-preview", esc(JSON.stringify(changes, null, 2)));
@@ -2637,6 +2755,9 @@ function renderReviewGate(rec) {
       card.appendChild(el("div", "hint",
         `Apply is blocked for ${blocked.map(esc).join(", ")} (ERROR-level data). Re-pull and fix the data first.`));
     }
+  } else if (noMembers) {
+    card.appendChild(el("div", "hint err",
+      "This segment has no members, so there's nothing to review or apply. Add tickers to the segment definition, then re-pull and re-review."));
   } else {
     card.appendChild(el("div", "hint", "No target-model changes proposed."));
   }
@@ -3060,6 +3181,31 @@ async function loadAnalysis(stem, { push = true } = {}) {
 }
 
 // ---- boot -----------------------------------------------------------------
+// Catch-all for failures nobody handled locally: uncaught promise rejections
+// (e.g. a view loader with no try/catch) and runtime script errors. Anything
+// api() already logged carries _recorded, so we don't double-count it.
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason;
+  if (r && r._recorded) return;
+  const msg = (r && r.message) || String(r) || "unhandled promise rejection";
+  const stackLine = r && r.stack ? String(r.stack).split("\n")[1] : "";
+  recordError("js", msg, { detail: stackLine ? stackLine.trim() : "" });
+});
+window.addEventListener("error", (ev) => {
+  if (ev.error && ev.error._recorded) return;
+  const msg = ev.message || (ev.error && ev.error.message) || "script error";
+  const where = ev.filename ? `${String(ev.filename).split("/").pop()}:${ev.lineno || "?"}` : "";
+  recordError("js", msg, { detail: where });
+});
+
+const _errBtn = $("#error-indicator");
+if (_errBtn) _errBtn.addEventListener("click", () => toggleErrorPanel());
+const _errClear = $("#error-clear");
+if (_errClear) _errClear.addEventListener("click", () => clearErrors());
+const _errClose = $("#error-close");
+if (_errClose) _errClose.addEventListener("click", () => toggleErrorPanel(false));
+renderErrorCenter();
+
 applyPrivacyMode(state.privacyMode);
 const initialNav = navFromUrl();
 window.history.replaceState(initialNav, "", window.location.href);

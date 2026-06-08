@@ -160,6 +160,49 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
 .settings-row .hint { margin: 2px 0 0; }
 .settings-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
+/* Error center: topbar badge + dropdown panel, sibling to the task pill. */
+.error-indicator {
+  background: rgba(255, 122, 122, 0.14);
+  color: var(--bad);
+  border: 1px solid rgba(255, 122, 122, 0.55);
+  padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  font-size: 13px; font-weight: 700; white-space: nowrap;
+}
+.error-indicator:hover { border-color: var(--bad); background: rgba(255, 122, 122, 0.22); }
+.error-indicator[hidden] { display: none; }
+.error-panel {
+  position: sticky; top: 64px; z-index: 9;
+  width: min(460px, calc(100% - 44px));
+  margin: 10px 22px 0 auto;
+  background: var(--panel); border: 1px solid rgba(255, 122, 122, 0.45);
+  border-radius: var(--radius-card);
+  box-shadow: 0 18px 40px rgba(0,0,0,.45);
+  padding: 16px 18px;
+}
+.error-panel[hidden] { display: none; }
+.error-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.error-panel-actions { display: flex; gap: 8px; }
+.error-list { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; }
+.error-empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
+.error-item {
+  position: relative;
+  border: 1px solid var(--border); border-left: 3px solid var(--bad);
+  border-radius: 10px; padding: 9px 34px 9px 12px;
+  background: rgba(255, 122, 122, 0.06);
+}
+.error-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; font-size: 11px; }
+.error-src { color: var(--bad); font-weight: 800; text-transform: uppercase; letter-spacing: .03em; }
+.error-time { color: var(--muted); }
+.error-x { color: var(--muted); font-weight: 700; }
+.error-msg { font-size: 13px; color: var(--text); word-break: break-word; }
+.error-detail { font-size: 11px; color: var(--muted); margin-top: 3px; word-break: break-word; }
+.error-dismiss {
+  position: absolute; top: 6px; right: 6px;
+  background: transparent; border: none; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+}
+.error-dismiss:hover { color: var(--bad); background: rgba(255,122,122,.12); }
+
 .card {
   border: 1px solid var(--border);
   background: linear-gradient(180deg, rgba(29, 33, 43, 0.78), var(--panel));
