@@ -39,6 +39,40 @@ class Weights(unittest.TestCase):
         self.assertEqual(pf.invested_value(HOLDINGS["positions"]), 400.0)
 
 
+class OptionExposure(unittest.TestCase):
+    # A real 2-lot SPY put: premium ~870 CZK, but ~9% of invested if exercised.
+    PUT = {
+        "symbol": "SPY   260618P00655000",
+        "asset_class": "OPT",
+        "quantity": 2.0,
+        "mark_price": 0.2091,
+        "market_value": 41.82,
+        "base_market_value": 870.14874,
+    }
+
+    def test_parse_occ_symbol(self):
+        self.assertEqual(pf.parse_occ_symbol("SPY   260618P00655000"), ("P", 655.0))
+
+    def test_parse_occ_rejects_non_option(self):
+        self.assertIsNone(pf.parse_occ_symbol("AMD"))
+        self.assertIsNone(pf.parse_occ_symbol(None))
+
+    def test_long_put_is_negative_exposure(self):
+        o = pf.option_exposure(self.PUT, 29_536_352.0)
+        self.assertEqual(o["right"], "P")
+        self.assertEqual(o["multiplier"], 100)  # inferred from premium math, not hardcoded
+        self.assertLess(o["exercise_pct"], 0)  # a long put is short on exercise
+        self.assertAlmostEqual(o["exercise_pct"], -9.23, places=1)
+        self.assertAlmostEqual(o["notional_base"], 2_725_705.0, delta=1000)
+
+    def test_short_put_flips_sign(self):
+        short = {**self.PUT, "quantity": -2.0}
+        self.assertGreater(pf.option_exposure(short, 29_536_352.0)["exercise_pct"], 0)
+
+    def test_none_without_invested(self):
+        self.assertIsNone(pf.option_exposure(self.PUT, 0.0))
+
+
 class TargetContext(unittest.TestCase):
     MODEL = {
         "targets": {"AMD": {"low": 10, "high": 12, "rule": "trim_only"}},

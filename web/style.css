@@ -398,9 +398,17 @@ tr:last-child td { border-bottom: 0; }
 .tier-mid .pos-bar { background: var(--info); }
 .tier-small .pos-bar { background: #39414f; }
 .tier-small .pos-sym, .tier-small .pos-w { color: var(--muted); }
-.tier-opt { cursor: default; opacity: .7; }
+.tier-opt { cursor: default; }
+.tier-opt .pos-sym, .tier-opt .pos-w { color: var(--info); }
 .tier-opt .pos-bar { background: transparent; }
 .tier-opt .pos-bar-track { border: 1px dashed var(--border); background: transparent; }
+/* Striped fill = notional exposure if exercised, deliberately unlike a solid
+   holding bar so it never reads as capital at risk. */
+.opt-bar {
+  min-width: 2px;
+  background-image: repeating-linear-gradient(-45deg, var(--info) 0 5px, transparent 5px 10px) !important;
+  opacity: .85;
+}
 
 @media (max-width: 620px) { .pos-row { grid-template-columns: 110px 1fr 70px; gap: 8px; } }
 
