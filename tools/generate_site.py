@@ -61,7 +61,7 @@ def money_czk_short(value: float) -> str:
 
 
 def pnl_usd_short(value: float) -> str:
-    """Unrealized P/L in USD thousands, e.g. -12345.6 -> '-$12.3k'."""
+    """Unrealized P/L formatted in USD thousands (a negative renders as '-$X.Xk')."""
     thousands = value / 1000
     if thousands < 0:
         return f"-${abs(thousands):.1f}k"
@@ -217,6 +217,7 @@ def main() -> int:
 
     if not DATA_JSON.exists():
         print(f"error: source of truth not found: {DATA_JSON}", file=sys.stderr)
+        print("hint: `data/` is a private submodule; run `git submodule update --init`.", file=sys.stderr)
         return 2
 
     data = json.loads(DATA_JSON.read_text(encoding="utf-8"))

@@ -454,6 +454,7 @@ def main() -> int:
     parser.add_argument("--strict", action="store_true", help="with --check, also exit 1 on WARN.")
     args = parser.parse_args()
 
+    portfolio.require_data()
     holdings = _load(HOLDINGS_JSON)
     model = _load(TARGET_MODEL_JSON)
 

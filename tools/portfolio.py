@@ -27,6 +27,25 @@ def load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+DATA_MISSING_HINT = (
+    "Portfolio data not found. `data/` is a private git submodule and looks "
+    "uninitialized.\n"
+    "Initialize it (requires access to the private data repo) with:\n"
+    "    git submodule update --init\n"
+)
+
+
+def data_initialized() -> bool:
+    """True if the private `data/` submodule appears populated."""
+    return HOLDINGS_JSON.exists() or TARGET_MODEL_JSON.exists()
+
+
+def require_data() -> None:
+    """Abort a CLI tool with a clear message when `data/` is not initialized."""
+    if not data_initialized():
+        raise SystemExit(DATA_MISSING_HINT)
+
+
 def clean_symbol(symbol: str | None) -> str:
     return str(symbol or "").upper().strip()
 

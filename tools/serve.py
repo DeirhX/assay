@@ -1631,6 +1631,12 @@ def main() -> int:
     _RELOAD = args.reload
 
     _load_secrets_env()
+
+    from portfolio import DATA_MISSING_HINT, data_initialized
+    if not data_initialized():
+        print("  WARNING: " + DATA_MISSING_HINT.rstrip().replace("\n", "\n  "))
+        print("  The UI will load but holdings/target views will be empty until then.")
+
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     print(f"Rebalancing research server on {url}  (Ctrl+C to stop)")

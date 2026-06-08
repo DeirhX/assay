@@ -13,15 +13,29 @@ Start here if you are new to the repo:
 
 It has three layers:
 
-1. **Static pages** (committed HTML) for the standing plan and per-stock detail.
+1. **Static pages** (generated HTML, built locally from private data) for the
+   standing plan and per-stock detail.
 2. **Interactive Research Console** (`web/` + `tools/serve.py`) for on-demand,
    live, multi-source deep dives on any ticker or whole industry segment.
 3. **Deep Research pipeline** for website-managed segment creation, Perplexity
    report capture, source extraction, review gating, and target-model proposals.
 
-Open the static main page (relative to this repo root):
+The static pages are generated from your private holdings (see **Setup**) and are
+not committed. Build them with `py -3 tools/generate_site.py`, then open
+`next-steps.html` (repo root).
 
-`next-steps.html`
+## Setup
+
+Portfolio data lives in a **private `data/` git submodule** — the public code repo
+contains no holdings, NAV, or P/L. After cloning:
+
+```powershell
+git submodule update --init   # requires access to the private data repo
+```
+
+Without it, `data/` stays empty: `tools/serve.py` still starts (holdings and target
+views are simply empty), and the CLI tools exit with a clear "data not initialized"
+message instead of a stack trace.
 
 ## Core Processes
 

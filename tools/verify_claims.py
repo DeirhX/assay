@@ -162,6 +162,7 @@ def main() -> int:
 
     if not CLAIMS_JSON.exists():
         print(f"error: claims file not found: {CLAIMS_JSON}", file=sys.stderr)
+        print("hint: `data/` is a private submodule; run `git submodule update --init`.", file=sys.stderr)
         return 2
 
     claims = json.loads(CLAIMS_JSON.read_text(encoding="utf-8"))
