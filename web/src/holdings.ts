@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, el, esc, fmtCZK, fmtStamp, sensitive, state } from "./core";
+import { $, api, el, esc, fmtStamp, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./rebalance";
 
 // ---- holdings -------------------------------------------------------------
@@ -42,26 +42,44 @@ async function loadHoldings() {
       // Tier by absolute concentration (flags the AMD/ARM problem on sight);
       // bar length is relative to the largest holding for visual ranking.
       const tier = isOpt ? "opt" : w >= 10 ? "core" : w >= 5 ? "large" : w >= 1 ? "mid" : "small";
-      const barW = isOpt ? 0 : (w / maxW) * 100;
-      const right = isOpt ? sensitive(`${fmtCZK(p.base_market_value)} CZK`, "absolute position value") : `${w.toFixed(2)}%`;
+      const o = isOpt ? p.option : null;
+      const exPct = o ? o.exercise_pct : null;
+
+      let right, barW, barClass;
+      if (isOpt) {
+        // Options carry ~0 capital but real notional exposure if exercised; show
+        // that (signed: a put is downside protection) instead of the tiny premium
+        // value, and draw a striped "notional, not capital" bar. Percentages are
+        // privacy-safe, so unlike the old absolute CZK value this needs no blur.
+        right = exPct != null
+          ? `${exPct < 0 ? "\u2193" : "\u2191"}${Math.abs(exPct).toFixed(1)}% if exercised`
+          : "n/a";
+        barW = exPct != null ? Math.min(100, (Math.abs(exPct) / maxW) * 100) : 0;
+        barClass = "pos-bar opt-bar";
+      } else {
+        right = `${w.toFixed(2)}%`;
+        barW = (w / maxW) * 100;
+        barClass = "pos-bar";
+      }
+
       const label = isOpt ? (p.description || p.symbol) : p.symbol;
       const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
       const row = el("div", "pos-row tier-" + tier);
       row.innerHTML =
         `<span class="pos-sym">${esc(label)}${tag}</span>` +
-        `<span class="pos-bar-track"><span class="pos-bar" style="width:${barW.toFixed(2)}%"></span></span>` +
+        `<span class="pos-bar-track"><span class="${barClass}" style="width:${barW.toFixed(2)}%"></span></span>` +
         `<span class="pos-w">${right}</span>`;
-      row.title =
-        (p.description || p.symbol) +
-        (isOpt && p.broker_percent_of_nav != null
-          ? ` · broker tagged ${p.broker_percent_of_nav}% of NAV (margin/notional artifact, ignored)`
-          : ` · ${w.toFixed(2)}% of invested`);
+      row.title = isOpt && o
+        ? `${p.description || p.symbol} \u00b7 ${Math.abs(o.contracts)} ${o.right === "P" ? "put" : "call"} @ ${o.strike} \u00b7 ` +
+          `${exPct.toFixed(1)}% of invested if exercised (notional, not capital)`
+        : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested`;
       if (!isOpt) row.addEventListener("click", () => analyzeFromAnywhere(p.symbol));
       list.appendChild(row);
     });
     out.appendChild(list);
     out.appendChild(el("div", "hint",
-      "Bar length \u221d weight. Colour = concentration: red >10% (single-name risk), amber 5\u201310%, blue 1\u20135%, grey <1%. Click a row to deep-dive."));
+      "Bar length \u221d weight. Colour = concentration: red >10% (single-name risk), amber 5\u201310%, blue 1\u20135%, grey <1%. " +
+      "Striped bar = option notional if exercised (\u2193 downside/short, \u2191 upside/long), not capital at risk. Click a row to deep-dive."));
   } catch (e) {
     status.textContent = "Could not load holdings: " + e.message;
     status.classList.add("err");
