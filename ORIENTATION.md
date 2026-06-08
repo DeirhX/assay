@@ -27,16 +27,16 @@ private data repo).
 Use this when refreshing the repo after portfolio or market changes:
 
 ```powershell
-# 1. Refresh IBKR in the separate reader repo.
-Set-Location "<path-to-your-ibkr-reader-repo>"
-py -3 "ibkr_portfolio.py" --json --out "portfolio.json" --snapshot-dir "snapshots"
+# 1. Refresh IBKR using the vendored read-only reader (needs IBKR_FLEX_TOKEN /
+#    IBKR_FLEX_QUERY_ID in the env or a gitignored tools\secrets.env). Easiest is
+#    the "Resync from IBKR" button in the holdings UI; the CLI equivalent is:
+py -3 "tools\ibkr_portfolio.py" --json --out "data\cache\ibkr\portfolio.json" --snapshot-dir "data\cache\ibkr\snapshots"
 
 # 2. Update this repo's sanitized holdings snapshot.
-# Use the repo's ibkr-holdings skill instructions, or regenerate the sanitized
-# snapshot from the refreshed portfolio.json if the helper script is available.
+# The "Resync from IBKR" button merges the pull into data\current-holdings.json
+# without widening its sanitized shape. Otherwise regenerate it from the pull.
 
-# 3. Return to this repo and regenerate/check derived static content.
-Set-Location "<path-to-this-repo>"
+# 3. Regenerate/check derived static content.
 py -3 "tools\generate_site.py"
 py -3 "tools\generate_site.py" --check
 

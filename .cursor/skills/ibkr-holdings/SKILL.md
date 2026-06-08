@@ -7,23 +7,26 @@ description: Pull and analyze the user's Interactive Brokers portfolio from the 
 
 ## Source
 
-Use the existing read-only IBKR Flex reader. It lives in a separate project
-outside this repo. Resolve its location from the `IBKR_PORTFOLIO_DIR`
-environment variable; if unset, ask the user for the path rather than assuming
-a drive. (Historically it lived at `ibkr-portfolio` under the user's projects
-folder.)
-
-It uses `secrets.env` in that folder. Never print, copy, echo, summarize, or commit tokens. If credentials are missing or invalid, ask the user to update `secrets.env`.
+The read-only IBKR Flex reader is **vendored in this repo** at
+`tools/ibkr_portfolio.py` (standard library only). Credentials are never
+committed: the reader resolves `IBKR_FLEX_TOKEN` / `IBKR_FLEX_QUERY_ID` from the
+environment or a gitignored `tools/secrets.env` (copy `secrets.env.example`
+patterns: `IBKR_FLEX_TOKEN=` and `IBKR_FLEX_QUERY_ID=`). Never print, copy, echo,
+summarize, or commit tokens. If credentials are missing or invalid, ask the user
+to update `tools/secrets.env`.
 
 ## Pull Current Holdings
 
-Run from the IBKR reader directory (`$IBKR_PORTFOLIO_DIR`):
+Easiest: click **Resync from IBKR** in the holdings UI, which runs the vendored
+reader via `serve.py` and refreshes `data/current-holdings.json`. Or run it
+directly from the repo root:
 
 ```powershell
-py -3 "ibkr_portfolio.py" --json --out "portfolio.json" --snapshot-dir "snapshots"
+py -3 "tools/ibkr_portfolio.py" --json --out "data/cache/ibkr/portfolio.json" --snapshot-dir "data/cache/ibkr/snapshots"
 ```
 
-This writes:
+Raw pulls land under `data/cache/ibkr/` — gitignored, inside the private `data`
+submodule, never in the public tree. The writes are:
 
 - `portfolio.json`: latest parsed portfolio snapshot.
 - `snapshots/portfolio-YYYYMMDD-HHMMSS.json`: timestamped copy.

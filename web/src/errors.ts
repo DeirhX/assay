@@ -308,19 +308,6 @@ $("#settings-close").addEventListener("click", () => {
 
 $("#settings-relogin").addEventListener("click", () => runPplxLogin($("#settings-login-state")));
 
-$("#settings-check").addEventListener("click", async () => {
-  const txt = $("#settings-login-state");
-  txt.classList.remove("err");
-  txt.innerHTML = `<span class="spinner"></span> checking (off-screen browser, ~10s)...`;
-  try {
-    await api("/api/deep-research/verify-login", "POST");
-    await refreshLoginStatus();
-  } catch (e) {
-    txt.classList.add("err");
-    txt.textContent = "check failed: " + e.message;
-  }
-});
-
 $("#pipe-save-report").addEventListener("click", async () => {
   const status = $("#pipe-artifact-status");
   status.classList.remove("err");

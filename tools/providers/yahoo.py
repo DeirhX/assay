@@ -118,15 +118,19 @@ def price_history_from_chart(result: dict[str, Any], *, rng: str, interval: str)
     ts = result.get("timestamp") or []
     quote = (result.get("indicators", {}).get("quote") or [{}])[0]
     closes = quote.get("close") or []
+    # Intraday intervals (5m/30m/1h...) keep the time-of-day so the UI can label
+    # and span a sub-day window; daily+ intervals stay date-only as before.
+    intraday = interval[-1:] in ("m", "h")
     points: list[dict[str, Any]] = []
     for timestamp, close in zip(ts, closes):
         if timestamp is None or close is None:
             continue
         try:
-            day = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).date().isoformat()
+            moment = dt.datetime.fromtimestamp(timestamp, dt.timezone.utc)
         except (OSError, OverflowError, TypeError, ValueError):
             continue
-        points.append({"date": day, "close": round(float(close), 4)})
+        stamp = moment.isoformat() if intraday else moment.date().isoformat()
+        points.append({"date": stamp, "close": round(float(close), 4)})
     if not points:
         return None
     return {
