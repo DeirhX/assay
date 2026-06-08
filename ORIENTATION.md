@@ -1,23 +1,25 @@
 # Assay — Repo Orientation
 
 This repo is a portfolio research and rebalancing workspace. It is not an order
-generator and it does not trade. It keeps the standing plan, current sanitized
-holdings, live research tooling, and Cursor skills in one place so another chat
-can continue without transcript archaeology.
+generator and it does not trade. It holds the live research tooling, generators,
+and Cursor skills; the actual portfolio data (holdings, targets, research) lives
+in a **private `data/` git submodule**, so the code can be public without leaking
+positions. Run `git submodule update --init` after cloning (needs access to the
+private data repo).
 
 ## What Lives Where
 
 | Area | Path | Purpose |
 | --- | --- | --- |
-| Standing plan | `next-steps.html`, `data/target-model.json` | Human-readable plan plus machine-readable target bands. |
-| Stock pages | `amd-detail.html`, `arm-detail.html`, `sofi-detail.html`, `pypl-detail.html`, `eeft-detail.html` | Per-name thesis, valuation, risks, action. |
-| Holdings snapshot | `data/current-holdings.json`, `data/current-holdings-summary.md` | Sanitized IBKR snapshot: no account id, no token, no raw XML. |
+| Standing plan | generated `next-steps.html` (not committed); bands in `data/target-model.json` (private submodule) | Human-readable plan plus machine-readable target bands. |
+| Stock pages | generated `*-detail.html` (not committed) | Per-name thesis, valuation, risks, action. |
+| Holdings snapshot | `data/current-holdings.json`, `data/current-holdings-summary.md` (private `data` submodule) | Sanitized IBKR snapshot: no account id, no token, no raw XML. |
 | Static generated values | `tools/generate_site.py` | Keeps NAV/position snippets in markdown and HTML synced to holdings JSON. |
 | Rebalance validator | `tools/rebalance.py` | Compares current weights against `data/target-model.json`. |
-| Claim validator | `tools/verify_claims.py`, `data/research-claims.json` | Checks valuation claims for arithmetic consistency and snapshot drift. |
+| Claim validator | `tools/verify_claims.py`, `data/research-claims.json` (submodule) | Checks valuation claims for arithmetic consistency and snapshot drift. |
 | Research Console | `tools/serve.py`, `tools/research_pull.py`, `web/` | Local live research UI/API using Yahoo, SEC EDGAR, optional FMP. |
-| Research segments | `data/segments/*.json` | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
-| Deep Research artifacts | `data/research/deep/` | Committed Perplexity reports, source sidecars, review-gate output, and target proposals. |
+| Research segments | `data/segments/*.json` (submodule) | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
+| Deep Research artifacts | `data/research/deep/` (submodule) | Perplexity reports, source sidecars, review-gate output, and target proposals. |
 | Project skills | `.cursor/skills/` | Cursor instructions for future chats. |
 
 ## Standard Workflow
@@ -26,7 +28,7 @@ Use this when refreshing the repo after portfolio or market changes:
 
 ```powershell
 # 1. Refresh IBKR in the separate reader repo.
-Set-Location "E:\Projects\Active\Stash\ibkr-portfolio"
+Set-Location "<path-to-your-ibkr-reader-repo>"
 py -3 "ibkr_portfolio.py" --json --out "portfolio.json" --snapshot-dir "snapshots"
 
 # 2. Update this repo's sanitized holdings snapshot.
@@ -34,7 +36,7 @@ py -3 "ibkr_portfolio.py" --json --out "portfolio.json" --snapshot-dir "snapshot
 # snapshot from the refreshed portfolio.json if the helper script is available.
 
 # 3. Return to this repo and regenerate/check derived static content.
-Set-Location "E:\Projects\Active\Finance\rebalancing"
+Set-Location "<path-to-this-repo>"
 py -3 "tools\generate_site.py"
 py -3 "tools\generate_site.py" --check
 
@@ -107,8 +109,8 @@ Billing paths:
 
 Local setup:
 
-1. `C:\Users\doome\.cursor\mcp.json` should define `playwright-pplx` with a
-   persistent profile at `C:\Users\doome\.cursor\pplx-chrome-profile`.
+1. `%USERPROFILE%\.cursor\mcp.json` should define `playwright-pplx` with a
+   persistent profile at `%USERPROFILE%\.cursor\pplx-chrome-profile`.
 2. Install the browser once:
 
    ```powershell
@@ -139,26 +141,26 @@ Pipeline discipline:
 
 ## What To Commit
 
-Commit:
+**Code repo (this one, public):** code under `tools/`, the `web/` client, root
+assets (`site.css`), `.cursor/skills/`, and docs. Generated HTML
+(`*-detail.html`, `next-steps.html`) is **not** committed here — it is built
+locally from private data and is gitignored.
 
-- Static HTML pages.
-- `data/current-holdings.json` and `data/current-holdings-summary.md` after
-  sanitization.
-- `data/target-model.json`.
-- `data/research-claims.json`.
-- `data/research/<SYMBOL>.json` when it contains useful research and thesis.
-- `data/segments/*.json` for approved research segment definitions.
-- `data/research/deep/*.md`, `*.sources.json`, `*.review.md`, and
-  `*.target-proposal.json` when they are reviewed research artifacts.
-- Project skills under `.cursor/skills/`.
+**Private `data/` submodule:** all portfolio data lives there —
+`current-holdings.json`/`.md` (after sanitization), `target-model.json`,
+`research-claims.json`, `research/<SYMBOL>.json`, `segments/*.json`, and reviewed
+`research/deep/*` artifacts.
 
-Do not commit:
+Never commit anywhere:
 
 - `secrets.env`, API keys, IBKR tokens, query IDs.
-- Raw Flex XML or full unsanitized `portfolio.json`.
-- `data/cache/`.
-- `data/research/segments/`.
+- Raw Flex XML or the full unsanitized `portfolio.json`.
+- `data/cache/` (regenerable + live session auth).
 - `.playwright-mcp/` or browser profile data.
+
+A `pre-commit` hook (`tools/hooks/pre-commit`, enable with
+`git config core.hooksPath tools/hooks`) blocks accidental commits of holdings
+figures and sensitive files into the public code repo.
 
 ## Project Skills
 
