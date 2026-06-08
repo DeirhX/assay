@@ -15,6 +15,85 @@ $("#ticker-recent").addEventListener("click", () => {
   renderViewedTickers();
 });
 
+const EXCHANGE_SUFFIXES = [".L", ".AS", ".DE", ".PA", ".BR", ".SW", ".HK", ".TO", ".PR"];
+
+function exchangeCandidates(sym) {
+  const base = cleanSymbol(sym).replace(/\s+/g, "");
+  if (!base || base.includes(".") || base.includes("-") || base.includes("=")) return [];
+  const candidates = EXCHANGE_SUFFIXES.map((suffix) => base + suffix);
+  if (/^\d+$/.test(base)) candidates.unshift(base.padStart(4, "0") + ".HK");
+  return [...new Set(candidates)];
+}
+
+function hasUsableMarketData(rec) {
+  if (!rec || typeof rec !== "object") return false;
+  if (rec.price && rec.price.value != null) return true;
+  return METRIC_ROWS.some(([key]) => rec[key] != null);
+}
+
+async function saveSymbolAlias(inputSymbol, providerSymbol) {
+  return api("/api/symbol-alias", "POST", {
+    input_symbol: inputSymbol,
+    provider_symbol: providerSymbol,
+  });
+}
+
+function renderNoMarketData(rec) {
+  const sym = cleanSymbol(rec?.input_symbol || rec?.alias_candidate_for || rec?.symbol || "");
+  const provider = rec?.provider_symbol || rec?.symbol || sym;
+  const out = $("#dd-result");
+  out.innerHTML = "";
+  const card = el("div", "card empty-ticker");
+  const errors = rec?.provider_errors || rec?.errors || rec?.error;
+  const detail = Array.isArray(errors)
+    ? errors.join("; ")
+    : typeof errors === "object" && errors
+      ? Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join("; ")
+      : String(errors || "No usable quote, fundamentals, or market-data fields were returned.");
+  card.innerHTML =
+    `<h2 class="section">No market data for ${esc(provider)}</h2>` +
+    `<p class="hint">The data providers did not return usable market data for <strong>${esc(sym || provider)}</strong>. ` +
+    `This is common for broker symbols that need an exchange suffix.</p>` +
+    `<div class="alias-suggestion err">${esc(detail)}</div>`;
+
+  const candidates = exchangeCandidates(sym || provider);
+  if (candidates.length) {
+    const row = el("div", "alias-suggestion");
+    row.innerHTML = `<span>Checking exchange-qualified ticker candidates...</span>`;
+    card.appendChild(row);
+    loadCandidateSuggestions(row, sym || provider, candidates);
+  }
+  out.appendChild(card);
+}
+
+async function loadCandidateSuggestions(row, inputSymbol, candidates) {
+  try {
+    const result = await api("/api/symbol-candidates", "POST", {
+      input_symbol: inputSymbol,
+      candidates,
+    });
+    const valid = result.candidates || [];
+    row.innerHTML = "";
+    if (!valid.length) {
+      row.appendChild(el("span", "", "No working exchange-qualified alternatives found."));
+      return;
+    }
+    row.appendChild(el("span", "", "Working alternatives"));
+    valid.forEach((candidate) => {
+      const label = candidate.exchange || candidate.currency
+        ? `Try ${candidate.symbol} (${[candidate.exchange, candidate.currency].filter(Boolean).join(", ")})`
+        : `Try ${candidate.symbol}`;
+      const btn = el("button", "ghost", esc(label));
+      btn.type = "button";
+      btn.addEventListener("click", () => pullTicker(candidate.symbol, { push: false, aliasFor: inputSymbol }));
+      row.appendChild(btn);
+    });
+  } catch (e) {
+    row.innerHTML = `<span>Could not validate alternate tickers: ${esc(e.message)}</span>`;
+    row.classList.add("err");
+  }
+}
+
 async function loadTickerFromCache(raw) {
   const sym = cleanSymbol(raw);
   if (!sym) return;
@@ -24,8 +103,12 @@ async function loadTickerFromCache(raw) {
   try {
     const rec = await api("/api/research/" + encodeURIComponent(sym));
     status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
-    renderDeepDive(rec);
-    hydrateHistory(rec);
+    if (hasUsableMarketData(rec)) {
+      renderDeepDive(rec);
+      hydrateHistory(rec);
+    } else {
+      renderNoMarketData(rec);
+    }
   } catch (e) {
     status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
@@ -43,7 +126,7 @@ async function loadTickerFromCache(raw) {
   }
 }
 
-async function pullTicker(raw, { push = true } = {}) {
+async function pullTicker(raw, { push = true, aliasFor = "" } = {}) {
   const sym = cleanSymbol(raw);
   if (!sym) return;
   if (push) pushNav({ view: "deepdive", ticker: sym });
@@ -56,12 +139,17 @@ async function pullTicker(raw, { push = true } = {}) {
   try {
     const rec = await api("/api/pull/" + encodeURIComponent(sym), "POST");
     status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
-    renderDeepDive(rec);
-    hydrateHistory(rec);
+    if (aliasFor) rec.alias_candidate_for = cleanSymbol(aliasFor);
+    if (hasUsableMarketData(rec)) {
+      renderDeepDive(rec);
+      hydrateHistory(rec);
+    } else {
+      renderNoMarketData(rec);
+    }
   } catch (e) {
     status.textContent = "Pull failed: " + e.message;
     status.classList.add("err");
-    $("#dd-result").innerHTML = "";
+    renderNoMarketData({ symbol: sym, error: e.message });
   } finally {
     $("#ticker-go").disabled = false;
   }
@@ -86,7 +174,12 @@ function renderDeepDive(rec) {
   const price = rec.price ? rec.price.value : null;
   const portfolio = rec.portfolio || {};
   const target = portfolio.target || {};
-  const owned = portfolio.current_weight_pct ?? state.holdings[rec.symbol];
+  const owned =
+    portfolio.current_weight_pct ??
+    state.holdings[rec.symbol] ??
+    state.holdings[rec.input_symbol] ??
+    state.holdings[rec.alias_candidate_for] ??
+    state.holdings[rec.provider_symbol];
   const decision = rec.decision || "research";
 
   const card = el("div", "card");
@@ -113,6 +206,26 @@ function renderDeepDive(rec) {
     badges.appendChild(el("span", "badge " + (on ? "on" : "off"), (on ? "✓ " : "· ") + s.replace("_", " ")));
   });
   card.appendChild(badges);
+  if (rec.input_symbol && rec.provider_symbol && rec.input_symbol !== rec.provider_symbol) {
+    card.appendChild(el("div", "alias-suggestion", `Resolved ${esc(rec.input_symbol)} to ${esc(rec.provider_symbol)}.`));
+  } else if (rec.alias_candidate_for && rec.alias_candidate_for !== rec.symbol) {
+    const row = el("div", "alias-suggestion");
+    row.innerHTML = `<span>${esc(rec.symbol)} worked. Save it as the provider symbol for ${esc(rec.alias_candidate_for)}?</span>`;
+    const btn = el("button", "primary", "Save alias");
+    btn.type = "button";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await saveSymbolAlias(rec.alias_candidate_for, rec.symbol);
+        row.innerHTML = `<span>Saved alias ${esc(rec.alias_candidate_for)} \u2192 ${esc(rec.symbol)}.</span>`;
+      } catch (e) {
+        btn.disabled = false;
+        row.appendChild(el("span", "status err", ` save failed: ${esc(e.message)}`));
+      }
+    });
+    row.appendChild(btn);
+    card.appendChild(row);
+  }
   out.appendChild(card);
 
   out.appendChild(renderAnalysisCard(rec));

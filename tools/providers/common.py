@@ -20,6 +20,10 @@ class ProviderError(RuntimeError):
     """A provider could not return usable data. Callers degrade gracefully."""
 
 
+class ProviderNotFoundError(ProviderError):
+    """A provider explicitly reported that the requested resource does not exist."""
+
+
 def http_get(
     url: str,
     *,
@@ -28,7 +32,11 @@ def http_get(
     timeout: int = 20,
     retries: int = 2,
 ) -> bytes:
-    """GET with a couple of retries. Raises ProviderError on give-up."""
+    """GET with a couple of retries. Raises ProviderError on give-up.
+
+    HTTP 404 is terminal: retrying a definitely-missing provider URL only makes
+    the UI slower and the logs noisier.
+    """
     last: Exception | None = None
     hdrs = {"User-Agent": BROWSER_UA, "Accept": "*/*"}
     if headers:
@@ -39,6 +47,12 @@ def http_get(
             fn = opener.open if opener else urllib.request.urlopen
             with fn(req, timeout=timeout) as resp:  # type: ignore[operator]
                 return resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise ProviderNotFoundError(f"GET 404 not found: {url}") from exc
+            last = exc
+            if attempt < retries:
+                time.sleep(0.6 * (attempt + 1))
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             last = exc
             if attempt < retries:

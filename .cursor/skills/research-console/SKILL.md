@@ -12,7 +12,7 @@ multiple free sources, cross-checked, with human judgement kept separate.
 
 ```powershell
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
-py -3 tools/serve.py            # http://127.0.0.1:8765  (localhost only)
+py -3 tools/serve.py            # http://127.0.0.1:6060  (localhost only)
 ```
 
 CLI equivalents (no server):

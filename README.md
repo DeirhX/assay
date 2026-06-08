@@ -52,7 +52,7 @@ A local, single-user app for launching deep analysis on demand. Run it:
 # optional but polite: identify yourself to the SEC fair-access API
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py
-# then open http://127.0.0.1:8765
+# then open http://127.0.0.1:6060
 ```
 
 ### Frontend (Vite + TypeScript)

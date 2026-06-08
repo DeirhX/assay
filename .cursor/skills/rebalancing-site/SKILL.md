@@ -23,7 +23,7 @@ This is no longer a purely static site. There are two layers:
 - **Interactive Research Console** (`web/` + `tools/serve.py`): a local,
   on-demand app for live multi-source deep dives on any ticker or segment. See
   the `research-console` skill. Run with `py -3 tools/serve.py` and open
-  `http://127.0.0.1:8765`.
+  `http://127.0.0.1:6060`.
 
 The old "keep everything static, no build step" rule was deliberately overridden
 to add the interactive console. The static pages still work as plain files; the

@@ -61,7 +61,7 @@ py -3 "tools\serve.py"
 
 Then open:
 
-`http://127.0.0.1:8765`
+`http://127.0.0.1:6060`
 
 Use the website as the normal control surface. It can:
 
