@@ -1,0 +1,46 @@
+// @ts-nocheck
+import { ensureTickerSet } from "./analyses";
+import { $, api, applyPrivacyMode, state } from "./core";
+import { clearErrors, recordError, refreshLoginStatus, renderErrorCenter, toggleErrorPanel } from "./errors";
+import { initShell, navFromUrl, restoreNav } from "./shell";
+
+// ---- boot -----------------------------------------------------------------
+// Catch-all for failures nobody handled locally: uncaught promise rejections
+// (e.g. a view loader with no try/catch) and runtime script errors. Anything
+// api() already logged carries _recorded, so we don't double-count it.
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason;
+  if (r && r._recorded) return;
+  const msg = (r && r.message) || String(r) || "unhandled promise rejection";
+  const stackLine = r && r.stack ? String(r.stack).split("\n")[1] : "";
+  recordError("js", msg, { detail: stackLine ? stackLine.trim() : "" });
+});
+window.addEventListener("error", (ev) => {
+  if (ev.error && ev.error._recorded) return;
+  const msg = ev.message || (ev.error && ev.error.message) || "script error";
+  const where = ev.filename ? `${String(ev.filename).split("/").pop()}:${ev.lineno || "?"}` : "";
+  recordError("js", msg, { detail: where });
+});
+
+const _errBtn = $("#error-indicator");
+if (_errBtn) _errBtn.addEventListener("click", () => toggleErrorPanel());
+const _errClear = $("#error-clear");
+if (_errClear) _errClear.addEventListener("click", () => clearErrors());
+const _errClose = $("#error-close");
+if (_errClose) _errClose.addEventListener("click", () => toggleErrorPanel(false));
+renderErrorCenter();
+
+initShell();
+applyPrivacyMode(state.privacyMode);
+const initialNav = navFromUrl();
+window.history.replaceState(initialNav, "", window.location.href);
+restoreNav(initialNav);
+refreshLoginStatus();
+ensureTickerSet();
+
+export {
+  _errBtn,
+  _errClear,
+  _errClose,
+  initialNav,
+};
