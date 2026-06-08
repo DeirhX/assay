@@ -16,6 +16,7 @@
       <button class="tab" data-view="pipeline">Pipeline</button>
       <button class="tab" data-view="rebalance">Rebalance</button>
       <button class="tab" data-view="holdings">Holdings</button>
+      <button class="tab" data-view="setup">Setup</button>
     </div>
     <div class="spacer"></div>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
@@ -342,6 +343,19 @@
       </div>
       <div class="status" id="hold-status"></div>
       <div id="hold-result"></div>
+    </section>
+
+    <!-- SETUP -->
+    <section class="view" id="view-setup">
+      <div class="setup-head">
+        <div>
+          <h2>First-time setup</h2>
+          <p class="hint">Verify the local CLIs and browser login Assay needs before running paid or quota-backed research. Credentials stay in your local tools and browser profile, not in this repo.</p>
+        </div>
+        <button class="primary" id="setup-refresh" type="button">Refresh checks</button>
+      </div>
+      <div class="status" id="setup-status"></div>
+      <div id="setup-result"></div>
     </section>
   </main>
 

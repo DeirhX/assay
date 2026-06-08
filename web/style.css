@@ -208,6 +208,40 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
   background: linear-gradient(180deg, rgba(29, 33, 43, 0.78), var(--panel));
   border-radius: var(--radius-card); padding: 18px; margin-top: 16px;
 }
+.setup-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.setup-head h2 { margin: 0 0 4px; }
+.setup-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.setup-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 4px 10px; font-size: 12px; font-weight: 800;
+}
+.setup-badge.ok { color: var(--good); border-color: rgba(107,211,138,.45); background: rgba(107,211,138,.08); }
+.setup-badge.bad { color: var(--bad); border-color: rgba(255,122,122,.45); background: rgba(255,122,122,.08); }
+.setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 12px 0; }
+.setup-provider {
+  border: 1px solid var(--border); border-radius: var(--radius-soft);
+  background: rgba(255,255,255,.025); padding: 14px;
+}
+.setup-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 0; }
+.setup-small { color: var(--muted); font-size: 12px; min-height: 18px; }
+.setup-small.ok { color: var(--good); }
+.setup-small.bad { color: var(--bad); }
+.setup-provider label, .setup-form-row label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; margin-top: 10px; }
+.setup-provider input[type="text"], .setup-provider input:not([type]), .setup-form-row input[type="number"] {
+  width: 100%; height: 34px; margin-top: 4px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0 10px;
+}
+.setup-check { display: flex !important; align-items: center; gap: 8px; color: var(--text) !important; }
+.setup-check input { width: auto; }
+.setup-list { color: var(--muted); font-size: 12px; padding-left: 18px; margin: 10px 0 0; }
+.setup-form-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 12px 0; }
+.setup-command {
+  overflow-x: auto; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-soft); background: #0b0d12; color: var(--text);
+  font-size: 12px;
+}
 .dd-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .dd-head .sym { font-size: 30px; font-weight: 800; }
 .dd-head .name { color: var(--muted); font-size: 16px; }

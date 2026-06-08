@@ -71,7 +71,7 @@ npm run dev          # Vite dev server on http://localhost:5173 (HMR),
 
 # Production / serving via Python:
 npm run build        # emits web/dist/ ; tools/serve.py serves it automatically
-py -3 tools/serve.py # then open http://127.0.0.1:8765
+py -3 tools/serve.py # then open http://127.0.0.1:6060
 
 npm run typecheck    # tsc --noEmit (loose baseline today; tightened as code is
                      # split into typed modules)
@@ -114,6 +114,35 @@ Optional FMP third opinion: put `FMP_API_KEY=...` in `secrets.env` (gitignored).
 
 > Note: the standing static pages (`next-steps.html`, per-stock detail) still
 > work as plain files. The Research Console is the built/served app.
+
+## First-Time Setup
+
+Open `http://127.0.0.1:6060/?view=setup` after starting the server. The Setup
+tab checks the local pieces that cannot be safely committed to the repo:
+
+- **Environment**: set `SEC_USER_AGENT` before starting the server. `FMP_API_KEY`
+  is optional and adds a third market-data opinion when available.
+- **LLM CLIs**: install and authorize at least one local analysis CLI. Assay uses
+  `claude` first and `cursor-agent` as fallback for single-ticker analyst notes.
+  Run each CLI once in a terminal and complete its login flow, then use the Setup
+  tab's smoke check. A binary being on `PATH` is not enough; the check verifies
+  that authorization actually works.
+- **Perplexity login**: click **Set up Perplexity login** in the Setup tab. A
+  visible browser opens against the persistent profile
+  `~/.cursor/pplx-chrome-profile`; sign into Perplexity there. Future Deep
+  Research pipeline runs reuse that session.
+
+Typical Windows bootstrap:
+
+```powershell
+npm install
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
+py -3 tools/serve.py
+```
+
+Then open the Setup tab, save the LLM provider preferences, run the CLI smoke
+checks, and verify Perplexity login. Do not commit `secrets.env`, browser
+profiles, API keys, or CLI tokens.
 
 ## Pages
 

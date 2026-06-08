@@ -77,11 +77,36 @@ _QUOTA_HINTS = (
 )
 
 PROVIDER_LABELS = {"claude": "Claude CLI", "cursor": "Cursor CLI"}
+_SMOKE_PROMPT = "Reply with exactly OK."
 
 
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
+def _normalize_providers(raw: Any, *, strip_model: bool = False) -> list[dict[str, Any]] | None:
+    if not isinstance(raw, list):
+        return None
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        pid = item.get("id")
+        if pid not in PROVIDER_LABELS or pid in seen:
+            continue
+        seen.add(pid)
+        model = str(item.get("model") or "")
+        if strip_model:
+            model = model.strip()
+        cleaned.append({
+            "id": pid,
+            "enabled": bool(item.get("enabled", True)),
+            "model": model,
+            "extra_args": [str(a) for a in (item.get("extra_args") or []) if str(a).strip()],
+        })
+    return cleaned or None
+
+
 def load_config() -> dict[str, Any]:
     """Defaults merged with the on-disk override (if any). Always returns a
     well-formed config even if the file is missing or partially specified."""
@@ -90,19 +115,9 @@ def load_config() -> dict[str, Any]:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return cfg
-    if isinstance(raw.get("providers"), list) and raw["providers"]:
-        cleaned = []
-        for p in raw["providers"]:
-            if not isinstance(p, dict) or p.get("id") not in PROVIDER_LABELS:
-                continue
-            cleaned.append({
-                "id": p["id"],
-                "enabled": bool(p.get("enabled", True)),
-                "model": str(p.get("model") or ""),
-                "extra_args": [str(a) for a in (p.get("extra_args") or []) if str(a).strip()],
-            })
-        if cleaned:
-            cfg["providers"] = cleaned
+    providers = _normalize_providers(raw.get("providers"))
+    if providers:
+        cfg["providers"] = providers
     if isinstance(raw.get("timeout_sec"), (int, float)) and raw["timeout_sec"] > 0:
         cfg["timeout_sec"] = int(raw["timeout_sec"])
     cfg["allow_web"] = bool(raw.get("allow_web", cfg["allow_web"]))
@@ -112,22 +127,9 @@ def load_config() -> dict[str, Any]:
 def save_config(cfg: dict[str, Any]) -> dict[str, Any]:
     """Validate and persist a config; returns the normalized, stored version."""
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
-    if isinstance(cfg.get("providers"), list):
-        cleaned = []
-        seen = set()
-        for p in cfg["providers"]:
-            pid = (p or {}).get("id")
-            if pid not in PROVIDER_LABELS or pid in seen:
-                continue
-            seen.add(pid)
-            cleaned.append({
-                "id": pid,
-                "enabled": bool(p.get("enabled", True)),
-                "model": str(p.get("model") or "").strip(),
-                "extra_args": [str(a) for a in (p.get("extra_args") or []) if str(a).strip()],
-            })
-        if cleaned:
-            merged["providers"] = cleaned
+    providers = _normalize_providers(cfg.get("providers"), strip_model=True)
+    if providers:
+        merged["providers"] = providers
     if isinstance(cfg.get("timeout_sec"), (int, float)) and cfg["timeout_sec"] > 0:
         merged["timeout_sec"] = int(cfg["timeout_sec"])
     merged["allow_web"] = bool(cfg.get("allow_web", merged["allow_web"]))
@@ -185,6 +187,97 @@ def _version_key(d: Path) -> tuple:
 
 def available_backends() -> dict[str, bool]:
     return {"claude": _claude_exe() is not None, "cursor": _cursor_argv_base() is not None}
+
+
+def _configured_provider(pid: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    for provider in cfg.get("providers") or []:
+        if provider.get("id") == pid:
+            return dict(provider)
+    for provider in DEFAULT_CONFIG["providers"]:
+        if provider.get("id") == pid:
+            return dict(provider)
+    return {"id": pid, "enabled": False, "model": "", "extra_args": []}
+
+
+def _last_line(text: str) -> str:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def _smoke_argv(pid: str, provider: dict[str, Any]) -> tuple[list[str], str | None] | dict[str, Any]:
+    """Build argv (+ optional stdin) for a smoke check, or return an error envelope."""
+    if pid == "claude":
+        exe = _claude_exe()
+        if not exe:
+            return {"ok": False, "status": "missing", "message": "claude CLI not found on PATH"}
+        argv = [exe, "-p", "--output-format", "text", "--tools", ""]
+        if provider.get("model"):
+            argv += ["--model", provider["model"]]
+        argv += list(provider.get("extra_args") or [])
+        return argv, _SMOKE_PROMPT
+    if pid == "cursor":
+        base = _cursor_argv_base()
+        if not base:
+            return {"ok": False, "status": "missing", "message": "cursor-agent CLI not found / unresolved"}
+        argv = base + ["-p", _SMOKE_PROMPT, "--output-format", "text", "--trust", "--mode", "ask"]
+        if provider.get("model"):
+            argv += ["--model", provider["model"]]
+        argv += list(provider.get("extra_args") or [])
+        return argv, None
+    return {"ok": False, "status": "unsupported", "message": f"unknown backend {pid}"}
+
+
+def _smoke_check_backend(pid: str, provider: dict[str, Any], *, timeout: int = 45) -> dict[str, Any]:
+    built = _smoke_argv(pid, provider)
+    if isinstance(built, dict):
+        return built
+    argv, input_text = built
+    label = PROVIDER_LABELS.get(pid, pid)
+    try:
+        proc = subprocess.run(argv, input=input_text, capture_output=True, text=True,
+                              timeout=timeout, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "status": "timeout", "message": f"{label} timed out after {timeout}s"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "status": "error", "message": f"{type(exc).__name__}: {exc}"}
+
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode == 0 and out:
+        return {"ok": True, "status": "ok", "message": _last_line(out) or "OK"}
+    blob = err or out or f"exit {proc.returncode}"
+    return {
+        "ok": False,
+        "status": "auth_or_quota" if _looks_like_quota(blob) else "error",
+        "message": _last_line(blob) or blob,
+    }
+
+
+def setup_status(*, run_checks: bool = False) -> dict[str, Any]:
+    cfg = load_config()
+    available = available_backends()
+    backends = []
+    for pid, label in PROVIDER_LABELS.items():
+        provider = _configured_provider(pid, cfg)
+        rec: dict[str, Any] = {
+            "id": pid,
+            "label": label,
+            "installed": bool(available.get(pid)),
+            "enabled": bool(provider.get("enabled", True)),
+            "model": provider.get("model") or "",
+            "extra_args": list(provider.get("extra_args") or []),
+        }
+        rec["status"] = "installed" if rec["installed"] else "missing"
+        if run_checks:
+            rec["check"] = _smoke_check_backend(pid, provider)
+            rec["status"] = rec["check"].get("status", rec["status"])
+        backends.append(rec)
+    return {
+        "config_exists": CONFIG_PATH.exists(),
+        "config_path": str(CONFIG_PATH),
+        "config": cfg,
+        "backends": backends,
+    }
 
 
 # Model suggestions for the config UI's autocomplete. Cursor exposes a real
