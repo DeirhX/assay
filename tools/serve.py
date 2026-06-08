@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
+WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
 DATA_DIR = REPO_ROOT / "data"
 RESEARCH_DIR = DATA_DIR / "research"
 DEEP_DIR = RESEARCH_DIR / "deep"
@@ -1183,8 +1184,12 @@ class Handler(BaseHTTPRequestHandler):
             target = (REPO_ROOT / clean).resolve()
             allowed_root = REPO_ROOT
         else:
-            target = (WEB_DIR / clean).resolve()
-            allowed_root = WEB_DIR
+            # Prefer the Vite build (web/dist) when it exists; fall back to raw
+            # web/ source otherwise. Note: since the entry is now app.ts, the raw
+            # fallback only fully works via `npm run dev`; prod needs a build.
+            base = WEB_DIST if (WEB_DIST / "index.html").is_file() else WEB_DIR
+            target = (base / clean).resolve()
+            allowed_root = base
         if allowed_root not in target.parents and target != allowed_root:
             return self._send_error_json(403, "forbidden")
         if not target.is_file():

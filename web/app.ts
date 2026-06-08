@@ -1,3 +1,6 @@
+// @ts-nocheck -- Legacy entry: JS ported to .ts to stand up the Vite/TS
+// toolchain. It is intentionally NOT type-checked yet. Typing happens as this
+// file is carved into modules (drop this directive per-module as that lands).
 "use strict";
 
 const state = {
