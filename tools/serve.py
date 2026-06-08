@@ -68,9 +68,12 @@ from jobs import (  # noqa: E402
     any_active as _any_active_deep_job,
 )
 
-# Selectable chart windows -> (Yahoo range, interval). Longer windows step to a
-# coarser interval so we don't ship thousands of daily points for a 10y view.
+# Selectable chart windows -> (Yahoo range, interval). Short windows use intraday
+# bars; longer windows step to a coarser interval so we don't ship thousands of
+# daily points for a 10y view. (Yahoo has no "1w" range; 5d covers a trading week.)
 PRICE_HISTORY_RANGES: dict[str, tuple[str, str]] = {
+    "1d": ("1d", "5m"),
+    "1w": ("5d", "30m"),
     "1mo": ("1mo", "1d"),
     "3mo": ("3mo", "1d"),
     "6mo": ("6mo", "1d"),
@@ -785,37 +788,49 @@ def _ticker_index() -> list[dict]:
     return sorted(out.values(), key=lambda r: r["symbol"])
 
 
+# The read-only IBKR Flex reader is vendored alongside this server (stdlib only).
+# Credentials are NEVER committed: the reader resolves IBKR_FLEX_TOKEN /
+# IBKR_FLEX_QUERY_ID from the environment or a gitignored tools/secrets.env.
+IBKR_READER = Path(__file__).resolve().parent / "ibkr_portfolio.py"
+# Raw pulls + snapshots are personal data -> keep them under data/cache (gitignored
+# and inside the private submodule), never in the public working tree.
+IBKR_CACHE_DIR = DATA_DIR / "cache" / "ibkr"
+
+
 def _sync_holdings() -> dict:
-    """Re-pull the portfolio from the external read-only IBKR Flex reader and
-    refresh data/current-holdings.json. The reader lives outside this repo (see
-    the ibkr-holdings skill); its folder must be given via IBKR_PORTFOLIO_DIR.
-    Read-only: the Flex query cannot trade. Returns the fresh holdings payload."""
+    """Re-pull the portfolio via the vendored read-only IBKR Flex reader and
+    refresh data/current-holdings.json. Read-only: the Flex query cannot trade.
+    Credentials come from IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID in the environment
+    or a gitignored tools/secrets.env. Raw output stays in data/cache/ibkr/ (also
+    gitignored). Returns the fresh holdings payload."""
     import subprocess
 
-    ibkr_dir = os.environ.get("IBKR_PORTFOLIO_DIR", "").strip()
-    if not ibkr_dir:
-        raise ValueError("IBKR_PORTFOLIO_DIR is not set; point it at the IBKR Flex reader folder")
-    base = Path(ibkr_dir)
-    script = base / "ibkr_portfolio.py"
-    if not script.exists():
-        raise ValueError(f"ibkr_portfolio.py not found in {ibkr_dir}")
+    if not IBKR_READER.exists():  # vendored next to serve.py; should always be here
+        raise ValueError(f"IBKR reader missing at {IBKR_READER}")
 
-    # "py -3" mirrors the documented, known-good launcher on Windows; fall back to
-    # this server's interpreter if the launcher is unavailable or off-Windows.
-    launcher = ["py", "-3"] if sys.platform == "win32" else [sys.executable]
-    tail = [str(script), "--json", "--out", "portfolio.json", "--snapshot-dir", "snapshots"]
+    IBKR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out_json = IBKR_CACHE_DIR / "portfolio.json"
+    snap_dir = IBKR_CACHE_DIR / "snapshots"
+    cmd = [sys.executable, str(IBKR_READER), "--json",
+           "--out", str(out_json), "--snapshot-dir", str(snap_dir)]
     try:
-        try:
-            proc = subprocess.run(launcher + tail, cwd=str(base), capture_output=True, text=True, timeout=240)
-        except FileNotFoundError:
-            proc = subprocess.run([sys.executable] + tail, cwd=str(base), capture_output=True, text=True, timeout=240)
+        proc = subprocess.run(cmd, cwd=str(IBKR_CACHE_DIR), capture_output=True,
+                              text=True, timeout=240)
     except subprocess.TimeoutExpired:
         raise ValueError("IBKR reader timed out after 240s")
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        raise ValueError("IBKR reader failed: " + (detail[-1] if detail else f"exit {proc.returncode}"))
+        last = detail[-1] if detail else f"exit {proc.returncode}"
+        # The reader exits with a clear "no Flex token / Query ID" message when it
+        # is unconfigured; point the user at the gitignored secrets file.
+        if "Flex token" in last or "Query ID" in last:
+            raise ValueError(
+                "IBKR credentials not configured. Set IBKR_FLEX_TOKEN and "
+                "IBKR_FLEX_QUERY_ID, or paste them into tools/secrets.env "
+                "(gitignored). Underlying error: " + last)
+        raise ValueError("IBKR reader failed: " + last)
 
-    fresh = _load(base / "portfolio.json")
+    fresh = _load(out_json)
     if not isinstance(fresh, dict) or "positions" not in fresh or fresh.get("net_asset_value") is None:
         raise ValueError("IBKR reader produced no usable portfolio.json")
 

@@ -154,11 +154,11 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
   padding: 16px 18px;
 }
 .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
-.settings-info { min-width: 0; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.settings-info { min-width: 0; flex: 1; }
 .settings-label { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
 .settings-row .hint { margin: 2px 0 0; }
-.settings-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.settings-row > button { flex-shrink: 0; }
 
 /* Error center: topbar badge + dropdown panel, sibling to the task pill. */
 .error-indicator {

@@ -806,7 +806,7 @@ function renderBusiness(rec) {
 }
 
 const PRICE_RANGES = [
-  ["1mo", "1M"], ["3mo", "3M"], ["6mo", "6M"],
+  ["1d", "1D"], ["1w", "1W"], ["1mo", "1M"], ["3mo", "3M"], ["6mo", "6M"],
   ["1y", "1Y"], ["5y", "5Y"], ["max", "Max"],
 ];
 
@@ -837,9 +837,11 @@ function chartSvg(rec, history) {
   const first = points[0], last = points[points.length - 1];
   const change = first.close ? (last.close / first.close - 1) * 100 : null;
   const trend = pctClass(change);
-  const spanDays = (new Date(last.date) - new Date(first.date)) / 86400000;
+  const parseStamp = (value) => new Date(value.length > 10 ? value : value + "T00:00:00Z");
+  const spanDays = (parseStamp(last.date) - parseStamp(first.date)) / 86400000;
   const dateLabel = (value) => {
-    const d = new Date(value + "T00:00:00Z");
+    const d = parseStamp(value);
+    if (spanDays < 2) return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
     return spanDays > 420
       ? d.toLocaleDateString(undefined, { month: "short", year: "numeric" })
       : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
