@@ -4,11 +4,11 @@ import { defineConfig } from "vite";
 // "Plan"/report pages. Vite only builds the SPA client.
 //
 //   dev:   `npm run dev`  -> Vite dev server on :5173 with HMR, proxying /api
-//          (and the root *.html report pages) to the Python server on :8765.
+//          (and the root *.html report pages) to the Python server on :6060.
 //          Keep `py tools/serve.py` running alongside it for the API.
 //   build: `npm run build` -> static bundle in web/dist, which serve.py serves
 //          in prod (it prefers web/dist/ over the raw web/ source when present).
-const API = "http://127.0.0.1:8765";
+const API = "http://127.0.0.1:6060";
 
 export default defineConfig({
   root: "web",

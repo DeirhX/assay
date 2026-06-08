@@ -7,10 +7,11 @@ import { loadHoldings } from "./holdings";
 import { loadPipeline, setPipeStep } from "./pipeline";
 import { loadRebalance, openTicker } from "./rebalance";
 import { loadCachedSegment, loadSegmentList } from "./segment";
+import { loadSetup } from "./setup";
 import { renderViewedTickers } from "./viewed";
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "holdings"]);
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "holdings", "setup"]);
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -91,6 +92,7 @@ function setActiveView(view) {
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
   if (active === "rebalance") loadRebalance();
+  if (active === "setup") loadSetup();
   return active;
 }
 

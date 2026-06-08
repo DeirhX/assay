@@ -45,6 +45,7 @@ TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
+DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-chrome-profile"
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -163,6 +164,18 @@ def _symbol_candidates(body: dict) -> dict:
         except Exception as exc:  # noqa: BLE001 - candidate failed validation
             invalid.append({"symbol": candidate, "error": str(exc)})
     return {"input_symbol": src, "candidates": valid, "invalid": invalid}
+
+
+def _setup_status(*, run_checks: bool = False) -> dict:
+    return {
+        "llm": ticker_analysis.setup_status(run_checks=run_checks),
+        "perplexity": _get_auth_state(),
+        "environment": {
+            "sec_user_agent": bool(os.environ.get("SEC_USER_AGENT")),
+            "fmp_api_key": bool(os.environ.get("FMP_API_KEY")),
+            "pplx_profile_dir": os.environ.get("PPLX_PROFILE_DIR") or str(DEFAULT_PPLX_PROFILE_DIR),
+        },
+    }
 
 
 def _segment_path(name: str) -> Path:
@@ -1331,6 +1344,8 @@ class Handler(BaseHTTPRequestHandler):
                 "available": ticker_analysis.available_backends(),
                 "labels": ticker_analysis.PROVIDER_LABELS,
             })
+        if path == "/api/setup/status":
+            return self._send_json(_setup_status())
         if path == "/api/analysis-models":
             force = (query.get("refresh") or ["0"])[0] in ("1", "true")
             return self._send_json({"models": ticker_analysis.provider_models(force=force)})
@@ -1479,6 +1494,9 @@ class Handler(BaseHTTPRequestHandler):
                 "available": ticker_analysis.available_backends(),
                 "labels": ticker_analysis.PROVIDER_LABELS,
             })
+
+        if path == "/api/setup/check":
+            return self._send_json(_setup_status(run_checks=True))
 
         if path == "/api/deep-research/save":
             body = self._read_body()
