@@ -46,6 +46,6 @@ def slugify(value: str) -> str:
 
 def safe_symbol(value: str) -> str:
     sym = (value or "").upper().strip()
-    if not sym or len(sym) > 16 or not re.match(r"^[A-Z0-9.=-]+$", sym):
+    if not sym or len(sym) > 16 or not re.match(r"^[A-Z0-9.=\- ]+$", sym):
         raise ValueError(f"bad symbol: {value!r}")
     return sym

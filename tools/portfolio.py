@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 
 
 def load_json(path: Path) -> dict[str, Any] | None:
@@ -24,6 +25,47 @@ def load_json(path: Path) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def clean_symbol(symbol: str | None) -> str:
+    return str(symbol or "").upper().strip()
+
+
+def symbol_aliases() -> dict[str, str]:
+    """Broker/display symbol -> provider/research symbol.
+
+    IBKR and Yahoo do not share one canonical namespace. Keep the broker symbol
+    for portfolio identity, but resolve to the provider symbol for research
+    pulls. This deliberately lives in the shared portfolio adapter so every
+    consumer gets the same mapping instead of re-learning exchange suffix trivia.
+    """
+    raw = load_json(SYMBOL_ALIASES_JSON)
+    if not isinstance(raw, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    for key, value in raw.items():
+        src = clean_symbol(str(key))
+        dst = clean_symbol(str(value))
+        if src and dst and src != dst:
+            aliases[src] = dst
+    return aliases
+
+
+def provider_symbol_for(symbol: str | None, aliases: dict[str, str] | None = None) -> str:
+    sym = clean_symbol(symbol)
+    aliases = aliases if aliases is not None else symbol_aliases()
+    return aliases.get(sym, sym)
+
+
+def is_researchable_position(position: dict[str, Any]) -> bool:
+    sym = clean_symbol(position.get("symbol"))
+    if not sym or position.get("asset_class") == "OPT":
+        return False
+    # IBKR dividend-right rows are bookkeeping artifacts, not standalone
+    # researchable securities.
+    if ".DRRT" in sym:
+        return False
+    return True
 
 
 def invested_value(positions: list[dict[str, Any]]) -> float:
@@ -107,7 +149,7 @@ def option_exposure(position: dict[str, Any], invested: float) -> dict[str, Any]
     }
 
 
-def holdings_weights(data: dict[str, Any] | None = None) -> dict[str, float]:
+def holdings_weights(data: dict[str, Any] | None = None, *, include_aliases: bool = False) -> dict[str, float]:
     data = data if data is not None else load_json(HOLDINGS_JSON)
     if not data:
         return {}
@@ -115,19 +157,28 @@ def holdings_weights(data: dict[str, Any] | None = None) -> dict[str, float]:
     invested = invested_value(positions)
     if not invested:
         return {}
-    return {
-        p["symbol"]: weight
-        for p in positions
-        if isinstance(p.get("symbol"), str)
-        for weight in [position_weight_pct(p, invested)]
-        if weight is not None
-    }
+    aliases = symbol_aliases()
+    weights: dict[str, float] = {}
+    for p in positions:
+        if not isinstance(p.get("symbol"), str):
+            continue
+        weight = position_weight_pct(p, invested)
+        if weight is None:
+            continue
+        sym = clean_symbol(p["symbol"])
+        weights[sym] = weight
+        if include_aliases:
+            provider_sym = provider_symbol_for(sym, aliases)
+            if provider_sym != sym:
+                weights[provider_sym] = weight
+    return weights
 
 
 def holdings_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
     data = data if data is not None else load_json(HOLDINGS_JSON) or {}
     positions = data.get("positions", [])
     invested = invested_value(positions)
+    aliases = symbol_aliases()
     return {
         "net_asset_value": data.get("net_asset_value"),
         "invested_value": invested,
@@ -136,6 +187,8 @@ def holdings_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
         "positions": [
             {
                 "symbol": p["symbol"],
+                "provider_symbol": provider_symbol_for(p.get("symbol"), aliases),
+                "researchable": is_researchable_position(p),
                 "description": p.get("description"),
                 "asset_class": p.get("asset_class"),
                 "percent_of_nav": position_weight_pct(p, invested),
@@ -174,8 +227,8 @@ def target_context(model: dict[str, Any], symbol: str) -> dict[str, Any]:
 
 
 def portfolio_context(symbol: str, *, holdings: dict[str, Any] | None = None, model: dict[str, Any] | None = None) -> dict[str, Any]:
-    symbol = symbol.upper().strip()
-    weights = holdings_weights(holdings)
+    symbol = clean_symbol(symbol)
+    weights = holdings_weights(holdings, include_aliases=True)
     model = model if model is not None else load_json(TARGET_MODEL_JSON) or {}
     current = weights.get(symbol)
     target = target_context(model, symbol)

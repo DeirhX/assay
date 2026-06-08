@@ -26,7 +26,7 @@ only -- no pip installs.
 
 ```powershell
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
-py -3 tools/serve.py            # UI + API at http://127.0.0.1:8765 (localhost only)
+py -3 tools/serve.py            # UI + API at http://127.0.0.1:6060 (localhost only)
 
 py -3 tools/research_pull.py --ticker NVDA       # CLI: one deep dive
 py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
@@ -96,7 +96,7 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
 
 The website is the normal control plane:
 
-1. Open `http://127.0.0.1:8765` and use the Pipeline tab.
+1. Open `http://127.0.0.1:6060` and use the Pipeline tab.
 2. Draft or approve a segment. Segment JSON is stored in `data/segments/*.json`.
 3. Run deterministic pulls for the segment.
 4. Generate the Perplexity prompt, then either:

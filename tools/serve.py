@@ -6,7 +6,7 @@ on-demand deep-dive puller. Stdlib only -- no Flask, no FastAPI, no pip install,
 no wheel roulette on bleeding-edge Python. Just::
 
     py -3 tools/serve.py
-    # then open http://127.0.0.1:8765
+    # then open http://127.0.0.1:6060
 
 Design notes / honest caveats:
 * Binds to 127.0.0.1 only. This is a single-user local tool, not a web service.
@@ -30,7 +30,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
@@ -43,11 +43,12 @@ SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
+SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from portfolio import holdings_payload, holdings_weights  # noqa: E402
+from portfolio import holdings_payload, holdings_weights, provider_symbol_for, symbol_aliases  # noqa: E402
 from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
@@ -96,6 +97,72 @@ _CONTENT_TYPES = {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
 }
+
+
+def _symbol_aliases() -> dict[str, str]:
+    return {
+        src: dst
+        for src, dst in symbol_aliases().items()
+        if len(src) <= 16 and len(dst) <= 16
+        and re.match(r"^[A-Z0-9.=\- ]+$", src)
+        and re.match(r"^[A-Z0-9.=\- ]+$", dst)
+    }
+
+
+def _resolve_symbol(symbol: str) -> str:
+    sym = _safe_symbol(symbol)
+    return provider_symbol_for(sym, _symbol_aliases())
+
+
+def _annotate_symbol_record(rec: dict, input_symbol: str, provider_symbol: str) -> dict:
+    if input_symbol != provider_symbol:
+        rec = dict(rec)
+        rec["input_symbol"] = input_symbol
+        rec["provider_symbol"] = provider_symbol
+    return rec
+
+
+def _save_symbol_alias(body: dict) -> dict:
+    src = _safe_symbol(str(body.get("input_symbol") or body.get("input") or ""))
+    dst = _safe_symbol(str(body.get("provider_symbol") or body.get("provider") or ""))
+    aliases = _symbol_aliases()
+    if src == dst:
+        aliases.pop(src, None)
+    else:
+        aliases[src] = dst
+    _write_json(SYMBOL_ALIASES_JSON, aliases)
+    return {"aliases": aliases, "input_symbol": src, "provider_symbol": aliases.get(src, src)}
+
+
+def _symbol_candidates(body: dict) -> dict:
+    src = _safe_symbol(str(body.get("input_symbol") or body.get("symbol") or ""))
+    raw_candidates = body.get("candidates") or []
+    if not isinstance(raw_candidates, list):
+        raise ValueError("candidates must be a list")
+
+    seen: set[str] = set()
+    valid: list[dict[str, str]] = []
+    invalid: list[dict[str, str]] = []
+    for raw in raw_candidates[:16]:
+        try:
+            candidate = _safe_symbol(str(raw))
+        except ValueError as exc:
+            invalid.append({"symbol": str(raw), "error": str(exc)})
+            continue
+        if candidate in seen or candidate == src:
+            continue
+        seen.add(candidate)
+        try:
+            result = yahoo.chart(candidate, rng="5d", interval="1d")
+            meta = result.get("meta") or {}
+            valid.append({
+                "symbol": candidate,
+                "exchange": str(meta.get("exchangeName") or meta.get("fullExchangeName") or ""),
+                "currency": str(meta.get("currency") or ""),
+            })
+        except Exception as exc:  # noqa: BLE001 - candidate failed validation
+            invalid.append({"symbol": candidate, "error": str(exc)})
+    return {"input_symbol": src, "candidates": valid, "invalid": invalid}
 
 
 def _segment_path(name: str) -> Path:
@@ -1298,32 +1365,37 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/target-model":
             rec = _load(TARGET_MODEL_JSON)
             return self._send_json(rec) if rec else self._send_error_json(404, "target model not found")
+        if path == "/api/symbol-aliases":
+            return self._send_json({"aliases": _symbol_aliases()})
         if path.startswith("/api/research/"):
-            sym = path.rsplit("/", 1)[-1].upper()
-            rec = _load(RESEARCH_DIR / f"{sym}.json")
-            return self._send_json(rec) if rec else self._send_error_json(404, f"no cached research for {sym}")
+            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+            provider_sym = _resolve_symbol(sym)
+            rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
+            return self._send_json(_annotate_symbol_record(rec, sym, provider_sym)) if rec else self._send_error_json(404, f"no cached research for {sym}")
         if path.startswith("/api/analysis/"):
             try:
-                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
-            rec = _latest_analysis(sym)
+            rec = _latest_analysis(_resolve_symbol(sym))
             return self._send_json(rec) if rec else self._send_error_json(404, f"no analysis for {sym}")
         if path.startswith("/api/qa/"):
             try:
-                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
-            return self._send_json(_load_qa(sym))
+            return self._send_json(_load_qa(_resolve_symbol(sym)))
         if path.startswith("/api/history/"):
-            sym = path.rsplit("/", 1)[-1].upper()
-            return self._send_json({"symbol": sym, "history": research_pull.history_for(sym)})
+            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+            provider_sym = _resolve_symbol(sym)
+            return self._send_json({"symbol": sym, "provider_symbol": provider_sym, "history": research_pull.history_for(provider_sym)})
         if path.startswith("/api/price-history/"):
-            sym = path.rsplit("/", 1)[-1].upper()
+            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+            provider_sym = _resolve_symbol(sym)
             rng_key = (query.get("range") or ["1y"])[0].lower()
             rng, interval = PRICE_HISTORY_RANGES.get(rng_key, PRICE_HISTORY_RANGES["1y"])
             try:
-                result = yahoo.chart(sym, rng=rng, interval=interval)
+                result = yahoo.chart(provider_sym, rng=rng, interval=interval)
                 ph = yahoo.price_history_from_chart(result, rng=rng, interval=interval)
             except Exception as exc:  # noqa: BLE001 - surface provider failure to UI
                 return self._send_error_json(502, f"price history failed for {sym}: {exc}")
@@ -1366,26 +1438,27 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/analyze/"):
             try:
-                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
             body = self._read_body()
             try:
-                return self._send_json(_start_analysis(sym, bool(body.get("refresh"))))
+                return self._send_json(_start_analysis(_resolve_symbol(sym), bool(body.get("refresh"))))
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
 
         if path.startswith("/api/qa/"):
             try:
-                sym = _safe_symbol(path.rsplit("/", 1)[-1])
+                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
+            provider_sym = _resolve_symbol(sym)
             body = self._read_body()
             if body.get("clear"):
-                _write_json(_qa_path(sym), {"symbol": sym, "turns": []})
-                return self._send_json(_load_qa(sym))
+                _write_json(_qa_path(provider_sym), {"symbol": provider_sym, "turns": []})
+                return self._send_json(_load_qa(provider_sym))
             try:
-                return self._send_json(_start_qa(sym, str(body.get("question") or "")))
+                return self._send_json(_start_qa(provider_sym, str(body.get("question") or "")))
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
             except RuntimeError as exc:
@@ -1463,13 +1536,29 @@ class Handler(BaseHTTPRequestHandler):
                 allow_blocked=bool(body.get("allow_blocked")),
             ))
 
+        if path == "/api/symbol-alias":
+            body = self._read_body()
+            try:
+                return self._send_json(_save_symbol_alias(body))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+
+        if path == "/api/symbol-candidates":
+            body = self._read_body()
+            try:
+                return self._send_json(_symbol_candidates(body))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+
         if path.startswith("/api/pull/"):
-            sym = path.rsplit("/", 1)[-1].upper()
-            if not sym.isascii() or not sym or len(sym) > 12:
+            try:
+                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+            except ValueError:
                 return self._send_error_json(400, "bad symbol")
+            provider_sym = _resolve_symbol(sym)
             with _PULL_LOCK:
-                rec = research_pull.pull_ticker(sym)
-            return self._send_json(rec)
+                rec = research_pull.pull_ticker(provider_sym)
+            return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
         if path.startswith("/api/pull-segment/"):
             name = path.rsplit("/", 1)[-1].lower()
@@ -1480,8 +1569,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(rec)
 
         if path.startswith("/api/thesis/"):
-            sym = path.rsplit("/", 1)[-1].upper()
-            rec = _load(RESEARCH_DIR / f"{sym}.json")
+            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+            provider_sym = _resolve_symbol(sym)
+            rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
             if not rec:
                 return self._send_error_json(404, f"pull {sym} before saving a thesis")
             body = self._read_body()
@@ -1496,10 +1586,10 @@ class Handler(BaseHTTPRequestHandler):
                 "source_artifact": body.get("source_artifact", ""),
                 "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             }
-            (RESEARCH_DIR / f"{sym}.json").write_text(
+            (RESEARCH_DIR / f"{provider_sym}.json").write_text(
                 json.dumps(rec, indent=2) + "\n", encoding="utf-8"
             )
-            return self._send_json(rec)
+            return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
         return self._send_error_json(404, "unknown endpoint")
 
@@ -1509,7 +1599,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=6060)
     parser.add_argument("--reload", action="store_true",
                         help="dev: auto-restart on tools/*.py edits and live-reload the browser on asset changes")
     args = parser.parse_args()

@@ -98,7 +98,7 @@ Hard-won facts baked into the worker (do not relearn these the hard way):
 ## Agent-driven run workflow
 
 ```
-- [ ] 1. Open the local site (`py -3 tools\serve.py`, then http://127.0.0.1:8765)
+- [ ] 1. Open the local site (`py -3 tools\serve.py`, then http://127.0.0.1:6060)
 - [ ] 2. In the Pipeline tab, choose/create the research segment and build the prompt
 - [ ] 3. Navigate to https://www.perplexity.ai (confirm logged in)
 - [ ] 4. Dismiss cookie dialog if present ("Only necessary")

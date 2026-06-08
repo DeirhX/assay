@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from portfolio import holdings_weights  # noqa: E402
+from portfolio import provider_symbol_for, holdings_weights  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_JSON = REPO_ROOT / "data" / "current-holdings.json"
@@ -135,8 +135,14 @@ def render_markdown(data: dict) -> str:
     ]
     for pos in data["top_positions"][:TOP_POSITIONS_IN_SUMMARY]:
         weight = weights.get(pos["symbol"], 0.0)
+        provider_symbol = provider_symbol_for(pos["symbol"])
+        display_symbol = (
+            f"{pos['symbol']} → {provider_symbol}"
+            if provider_symbol != pos["symbol"].upper().strip()
+            else pos["symbol"]
+        )
         lines.append(
-            f"| `{pos['symbol']}` | {pos['description']} | "
+            f"| `{display_symbol}` | {pos['description']} | "
             f"{weight:.2f}% | "
             f"{pos['base_market_value']:,.0f} | "
             f"{pos['unrealized_pnl']:,.0f} |"

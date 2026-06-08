@@ -11,7 +11,12 @@ async function loadHoldings() {
     const h = await api("/api/holdings");
     state.nav = h.net_asset_value;
     state.holdings = {};
-    (h.positions || []).forEach((p) => { state.holdings[p.symbol] = p.percent_of_nav; });
+    (h.positions || []).forEach((p) => {
+      state.holdings[p.symbol] = p.percent_of_nav;
+      if (p.provider_symbol && p.provider_symbol !== p.symbol) {
+        state.holdings[p.provider_symbol] = p.percent_of_nav;
+      }
+    });
     status.innerHTML =
       `NAV ${sensitive(`${Math.round(h.net_asset_value || 0).toLocaleString()} CZK`, "total NAV")} · ` +
       `invested ${sensitive(`${Math.round(h.invested_value || 0).toLocaleString()} CZK`, "invested value")}`;
@@ -38,6 +43,8 @@ async function loadHoldings() {
     const list = el("div", "pos-list");
     rows.forEach((p) => {
       const isOpt = p.asset_class === "OPT";
+      const researchable = isResearchableHolding(p);
+      const providerSymbol = p.provider_symbol || p.symbol;
       const w = p.percent_of_nav || 0;
       // Tier by absolute concentration (flags the AMD/ARM problem on sight);
       // bar length is relative to the largest holding for visual ranking.
@@ -62,7 +69,8 @@ async function loadHoldings() {
         barClass = "pos-bar";
       }
 
-      const label = isOpt ? (p.description || p.symbol) : p.symbol;
+      const displaySymbol = providerSymbol && providerSymbol !== p.symbol ? `${p.symbol} \u2192 ${providerSymbol}` : p.symbol;
+      const label = isOpt ? (p.description || p.symbol) : displaySymbol;
       const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
       const row = el("div", "pos-row tier-" + tier);
       row.innerHTML =
@@ -72,8 +80,14 @@ async function loadHoldings() {
       row.title = isOpt && o
         ? `${p.description || p.symbol} \u00b7 ${Math.abs(o.contracts)} ${o.right === "P" ? "put" : "call"} @ ${o.strike} \u00b7 ` +
           `${exPct.toFixed(1)}% of invested if exercised (notional, not capital)`
-        : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested`;
-      if (!isOpt) row.addEventListener("click", () => analyzeFromAnywhere(p.symbol));
+        : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested` +
+          (providerSymbol !== p.symbol ? ` \u00b7 opens ${providerSymbol}` : "");
+      if (researchable) {
+        row.addEventListener("click", () => analyzeFromAnywhere(providerSymbol));
+      } else {
+        row.classList.add("disabled");
+        row.title += " \u00b7 not a researchable ticker";
+      }
       list.appendChild(row);
     });
     out.appendChild(list);
@@ -84,6 +98,13 @@ async function loadHoldings() {
     status.textContent = "Could not load holdings: " + e.message;
     status.classList.add("err");
   }
+}
+
+function isResearchableHolding(position) {
+  if (position.researchable === false) return false;
+  if (position.asset_class === "OPT") return false;
+  const symbol = String(position.symbol || "").toUpperCase();
+  return !symbol.endsWith(".DRRT");
 }
 
 export {

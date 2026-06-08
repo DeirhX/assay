@@ -37,7 +37,7 @@ The repository root. All page paths below are relative to it.
 
 ## Interactive Console
 
-Run `py -3 tools\serve.py` and open `http://127.0.0.1:8765`.
+Run `py -3 tools\serve.py` and open `http://127.0.0.1:6060`.
 
 Tabs:
 
