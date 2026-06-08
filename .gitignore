@@ -16,3 +16,10 @@ web/dist/
 .vite/
 _commitmsg.txt
 _prbody.txt
+
+# --- Public-repo privacy hardening ---
+# `data/` is a private git submodule (real holdings). Never vendored here.
+# Rendered mini-site pages are generated from that private data and may contain
+# real positions/NAV/P/L. Build locally with tools/generate_site.py; never commit.
+# (The app shell web/index.html lives under web/ and stays tracked.)
+/*.html

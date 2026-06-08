@@ -39,13 +39,9 @@ Give concrete actions, not vague asset-allocation oatmeal:
 
 ## Sizing Legend
 
-Last discussed NAV basis:
-
-- `1% NAV ~= «redacted»`
-- `5% NAV ~= «redacted»`
-- `10% NAV ~= «redacted»`
-
-Refresh IBKR before relying on these exact amounts.
+Position sizes are expressed as a percentage of NAV. The concrete `1% / 5% / 10% NAV`
+amounts come from the current sanitized holdings snapshot in the private `data`
+submodule (`data/current-holdings.json`); refresh IBKR before relying on exact figures.
 
 ## Live Deep Dives
 

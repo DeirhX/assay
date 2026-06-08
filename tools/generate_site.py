@@ -12,7 +12,7 @@ Targets:
 
 HTML pages opt in per value using marker comments::
 
-    <strong><!--GEN:nav.1pct-->«redacted»<!--/GEN:nav.1pct--></strong>
+    <strong><!--GEN:nav.1pct-->NNNk CZK<!--/GEN:nav.1pct--></strong>
 
 The text between the markers is replaced with the freshly computed value. The
 markers themselves are preserved, so regeneration is idempotent.
@@ -54,14 +54,14 @@ TOP_POSITIONS_IN_SUMMARY = 20
 
 
 def money_czk_short(value: float) -> str:
-    """Human-friendly CZK magnitude, e.g. «redacted» -> '«redacted»'."""
+    """Human-friendly CZK magnitude, e.g. 250000 -> '250k CZK'."""
     if abs(value) >= 1_000_000:
         return f"{value / 1_000_000:.2f}m CZK"
     return f"{round(value / 1000)}k CZK"
 
 
 def pnl_usd_short(value: float) -> str:
-    """Unrealized P/L in USD thousands, e.g. -«redacted» -> '-$19.5k'."""
+    """Unrealized P/L in USD thousands, e.g. -12345.6 -> '-$12.3k'."""
     thousands = value / 1000
     if thousands < 0:
         return f"-${abs(thousands):.1f}k"

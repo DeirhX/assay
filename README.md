@@ -187,16 +187,10 @@ Saved Deep Research artifacts live under `data/research/deep/<segment>-<date>.*`
 
 ## Current Sizing Legend
 
-Sanitized holdings snapshot: `data/current-holdings.json`.
+Sanitized holdings snapshot: `data/current-holdings.json` (private `data` submodule).
 
-Snapshot generated at `2026-06-03T10:23:04+00:00`, report date `20260602`, NAV about `«redacted»`:
-
-- `1% NAV ~= «redacted»`
-- `2% NAV ~= «redacted»`
-- `5% NAV ~= «redacted»`
-- `10% NAV ~= «redacted»`
-
-Refresh IBKR before relying on exact amounts.
+Position sizes are expressed as a percentage of NAV. The concrete `1% / 2% / 5% / 10%`
+amounts are computed from the snapshot — refresh IBKR before relying on exact figures.
 
 ## Sensitive Data
 

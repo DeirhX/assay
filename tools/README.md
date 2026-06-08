@@ -258,7 +258,7 @@ the diff before committing.
 Wrap the literal in marker comments and add the key to `compute_fragments()`:
 
 ```html
-<strong><!--GEN:nav.1pct-->«redacted»<!--/GEN:nav.1pct--></strong>
+<strong><!--GEN:nav.1pct-->NNNk CZK<!--/GEN:nav.1pct--></strong>
 ```
 
 The text between the markers is the seed value; the script overwrites it. The

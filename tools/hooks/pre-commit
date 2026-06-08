@@ -1,0 +1,46 @@
+#!/bin/sh
+# Defense-in-depth guard against accidentally committing personal/financial data
+# into the public code repo. Real data lives in the private `data` submodule.
+#
+# Enable with:  git config core.hooksPath tools/hooks
+# Bypass once:  git commit --no-verify   (use only when you are certain)
+
+fail=0
+
+# 1) Block root-level *.html — these are generated mini-site pages that embed real
+#    holdings. They are gitignored, but catch a forced `git add -f` too.
+blocked_html=$(git diff --cached --name-only --diff-filter=AM | grep -E '^[^/]+\.html$')
+if [ -n "$blocked_html" ]; then
+  echo "pre-commit: refusing to commit root HTML pages (generated, may contain real holdings):"
+  echo "$blocked_html" | sed 's/^/  - /'
+  fail=1
+fi
+
+# 2) Block obviously sensitive filenames if ever force-added.
+blocked_files=$(git diff --cached --name-only --diff-filter=AM | grep -Ei '(^|/)(current-holdings|portfolio)\.json$|(^|/)secrets\.env$|\.xml$|pplx-auth\.json$')
+if [ -n "$blocked_files" ]; then
+  echo "pre-commit: refusing to commit sensitive files:"
+  echo "$blocked_files" | sed 's/^/  - /'
+  fail=1
+fi
+
+# 3) Scan staged additions for high-signal personal-data markers. Patterns are
+#    chosen to avoid false positives on code/tests (which use bare numbers):
+#      - IBKR account ids (Uxxxxxxx)
+#      - cash field with a real value
+#      - CZK amounts in the millions (>=2 thousands-groups, or "N.Nm CZK")
+#      - per-position USD P/L like -$19.5k
+markers=$(git diff --cached -U0 --diff-filter=AM | grep -E '^\+' \
+  | grep -E '\bU[0-9]{7}\b|"ending_cash"[[:space:]]*:[[:space:]]*[0-9]|[0-9]{1,3}(,[0-9]{3}){2,}[[:space:]]*CZK|[0-9]+\.[0-9]+m[[:space:]]*CZK|-?\$[0-9]+(\.[0-9]+)?k\b')
+if [ -n "$markers" ]; then
+  echo "pre-commit: staged changes contain possible personal financial data:"
+  echo "$markers" | head -n 20 | sed 's/^/  /'
+  echo "If this is a genuine false positive, re-run with: git commit --no-verify"
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "pre-commit: blocked. Personal data belongs in the private 'data' submodule."
+fi
+exit $fail
