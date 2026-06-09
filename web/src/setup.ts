@@ -227,7 +227,22 @@ function setupSteps(st) {
   const pplxOk = !!st?.perplexity?.logged_in;
   const secOk = !!(st.environment || {}).sec_user_agent;
   const ibkr = st.ibkr || {};
-  return [
+  const data = st.data || {};
+  const dataReady = !!data.ready;
+  const portfolioStep = {
+    id: "ibkr",
+    title: "Portfolio data (IBKR Flex)",
+    required: !dataReady,
+    done: dataReady,
+    partial: !dataReady && !!ibkr.configured,
+    state: dataReady
+      ? `Ready — ${data.holdings?.positions || 0} positions`
+      : ibkr.configured
+        ? "Credentials configured — sync holdings"
+        : (ibkr.token_set || ibkr.query_id) ? "Incomplete credentials" : "No portfolio data",
+    render: () => renderIbkr(st),
+  };
+  const steps = [
     {
       id: "llm",
       title: "Analysis CLI",
@@ -251,15 +266,6 @@ function setupSteps(st) {
       render: () => renderPerplexity(st),
     },
     {
-      id: "ibkr",
-      title: "Portfolio data (IBKR Flex)",
-      required: false,
-      done: !!ibkr.configured,
-      partial: !ibkr.configured && (!!ibkr.token_set || !!ibkr.query_id),
-      state: ibkr.configured ? "Configured" : (ibkr.token_set || ibkr.query_id) ? "Incomplete" : "Not configured",
-      render: () => renderIbkr(st),
-    },
-    {
       id: "env",
       title: "Environment",
       required: false,
@@ -269,6 +275,7 @@ function setupSteps(st) {
       render: () => renderEnvironment(st),
     },
   ];
+  return dataReady ? [...steps.slice(0, 2), portfolioStep, steps[2]] : [portfolioStep, ...steps];
 }
 
 function stepStateBadge(step) {
@@ -312,11 +319,15 @@ function renderSetup(st) {
 
 function renderIbkr(st) {
   const k = st.ibkr || {};
+  const data = st.data || {};
+  const dataReady = !!data.ready;
+  const positions = data.holdings?.positions || 0;
   const wrap = el("div", "setup-body-inner");
   const tokenPlaceholder = k.token_set
     ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 saved \u2014 leave blank to keep"
     : "paste Flex Web Service token";
   wrap.innerHTML =
+    `<div class="setup-row"><strong>Portfolio snapshot</strong>${badge(dataReady, dataReady ? `${positions} positions` : "empty")}</div>` +
     `<div class="setup-row"><strong>IBKR Flex Web Service</strong>${badge(k.configured, k.configured ? "configured" : "not set")}</div>` +
     `<p class="hint">Read-only Flex query behind <strong>Resync from IBKR</strong> on the Holdings tab. ` +
       `Saved to <code>${esc(k.secrets_path || "tools/secrets.env")}</code> (gitignored) and never committed. ` +
@@ -371,7 +382,7 @@ function renderLlmCli(st) {
       `<span class="status" id="setup-llm-status"></span>` +
     `</div>` +
     `<div class="setup-globals">` +
-      toggle("setup-web", "Allow web research (Claude + Cursor)", st.llm.config.allow_web) +
+      toggle("setup-web", "Allow web research (Claude preferred; Cursor fallback)", st.llm.config.allow_web) +
       `<label class="setup-field-inline">Timeout` +
         `<input id="setup-timeout" type="number" min="30" step="30" value="${esc(st.llm.config.timeout_sec || 300)}">` +
         `<span>s</span>` +

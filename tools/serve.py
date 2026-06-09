@@ -175,11 +175,31 @@ def _setup_status(*, run_checks: bool = False) -> dict:
         "llm": ticker_analysis.setup_status(run_checks=run_checks),
         "perplexity": _get_auth_state(),
         "ibkr": _ibkr_status(),
+        "data": _data_status(),
         "environment": {
             "sec_user_agent": bool(os.environ.get("SEC_USER_AGENT")),
             "fmp_api_key": bool(os.environ.get("FMP_API_KEY")),
             "pplx_profile_dir": os.environ.get("PPLX_PROFILE_DIR") or str(DEFAULT_PPLX_PROFILE_DIR),
         },
+    }
+
+
+def _data_status() -> dict:
+    holdings = _load(HOLDINGS_JSON)
+    model = _load(TARGET_MODEL_JSON)
+    positions = holdings.get("positions") if isinstance(holdings, dict) else []
+    has_holdings = isinstance(positions, list) and len(positions) > 0
+    has_model = isinstance(model, dict) and bool(model)
+    return {
+        "ready": bool(has_holdings and has_model),
+        "holdings": {
+            "exists": HOLDINGS_JSON.exists(),
+            "positions": len(positions) if isinstance(positions, list) else 0,
+        },
+        "target_model": {
+            "exists": TARGET_MODEL_JSON.exists(),
+        },
+        "empty": not (has_holdings and has_model),
     }
 
 

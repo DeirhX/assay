@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _support  # noqa: F401
 import ticker_analysis as ta
@@ -72,6 +73,47 @@ class Usage(unittest.TestCase):
 
     def test_non_dict_is_empty(self):
         self.assertEqual(ta._norm_usage(None), {})
+
+
+class ProviderOrder(unittest.TestCase):
+    def test_claude_is_preferred_even_if_config_is_reversed(self):
+        cfg = {"providers": [
+            {"id": "cursor", "enabled": True},
+            {"id": "claude", "enabled": True},
+        ]}
+        self.assertEqual([p["id"] for p in ta._ordered_providers(cfg)], ["claude", "cursor"])
+
+    def test_unknown_providers_are_ignored_for_runtime_order(self):
+        cfg = {"providers": [{"id": "bogus"}, {"id": "cursor"}]}
+        self.assertEqual([p["id"] for p in ta._ordered_providers(cfg)], ["cursor"])
+
+
+class ClaudeQaArgs(unittest.TestCase):
+    def test_qa_does_not_use_removed_dynamic_prompt_flag(self):
+        seen = {}
+
+        def fake_run(argv, *, input_text, timeout, cancel):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout='{"result":"OK","session_id":"sid","usage":{}}',
+                stderr="",
+            )
+
+        rec = {"symbol": "AMD", "name": "AMD", "metrics": {}, "portfolio": {}}
+        with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude"}, clear=False), \
+             mock.patch.object(ta, "_run_proc", side_effect=fake_run):
+            out = ta._run_claude_qa(
+                rec, [], "question?", None,
+                {"id": "claude", "enabled": True, "model": "", "extra_args": []},
+                {"allow_web": False, "timeout_sec": 300},
+                None,
+                None,
+            )
+        self.assertTrue(out["ok"])
+        self.assertNotIn("--exclude-dynamic-system-prompt-sections", seen["argv"])
+        self.assertIn("--session-id", seen["argv"])
 
 
 class Config(unittest.TestCase):
