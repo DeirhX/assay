@@ -16,15 +16,16 @@
       <button class="tab" data-view="pipeline">Pipeline</button>
       <button class="tab" data-view="rebalance">Rebalance</button>
       <button class="tab" data-view="holdings">Holdings</button>
-      <button class="tab" data-view="setup">Setup</button>
     </div>
     <div class="spacer"></div>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
-    <button class="ghost privacy-inline" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">Settings</button>
     <nav>
       <a href="/next-steps.html" target="_blank" rel="noopener">Plan</a>
     </nav>
+    <button class="tab settings-cog" data-view="setup" type="button" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </button>
   </header>
 
   <div class="error-panel" id="error-panel" hidden>
@@ -36,20 +37,6 @@
       </div>
     </div>
     <div class="error-list" id="error-list"></div>
-  </div>
-
-  <div class="settings-panel" id="settings-panel" hidden>
-    <div class="settings-head">
-      <strong>Settings</strong>
-      <button class="panel-close" id="settings-close" type="button" aria-label="Close settings">&times;</button>
-    </div>
-    <div class="settings-row">
-      <div class="settings-info">
-        <div class="settings-label">Perplexity automation</div>
-        <div class="hint" id="settings-login-state">checking login...</div>
-      </div>
-      <button class="ghost" id="settings-relogin" type="button">Re-login</button>
-    </div>
   </div>
 
   <main>
@@ -323,6 +310,8 @@
     <section class="view" id="view-holdings">
       <div class="hold-controls">
         <button class="primary" id="hold-sync" type="button">Resync from IBKR</button>
+        <button class="ghost" id="plan-regen" type="button" title="Re-render next-steps.html and the detail pages from the current snapshot + target model">Regenerate plan</button>
+        <a class="ghost" href="/next-steps.html" target="_blank" rel="noopener" role="button">Open plan ↗</a>
         <span class="hint" id="hold-synced"></span>
       </div>
       <div class="hint">Your sanitized IBKR positions, cash, and tax lots. Resync runs a read-only Flex pull — a point-in-time snapshot, not live prices. Weights are % of NAV from base-currency market value; refresh before acting on exact figures.</div>
@@ -334,8 +323,8 @@
     <section class="view" id="view-setup">
       <div class="setup-head">
         <div>
-          <h2>First-time setup</h2>
-          <p class="hint">Verify the local CLIs and browser login Assay needs before running paid or quota-backed research. Credentials stay in your local tools and browser profile, not in this repo.</p>
+          <h2>Settings</h2>
+          <p class="hint">Configure and verify the local CLIs and browser login Assay needs before running paid or quota-backed research. Credentials stay in your local tools and browser profile, not in this repo.</p>
         </div>
         <button class="primary" id="setup-refresh" type="button">Refresh checks</button>
       </div>

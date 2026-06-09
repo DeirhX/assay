@@ -289,25 +289,6 @@ $("#pipe-login-recheck").addEventListener("click", async () => {
   }
 });
 
-$("#settings-toggle").addEventListener("click", () => {
-  const panel = $("#settings-panel");
-  const opening = panel.hasAttribute("hidden");
-  if (opening) {
-    panel.removeAttribute("hidden");
-    refreshLoginStatus();
-  } else {
-    panel.setAttribute("hidden", "");
-  }
-  $("#settings-toggle").setAttribute("aria-expanded", opening ? "true" : "false");
-});
-
-$("#settings-close").addEventListener("click", () => {
-  $("#settings-panel").setAttribute("hidden", "");
-  $("#settings-toggle").setAttribute("aria-expanded", "false");
-});
-
-$("#settings-relogin").addEventListener("click", () => runPplxLogin($("#settings-login-state")));
-
 $("#pipe-save-report").addEventListener("click", async () => {
   const status = $("#pipe-artifact-status");
   status.classList.remove("err");

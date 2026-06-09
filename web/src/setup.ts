@@ -160,6 +160,7 @@ function setupSteps(st) {
   const anyCliOk = backends.some((b) => b.check?.ok);
   const pplxOk = !!st?.perplexity?.logged_in;
   const secOk = !!(st.environment || {}).sec_user_agent;
+  const ibkr = st.ibkr || {};
   return [
     {
       id: "llm",
@@ -178,6 +179,15 @@ function setupSteps(st) {
       partial: false,
       state: pplxOk ? "Logged in" : "Not logged in",
       render: () => renderPerplexity(st),
+    },
+    {
+      id: "ibkr",
+      title: "Portfolio data (IBKR Flex)",
+      required: false,
+      done: !!ibkr.configured,
+      partial: !ibkr.configured && (!!ibkr.token_set || !!ibkr.query_id),
+      state: ibkr.configured ? "Configured" : (ibkr.token_set || ibkr.query_id) ? "Incomplete" : "Not configured",
+      render: () => renderIbkr(st),
     },
     {
       id: "env",
@@ -228,6 +238,36 @@ function renderSetup(st) {
   });
 
   fillModelLists();
+}
+
+function renderIbkr(st) {
+  const k = st.ibkr || {};
+  const wrap = el("div", "setup-body-inner");
+  const tokenPlaceholder = k.token_set
+    ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 saved \u2014 leave blank to keep"
+    : "paste Flex Web Service token";
+  wrap.innerHTML =
+    `<div class="setup-row"><strong>IBKR Flex Web Service</strong>${badge(k.configured, k.configured ? "configured" : "not set")}</div>` +
+    `<p class="hint">Read-only Flex query behind <strong>Resync from IBKR</strong> on the Holdings tab. ` +
+      `Saved to <code>${esc(k.secrets_path || "tools/secrets.env")}</code> (gitignored) and never committed. ` +
+      `The token is stored locally and never shown back here.</p>` +
+    `<ul class="setup-list">` +
+      `<li>IBKR Client Portal &rarr; Settings &rarr; Account Settings &rarr; <strong>Flex Web Service</strong>: enable it and copy the <strong>token</strong>.</li>` +
+      `<li>Create a <strong>Flex Query</strong> (positions, cash, open tax lots) and copy its <strong>Query ID</strong>.</li>` +
+      `<li>Save below, then <strong>Resync from IBKR</strong> on the Holdings tab.</li>` +
+    `</ul>` +
+    (k.from_env ? `<p class="setup-small">A value is currently set via environment variable; that takes precedence over what you save here.</p>` : "") +
+    `<label class="setup-field">Flex Query ID` +
+      `<input id="setup-ibkr-query" placeholder="e.g. 1234567" value="${esc(k.query_id || "")}" autocomplete="off" inputmode="numeric">` +
+    `</label>` +
+    `<label class="setup-field">Flex token` +
+      `<input id="setup-ibkr-token" type="password" placeholder="${esc(tokenPlaceholder)}" autocomplete="off">` +
+    `</label>` +
+    `<div class="setup-actions">` +
+      `<button class="primary" id="setup-save-ibkr" type="button">Save credentials</button>` +
+      `<span class="status" id="setup-ibkr-status"></span>` +
+    `</div>`;
+  return wrap;
 }
 
 function renderEnvironment(st) {
@@ -409,11 +449,33 @@ async function runSmokeChecks() {
   }
 }
 
+async function saveIbkr() {
+  const status = $("#setup-ibkr-status");
+  const token = $("#setup-ibkr-token").value.trim();
+  const query_id = $("#setup-ibkr-query").value.trim();
+  if (!token && !query_id) {
+    status.classList.add("err");
+    status.textContent = "Enter a Query ID and/or token.";
+    return;
+  }
+  status.classList.remove("err");
+  status.textContent = "saving…";
+  try {
+    await api("/api/setup/ibkr", "POST", { token, query_id });
+    status.textContent = "saved";
+    await loadSetup();
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent = "save failed: " + e.message;
+  }
+}
+
 const SETUP_ACTIONS = {
   "setup-save-llm": saveLlmConfig,
   "setup-check-llm": runSmokeChecks,
   "setup-pplx-login": startPerplexityLogin,
   "setup-pplx-check": verifyPerplexity,
+  "setup-save-ibkr": saveIbkr,
 };
 
 function wireSetup() {

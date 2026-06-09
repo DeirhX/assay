@@ -26,18 +26,28 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import rebalance  # noqa: E402  -- same drift/action engine the web planner uses
 from portfolio import provider_symbol_for, holdings_weights  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_JSON = REPO_ROOT / "data" / "current-holdings.json"
+TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
 CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
 SUMMARY_MD = REPO_ROOT / "data" / "current-holdings-summary.md"
+
+# Symbols that have their own hand-authored deep-dive page, so generated tables
+# can link to them.
+DETAIL_PAGES = {
+    "AMD": "amd-detail.html", "ARM": "arm-detail.html", "SOFI": "sofi-detail.html",
+    "PYPL": "pypl-detail.html", "EEFT": "eeft-detail.html",
+}
 
 # Claim metrics surfaced on detail pages, mapped to their short fragment suffix.
 CLAIM_METRICS = {
@@ -195,15 +205,214 @@ def apply_fragments(text: str, fragments: dict[str, str]) -> tuple[str, int]:
     return pattern.sub(repl, text), replaced
 
 
-def iter_targets(data: dict, claims: dict | None):
+# --------------------------------------------------------------------------- #
+# Region (block) generation: rebalance.plan() -> whole HTML table bodies
+# --------------------------------------------------------------------------- #
+def _esc(text: object) -> str:
+    return html.escape(str(text or ""))
+
+
+def _name_cell(name: str, kind: str) -> str:
+    """Link a symbol to its deep-dive page if one exists; sleeves render plain."""
+    if kind == "sleeve":
+        return _esc(name)
+    page = DETAIL_PAGES.get(name.upper())
+    return f'<a href="{page}">{_esc(name)}</a>' if page else _esc(name)
+
+
+def _price_per_share(holdings: dict) -> dict[str, float]:
+    """symbol -> base-currency price per share, for converting CZK deltas to
+    share counts. Derived from the snapshot, so it shares the snapshot's basis."""
+    out: dict[str, float] = {}
+    for pos in holdings.get("positions", []):
+        qty = pos.get("quantity")
+        bmv = pos.get("base_market_value")
+        if isinstance(qty, (int, float)) and qty and isinstance(bmv, (int, float)):
+            out[pos.get("symbol", "")] = bmv / qty
+    return out
+
+
+def _sensitive(text: str) -> str:
+    """Wrap a value the privacy toggle should be able to mask."""
+    return f'<span data-sensitive>{text}</span>'
+
+
+def render_targets_block(plan: dict) -> str:
+    """Body of the '1-3 Month Targets' table, straight from target-model bands +
+    notes, annotated with the live status the planner computed."""
+    lines: list[str] = []
+    for r in plan["rows"]:
+        band = f"{r['low']:g}-{r['high']:g}%"
+        status = r["status"]
+        if status == "IN":
+            hint = "in band"
+        else:
+            now = _sensitive(f"{r['current_pct']:g}%")
+            hint = f"now {now}, <strong>{status.lower()}</strong> band"
+        note = _esc(r.get("note") or "")
+        path = f"{note} ({hint})." if note else f"{hint.capitalize()}."
+        lines.append(
+            f"      <tr><td>{_name_cell(r['name'], r['kind'])}</td>"
+            f'<td class="num">{band}</td><td>{path}</td></tr>'
+        )
+    return "\n".join(lines)
+
+
+def render_actions_block(plan: dict, prices: dict[str, float]) -> str:
+    """Body of the 'This Week' table: only out-of-band names that need a trade,
+    trims first (in funding order), then buys by size. Mirrors rebalance.advice()."""
+    funding_order: list[str] = plan.get("funding_order", [])
+
+    def fpri(name: str) -> int:
+        return funding_order.index(name) if name in funding_order else len(funding_order)
+
+    trims, buys, reviews = [], [], []
+    for r in plan["rows"]:
+        action = r.get("action")
+        if action == "trim":
+            trims.append(r)
+        elif action == "buy":
+            buys.append(r)
+        elif action == "review":
+            reviews.append(r)
+    trims.sort(key=lambda r: (fpri(r["name"]), -abs(r["suggest_delta_pct"])))
+    buys.sort(key=lambda r: -abs(r["suggest_delta_pct"]))
+
+    def move_cell(r: dict) -> str:
+        pct = abs(r["suggest_delta_pct"])
+        bits = [f"~{pct:g}% book"]
+        czk = r.get("suggest_delta_czk")
+        if isinstance(czk, (int, float)):
+            bits.append(_sensitive(f"~{abs(czk):,.0f} CZK"))
+        price = prices.get(r["name"])
+        if r["kind"] == "target" and price:
+            shares = abs(czk) / price if isinstance(czk, (int, float)) else 0
+            if shares >= 1:
+                bits.append(_sensitive(f"~{round(shares):,} sh"))
+        return ", ".join(bits)
+
+    rows = []
+
+    def emit(label: str, items: list[dict]) -> None:
+        for r in items:
+            rows.append(
+                f"      <tr><td>{label}</td><td>{_name_cell(r['name'], r['kind'])}</td>"
+                f"<td>{move_cell(r)}</td><td>{_esc(r.get('note') or '')}</td></tr>"
+            )
+
+    emit("Trim / sell", trims)
+    emit("Add / buy", buys)
+    emit("Review", reviews)
+    if not rows:
+        rows.append('      <tr><td colspan="4">Everything is within its band — no trades needed.</td></tr>')
+    return "\n".join(rows)
+
+
+# Names you should not be buying, by rule, with a short human stance.
+DO_NOT_CHASE_RULES = {
+    "trim_only": "Trim only, never add",
+    "do_not_add": "Hold, do not add",
+    "wait": "Wait for a catalyst",
+    "avoid": "Avoid / do not own",
+}
+
+
+def render_donotchase_block(plan: dict) -> str:
+    """Body of the 'Do Not Chase' table: every name on a no-buy rule, with the
+    live status appended so an over-band name reads as an active trim."""
+    lines: list[str] = []
+    for r in plan["rows"]:
+        stance = DO_NOT_CHASE_RULES.get(r["rule"])
+        if not stance:
+            continue
+        if r["status"] == "ABOVE":
+            stance += " &mdash; over band, trim"
+        why = _esc(r.get("note") or "")
+        lines.append(
+            f"      <tr><td>{_name_cell(r['name'], r['kind'])}</td>"
+            f"<td>{stance}</td><td>{why}</td></tr>"
+        )
+    return "\n".join(lines)
+
+
+def compute_blocks(holdings: dict, model: dict | None) -> dict[str, str]:
+    """key -> generated HTML for every ``<!--GENBLOCK:key-->`` region."""
+    if not model:
+        return {}
+    plan = rebalance.plan(model, holdings)
+    prices = _price_per_share(holdings)
+    return {
+        "rebalance.targets": render_targets_block(plan),
+        "rebalance.actions": render_actions_block(plan, prices),
+        "rebalance.donotchase": render_donotchase_block(plan),
+    }
+
+
+def apply_blocks(text: str, blocks: dict[str, str]) -> tuple[str, int]:
+    """Replace the body of every recognized ``<!--GENBLOCK:key-->...<!--/...-->``."""
+    replaced = 0
+
+    def repl(match: re.Match) -> str:
+        nonlocal replaced
+        key = match.group("key")
+        if key not in blocks:
+            return match.group(0)
+        replaced += 1
+        return f"<!--GENBLOCK:{key}-->\n{blocks[key]}\n      <!--/GENBLOCK:{key}-->"
+
+    pattern = re.compile(
+        r"<!--GENBLOCK:(?P<key>[\w.]+)-->.*?<!--/GENBLOCK:(?P=key)-->",
+        re.DOTALL,
+    )
+    return pattern.sub(repl, text), replaced
+
+
+def iter_targets(data: dict, claims: dict | None, model: dict | None = None):
     """Yield (path, new_content) for every generated artifact."""
     fragments = compute_fragments(data, claims)
+    blocks = compute_blocks(data, model)
     yield SUMMARY_MD, render_markdown(data)
     for html_path in sorted(REPO_ROOT.glob("*.html")):
         current = html_path.read_text(encoding="utf-8")
-        updated, replaced = apply_fragments(current, fragments)
-        if replaced:
+        updated, n_frag = apply_fragments(current, fragments)
+        updated, n_block = apply_blocks(updated, blocks)
+        if n_frag or n_block:
             yield html_path, updated
+
+
+def regenerate(write: bool = True) -> dict:
+    """Programmatic entry point (used by both the CLI and serve.py).
+
+    Recomputes every derived artifact from the data snapshot. When ``write`` is
+    True, stale files are rewritten and listed in ``written``; when False (a dry
+    run / check) they are listed in ``stale`` instead. Returns a JSON-friendly
+    summary so the web layer can report what changed without parsing stdout."""
+    if not DATA_JSON.exists():
+        return {
+            "ok": False,
+            "error": f"source of truth not found: {DATA_JSON.name}; "
+                     "`data/` is a private submodule (git submodule update --init).",
+            "written": [], "stale": [],
+        }
+
+    data = json.loads(DATA_JSON.read_text(encoding="utf-8"))
+    claims = json.loads(CLAIMS_JSON.read_text(encoding="utf-8")) if CLAIMS_JSON.exists() else None
+    model = json.loads(TARGET_MODEL_JSON.read_text(encoding="utf-8")) if TARGET_MODEL_JSON.exists() else None
+
+    written: list[str] = []
+    stale: list[str] = []
+    for path, new_content in iter_targets(data, claims, model):
+        on_disk = path.read_text(encoding="utf-8") if path.exists() else None
+        if on_disk == new_content:
+            continue
+        rel = str(path.relative_to(REPO_ROOT)).replace("\\", "/")
+        if write:
+            path.write_text(new_content, encoding="utf-8")
+            written.append(rel)
+        else:
+            stale.append(rel)
+    return {"ok": True, "error": None, "written": written, "stale": stale,
+            "has_model": model is not None}
 
 
 def main() -> int:
@@ -215,43 +424,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not DATA_JSON.exists():
-        print(f"error: source of truth not found: {DATA_JSON}", file=sys.stderr)
-        print("hint: `data/` is a private submodule; run `git submodule update --init`.", file=sys.stderr)
+    res = regenerate(write=not args.check)
+    if not res["ok"]:
+        print(f"error: {res['error']}", file=sys.stderr)
         return 2
 
-    data = json.loads(DATA_JSON.read_text(encoding="utf-8"))
-    claims = (
-        json.loads(CLAIMS_JSON.read_text(encoding="utf-8"))
-        if CLAIMS_JSON.exists()
-        else None
-    )
-
-    stale: list[Path] = []
-    written: list[Path] = []
-    for path, new_content in iter_targets(data, claims):
-        on_disk = path.read_text(encoding="utf-8") if path.exists() else None
-        if on_disk == new_content:
-            continue
-        rel = path.relative_to(REPO_ROOT)
-        if args.check:
-            stale.append(rel)
-        else:
-            path.write_text(new_content, encoding="utf-8")
-            written.append(rel)
-
     if args.check:
-        if stale:
+        if res["stale"]:
             print("Stale generated artifacts (run tools/generate_site.py):")
-            for rel in stale:
+            for rel in res["stale"]:
                 print(f"  - {rel}")
             return 1
         print("All generated artifacts are in sync with data/current-holdings.json.")
         return 0
 
-    if written:
+    if res["written"]:
         print("Regenerated:")
-        for rel in written:
+        for rel in res["written"]:
             print(f"  - {rel}")
     else:
         print("Nothing to regenerate; artifacts already match the snapshot.")

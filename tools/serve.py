@@ -55,6 +55,7 @@ import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
+import generate_site  # noqa: E402
 import jobs  # noqa: E402
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -173,6 +174,7 @@ def _setup_status(*, run_checks: bool = False) -> dict:
     return {
         "llm": ticker_analysis.setup_status(run_checks=run_checks),
         "perplexity": _get_auth_state(),
+        "ibkr": _ibkr_status(),
         "environment": {
             "sec_user_agent": bool(os.environ.get("SEC_USER_AGENT")),
             "fmp_api_key": bool(os.environ.get("FMP_API_KEY")),
@@ -792,9 +794,81 @@ def _ticker_index() -> list[dict]:
 # Credentials are NEVER committed: the reader resolves IBKR_FLEX_TOKEN /
 # IBKR_FLEX_QUERY_ID from the environment or a gitignored tools/secrets.env.
 IBKR_READER = Path(__file__).resolve().parent / "ibkr_portfolio.py"
+# Credentials file the reader reads (gitignored). The Settings UI writes here.
+IBKR_SECRETS = IBKR_READER.parent / "secrets.env"
 # Raw pulls + snapshots are personal data -> keep them under data/cache (gitignored
 # and inside the private submodule), never in the public working tree.
 IBKR_CACHE_DIR = DATA_DIR / "cache" / "ibkr"
+
+
+def _read_env_file(path: Path) -> dict:
+    """Minimal KEY=VALUE parser (matches tools/ibkr_portfolio.load_env_file)."""
+    out: dict = {}
+    try:
+        if not path.exists():
+            return out
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            out[key.strip()] = val.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+def _ibkr_status() -> dict:
+    """Whether IBKR Flex credentials are configured. The token is NEVER echoed;
+    the query id is returned so the form can prefill it (useless without the
+    token). Placeholders (<...>) and blanks count as unset, matching the reader."""
+    file_vals = _read_env_file(IBKR_SECRETS)
+
+    def resolve(key: str) -> str:
+        val = (os.environ.get(key) or file_vals.get(key) or "").strip()
+        return "" if (not val or val.startswith("<")) else val
+
+    token = resolve("IBKR_FLEX_TOKEN")
+    query_id = resolve("IBKR_FLEX_QUERY_ID")
+    return {
+        "token_set": bool(token),
+        "query_id": query_id,
+        "configured": bool(token and query_id),
+        "from_env": bool((os.environ.get("IBKR_FLEX_TOKEN") or "").strip()),
+        "secrets_path": str(IBKR_SECRETS.relative_to(REPO_ROOT)).replace("\\", "/"),
+    }
+
+
+def _save_ibkr_secrets(body: dict) -> dict:
+    """Upsert IBKR Flex credentials into the gitignored tools/secrets.env and the
+    live process env. Blank fields are left untouched, so the query id can be
+    updated without re-pasting the token. Returns the (token-free) status."""
+    token = str(body.get("token") or "").strip()
+    query_id = str(body.get("query_id") or "").strip()
+    if not token and not query_id:
+        raise ValueError("nothing to save: provide a Flex token and/or query id")
+
+    existing = _read_env_file(IBKR_SECRETS)
+    if token:
+        existing["IBKR_FLEX_TOKEN"] = token
+        os.environ["IBKR_FLEX_TOKEN"] = token
+    if query_id:
+        existing["IBKR_FLEX_QUERY_ID"] = query_id
+        os.environ["IBKR_FLEX_QUERY_ID"] = query_id
+
+    lines = [
+        "# IBKR Flex Web Service credentials -- gitignored, never commit.",
+        "# Written by the Settings tab; read by tools/ibkr_portfolio.py.",
+    ]
+    # Keep the two known keys first, then preserve any other keys already present.
+    for key in ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID"):
+        if existing.get(key):
+            lines.append(f"{key}={existing[key]}")
+    for key, val in existing.items():
+        if key not in ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID") and val:
+            lines.append(f"{key}={val}")
+    IBKR_SECRETS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return _ibkr_status()
 
 
 def _sync_holdings() -> dict:
@@ -836,7 +910,22 @@ def _sync_holdings() -> dict:
 
     current = _load(HOLDINGS_JSON) or {}
     _write_json(HOLDINGS_JSON, _merge_holdings_snapshot(current, fresh))
-    return holdings_payload()
+    # A fresh snapshot makes the rendered plan (next-steps + detail pages) stale,
+    # so regenerate the derived artifacts in the same call. Best-effort: a render
+    # hiccup must not fail the sync itself.
+    payload = holdings_payload()
+    payload["site"] = _regenerate_site()
+    return payload
+
+
+def _regenerate_site() -> dict:
+    """Re-render the derived report pages from the current data snapshot. Wraps
+    generate_site.regenerate() so a failure degrades gracefully into the payload
+    instead of raising."""
+    try:
+        return generate_site.regenerate(write=True)
+    except Exception as exc:  # noqa: BLE001 -- never let rendering break a sync
+        return {"ok": False, "error": str(exc), "written": [], "stale": []}
 
 
 def _merge_holdings_snapshot(existing: dict, fresh: dict) -> dict:
@@ -1466,6 +1555,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._send_error_json(400, str(exc))
 
+        if path == "/api/site/regenerate":
+            res = _regenerate_site()
+            if not res.get("ok"):
+                return self._send_error_json(400, res.get("error") or "regeneration failed")
+            return self._send_json(res)
+
         if path.startswith("/api/analyze/"):
             try:
                 sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
@@ -1512,6 +1607,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/setup/check":
             return self._send_json(_setup_status(run_checks=True))
+
+        if path == "/api/setup/ibkr":
+            body = self._read_body()
+            try:
+                return self._send_json(_save_ibkr_secrets(body))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            except OSError as exc:
+                return self._send_error_json(500, f"could not write secrets: {exc}")
 
         if path == "/api/deep-research/save":
             body = self._read_body()
