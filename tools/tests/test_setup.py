@@ -145,13 +145,21 @@ class SmokeCheckBackend(unittest.TestCase):
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["message"], "OK")
 
-    def test_quota_phrase_flagged_as_auth_or_quota(self):
+    def test_quota_phrase_flagged_as_quota(self):
         with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude"}, clear=False):
             with mock.patch.object(ta.subprocess, "run",
                                    return_value=self._proc(1, err="Error: usage limit reached")):
                 out = ta._smoke_check_backend("claude", {})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["status"], "auth_or_quota")
+        self.assertEqual(out["status"], "quota")
+
+    def test_auth_phrase_flagged_as_auth(self):
+        with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude"}, clear=False):
+            with mock.patch.object(ta.subprocess, "run",
+                                   return_value=self._proc(1, err="Error: not logged in")):
+                out = ta._smoke_check_backend("claude", {})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], "auth")
 
     def test_generic_failure_is_error(self):
         with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude"}, clear=False):
@@ -176,15 +184,29 @@ class SetupStatus(unittest.TestCase):
         ta.CONFIG_PATH = self._orig
 
     def test_shape_without_checks(self):
-        with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude",
-                                             "REBAL_CURSOR_CLI": "/x/cursor-agent"}, clear=False):
-            st = ta.setup_status()
+        # Probe inconclusive -> installed but credential state unknown.
+        with mock.patch.object(ta, "_auth_probe", return_value=None):
+            with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude",
+                                                 "REBAL_CURSOR_CLI": "/x/cursor-agent"}, clear=False):
+                st = ta.setup_status()
         self.assertFalse(st["config_exists"])  # tmp file not written yet
         self.assertEqual({b["id"] for b in st["backends"]}, {"claude", "cursor"})
         for b in st["backends"]:
             self.assertTrue(b["installed"])
             self.assertEqual(b["status"], "installed")
+            self.assertIsNone(b["authenticated"])
             self.assertNotIn("check", b)
+
+    def test_auth_probe_distinguishes_logged_out_from_ready(self):
+        with mock.patch.object(ta, "_auth_probe", side_effect=lambda pid, **k: pid == "claude"):
+            with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude",
+                                                 "REBAL_CURSOR_CLI": "/x/cursor-agent"}, clear=False):
+                st = ta.setup_status()
+        by = {b["id"]: b for b in st["backends"]}
+        self.assertTrue(by["claude"]["authenticated"])
+        self.assertEqual(by["claude"]["status"], "ready")
+        self.assertFalse(by["cursor"]["authenticated"])
+        self.assertEqual(by["cursor"]["status"], "logged_out")
 
     def test_missing_backends_report_missing(self):
         ctx_env, ctx_which = _no_backends_env()

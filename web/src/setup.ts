@@ -144,11 +144,75 @@ function commandBlock(lines) {
   return `<pre class="setup-command">${esc(lines.join("\n"))}</pre>`;
 }
 
-function backendStateText(backend) {
-  const check = backend.check;
-  if (check) return `${check.status}: ${check.message || ""}`;
-  if (backend.installed) return "installed, not smoke-tested";
-  return "missing";
+// Collapse the backend record (installed / authenticated / smoke-check) into a
+// single phase the UI can drive status text, colours, and fix steps from.
+function backendPhase(b) {
+  const check = b.check;
+  if (check) {
+    if (check.ok) return "ok";
+    if (check.status === "auth") return "logged_out";
+    if (check.status === "quota") return "quota";
+    return "error"; // includes "error" and "timeout"
+  }
+  if (!b.installed) return "missing";
+  if (b.authenticated === false) return "logged_out";
+  if (b.authenticated === true) return "ready";
+  return "installed";
+}
+
+function backendStateText(b) {
+  const check = b.check;
+  switch (backendPhase(b)) {
+    case "ok": return `Ready — smoke check passed${check?.message ? " (" + check.message + ")" : ""}`;
+    case "logged_out": return check ? `Not authenticated: ${check.message || "login required"}` : "Installed, but not logged in";
+    case "quota": return `Authenticated, but rate-limited / out of quota${check?.message ? ": " + check.message : ""}`;
+    case "error": return `${check?.status || "error"}: ${check?.message || "unknown failure"}`;
+    case "ready": return "Logged in — run a smoke check to confirm";
+    case "missing": return "Not installed";
+    default: return "Installed, not smoke-tested";
+  }
+}
+
+function backendPhaseClass(phase) {
+  if (phase === "ok" || phase === "ready") return "ok";
+  if (phase === "installed") return "muted";
+  return "bad"; // missing, logged_out, quota, error
+}
+
+// What to actually do, tailored to the phase (and which CLI).
+function backendFixSteps(id, phase) {
+  const loginCmd = id === "claude" ? "claude auth login" : "cursor-agent login";
+  const installSteps = id === "claude"
+    ? ["Install Claude Code, e.g. `npm i -g @anthropic-ai/claude-code` (or the official installer).",
+       "Ensure `claude` is on your PATH, then reload this page."]
+    : ["Install/update the Cursor CLI so `cursor-agent` is on your PATH.",
+       "Reload this page once it resolves."];
+  switch (phase) {
+    case "missing": return installSteps;
+    case "logged_out": return [
+      `Installed but no credentials. Run \`${loginCmd}\` in a terminal and finish the browser sign-in.`,
+      "Then re-run the smoke check here.",
+    ];
+    case "quota": return [
+      "Credentials are valid — the plan is rate-limited or out of quota.",
+      "Wait for the limit to reset, pick a cheaper model, or upgrade the plan. The other backend is used meanwhile.",
+    ];
+    case "error": return [
+      "Unexpected failure — see the message above.",
+      `If it mentions auth/credentials, run \`${loginCmd}\`; otherwise check the model name / extra args below.`,
+    ];
+    case "ready": return ["Looks authenticated. Run the smoke check to confirm it can actually answer."];
+    case "ok": return [];
+    default: return ["Run the smoke check to verify credentials and the selected model."];
+  }
+}
+
+// Second header badge: credential state, once we know it.
+function authBadge(b) {
+  const phase = backendPhase(b);
+  if (phase === "ok" || phase === "ready") return badge(true, "logged in");
+  if (phase === "logged_out") return badge(false, "not logged in");
+  return ""; // installed/unknown/quota/error/missing -> no auth claim
 }
 
 // Ordered setup steps. `done` drives which step auto-expands: the first
@@ -158,6 +222,8 @@ function setupSteps(st) {
   const backends = st?.llm?.backends || [];
   const anyCliInstalled = backends.some((b) => b.installed);
   const anyCliOk = backends.some((b) => b.check?.ok);
+  const anyCliReady = backends.some((b) => b.check?.ok || b.authenticated === true);
+  const anyLoggedOut = backends.some((b) => b.installed && (b.authenticated === false || b.check?.status === "auth"));
   const pplxOk = !!st?.perplexity?.logged_in;
   const secOk = !!(st.environment || {}).sec_user_agent;
   const ibkr = st.ibkr || {};
@@ -166,9 +232,13 @@ function setupSteps(st) {
       id: "llm",
       title: "Analysis CLI",
       required: true,
-      done: anyCliOk,
-      partial: anyCliInstalled && !anyCliOk,
-      state: anyCliOk ? "Ready" : anyCliInstalled ? "Installed — run a smoke check" : "Not installed yet",
+      done: anyCliReady,
+      partial: anyCliInstalled && !anyCliReady,
+      state: anyCliOk ? "Ready"
+        : anyCliReady ? "Logged in — run a smoke check"
+        : anyLoggedOut ? "Installed — not logged in"
+        : anyCliInstalled ? "Installed — checking credentials"
+        : "Not installed yet",
       render: () => renderLlmCli(st),
     },
     {
@@ -290,18 +360,10 @@ function renderLlmCli(st) {
   const cursor = backendById(st, "cursor");
   const wrap = el("div", "setup-body-inner");
   wrap.innerHTML =
-    `<p class="hint">At least one local CLI must be installed and authorized. The smoke check sends a tiny prompt and should return OK.</p>` +
+    `<p class="hint">At least one local CLI must be installed <em>and logged in</em>. Credentials are probed on load; the smoke check sends a tiny prompt to confirm it can answer.</p>` +
     `<div class="setup-grid">` +
-      renderBackendStatus(st, "claude", claude, [
-        "Install Claude Code if needed.",
-        "Run `claude` once and complete the interactive login/subscription flow.",
-        "Return here and run the smoke check.",
-      ]) +
-      renderBackendStatus(st, "cursor", cursor, [
-        "Install/update Cursor CLI so `cursor-agent` is on PATH.",
-        "Run `cursor-agent login` if the smoke check reports an auth failure.",
-        "Return here and run the smoke check.",
-      ]) +
+      renderBackendStatus(st, "claude", claude) +
+      renderBackendStatus(st, "cursor", cursor) +
     `</div>` +
     `<div class="setup-actions">` +
       `<button class="primary" id="setup-check-llm" type="button">Run smoke checks</button>` +
@@ -318,10 +380,11 @@ function renderLlmCli(st) {
   return wrap;
 }
 
-function renderBackendStatus(st, id, backend, instructions) {
-  const check = backend.check;
+function renderBackendStatus(st, id, backend) {
   const cfg = providerConfig(st, id);
-  const stateCls = check?.ok ? "ok" : check ? "bad" : "muted";
+  const phase = backendPhase(backend);
+  const stateCls = backendPhaseClass(phase);
+  const steps = backendFixSteps(id, phase);
   return (
     `<div class="setup-provider${cfg.enabled ? "" : " disabled"}">` +
       `<div class="setup-provider-head">` +
@@ -329,10 +392,11 @@ function renderBackendStatus(st, id, backend, instructions) {
         `<span class="setup-provider-head-right">` +
           toggle(`setup-${id}-enabled`, "Enabled", cfg.enabled) +
           badge(backend.installed, backend.installed ? "installed" : "missing") +
+          authBadge(backend) +
         `</span>` +
       `</div>` +
       `<div class="setup-small ${stateCls}">${esc(backendStateText(backend))}</div>` +
-      `<ul class="setup-list">${instructions.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` +
+      (steps.length ? `<ul class="setup-list">${steps.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` : "") +
       `<label class="setup-field">Model` +
         `<div class="setup-combo">` +
           `<input class="setup-model" id="setup-${id}-model" placeholder="default (recommended)" value="${esc(cfg.model || "")}" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false">` +
