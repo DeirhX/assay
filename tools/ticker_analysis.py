@@ -68,7 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "allow_web": False,
 }
 
-# Phrases that mean "this backend is out of quota / not usable right now" so the
+# Phrases that mean "this backend is out of quota / rate-limited right now" so the
 # orchestrator falls through to the next provider instead of surfacing an error.
 _QUOTA_HINTS = (
     "usage limit",
@@ -77,9 +77,23 @@ _QUOTA_HINTS = (
     "5-hour limit",
     "limit reached",
     "too many requests",
+)
+
+# Phrases that mean "the CLI is installed but has no usable credentials" -> the
+# user must log in. Also non-fatal so the orchestrator tries the other backend.
+_AUTH_HINTS = (
     "authentication required",
     "please run 'agent login'",
+    'please run "agent login"',
     "not logged in",
+    "logged out",
+    "not authenticated",
+    "unauthorized",
+    "login required",
+    "invalid api key",
+    "no api key",
+    "credentials",
+    "auth login",
 )
 
 PROVIDER_LABELS = {"claude": "Claude CLI", "cursor": "Cursor CLI"}
@@ -252,11 +266,58 @@ def _smoke_check_backend(pid: str, provider: dict[str, Any], *, timeout: int = 4
     if proc.returncode == 0 and out:
         return {"ok": True, "status": "ok", "message": _last_line(out) or "OK"}
     blob = err or out or f"exit {proc.returncode}"
+    status = "auth" if _looks_like_auth(blob) else "quota" if _looks_like_quota(blob) else "error"
     return {
         "ok": False,
-        "status": "auth_or_quota" if _looks_like_quota(blob) else "error",
+        "status": status,
         "message": _last_line(blob) or blob,
     }
+
+
+def _auth_probe(pid: str, *, timeout: int = 12) -> bool | None:
+    """Cheap 'are credentials present?' check that does NOT send a real prompt, so
+    the UI can tell "installed but not logged in" apart from "installed and ready"
+    on page load. Returns True (logged in), False (no credentials), or None
+    (unknown / probe unavailable). Privacy: the CLIs print the account email/org
+    here -- we extract only the boolean and never return or log that PII."""
+    try:
+        if pid == "claude":
+            exe = _claude_exe()
+            if not exe:
+                return None
+            proc = subprocess.run([exe, "auth", "status"], capture_output=True,
+                                  text=True, timeout=timeout, encoding="utf-8", errors="replace")
+            try:
+                val = json.loads(proc.stdout or "{}").get("loggedIn")
+                if isinstance(val, bool):
+                    return val
+            except (ValueError, AttributeError):
+                pass
+            blob = ((proc.stdout or "") + "\n" + (proc.stderr or "")).lower()
+            if '"loggedin": true' in blob or "logged in" in blob:
+                return True
+            if _looks_like_auth(blob) or "logged out" in blob:
+                return False
+            return None
+        if pid == "cursor":
+            base = _cursor_argv_base()
+            if not base:
+                return None
+            proc = subprocess.run(base + ["status"], capture_output=True,
+                                  text=True, timeout=timeout, encoding="utf-8", errors="replace")
+            blob = ((proc.stdout or "") + "\n" + (proc.stderr or "")).lower()
+            if _looks_like_auth(blob):
+                return False
+            if proc.returncode == 0 and ("logged in" in blob or "login successful" in blob):
+                return True
+            if proc.returncode != 0:
+                return False
+            return None
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:  # noqa: BLE001 -- a flaky probe must never break setup status
+        return None
+    return None
 
 
 def setup_status(*, run_checks: bool = False) -> dict[str, Any]:
@@ -272,11 +333,25 @@ def setup_status(*, run_checks: bool = False) -> dict[str, Any]:
             "enabled": bool(provider.get("enabled", True)),
             "model": provider.get("model") or "",
             "extra_args": list(provider.get("extra_args") or []),
+            "authenticated": None,
         }
         rec["status"] = "installed" if rec["installed"] else "missing"
         if run_checks:
+            # A real smoke check is the source of truth; skip the cheap probe.
             rec["check"] = _smoke_check_backend(pid, provider)
             rec["status"] = rec["check"].get("status", rec["status"])
+            if rec["check"].get("ok"):
+                rec["authenticated"] = True
+            elif rec["check"].get("status") == "auth":
+                rec["authenticated"] = False
+        elif rec["installed"]:
+            # Cheap credential probe so load-time UI distinguishes logged-out from ready.
+            auth = _auth_probe(pid)
+            rec["authenticated"] = auth
+            if auth is False:
+                rec["status"] = "logged_out"
+            elif auth is True:
+                rec["status"] = "ready"
         backends.append(rec)
     return {
         "config_exists": CONFIG_PATH.exists(),
@@ -465,6 +540,17 @@ def _looks_like_quota(text: str) -> bool:
     return any(h in low for h in _QUOTA_HINTS)
 
 
+def _looks_like_auth(text: str) -> bool:
+    low = text.lower()
+    return any(h in low for h in _AUTH_HINTS)
+
+
+def _is_transient_failure(text: str) -> bool:
+    """Quota or auth failures are non-fatal: the orchestrator should try the next
+    backend instead of aborting the whole run."""
+    return _looks_like_quota(text) or _looks_like_auth(text)
+
+
 # Built-in agent tools we expose when web research is on. WebSearch does
 # query->results; WebFetch pulls a specific URL (earnings releases, SEC filings,
 # IR pages). We deliberately stop there: Bash/Edit/Write/Read add risk and zero
@@ -608,7 +694,7 @@ def _finish(pid: str, provider: dict, proc: subprocess.CompletedProcess) -> dict
     if proc.returncode != 0 or not out:
         blob = err or out or f"exit {proc.returncode}"
         # Quota/auth failures are non-fatal: let the next backend try.
-        return {"ok": False, "fatal": not _looks_like_quota(blob),
+        return {"ok": False, "fatal": not _is_transient_failure(blob),
                 "error": f"{PROVIDER_LABELS[pid]}: {blob.splitlines()[-1] if blob.splitlines() else blob}"}
     return {"ok": True, "report": out, "backend": pid,
             "backend_label": PROVIDER_LABELS[pid], "model": provider.get("model") or "(default)"}
@@ -727,7 +813,7 @@ def _finish_claude_json(pid: str, provider: dict, proc: subprocess.CompletedProc
     err = (proc.stderr or "").strip()
     if proc.returncode != 0 or not raw:
         blob = err or raw or f"exit {proc.returncode}"
-        return {"ok": False, "fatal": not _looks_like_quota(blob),
+        return {"ok": False, "fatal": not _is_transient_failure(blob),
                 "error": f"{PROVIDER_LABELS[pid]}: {blob.splitlines()[-1] if blob.splitlines() else blob}"}
     text, usage, sid = raw, {}, session_id
     try:
@@ -737,7 +823,7 @@ def _finish_claude_json(pid: str, provider: dict, proc: subprocess.CompletedProc
     if isinstance(data, dict):
         if data.get("is_error"):
             msg = str(data.get("result") or data.get("error") or "claude error")
-            return {"ok": False, "fatal": not _looks_like_quota(msg), "error": f"{PROVIDER_LABELS[pid]}: {msg}"}
+            return {"ok": False, "fatal": not _is_transient_failure(msg), "error": f"{PROVIDER_LABELS[pid]}: {msg}"}
         text = (data.get("result") or "").strip()
         usage = data.get("usage") or {}
         sid = data.get("session_id") or session_id
