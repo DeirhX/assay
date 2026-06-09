@@ -203,8 +203,9 @@ function initShell() {
     status.classList.remove("err");
     status.textContent = "Re-pulling portfolio from IBKR (read-only, can take a minute)…";
     try {
-      await api("/api/holdings/sync", "POST", {});
+      const res = await api("/api/holdings/sync", "POST", {});
       await loadHoldings();
+      status.textContent = "Synced. " + planMsg(res && res.site);
     } catch (e) {
       status.textContent = "Sync failed: " + e.message;
       status.classList.add("err");
@@ -213,6 +214,36 @@ function initShell() {
       btn.textContent = prev;
     }
   });
+
+  const regen = $("#plan-regen");
+  if (regen) {
+    regen.addEventListener("click", async () => {
+      const status = $("#hold-status");
+      const prev = regen.textContent;
+      regen.disabled = true;
+      regen.textContent = "Regenerating…";
+      status.classList.remove("err");
+      try {
+        const res = await api("/api/site/regenerate", "POST", {});
+        status.textContent = planMsg(res);
+      } catch (e) {
+        status.textContent = "Regenerate failed: " + e.message;
+        status.classList.add("err");
+      } finally {
+        regen.disabled = false;
+        regen.textContent = prev;
+      }
+    });
+  }
+}
+
+// Human-readable summary of a generate_site.regenerate() result.
+function planMsg(site) {
+  if (!site) return "Plan not regenerated.";
+  if (site.ok === false) return "Plan not regenerated: " + (site.error || "unknown error");
+  const n = (site.written || []).length;
+  if (!site.has_model && n === 0) return "Plan unchanged (no target model found).";
+  return n ? `Plan regenerated (${n} file${n === 1 ? "" : "s"} updated).` : "Plan already up to date.";
 }
 
 export {

@@ -49,6 +49,15 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+.tab.settings-cog {
+  width: var(--control-h); height: var(--control-h); padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-soft); color: var(--muted); flex-shrink: 0;
+}
+.tab.settings-cog svg { display: block; transition: transform .25s ease; }
+.tab.settings-cog:hover { color: var(--text); border-color: var(--border); background: var(--panel-2); }
+.tab.settings-cog:hover svg { transform: rotate(45deg); }
+.tab.settings-cog.active { color: var(--accent); border-color: var(--accent); background: rgba(130,170,255,.12); }
 .topbar .spacer { flex: 1; }
 .topbar nav { display: flex; gap: 8px; font-size: 13px; flex-wrap: wrap; }
 .topbar nav a {
@@ -226,6 +235,15 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
   flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
 }
 .setup-field-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }
+/* Inputs in a setup-field that aren't inside a provider card (e.g. IBKR creds). */
+.setup-body-inner > .setup-field input {
+  width: 100%; height: 36px; margin-top: 6px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 9px; padding: 0 11px; transition: border-color .12s, box-shadow .12s;
+}
+.setup-body-inner > .setup-field input:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(130,170,255,.18);
+}
 .setup-globals input[type="number"] { width: 84px; height: 34px; margin-top: 0; }
 .setup-advanced-body { margin-top: 4px; }
 .setup-provider-enable { margin-top: 12px; }
@@ -316,7 +334,8 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 .dd-head .sym { font-size: 30px; font-weight: 800; }
 .dd-head .name { color: var(--muted); font-size: 16px; }
 .dd-head .price { font-size: 26px; font-weight: 700; margin-left: auto; }
-.dd-sub { color: var(--muted); font-size: 13px; margin-top: 4px; display: flex; gap: 14px; flex-wrap: wrap; }
+.dd-sub { color: var(--muted); font-size: 13px; margin-top: 4px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+.dd-refresh { margin-left: auto; padding: 4px 10px; font-size: 12px; }
 
 .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .badge {

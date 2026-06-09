@@ -23,3 +23,28 @@ _prbody.txt
 # real positions/NAV/P/L. Build locally with tools/generate_site.py; never commit.
 # (The app shell web/index.html lives under web/ and stays tracked.)
 /*.html
+
+# --- Secret / credential belt-and-suspenders ---
+# `secrets.env` and `*.env` are covered above; the rest is defense in depth so a
+# stray credential file can never be staged by accident.
+.env
+.env.*
+*.secret
+*.secrets
+secrets.*
+*credentials*.json
+*.token
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_rsa.pub
+id_ed25519
+*.ppk
+
+# Scratch / generated junk
+*.tmp
+COMMIT_MSG*
+PR_BODY*

@@ -197,6 +197,11 @@ function renderDeepDive(rec) {
     `<span>as of ${new Date(rec.as_of).toLocaleString()}</span>` +
     (owned != null ? `<span class="owned-pill">held: ${fmtWeight(owned)} NAV</span>` : `<span class="muted">not held</span>`) +
     (target.rule ? `<span>rule: <strong>${esc(target.rule)}</strong></span>` : `<span class="muted">no target rule</span>`);
+  const refreshBtn = el("button", "ghost dd-refresh", "\u21bb Refresh");
+  refreshBtn.type = "button";
+  refreshBtn.title = "Re-pull live price history, price, metrics, and profile from Yahoo / SEC / FMP";
+  refreshBtn.addEventListener("click", () => pullTicker(rec.symbol, { push: false }));
+  sub.appendChild(refreshBtn);
   card.appendChild(sub);
 
   // source badges

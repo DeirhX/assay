@@ -26,6 +26,9 @@ export default defineConfig({
       // Root static report pages (next-steps.html, losers.html, ...) are served
       // by Python; forward them so links work in the dev server too.
       "^/[a-z0-9-]+\\.html$": { target: API, changeOrigin: false },
+      // ...and the sibling assets those report pages pull in. Kept explicit so
+      // the SPA's own /style.css (served by Vite from web/) is NOT proxied.
+      "^/(site\\.css|privacy\\.css|privacy\\.js)$": { target: API, changeOrigin: false },
     },
   },
 });
