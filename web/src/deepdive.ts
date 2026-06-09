@@ -720,7 +720,7 @@ async function openAnalysisConfig() {
 
     const opts = el("div", "backend-opts");
     opts.innerHTML =
-      `<label><input type="checkbox" id="cfg-web" ${cfg.allow_web ? "checked" : ""}> Allow web research (Claude WebSearch + WebFetch, cited; slower &amp; fresher \u2014 off keeps it grounded purely in the data)</label>` +
+      `<label><input type="checkbox" id="cfg-web" ${cfg.allow_web ? "checked" : ""}> Allow web research (Claude + Cursor, cited; slower &amp; fresher \u2014 off keeps it grounded purely in the data)</label>` +
       `<label>Timeout <input type="number" id="cfg-timeout" min="30" max="1200" value="${Number(cfg.timeout_sec) || 300}"> s</label>`;
     panel.appendChild(opts);
 

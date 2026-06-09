@@ -32,7 +32,7 @@
       <strong>Errors</strong>
       <div class="error-panel-actions">
         <button class="ghost" id="error-clear" type="button">Clear all</button>
-        <button class="ghost" id="error-close" type="button" aria-label="Close errors">Close</button>
+        <button class="panel-close" id="error-close" type="button" aria-label="Close errors">&times;</button>
       </div>
     </div>
     <div class="error-list" id="error-list"></div>
@@ -41,7 +41,7 @@
   <div class="settings-panel" id="settings-panel" hidden>
     <div class="settings-head">
       <strong>Settings</strong>
-      <button class="ghost" id="settings-close" type="button" aria-label="Close settings">Close</button>
+      <button class="panel-close" id="settings-close" type="button" aria-label="Close settings">&times;</button>
     </div>
     <div class="settings-row">
       <div class="settings-info">
@@ -53,19 +53,6 @@
   </div>
 
   <main>
-    <section class="console-hero" aria-label="Console overview">
-      <div>
-        <span class="eyebrow">Local research control plane</span>
-        <h2>Validate numbers, draft segments, and keep thesis changes reviewable.</h2>
-        <p>Use percentages for sharing, deterministic pulls for facts, and the Pipeline tab for Perplexity-backed narrative research.</p>
-      </div>
-      <div class="hero-steps" aria-label="Common workflow">
-        <span>1. Pull data</span>
-        <span>2. Review thesis</span>
-        <span>3. Propose targets</span>
-      </div>
-    </section>
-
     <!-- DEEP DIVE -->
     <section class="view active" id="view-deepdive">
       <div class="searchbar">
@@ -338,6 +325,7 @@
         <button class="primary" id="hold-sync" type="button">Resync from IBKR</button>
         <span class="hint" id="hold-synced"></span>
       </div>
+      <div class="hint">Your sanitized IBKR positions, cash, and tax lots. Resync runs a read-only Flex pull — a point-in-time snapshot, not live prices. Weights are % of NAV from base-currency market value; refresh before acting on exact figures.</div>
       <div class="status" id="hold-status"></div>
       <div id="hold-result"></div>
     </section>

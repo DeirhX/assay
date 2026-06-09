@@ -19,12 +19,18 @@ Design choices / honest caveats:
   (cursor ``--mode ask``) so a backend can't shell out, edit files, or hang on a
   permission prompt; the note is grounded ONLY in the numbers we hand it -- if a
   figure is missing it is told to say so, not to guess.
-* Optional web research (config ``allow_web``): Claude gets ONLY the scoped
-  ``WebSearch`` / ``WebFetch`` tools, pre-approved via ``--allowedTools`` so the
-  headless ``-p`` run can't be silently denied on a permission prompt it can't
-  answer. The prompt then switches to web-aware ground rules that REQUIRE a
-  source URL for every web-derived fact. We still never enable Bash/Edit/Write
-  -- an analyst note has no business shelling out or touching the filesystem.
+* Optional web research (config ``allow_web``) spans BOTH backends, steered by
+  the same prompt ground rules that REQUIRE a source URL for every web-derived
+  fact. The CLIs differ in how the tool is granted:
+  - Claude gets ONLY the scoped ``WebSearch`` / ``WebFetch`` tools, pre-approved
+    via ``--allowedTools`` so the headless ``-p`` run can't be silently denied on
+    a permission prompt it can't answer.
+  - cursor-agent has no per-tool flag, so it stays in read-only ``--mode ask``
+    and uses its built-in web search when available; web *intent* is carried by
+    the prompt. If ask mode exposes no web tool, the note just stays grounded in
+    the DATA.
+  We still never enable Bash/Edit/Write on either -- an analyst note has no
+  business shelling out or touching the filesystem.
 * Backends consume YOUR interactive coding quota. Cheap != free; that's why this
   is gated behind an explicit button, not run on every page view.
 * Windows is a first-class target. ``cursor-agent`` ships as a PowerShell/.cmd
@@ -377,7 +383,7 @@ def _data_rule(allow_web: bool) -> str:
                 'data" rather than guessing.')
     return (
         "- Anchor all position math and the valuation multiples in the DATA block; never invent "
-        "those figures. You MAY use the WebSearch / WebFetch tools for fresher qualitative context "
+        "those figures. You MAY use your web search / fetch tools for fresher qualitative context "
         "the DATA lacks: recent news, the latest earnings/guidance, analyst actions, regulatory or "
         "competitive developments.\n"
         "- Every web-derived fact MUST be followed by its source URL in parentheses, and prefer "
@@ -395,7 +401,7 @@ def _qa_data_rule(allow_web: bool) -> str:
                 'present, say "not in the data".')
     return (
         "- Anchor figures in the DATA block (don't invent them) and use the conversation/analyst "
-        "note for continuity. You MAY use WebSearch / WebFetch for fresher facts the DATA lacks "
+        "note for continuity. You MAY use your web search / fetch tools for fresher facts the DATA lacks "
         "(recent news, latest earnings/guidance, analyst actions).\n"
         "- Cite every web-derived fact with its source URL in parentheses, preferring primary "
         "sources; date time-sensitive claims. Drop anything you can't verify."
@@ -572,9 +578,15 @@ def _run_cursor(prompt: str, provider: dict, cfg: dict,
     # cursor-agent does NOT read the prompt from stdin in -p mode; it must be a
     # positional arg. We pass it as a real argv element (no shell) so quotes and
     # newlines survive intact.
-    argv = base + ["-p", prompt, "--output-format", "text", "--trust"]
-    if not cfg.get("allow_web"):
-        argv += ["--mode", "ask"]  # read-only Q&A; no shell, no edits
+    # Always read-only. cursor-agent has no per-tool web flag: its only modes are
+    # the read-only "ask"/"plan", while bare -p grants ALL tools (incl. shell +
+    # write). An analyst note must never shell out or edit, so we pin "ask"
+    # unconditionally and let web research be steered by the prompt's ground rules
+    # (same as Claude). Cursor's ask mode uses its built-in web search when the
+    # agent exposes it; if it doesn't, the run simply stays grounded in the
+    # deterministic DATA -- safe either way, and never at the cost of full agent
+    # powers like the old allow_web path did.
+    argv = base + ["-p", prompt, "--output-format", "text", "--trust", "--mode", "ask"]
     if provider.get("model"):
         argv += ["--model", provider["model"]]
     argv += list(provider.get("extra_args") or [])

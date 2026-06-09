@@ -42,16 +42,16 @@ class RunTimeout(unittest.TestCase):
 class GroundRules(unittest.TestCase):
     def test_offline_rule_restricts_to_data(self):
         self.assertIn("ONLY", ta._data_rule(False))
-        self.assertNotIn("WebSearch", ta._data_rule(False))
+        self.assertNotIn("web search", ta._data_rule(False))
 
     def test_web_rule_permits_search_and_demands_citations(self):
         rule = ta._data_rule(True)
-        self.assertIn("WebSearch", rule)
+        self.assertIn("web search", rule)
         self.assertIn("source URL", rule)
 
     def test_qa_rules_track_web_flag(self):
         self.assertIn("ONLY", ta._qa_data_rule(False))
-        self.assertIn("WebSearch", ta._qa_data_rule(True))
+        self.assertIn("web search", ta._qa_data_rule(True))
 
     def test_sources_section_only_when_web(self):
         self.assertEqual(ta._sources_section(False), "")
