@@ -5,8 +5,131 @@ let _wired = false;
 
 const LLM_IDS = ["claude", "cursor"];
 
+// Model suggestions per provider, fetched once from /api/analysis-models and
+// reused across re-renders. Empty until loaded; the inputs stay free-text so an
+// unlisted model still works even if the list never arrives.
+let _models = {};
+
 function badge(ok, text) {
   return `<span class="setup-badge ${ok ? "ok" : "bad"}">${esc(text)}</span>`;
+}
+
+function toggle(id, label, checked) {
+  return (
+    `<label class="setup-toggle">` +
+      `<input type="checkbox" id="${esc(id)}" ${checked ? "checked" : ""}>` +
+      `<span class="setup-toggle-track"></span>` +
+      `<span class="setup-toggle-label">${esc(label)}</span>` +
+    `</label>`
+  );
+}
+
+async function ensureModels() {
+  if (Object.keys(_models).length) return;
+  try {
+    const r = await api("/api/analysis-models");
+    _models = r.models || {};
+  } catch (e) {
+    /* leave inputs as free-text */
+  }
+}
+
+// Build the dropdown body. An empty filter (manual expand) shows everything;
+// a non-empty filter (the user typing) narrows to substring matches.
+function comboMenuHtml(id, filter) {
+  const f = (filter || "").trim().toLowerCase();
+  const items = (_models[id] || []).filter(
+    (m) => !f || `${m.value} ${m.label || ""}`.toLowerCase().includes(f),
+  );
+  if (!items.length) {
+    return `<div class="setup-combo-empty">${f ? "no matches" : "no suggestions"}</div>`;
+  }
+  return items
+    .map(
+      (m) =>
+        `<div class="setup-combo-item" role="option" data-val="${esc(m.value)}">` +
+          `<span class="setup-combo-val">${esc(m.value)}</span>` +
+          (m.label && m.label !== m.value ? `<span class="setup-combo-label">${esc(m.label)}</span>` : "") +
+        `</div>`,
+    )
+    .join("");
+}
+
+// Lightweight combobox: native <datalist> filters by the current value the
+// moment the field is non-empty, which kills "open to see all". So we drive our
+// own menu — focus/caret shows the full list, typing filters it. Options are
+// read from _models lazily, so a slow Cursor list still populates once it lands.
+function wireModelCombo(id) {
+  const input = document.getElementById(`setup-${id}-model`);
+  const menu = document.getElementById(`setup-combo-${id}`);
+  if (!input || !menu || input.dataset.comboWired) return;
+  input.dataset.comboWired = "1";
+
+  const open = (showAll) => {
+    menu.innerHTML = comboMenuHtml(id, showAll ? "" : input.value);
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+  const close = () => {
+    menu.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+  };
+  const setActive = (items, idx) => {
+    items.forEach((it) => it.classList.remove("active"));
+    if (idx >= 0 && items[idx]) {
+      items[idx].classList.add("active");
+      items[idx].scrollIntoView({ block: "nearest" });
+    }
+  };
+
+  input.addEventListener("focus", () => open(true));
+  input.addEventListener("click", () => open(true));
+  input.addEventListener("input", () => open(false));
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") return close();
+    const items = [...menu.querySelectorAll(".setup-combo-item")];
+    if (menu.hidden || !items.length) return;
+    let idx = items.findIndex((it) => it.classList.contains("active"));
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive(items, Math.min(items.length - 1, idx + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive(items, Math.max(0, idx - 1));
+    } else if (e.key === "Enter" && idx >= 0) {
+      e.preventDefault();
+      input.value = items[idx].dataset.val;
+      close();
+    }
+  });
+
+  // mousedown (not click) so selecting fires before the input's blur closes it.
+  menu.addEventListener("mousedown", (e) => {
+    const it = e.target.closest(".setup-combo-item");
+    if (!it) return;
+    e.preventDefault();
+    input.value = it.dataset.val;
+    close();
+  });
+  const caret = input.parentElement.querySelector(".setup-combo-caret");
+  if (caret) {
+    caret.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      if (menu.hidden) {
+        input.focus();
+        open(true);
+      } else {
+        close();
+      }
+    });
+  }
+}
+
+// Wire any model comboboxes present after a render. Idempotent per element, and
+// safe to call again once models finish loading since the menu reads _models live.
+function fillModelLists() {
+  LLM_IDS.forEach(wireModelCombo);
 }
 
 function backendById(st, id) {
@@ -28,88 +151,163 @@ function backendStateText(backend) {
   return "missing";
 }
 
-function setupSummary(st) {
+// Ordered setup steps. `done` drives which step auto-expands: the first
+// not-done step opens, everything else stays collapsed so the user only ever
+// deals with one thing at a time.
+function setupSteps(st) {
   const backends = st?.llm?.backends || [];
   const anyCliInstalled = backends.some((b) => b.installed);
   const anyCliOk = backends.some((b) => b.check?.ok);
   const pplxOk = !!st?.perplexity?.logged_in;
+  const secOk = !!(st.environment || {}).sec_user_agent;
   return [
-    { label: "LLM CLI installed", ok: anyCliInstalled },
-    { label: "LLM CLI smoke-tested", ok: anyCliOk },
-    { label: "Perplexity login", ok: pplxOk },
+    {
+      id: "llm",
+      title: "Analysis CLI",
+      required: true,
+      done: anyCliOk,
+      partial: anyCliInstalled && !anyCliOk,
+      state: anyCliOk ? "Ready" : anyCliInstalled ? "Installed — run a smoke check" : "Not installed yet",
+      render: () => renderLlmCli(st),
+    },
+    {
+      id: "pplx",
+      title: "Perplexity Deep Research login",
+      required: true,
+      done: pplxOk,
+      partial: false,
+      state: pplxOk ? "Logged in" : "Not logged in",
+      render: () => renderPerplexity(st),
+    },
+    {
+      id: "env",
+      title: "Environment",
+      required: false,
+      done: secOk,
+      partial: false,
+      state: secOk ? "SEC user-agent set" : "Optional — SEC user-agent recommended",
+      render: () => renderEnvironment(st),
+    },
   ];
+}
+
+function stepStateBadge(step) {
+  if (step.done) return badge(true, "OK");
+  if (step.partial) return `<span class="setup-badge warn">IN PROGRESS</span>`;
+  return badge(false, step.required ? "TODO" : "OPTIONAL");
 }
 
 function renderSetup(st) {
   const out = $("#setup-result");
   out.innerHTML = "";
 
-  const summary = el("div", "setup-summary");
-  setupSummary(st).forEach((item) => {
-    summary.innerHTML += badge(item.ok, `${item.ok ? "OK" : "TODO"} · ${item.label}`);
-  });
-  out.appendChild(summary);
+  const steps = setupSteps(st);
+  const next = steps.find((s) => s.required && !s.done) || steps.find((s) => !s.done);
+  const doneCount = steps.filter((s) => s.done).length;
 
-  out.appendChild(renderEnvironment(st));
-  out.appendChild(renderLlmCli(st));
-  out.appendChild(renderPerplexity(st));
+  const progress = el("div", "setup-progress" + (next ? "" : " ok"));
+  progress.innerHTML = next
+    ? `<div class="setup-progress-count">${doneCount}/${steps.length} done</div>` +
+      `<div class="setup-next">Next: <strong>${esc(next.title)}</strong> — ${esc(next.state)}</div>`
+    : `<div class="setup-progress-count ok">All set</div>` +
+      `<div class="setup-next">Everything required is configured. Expand any step to revisit it.</div>`;
+  out.appendChild(progress);
+
+  steps.forEach((step) => {
+    const d = el("details", "setup-step" + (step.done ? " done" : step.partial ? " partial" : ""));
+    if (next && step.id === next.id) d.open = true;
+    const summary = el("summary", "setup-step-head");
+    summary.innerHTML =
+      `<span class="setup-step-title">${esc(step.title)}</span>` +
+      `<span class="setup-step-state"><span class="setup-step-note">${esc(step.state)}</span>${stepStateBadge(step)}</span>`;
+    d.appendChild(summary);
+    const body = el("div", "setup-step-body");
+    body.appendChild(step.render());
+    d.appendChild(body);
+    out.appendChild(d);
+  });
+
+  fillModelLists();
 }
 
 function renderEnvironment(st) {
   const env = st.environment || {};
-  const card = el("div", "card setup-card");
-  card.innerHTML =
-    `<h2 class="section">Environment</h2>` +
+  const wrap = el("div", "setup-body-inner");
+  wrap.innerHTML =
     `<div class="setup-row"><strong>SEC user-agent</strong>${badge(env.sec_user_agent, env.sec_user_agent ? "set" : "missing")}</div>` +
     `<p class="hint">Set <code>SEC_USER_AGENT</code> before launching the server so SEC EDGAR requests identify you politely.</p>` +
     commandBlock([`$env:SEC_USER_AGENT = "assay research (you@example.com)"`, "py -3 tools/serve.py"]) +
-    `<div class="setup-row"><strong>FMP API key</strong>${badge(env.fmp_api_key, env.fmp_api_key ? "set" : "optional")}</div>` +
-    `<p class="hint">FMP is optional. If set, it gives a third opinion for some market-cap and profile fields.</p>`;
-  return card;
+    `<details class="setup-advanced">` +
+      `<summary>Optional: FMP API key</summary>` +
+      `<div class="setup-row"><strong>FMP API key</strong>${badge(env.fmp_api_key, env.fmp_api_key ? "set" : "optional")}</div>` +
+      `<p class="hint">FMP is optional. If set, it gives a third opinion for some market-cap and profile fields.</p>` +
+    `</details>`;
+  return wrap;
 }
 
 function renderLlmCli(st) {
-  const card = el("div", "card setup-card");
   const claude = backendById(st, "claude");
   const cursor = backendById(st, "cursor");
-  card.innerHTML =
-    `<h2 class="section">LLM CLIs for ticker analysis</h2>` +
+  const wrap = el("div", "setup-body-inner");
+  wrap.innerHTML =
     `<p class="hint">At least one local CLI must be installed and authorized. The smoke check sends a tiny prompt and should return OK.</p>` +
     `<div class="setup-grid">` +
-      renderBackendConfig(st, "claude", claude, [
+      renderBackendStatus(st, "claude", claude, [
         "Install Claude Code if needed.",
         "Run `claude` once and complete the interactive login/subscription flow.",
         "Return here and run the smoke check.",
       ]) +
-      renderBackendConfig(st, "cursor", cursor, [
+      renderBackendStatus(st, "cursor", cursor, [
         "Install/update Cursor CLI so `cursor-agent` is on PATH.",
         "Run `cursor-agent login` if the smoke check reports an auth failure.",
         "Return here and run the smoke check.",
       ]) +
     `</div>` +
-    `<div class="setup-form-row">` +
-      `<label>Timeout seconds <input id="setup-timeout" type="number" min="30" step="30" value="${esc(st.llm.config.timeout_sec || 300)}"></label>` +
-      `<label class="setup-check"><input id="setup-web" type="checkbox" ${st.llm.config.allow_web ? "checked" : ""}> Allow Claude web research</label>` +
-    `</div>` +
-    `<div class="thesis-actions">` +
-      `<button class="primary" id="setup-save-llm" type="button">Save LLM config</button>` +
-      `<button class="ghost" id="setup-check-llm" type="button">Run smoke checks</button>` +
+    `<div class="setup-actions">` +
+      `<button class="primary" id="setup-check-llm" type="button">Run smoke checks</button>` +
+      `<button class="ghost" id="setup-save-llm" type="button">Save config</button>` +
       `<span class="status" id="setup-llm-status"></span>` +
+    `</div>` +
+    `<div class="setup-globals">` +
+      toggle("setup-web", "Allow web research (Claude + Cursor)", st.llm.config.allow_web) +
+      `<label class="setup-field-inline">Timeout` +
+        `<input id="setup-timeout" type="number" min="30" step="30" value="${esc(st.llm.config.timeout_sec || 300)}">` +
+        `<span>s</span>` +
+      `</label>` +
     `</div>`;
-  return card;
+  return wrap;
 }
 
-function renderBackendConfig(st, id, backend, instructions) {
-  const cfg = providerConfig(st, id);
+function renderBackendStatus(st, id, backend, instructions) {
   const check = backend.check;
+  const cfg = providerConfig(st, id);
+  const stateCls = check?.ok ? "ok" : check ? "bad" : "muted";
   return (
-    `<div class="setup-provider">` +
-      `<div class="setup-row"><strong>${esc(backend.label || id)}</strong>${badge(backend.installed, backend.installed ? "installed" : "missing")}</div>` +
-      `<div class="setup-small ${check?.ok ? "ok" : check ? "bad" : ""}">${esc(backendStateText(backend))}</div>` +
-      `<label class="setup-check"><input type="checkbox" id="setup-${id}-enabled" ${cfg.enabled ? "checked" : ""}> Enabled</label>` +
-      `<label>Model <input id="setup-${id}-model" placeholder="default" value="${esc(cfg.model || "")}"></label>` +
-      `<label>Extra args <input id="setup-${id}-extra" placeholder="--flag value" value="${esc((cfg.extra_args || []).join(" "))}"></label>` +
+    `<div class="setup-provider${cfg.enabled ? "" : " disabled"}">` +
+      `<div class="setup-provider-head">` +
+        `<strong>${esc(backend.label || id)}</strong>` +
+        `<span class="setup-provider-head-right">` +
+          toggle(`setup-${id}-enabled`, "Enabled", cfg.enabled) +
+          badge(backend.installed, backend.installed ? "installed" : "missing") +
+        `</span>` +
+      `</div>` +
+      `<div class="setup-small ${stateCls}">${esc(backendStateText(backend))}</div>` +
       `<ul class="setup-list">${instructions.map((line) => `<li>${esc(line)}</li>`).join("")}</ul>` +
+      `<label class="setup-field">Model` +
+        `<div class="setup-combo">` +
+          `<input class="setup-model" id="setup-${id}-model" placeholder="default (recommended)" value="${esc(cfg.model || "")}" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false">` +
+          `<span class="setup-combo-caret" aria-hidden="true">\u25be</span>` +
+          `<div class="setup-combo-menu" id="setup-combo-${id}" role="listbox" hidden></div>` +
+        `</div>` +
+      `</label>` +
+      `<details class="setup-advanced">` +
+        `<summary>Advanced</summary>` +
+        `<div class="setup-advanced-body">` +
+          `<label class="setup-field">Extra args` +
+            `<input id="setup-${id}-extra" placeholder="--flag value" value="${esc((cfg.extra_args || []).join(" "))}">` +
+          `</label>` +
+        `</div>` +
+      `</details>` +
     `</div>`
   );
 }
@@ -117,9 +315,8 @@ function renderBackendConfig(st, id, backend, instructions) {
 function renderPerplexity(st) {
   const pplx = st.perplexity || {};
   const env = st.environment || {};
-  const card = el("div", "card setup-card");
-  card.innerHTML =
-    `<h2 class="section">Perplexity Deep Research login</h2>` +
+  const wrap = el("div", "setup-body-inner");
+  wrap.innerHTML =
     `<div class="setup-row"><strong>Browser session</strong>${badge(pplx.logged_in, pplx.logged_in ? "logged in" : "not logged in")}</div>` +
     `<p class="hint">Deep Research uses the persistent browser profile below. The login window is visible so you can complete Google/Perplexity auth and CAPTCHA if those bastards show up.</p>` +
     commandBlock([env.pplx_profile_dir || "~/.cursor/pplx-chrome-profile"]) +
@@ -128,7 +325,7 @@ function renderPerplexity(st) {
       `<button class="ghost" id="setup-pplx-check" type="button">Verify login</button>` +
       `<span class="status" id="setup-pplx-status"></span>` +
     `</div>`;
-  return card;
+  return wrap;
 }
 
 function readLlmConfig() {
@@ -205,6 +402,7 @@ async function runSmokeChecks() {
     const rec = await api("/api/setup/check", "POST", {});
     status.textContent = "checks finished";
     renderSetup(rec);
+    ensureModels().then(fillModelLists);
   } catch (e) {
     status.classList.add("err");
     status.textContent = "checks failed: " + e.message;
@@ -225,6 +423,13 @@ function wireSetup() {
   $("#setup-result").addEventListener("click", (e) => {
     SETUP_ACTIONS[e.target?.id]?.();
   });
+  // Dim a provider card live when its Enabled toggle flips.
+  $("#setup-result").addEventListener("change", (e) => {
+    const t = e.target;
+    if (t && /^setup-(claude|cursor)-enabled$/.test(t.id || "")) {
+      t.closest(".setup-provider")?.classList.toggle("disabled", !t.checked);
+    }
+  });
 }
 
 async function loadSetup() {
@@ -236,6 +441,7 @@ async function loadSetup() {
     const st = await api("/api/setup/status");
     renderSetup(st);
     status.textContent = "Setup status loaded.";
+    ensureModels().then(fillModelLists);
   } catch (e) {
     status.classList.add("err");
     status.textContent = "setup check failed: " + e.message;
