@@ -33,14 +33,32 @@ renderErrorCenter();
 initShell();
 applyPrivacyMode(state.privacyMode);
 const initialNav = navFromUrl();
-window.history.replaceState(initialNav, "", window.location.href);
-restoreNav(initialNav);
-refreshLoginStatus();
-ensureTickerSet();
+boot();
+
+async function boot() {
+  const params = new URLSearchParams(window.location.search);
+  let nav = initialNav;
+  if (!params.has("view")) {
+    try {
+      const setup = await api("/api/setup/status");
+      if (setup?.data?.empty) {
+        nav = { ...nav, view: "setup", ticker: "", segment: "", run: "" };
+      }
+    } catch (_e) {
+      // If setup status itself is unavailable, fall through to the normal route;
+      // the error center already records API failures.
+    }
+  }
+  window.history.replaceState(nav, "", nav.view === "setup" ? "?view=setup" : window.location.href);
+  await restoreNav(nav);
+  refreshLoginStatus();
+  ensureTickerSet();
+}
 
 export {
   _errBtn,
   _errClear,
   _errClose,
   initialNav,
+  boot,
 };

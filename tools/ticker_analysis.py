@@ -701,6 +701,18 @@ def _finish(pid: str, provider: dict, proc: subprocess.CompletedProcess) -> dict
 
 
 _RUNNERS: dict[str, Callable[..., dict]] = {"claude": _run_claude, "cursor": _run_cursor}
+_PROVIDER_ORDER = {"claude": 0, "cursor": 1}
+
+
+def _ordered_providers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Canonical backend preference: Claude first, Cursor as fallback.
+
+    The setup UI writes providers in this order, but config files are editable.
+    Keep the runtime policy explicit so Cursor only runs after Claude is
+    unavailable, not because a hand-edited config accidentally swapped entries.
+    """
+    providers = [p for p in (cfg.get("providers") or []) if p.get("id") in _RUNNERS]
+    return sorted(providers, key=lambda p: _PROVIDER_ORDER.get(p.get("id"), 99))
 
 
 def _run_with_fallback(prompt: str, cfg: dict,
@@ -709,7 +721,7 @@ def _run_with_fallback(prompt: str, cfg: dict,
     """Run a prompt through the configured backends in order, falling back on
     quota/auth failure. Returns the first success, or an aggregate error."""
     attempts: list[str] = []
-    for provider in cfg.get("providers", []):
+    for provider in _ordered_providers(cfg):
         if not provider.get("enabled"):
             continue
         pid = provider.get("id")
@@ -847,9 +859,10 @@ def _run_claude_qa(rec: dict[str, Any], history: list[dict] | None, question: st
         return {"ok": False, "fatal": False, "error": "claude CLI not found on PATH"}
 
     def invoke(prompt_text: str, session_args: list[str]):
-        # --exclude-dynamic-system-prompt-sections keeps the cacheable prefix
-        # stable across runs (its help literally cites prompt-cache reuse).
-        argv = [exe, "-p", "--output-format", "json", "--exclude-dynamic-system-prompt-sections"]
+        # Keep this argv conservative. Some Claude CLI releases do not support
+        # prompt-cache tuning flags, while -p/json/session-id/resume are the core
+        # contract this integration needs.
+        argv = [exe, "-p", "--output-format", "json"]
         argv += session_args
         argv += _claude_tool_args(cfg)
         if provider.get("model"):
@@ -901,7 +914,7 @@ def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
     cfg = cfg or load_config()
     full_prompt = build_qa_prompt(rec, history, question, note, allow_web=cfg.get("allow_web", False))
     attempts: list[str] = []
-    for provider in cfg.get("providers", []):
+    for provider in _ordered_providers(cfg):
         if not provider.get("enabled"):
             continue
         pid = provider.get("id")
