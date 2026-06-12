@@ -245,14 +245,6 @@ async function refreshLoginStatus() {
   }
   state.pplxLoggedIn = !!st.logged_in;
   updateStep2LoginGate();
-  const txt = $("#settings-login-state");
-  if (txt) {
-    const when = st.updated_at ? " (confirmed " + st.updated_at.slice(0, 10) + ")" : "";
-    txt.classList.remove("err");
-    txt.textContent = state.pplxLoggedIn
-      ? `Logged in${when}. Re-login only if runs start hitting the login wall.`
-      : "Not logged in. Use Re-login to set up the Perplexity session.";
-  }
   return state.pplxLoggedIn;
 }
 

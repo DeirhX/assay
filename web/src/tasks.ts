@@ -1,6 +1,5 @@
 // @ts-nocheck
 import { $, el, esc } from "./core";
-import { pollDeepJob } from "./errors";
 
 // ---- Global "task running" pill --------------------------------------------
 // A page-level affordance so a long LLM job (analysis, Q&A, deep research) is

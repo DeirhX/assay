@@ -12,19 +12,23 @@ concurrency:
 
 jobs:
   python:
-    name: Python unittest suite
+    name: Python lint + unittest suite
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      # Backend is stdlib-only, so there is nothing to pip install.
+      # Backend is stdlib-only; ruff is the only dev-time install.
+      - name: Lint (ruff)
+        run: |
+          pip install --quiet ruff
+          ruff check tools
       - name: Run tests
         run: python -m unittest discover -s tools/tests -t tools/tests -v
 
   frontend:
-    name: Frontend typecheck + build
+    name: Frontend typecheck + tests + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,4 +38,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build

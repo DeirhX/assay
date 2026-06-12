@@ -60,9 +60,11 @@ Use `tools/generate_site.py` after refreshing `data/current-holdings.json`.
 
 ## Interactive Research Console
 
-A local, single-user app for launching deep analysis on demand. Run it:
+A local, single-user app for launching deep analysis on demand. The SPA is
+TypeScript and **must be built once** before the Python server can serve it:
 
 ```powershell
+npm install && npm run build   # once (and after pulling web/ changes)
 # optional but polite: identify yourself to the SEC fair-access API
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py
@@ -91,10 +93,12 @@ npm run typecheck    # tsc --noEmit (loose baseline today; tightened as code is
                      # split into typed modules)
 ```
 
-`web/app.ts` is the entry. It is the old `app.js` ported verbatim to TypeScript
-to stand up the toolchain; it carries `// @ts-nocheck` and gets typed as it is
-carved into modules. `web/dist/` and `node_modules/` are gitignored — run
-`npm run build` before serving in prod.
+The entry is `web/src/main.ts`, which boots a set of per-view modules under
+`web/src/` (shell, deepdive, segment, pipeline, analyses, rebalance, holdings,
+setup). Most modules still carry `// @ts-nocheck` and get typed incrementally.
+`web/dist/` and `node_modules/` are gitignored — run `npm run build` before
+serving via the Python server; without it `serve.py` warns at startup and the
+UI will not load.
 
 What it does:
 
@@ -142,14 +146,16 @@ tab checks the local pieces that cannot be safely committed to the repo:
   tab's smoke check. A binary being on `PATH` is not enough; the check verifies
   that authorization actually works.
 - **Perplexity login**: click **Set up Perplexity login** in the Setup tab. A
-  visible browser opens against the persistent profile
-  `~/.cursor/pplx-chrome-profile`; sign into Perplexity there. Future Deep
-  Research pipeline runs reuse that session.
+  visible browser opens against the persistent automation profile
+  `~/.cursor/pplx-automation-profile`; sign into Perplexity there. Future Deep
+  Research pipeline runs reuse that session. (This is separate from the
+  `pplx-chrome-profile` used by the `user-playwright-pplx` MCP browser.)
 
 Typical Windows bootstrap:
 
 ```powershell
 npm install
+npm run build
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py
 ```

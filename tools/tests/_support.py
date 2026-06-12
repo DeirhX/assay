@@ -5,7 +5,6 @@ loader that hijacks a real scraped research dossier as a fixture."""
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 

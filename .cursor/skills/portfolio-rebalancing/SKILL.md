@@ -9,7 +9,9 @@ description: Continue the user's aggressive semiconductor/AI portfolio rebalanci
 
 Before answering or editing pages, read:
 
-- [CURRENT_PLAN.md](CURRENT_PLAN.md)
+- `data/target-model.json` (private submodule) — the machine-readable standing
+  plan: target bands and per-name rules. Run `py -3 tools/rebalance.py` for the
+  current drift view against it.
 - `data/current-holdings-summary.md` if current allocation context matters.
 - `data/current-holdings.json` if exact positions, lots, cash, or NAV weights matter.
 

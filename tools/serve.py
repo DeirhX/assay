@@ -45,7 +45,9 @@ TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
-DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-chrome-profile"
+# Must match pplx_deep_research.default_profile_dir(): the automation worker uses
+# a dedicated profile so it never fights the MCP browser for the profile lock.
+DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1351,6 +1353,15 @@ def _start_import(body: dict) -> dict:
     return _job_public(job)
 
 
+# Generous ceiling for JSON POST bodies (Deep Research reports run to a few
+# hundred KB); anything bigger is a bug or abuse, not a legitimate request.
+_MAX_BODY_BYTES = 5 * 1024 * 1024
+
+
+class _BadRequest(ValueError):
+    """A client-side request problem that should map to HTTP 400, not 500."""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "rebalancing-research/1.0"
 
@@ -1389,8 +1400,9 @@ class Handler(BaseHTTPRequestHandler):
             allowed_root = REPO_ROOT
         else:
             # Prefer the Vite build (web/dist) when it exists; fall back to raw
-            # web/ source otherwise. Note: since the entry is now app.ts, the raw
-            # fallback only fully works via `npm run dev`; prod needs a build.
+            # web/ source otherwise. The entry is TypeScript (web/src/main.ts),
+            # so the raw fallback only fully works via `npm run dev`; serving
+            # the SPA directly from this server requires `npm run build`.
             base = WEB_DIST if (WEB_DIST / "index.html").is_file() else WEB_DIR
             target = (base / clean).resolve()
             allowed_root = base
@@ -1410,12 +1422,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length") or 0)
+        if length > _MAX_BODY_BYTES:
+            raise _BadRequest(f"request body too large ({length} bytes; max {_MAX_BODY_BYTES})")
         if not length:
             return {}
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return {}
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # A silent {} here used to turn client bugs into confusing downstream
+            # "missing field" behavior; fail the request loudly instead.
+            raise _BadRequest(f"malformed JSON body: {exc}") from exc
+        if not isinstance(data, dict):
+            raise _BadRequest("JSON body must be an object")
+        return data
 
     def log_message(self, fmt, *args):  # quieter, single-line logs
         sys.stderr.write(f"  {self.address_string()} {fmt % args}\n")
@@ -1551,6 +1570,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             return self._handle_post_api(path)
+        except _BadRequest as exc:
+            return self._send_error_json(400, str(exc))
         except Exception as exc:  # noqa: BLE001
             return self._handle_unexpected(exc)
 
@@ -1755,7 +1776,8 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="bind address; loopback only (the API has no auth and can write credentials)")
     parser.add_argument("--port", type=int, default=6060)
     parser.add_argument("--reload", action="store_true",
                         help="dev: auto-restart on tools/*.py edits and live-reload the browser on asset changes")
@@ -1766,6 +1788,16 @@ def main() -> int:
     if args.reload and os.environ.get("_REBAL_RELOAD_CHILD") != "1":
         return _run_reloader()
 
+    # Hard refusal, not a warning: every endpoint is unauthenticated, several
+    # write to disk (target model, IBKR credentials) or spawn browser/CLI jobs.
+    # Exposing that beyond loopback is indistinguishable from a remote shell.
+    if args.host not in ("127.0.0.1", "::1", "localhost"):
+        print(f"ERROR: refusing to bind non-loopback host {args.host!r}.", file=sys.stderr)
+        print("  This server has no authentication and can write credentials and", file=sys.stderr)
+        print("  portfolio targets. Run it on 127.0.0.1 and use a tunnel if remote", file=sys.stderr)
+        print("  access is genuinely needed.", file=sys.stderr)
+        return 2
+
     global _RELOAD
     _RELOAD = args.reload
 
@@ -1775,6 +1807,12 @@ def main() -> int:
     if not data_initialized():
         print("  WARNING: " + DATA_MISSING_HINT.rstrip().replace("\n", "\n  "))
         print("  The UI will load but holdings/target views will be empty until then.")
+
+    if not (WEB_DIST / "index.html").is_file():
+        print("  WARNING: web/dist/ is missing -- the console UI will NOT load from this server.")
+        print("  The SPA entry is TypeScript and needs a build. Either:")
+        print("    npm run build   (then this server serves web/dist)")
+        print("    npm run dev     (Vite dev server on :5173, proxying API calls here)")
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"

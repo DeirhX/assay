@@ -442,7 +442,7 @@ function renderPerplexity(st) {
   wrap.innerHTML =
     `<div class="setup-row"><strong>Browser session</strong>${badge(pplx.logged_in, pplx.logged_in ? "logged in" : "not logged in")}</div>` +
     `<p class="hint">Deep Research uses the persistent browser profile below. The login window is visible so you can complete Google/Perplexity auth and CAPTCHA if those bastards show up.</p>` +
-    commandBlock([env.pplx_profile_dir || "~/.cursor/pplx-chrome-profile"]) +
+    commandBlock([env.pplx_profile_dir || "~/.cursor/pplx-automation-profile"]) +
     `<div class="thesis-actions">` +
       `<button class="primary" id="setup-pplx-login" type="button">Set up Perplexity login</button>` +
       `<button class="ghost" id="setup-pplx-check" type="button">Verify login</button>` +
