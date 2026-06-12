@@ -281,11 +281,11 @@ def _positions_from_lots(lots: list[Lot], nav: float | None) -> list[Position]:
     positions: list[Position] = []
     for lot_group in by_symbol.values():
         first = lot_group[0]
-        quantity = sum(l.quantity for l in lot_group)
-        market_value = sum(l.market_value for l in lot_group)
-        base_market_value = sum(l.base_market_value for l in lot_group)
-        cost_basis_money = sum(l.cost_basis_money for l in lot_group)
-        unrealized_pnl = sum(l.unrealized_pnl for l in lot_group)
+        quantity = sum(lot.quantity for lot in lot_group)
+        market_value = sum(lot.market_value for lot in lot_group)
+        base_market_value = sum(lot.base_market_value for lot in lot_group)
+        cost_basis_money = sum(lot.cost_basis_money for lot in lot_group)
+        unrealized_pnl = sum(lot.unrealized_pnl for lot in lot_group)
         percent_of_nav = (
             (base_market_value / nav) * 100 if nav not in (None, 0) else None
         )

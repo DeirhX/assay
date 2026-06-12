@@ -14,8 +14,8 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
 
-    // Loose to start: app.ts is JS-with-a-.ts-extension today. Tighten (strict,
-    // noImplicitAny, noUnusedLocals) incrementally as it is split into modules.
+    // Loose to start: most web/src modules still carry @ts-nocheck. Tighten
+    // (strict, noImplicitAny, noUnusedLocals) incrementally as they get typed.
     "strict": false,
     "noImplicitAny": false,
     "allowJs": true,

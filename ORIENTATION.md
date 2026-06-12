@@ -54,9 +54,12 @@ Expected validator behavior:
 
 ## Live Research Console
 
-Run the local console when you need fresh numeric data for a ticker or segment:
+Run the local console when you need fresh numeric data for a ticker or segment.
+The SPA is TypeScript and needs a one-time Vite build before `serve.py` can
+serve it:
 
 ```powershell
+npm install; npm run build   # once, and after pulling web/ changes
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 "tools\serve.py"
 ```

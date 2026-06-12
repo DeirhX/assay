@@ -10,10 +10,16 @@ multiple free sources, cross-checked, with human judgement kept separate.
 
 ## Run It
 
+The SPA is TypeScript; it must be built before `serve.py` can serve it.
+
 ```powershell
+npm install && npm run build   # once, and after pulling web/ changes
 $env:SEC_USER_AGENT = "assay research (you@example.com)"
 py -3 tools/serve.py            # http://127.0.0.1:6060  (localhost only)
 ```
+
+For frontend development use `npm run dev` (Vite on `http://localhost:5173`
+with HMR, proxying `/api` to the Python server) alongside `serve.py`.
 
 CLI equivalents (no server):
 
@@ -22,7 +28,7 @@ py -3 tools/research_pull.py --ticker NVDA
 py -3 tools/research_pull.py --segment semiconductors
 ```
 
-## Architecture (stdlib only -- no pip installs)
+## Architecture (Python backend is stdlib only -- no pip installs)
 
 - `tools/providers/yahoo.py` -- price/momentum/history + fundamentals (cookie+crumb).
 - `tools/providers/sec_edgar.py` -- independent cross-check for US filers (XBRL
@@ -37,9 +43,11 @@ py -3 tools/research_pull.py --segment semiconductors
   compact Yahoo daily-close price history for the Deep Dive chart.
 - `tools/review_deep_research.py` -- reviews saved Perplexity Deep Research
   artifacts against sources, deterministic ticker data, holdings, and target rules.
-- `tools/serve.py` -- stdlib `http.server`; serves `web/` + the JSON API.
-- `web/` -- vanilla-JS single page (dossier-style deep dive / scored segment /
-  pipeline / holdings tabs).
+- `tools/serve.py` -- stdlib `http.server`; serves the built SPA (`web/dist/`)
+  + the JSON API.
+- `web/` -- TypeScript SPA built with Vite; entry `web/src/main.ts`, per-view
+  modules under `web/src/` (deep dive / segment / pipeline / analyses /
+  rebalance / holdings / setup tabs).
 
 ## Non-Negotiable Discipline
 
@@ -72,7 +80,8 @@ This repo exists to not trust unverified numbers. Keep it that way:
   preferred-source order in `METRIC_SPECS`. Add any new cross-checks in
   `_cross_checks`.
 - **Add a metric**: extend the provider output, `METRIC_SPECS`, and the
-  `METRIC_ROWS`/`SEG_COLS` arrays in `web/app.js`.
+  `METRIC_ROWS` array in `web/src/deepdive.ts` / `SEG_COLS` in
+  `web/src/segment.ts`.
 
 ## Safety
 

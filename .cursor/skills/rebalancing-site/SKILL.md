@@ -11,7 +11,7 @@ Before editing pages, read:
 
 - [SITE_MAP.md](SITE_MAP.md)
 
-If investment recommendations change, also read the `portfolio-rebalancing` skill and its `CURRENT_PLAN.md`.
+If investment recommendations change, also read the `portfolio-rebalancing` skill and the target bands in `data/target-model.json`.
 
 ## Two Layers
 
@@ -22,8 +22,8 @@ This is no longer a purely static site. There are two layers:
   `tools/generate_site.py` from `data/current-holdings.json`.
 - **Interactive Research Console** (`web/` + `tools/serve.py`): a local,
   on-demand app for live multi-source deep dives on any ticker or segment. See
-  the `research-console` skill. Run with `py -3 tools/serve.py` and open
-  `http://127.0.0.1:6060`.
+  the `research-console` skill. Build the SPA once with `npm run build`, then
+  run `py -3 tools/serve.py` and open `http://127.0.0.1:6060`.
 
 The old "keep everything static, no build step" rule was deliberately overridden
 to add the interactive console. The static pages still work as plain files; the

@@ -10,10 +10,16 @@ description: Pull and analyze the user's Interactive Brokers portfolio from the 
 The read-only IBKR Flex reader is **vendored in this repo** at
 `tools/ibkr_portfolio.py` (standard library only). Credentials are never
 committed: the reader resolves `IBKR_FLEX_TOKEN` / `IBKR_FLEX_QUERY_ID` from the
-environment or a gitignored `tools/secrets.env` (copy `secrets.env.example`
-patterns: `IBKR_FLEX_TOKEN=` and `IBKR_FLEX_QUERY_ID=`). Never print, copy, echo,
-summarize, or commit tokens. If credentials are missing or invalid, ask the user
-to update `tools/secrets.env`.
+environment or a gitignored `tools/secrets.env` containing two lines,
+`IBKR_FLEX_TOKEN=...` and `IBKR_FLEX_QUERY_ID=...` (no example file is shipped --
+`.gitignore` deliberately blocks `secrets.*`). The Settings tab's IBKR pane can
+write this file for you. Never print, copy, echo, summarize, or commit tokens.
+If credentials are missing or invalid, ask the user to update `tools/secrets.env`.
+
+Note there are **two** gitignored secrets files: `tools/secrets.env` (IBKR Flex
+credentials, used by the reader and written by the Settings tab) and repo-root
+`secrets.env` (`FMP_API_KEY` for the optional FMP data provider, loaded by
+`tools/serve.py` at startup).
 
 ## Pull Current Holdings
 
