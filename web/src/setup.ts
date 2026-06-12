@@ -237,9 +237,11 @@ function setupSteps(st) {
     partial: !dataReady && !!ibkr.configured,
     state: dataReady
       ? `Ready — ${data.holdings?.positions || 0} positions`
-      : ibkr.configured
-        ? "Credentials configured — sync holdings"
-        : (ibkr.token_set || ibkr.query_id) ? "Incomplete credentials" : "No portfolio data",
+      : (data.holdings?.positions || 0) > 0
+        ? "Holdings synced — set a target model"
+        : ibkr.configured
+          ? "Credentials saved — sync to pull holdings"
+          : (ibkr.token_set || ibkr.query_id) ? "Incomplete credentials" : "No portfolio data",
     render: () => renderIbkr(st),
   };
   const steps = [
@@ -320,22 +322,21 @@ function renderSetup(st) {
 function renderIbkr(st) {
   const k = st.ibkr || {};
   const data = st.data || {};
-  const dataReady = !!data.ready;
   const positions = data.holdings?.positions || 0;
+  const hasSnapshot = positions > 0;
+  const canSync = !!(k.configured || k.from_env);
+  const needsModel = hasSnapshot && data.target_model && !data.target_model.exists;
   const wrap = el("div", "setup-body-inner");
   const tokenPlaceholder = k.token_set
     ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 saved \u2014 leave blank to keep"
     : "paste Flex Web Service token";
   wrap.innerHTML =
-    `<div class="setup-row"><strong>Portfolio snapshot</strong>${badge(dataReady, dataReady ? `${positions} positions` : "empty")}</div>` +
-    `<div class="setup-row"><strong>IBKR Flex Web Service</strong>${badge(k.configured, k.configured ? "configured" : "not set")}</div>` +
-    `<p class="hint">Read-only Flex query behind <strong>Resync from IBKR</strong> on the Holdings tab. ` +
-      `Saved to <code>${esc(k.secrets_path || "tools/secrets.env")}</code> (gitignored) and never committed. ` +
-      `The token is stored locally and never shown back here.</p>` +
+    `<p class="hint">Two steps: <strong>1.</strong> save your read-only Flex credentials, then <strong>2.</strong> sync to pull the holdings snapshot. ` +
+      `Saved to <code>${esc(k.secrets_path || "tools/secrets.env")}</code> (gitignored); the token is stored locally and never shown back here.</p>` +
+    `<div class="setup-row"><strong>1. Flex credentials</strong>${badge(k.configured, k.configured ? "saved" : "not set")}</div>` +
     `<ul class="setup-list">` +
       `<li>IBKR Client Portal &rarr; Settings &rarr; Account Settings &rarr; <strong>Flex Web Service</strong>: enable it and copy the <strong>token</strong>.</li>` +
       `<li>Create a <strong>Flex Query</strong> (positions, cash, open tax lots) and copy its <strong>Query ID</strong>.</li>` +
-      `<li>Save below, then <strong>Resync from IBKR</strong> on the Holdings tab.</li>` +
     `</ul>` +
     (k.from_env ? `<p class="setup-small">A value is currently set via environment variable; that takes precedence over what you save here.</p>` : "") +
     `<label class="setup-field">Flex Query ID` +
@@ -345,9 +346,16 @@ function renderIbkr(st) {
       `<input id="setup-ibkr-token" type="password" placeholder="${esc(tokenPlaceholder)}" autocomplete="off">` +
     `</label>` +
     `<div class="setup-actions">` +
-      `<button class="primary" id="setup-save-ibkr" type="button">Save credentials</button>` +
+      `<button class="${k.configured ? "ghost" : "primary"}" id="setup-save-ibkr" type="button">Save credentials</button>` +
       `<span class="status" id="setup-ibkr-status"></span>` +
-    `</div>`;
+    `</div>` +
+    `<div class="setup-row" style="margin-top:14px"><strong>2. Holdings snapshot</strong>${badge(hasSnapshot, hasSnapshot ? `${positions} positions` : "not pulled yet")}</div>` +
+    `<p class="hint">Pulls the latest positions, cash, and tax lots directly from IBKR (read-only — the Flex query cannot trade). Same action as <strong>Resync from IBKR</strong> on the Holdings tab.</p>` +
+    `<div class="setup-actions">` +
+      `<button class="primary" id="setup-sync-ibkr" type="button"${canSync ? "" : " disabled"} title="${canSync ? "Re-pull holdings from IBKR (read-only)" : "Save your Flex credentials first"}">${hasSnapshot ? "Re-sync holdings" : "Sync holdings now"}</button>` +
+      `<span class="status" id="setup-ibkr-sync-status">${canSync ? "" : "Save credentials first to enable syncing."}</span>` +
+    `</div>` +
+    (needsModel ? `<p class="setup-small">Snapshot present, but no target model yet — set one to finish portfolio setup.</p>` : "");
   return wrap;
 }
 
@@ -545,12 +553,33 @@ async function saveIbkr() {
   }
 }
 
+async function syncIbkr() {
+  const btn = $("#setup-sync-ibkr");
+  const status = $("#setup-ibkr-sync-status");
+  if (!btn || btn.disabled) return;
+  status.classList.remove("err");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  status.textContent = "Re-pulling portfolio from IBKR (read-only, can take a minute)…";
+  try {
+    await api("/api/holdings/sync", "POST", {});
+    await loadSetup(); // re-renders with the fresh snapshot badge + position count
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent = "Sync failed: " + e.message;
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
 const SETUP_ACTIONS = {
   "setup-save-llm": saveLlmConfig,
   "setup-check-llm": runSmokeChecks,
   "setup-pplx-login": startPerplexityLogin,
   "setup-pplx-check": verifyPerplexity,
   "setup-save-ibkr": saveIbkr,
+  "setup-sync-ibkr": syncIbkr,
 };
 
 function wireSetup() {
