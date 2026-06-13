@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { $, api, esc, state } from "./core";
-import { loadDeepRun, refreshDeepRuns, refreshLoginStatus } from "./errors";
+import { loadDeepRun, refreshDeepRuns, refreshLoginStatus, pollDeepJob } from "./errors";
 import { loadSegmentList, renderSegment } from "./segment";
 import { pushNav, setActiveView, setSegmentControls } from "./shell";
 
@@ -217,20 +217,39 @@ function parseJsonField(sel, fallback) {
   return JSON.parse(raw);
 }
 
+// Drafting is now LLM-backed and async: for a subject you don't hold (e.g.
+// "space exploration") the keyword baseline finds nothing, so the server asks
+// the analysis CLI to propose real, currently-listed tickers and we poll for
+// the result. The keyword universe is still merged in as an instant baseline,
+// and the copy-the-prompt fallback survives for when no CLI is configured.
 $("#pipe-draft").addEventListener("click", async () => {
   const status = $("#pipe-segment-status");
+  const btn = $("#pipe-draft") as HTMLButtonElement;
+  const query = $("#pipe-query").value.trim();
   status.classList.remove("err");
-  status.textContent = "drafting...";
+  if (!query) {
+    status.classList.add("err");
+    status.textContent = "describe a theme first";
+    return;
+  }
+  btn.disabled = true;
+  status.innerHTML = `<span class="spinner"></span> researching candidate tickers...`;
   try {
-    const rec = await api("/api/segment-draft", "POST", { query: $("#pipe-query").value });
-    $("#pipe-slug").value = rec.slug;
-    $("#pipe-segment-json").value = JSON.stringify(rec.definition, null, 2);
-    $("#pipe-prompt").value = rec.llm_prompt || "";
-    $("#seg-draft-editor").hidden = false;
-    status.textContent = rec.warnings && rec.warnings.length ? rec.warnings.join(" ") : "draft ready; review it, then approve to continue";
+    const job = await api("/api/segment-draft", "POST", { query });
+    await pollDeepJob(job.id, status, async (done) => {
+      const rec = done.result || {};
+      $("#pipe-slug").value = rec.slug || "";
+      $("#pipe-segment-json").value = JSON.stringify(rec.definition || {}, null, 2);
+      $("#pipe-prompt").value = rec.llm_prompt || "";
+      $("#seg-draft-editor").hidden = false;
+      const warn = (rec.warnings || []).join(" ");
+      status.textContent = warn || `drafted ${rec.member_count || 0} names — review, then approve to continue`;
+    }, `Drafting ${query}`);
   } catch (e) {
     status.textContent = "draft failed: " + e.message;
     status.classList.add("err");
+  } finally {
+    btn.disabled = false;
   }
 });
 

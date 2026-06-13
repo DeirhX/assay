@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -67,6 +68,57 @@ class RequestGuards(unittest.TestCase):
         status, payload = self._post("/api/deep-job/cancel", b'{"id": ""}')
         self.assertEqual(status, 400)  # empty id is rejected by the endpoint...
         self.assertIn("missing job id", payload["error"])  # ...not by the body guard
+
+
+class HoldingsSyncJob(unittest.TestCase):
+    """The IBKR sync runs as a registered background job, not a blocking request.
+    The underlying Flex pull (_sync_holdings) is mocked so these stay offline."""
+
+    def _wait(self, job_id, *, timeout=4.0, state=None):
+        deadline = time.time() + timeout
+        terminal = (state,) if state else ("done", "error", "cancelled")
+        while time.time() < deadline:
+            pub = serve.jobs.get_public(job_id)
+            if pub and pub["state"] in terminal:
+                return pub
+            time.sleep(0.02)
+        self.fail(f"job {job_id} never reached {terminal}")
+
+    def test_sync_runs_as_registered_job_and_carries_result(self):
+        def fake_sync(progress=None):
+            if progress:
+                progress("working…")
+            return {"site": {"ok": True, "written": []}, "generated_at": "2026-06-13T00:00:00+00:00"}
+
+        with mock.patch.object(serve, "_sync_holdings", side_effect=fake_sync):
+            job = serve._start_holdings_sync()
+            self.assertEqual(job["kind"], "ibkr_sync")
+            pub = self._wait(job["id"])
+        self.assertEqual(pub["state"], "done")
+        self.assertTrue(pub["result"]["site"]["ok"])
+
+    def test_only_one_sync_at_a_time(self):
+        release = threading.Event()
+
+        def blocker(progress=None):
+            release.wait(timeout=5)
+            return {"site": None, "generated_at": None}
+
+        with mock.patch.object(serve, "_sync_holdings", side_effect=blocker):
+            job = serve._start_holdings_sync()
+            self._wait(job["id"], state="running")
+            with self.assertRaises(RuntimeError):
+                serve._start_holdings_sync()   # second sync is refused while one runs
+            release.set()
+            self._wait(job["id"])
+
+    def test_sync_failure_becomes_error_state(self):
+        with mock.patch.object(serve, "_sync_holdings",
+                               side_effect=ValueError("IBKR credentials not configured")):
+            job = serve._start_holdings_sync()
+            pub = self._wait(job["id"])
+        self.assertEqual(pub["state"], "error")
+        self.assertIn("credentials", pub["error"])
 
 
 class HostGuard(unittest.TestCase):

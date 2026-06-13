@@ -344,6 +344,111 @@ def _draft_segment(query: str) -> dict:
     }
 
 
+def _merge_draft_members(baseline: list[dict], extra: list[dict]) -> list[dict]:
+    """Combine keyword-baseline members with LLM-proposed ones, deduped by
+    symbol (baseline wins on a tie) and skipping anything with an invalid or
+    empty symbol. Keeps rationale/confidence when present."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for source in (baseline or [], extra or []):
+        for item in source:
+            if not isinstance(item, dict):
+                continue
+            try:
+                sym = _safe_symbol(str(item.get("symbol") or ""))
+            except ValueError:
+                continue
+            if sym in seen:
+                continue
+            seen.add(sym)
+            member = {
+                "symbol": sym,
+                "sleeve": str(item.get("sleeve") or "other").strip().lower() or "other",
+            }
+            for key in ("rationale", "confidence"):
+                if item.get(key):
+                    member[key] = str(item[key]).strip()
+            out.append(member)
+    return out
+
+
+def _run_segment_draft_job(job_id: str, query: str) -> None:
+    """Draft a research segment for any theme: start from the keyword baseline,
+    then (if an analysis CLI is available) ask the LLM to propose real tickers
+    for subjects we don't already hold, and merge the two."""
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        baseline = _draft_segment(query)
+        definition = baseline["definition"]
+        members = list(definition.get("members") or [])
+        warnings: list[str] = []
+        backend_label = None
+
+        if any(ticker_analysis.available_backends().values()):
+            _update_job(job_id, state="running",
+                        message="researching candidate tickers…")
+            llm = ticker_analysis.draft_segment_members(
+                query, progress=progress, cancel=lambda: jobs.is_cancelled(job_id))
+            if jobs.is_cancelled(job_id):
+                _update_job(job_id, state="cancelled", message="cancelled")
+                return
+            if llm.get("ok"):
+                members = _merge_draft_members(members, llm.get("members") or [])
+                backend_label = llm.get("backend_label")
+                if llm.get("title"):
+                    definition["title"] = llm["title"]
+                if llm.get("comment"):
+                    definition["comment"] = llm["comment"]
+            else:
+                warnings.append(
+                    "LLM draft failed (" + (llm.get("error") or "unknown")
+                    + "); showing keyword matches only. Use the prompt below to fill members."
+                )
+        else:
+            warnings.append(
+                "No analysis CLI is configured, so tickers weren't auto-researched. "
+                "Use the prompt below with an LLM (or paste members), then approve."
+            )
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    if not members:
+        warnings.append(
+            "No candidate tickers identified. Use the prompt below with an LLM, or "
+            "paste/edit members, then validate before approving."
+        )
+    definition["members"] = members
+    definition["sleeves"] = sorted({m["sleeve"] for m in members}) or ["other"]
+    _update_job(
+        job_id, state="done",
+        message=(f"drafted {len(members)} names via {backend_label}"
+                 if backend_label else f"drafted {len(members)} names"),
+        result={
+            "slug": baseline["slug"],
+            "definition": definition,
+            "llm_prompt": baseline["llm_prompt"],
+            "warnings": warnings,
+            "backend_label": backend_label,
+            "member_count": len(members),
+        },
+    )
+
+
+def _start_segment_draft(query: str) -> dict:
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("query is required")
+    # Like ticker analysis, drafting shells out to a CLI but not the browser, so
+    # it does not take the single browser slot and can run alongside other work.
+    job = _new_job("segment_draft", query=query)
+    threading.Thread(target=_run_segment_draft_job,
+                     args=(job["id"], query), daemon=True).start()
+    return _job_public(job)
+
+
 def _segment_prompt(name: str) -> dict:
     slug = _slugify(name)
     definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
@@ -910,13 +1015,20 @@ def _save_ibkr_secrets(body: dict) -> dict:
     return _ibkr_status()
 
 
-def _sync_holdings() -> dict:
+def _sync_holdings(progress=None) -> dict:
     """Re-pull the portfolio via the vendored read-only IBKR Flex reader and
     refresh data/current-holdings.json. Read-only: the Flex query cannot trade.
     Credentials come from IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID in the environment
     or a gitignored tools/secrets.env. Raw output stays in data/cache/ibkr/ (also
-    gitignored). Returns the fresh holdings payload."""
+    gitignored). Returns the fresh holdings payload.
+
+    ``progress`` is an optional ``callable(str)`` used by the background job runner
+    to stream status to the UI; it is a no-op when called synchronously."""
     import subprocess
+
+    def _p(msg: str) -> None:
+        if progress:
+            progress(msg)
 
     if not IBKR_READER.exists():  # vendored next to serve.py; should always be here
         raise ValueError(f"IBKR reader missing at {IBKR_READER}")
@@ -926,6 +1038,7 @@ def _sync_holdings() -> dict:
     snap_dir = IBKR_CACHE_DIR / "snapshots"
     cmd = [sys.executable, str(IBKR_READER), "--json",
            "--out", str(out_json), "--snapshot-dir", str(snap_dir)]
+    _p("contacting IBKR Flex (read-only)…")
     try:
         proc = subprocess.run(cmd, cwd=str(IBKR_CACHE_DIR), capture_output=True,
                               text=True, timeout=240)
@@ -947,14 +1060,53 @@ def _sync_holdings() -> dict:
     if not isinstance(fresh, dict) or "positions" not in fresh or fresh.get("net_asset_value") is None:
         raise ValueError("IBKR reader produced no usable portfolio.json")
 
+    _p("merging snapshot…")
     current = _load(HOLDINGS_JSON) or {}
     _write_json(HOLDINGS_JSON, _merge_holdings_snapshot(current, fresh))
     # A fresh snapshot makes the rendered plan (next-steps + detail pages) stale,
     # so regenerate the derived artifacts in the same call. Best-effort: a render
     # hiccup must not fail the sync itself.
+    _p("regenerating plan pages…")
     payload = holdings_payload()
     payload["site"] = _regenerate_site()
     return payload
+
+
+# IBKR sync runs as a registered background job (like the deep-research/analysis
+# runners) so it survives navigation, surfaces in the global task pill, and counts
+# as "active" for the reload watcher. One sync at a time -- the Flex pull hits a
+# shared cache dir and there is no point racing two.
+def _sync_running() -> bool:
+    return jobs.find(
+        lambda j: j.get("kind") == "ibkr_sync"
+        and j.get("state") in ("queued", "running")
+        and not j.get("cancelled")
+    )
+
+
+def _run_holdings_sync_job(job_id: str) -> None:
+    _update_job(job_id, state="running", message="pulling portfolio from IBKR (read-only)…")
+    try:
+        payload = _sync_holdings(progress=lambda msg: _update_job(job_id, message=msg))
+    except ValueError as exc:  # expected, user-actionable (bad creds, timeout, …)
+        _update_job(job_id, state="error", error=str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 -- never let the worker thread die silently
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+    # Keep the public result small: the UI re-fetches /api/holdings on done; we
+    # only need the site-regen summary (for the "plan regenerated" line) and the
+    # snapshot stamp.
+    _update_job(job_id, state="done", message="synced",
+                result={"site": payload.get("site"), "generated_at": payload.get("generated_at")})
+
+
+def _start_holdings_sync() -> dict:
+    if _sync_running():
+        raise RuntimeError("an IBKR sync is already running")
+    job = _new_job("ibkr_sync")
+    threading.Thread(target=_run_holdings_sync_job, args=(job["id"],), daemon=True).start()
+    return _job_public(job)
 
 
 def _regenerate_site() -> dict:
@@ -1614,7 +1766,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_api(self, path: str):
         if path == "/api/segment-draft":
             body = self._read_body()
-            return self._send_json(_draft_segment(str(body.get("query") or "")))
+            try:
+                return self._send_json(_start_segment_draft(str(body.get("query") or "")))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
 
         if path.startswith("/api/segment-def/"):
             name = _slugify(path.rsplit("/", 1)[-1])
@@ -1628,9 +1783,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/holdings/sync":
             try:
-                return self._send_json(_sync_holdings())
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
+                return self._send_json(_start_holdings_sync())
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
 
         if path == "/api/site/regenerate":
             res = _regenerate_site()
