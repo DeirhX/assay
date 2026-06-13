@@ -6,6 +6,6 @@ trust a single unverified number, so multiple providers feed the same metrics an
 ``research_pull`` cross-checks them.
 """
 
-from . import sec_edgar, yahoo  # noqa: F401
+from . import fred, sec_edgar, yahoo  # noqa: F401
 
-__all__ = ["yahoo", "sec_edgar"]
+__all__ = ["yahoo", "sec_edgar", "fred"]
