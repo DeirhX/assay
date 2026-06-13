@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -302,8 +303,21 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         if existing and "thesis" in existing:
             record["thesis"] = existing["thesis"]  # never clobber judgement
         _write(RESEARCH_DIR / f"{symbol}.json", record)
-        _write_history(symbol, record)
+        if _has_usable_data(record):
+            _write_history(symbol, record)
     return record
+
+
+def _has_usable_data(record: dict[str, Any]) -> bool:
+    """True when the pull actually retrieved market data. A total provider
+    wipeout (no price and no metrics) is a failed analysis and must NOT be
+    persisted to the change-log history, or the deep dive fills up with rows of
+    n/a that pretend something happened."""
+    price = record.get("price")
+    if _val(price) is not None:
+        return True
+    metrics = record.get("metrics") or {}
+    return any(_val(v) is not None for v in metrics.values())
 
 
 def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
@@ -460,9 +474,30 @@ def history_for(symbol: str, *, limit: int = 12) -> list[dict[str, Any]]:
             "ps": _val(metrics.get("ps")),
             "revenue_ttm_usd_b": _val(metrics.get("revenue_ttm_usd_b")),
             "data_quality": _worst_severity(rec.get("cross_checks", [])),
+            "stamp": path.stem,
             "path": str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
         })
     return entries
+
+
+_HISTORY_STAMP_RE = re.compile(r"^\d{8}T\d{6}Z$")
+
+
+def delete_history(symbol: str, stamp: str) -> bool:
+    """Delete a single per-ticker history snapshot. Returns True if a file was
+    removed, False if it was already gone. The stamp must match the
+    YYYYMMDDTHHMMSSZ filename format so this can't be used for path traversal."""
+    sym = symbol.upper().strip()
+    if not _HISTORY_STAMP_RE.match(stamp or ""):
+        raise ValueError(f"bad history stamp: {stamp!r}")
+    folder = (HISTORY_DIR / sym).resolve()
+    target = (folder / f"{stamp}.json").resolve()
+    if folder not in target.parents:
+        raise ValueError("history path escapes its folder")
+    if not target.exists():
+        return False
+    target.unlink()
+    return True
 
 
 def _write_history(symbol: str, record: dict[str, Any]) -> None:

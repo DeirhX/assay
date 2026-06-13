@@ -97,7 +97,7 @@ function renderErrorCenter() {
 
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
-async function pollDeepJob(jobId, statusEl, onDone, label) {
+async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
   if (label) taskStart(jobId, label);
   try {
     for (;;) {
@@ -107,7 +107,9 @@ async function pollDeepJob(jobId, statusEl, onDone, label) {
         job = await api("/api/deep-job?id=" + encodeURIComponent(jobId));
       } catch (e) {
         statusEl.classList.add("err");
-        statusEl.textContent = "lost the job: " + e.message;
+        const msg = "lost the job: " + e.message;
+        statusEl.textContent = msg;
+        if (onFail) onFail(msg);
         return;
       }
       if (job.state === "queued" || job.state === "running") {
@@ -139,6 +141,7 @@ async function pollDeepJob(jobId, statusEl, onDone, label) {
       const jobErr = job.error || job.message || job.state;
       statusEl.textContent = jobErr;
       recordError("task", `${label || "Background task"} failed: ${jobErr}`);
+      if (onFail) onFail(jobErr);
       return;
     }
   } finally {

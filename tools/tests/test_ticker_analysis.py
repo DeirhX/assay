@@ -76,12 +76,12 @@ class Usage(unittest.TestCase):
 
 
 class ProviderOrder(unittest.TestCase):
-    def test_claude_is_preferred_even_if_config_is_reversed(self):
+    def test_cursor_is_preferred_even_if_config_is_reversed(self):
         cfg = {"providers": [
-            {"id": "cursor", "enabled": True},
             {"id": "claude", "enabled": True},
+            {"id": "cursor", "enabled": True},
         ]}
-        self.assertEqual([p["id"] for p in ta._ordered_providers(cfg)], ["claude", "cursor"])
+        self.assertEqual([p["id"] for p in ta._ordered_providers(cfg)], ["cursor", "claude"])
 
     def test_unknown_providers_are_ignored_for_runtime_order(self):
         cfg = {"providers": [{"id": "bogus"}, {"id": "cursor"}]}

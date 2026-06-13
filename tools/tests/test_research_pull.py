@@ -6,7 +6,10 @@ score, plus an integration smoke test over a real scraped dossier."""
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import _support  # noqa: F401  (sys.path side effect)
 import research_pull as rp
@@ -177,6 +180,65 @@ class RealDossierSmoke(unittest.TestCase):
     def test_history_for_returns_list(self):
         # cache may be empty on a fresh checkout; we only assert the contract.
         self.assertIsInstance(rp.history_for(self.rec["symbol"]), list)
+
+
+class DeleteHistory(unittest.TestCase):
+    """delete_history removes a single snapshot and refuses anything that isn't a
+    well-formed YYYYMMDDTHHMMSSZ stamp (no path traversal)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._patch = mock.patch.object(rp, "HISTORY_DIR", self.tmp)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+
+    def _make(self, sym, stamp):
+        path = self.tmp / sym / f"{stamp}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        return path
+
+    def test_deletes_existing_snapshot(self):
+        path = self._make("NVDA", "20260613T132751Z")
+        self.assertTrue(rp.delete_history("nvda", "20260613T132751Z"))  # case-insensitive
+        self.assertFalse(path.exists())
+
+    def test_missing_returns_false(self):
+        self.assertFalse(rp.delete_history("NVDA", "20260613T132751Z"))
+
+    def test_bad_stamp_rejected(self):
+        self._make("NVDA", "20260613T132751Z")
+        for bad in ("", "../../etc/passwd", "2026", "20260613T132751Z.json", "../NVDA/x"):
+            with self.assertRaises(ValueError):
+                rp.delete_history("NVDA", bad)
+
+    def test_only_targets_named_snapshot(self):
+        keep = self._make("NVDA", "20260101T000000Z")
+        gone = self._make("NVDA", "20260613T132751Z")
+        rp.delete_history("NVDA", "20260613T132751Z")
+        self.assertTrue(keep.exists())
+        self.assertFalse(gone.exists())
+
+
+class HasUsableData(unittest.TestCase):
+    """Failed pulls (no price, no metrics) must not be persisted to history."""
+
+    def test_price_makes_it_usable(self):
+        self.assertTrue(rp._has_usable_data(
+            {"price": {"value": 12.3, "source": "yahoo"}, "metrics": {}}))
+
+    def test_any_metric_makes_it_usable(self):
+        self.assertTrue(rp._has_usable_data(
+            {"price": None, "metrics": {"pe_fwd": {"value": 20.0}}}))
+
+    def test_no_data_is_failure(self):
+        self.assertFalse(rp._has_usable_data({"price": None, "metrics": {}}))
+
+    def test_empty_metric_values_are_failure(self):
+        rec = {"price": None, "metrics": {"pe_fwd": {"value": None}, "ps": {}}}
+        self.assertFalse(rp._has_usable_data(rec))
 
 
 if __name__ == "__main__":

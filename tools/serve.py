@@ -1730,6 +1730,20 @@ class Handler(BaseHTTPRequestHandler):
                 allow_blocked=bool(body.get("allow_blocked")),
             ))
 
+        if path == "/api/history/delete":
+            body = self._read_body()
+            try:
+                sym = _safe_symbol(str(body.get("symbol") or ""))
+                provider_sym = _resolve_symbol(sym)
+                removed = research_pull.delete_history(provider_sym, str(body.get("stamp") or ""))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            return self._send_json({
+                "symbol": sym,
+                "removed": removed,
+                "history": research_pull.history_for(provider_sym),
+            })
+
         if path == "/api/symbol-alias":
             body = self._read_body()
             try:

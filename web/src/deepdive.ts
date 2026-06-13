@@ -8,12 +8,26 @@ import { recordView, relTime, renderViewedTickers } from "./viewed";
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
 $("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker($("#ticker-input").value); });
-$("#ticker-recent").addEventListener("click", () => {
+// Return to the viewed-tickers overview (the deep-dive landing list).
+function goToOverview() {
   $("#ticker-input").value = "";
   pushNav({ view: "deepdive", ticker: "" });
   setActiveView("deepdive");
   renderViewedTickers();
-});
+}
+
+// Sticky "back to overview" bar. The single way back to the viewed-tickers list
+// from any dossier state (loaded dossier OR a no-market-data card), so it stays
+// one click away even after scrolling. Replaces the old search-bar button.
+function overviewBackBar() {
+  const backBar = el("div", "dd-backbar");
+  const back = el("button", "ghost dd-back", "\u2190 All tickers");
+  back.type = "button";
+  back.title = "Back to your viewed tickers";
+  back.addEventListener("click", goToOverview);
+  backBar.appendChild(back);
+  return backBar;
+}
 
 const EXCHANGE_SUFFIXES = [".L", ".AS", ".DE", ".PA", ".BR", ".SW", ".HK", ".TO", ".PR"];
 
@@ -43,6 +57,7 @@ function renderNoMarketData(rec) {
   const provider = rec?.provider_symbol || rec?.symbol || sym;
   const out = $("#dd-result");
   out.innerHTML = "";
+  out.appendChild(overviewBackBar());
   const card = el("div", "card empty-ticker");
   const errors = rec?.provider_errors || rec?.errors || rec?.error;
   const detail = Array.isArray(errors)
@@ -68,7 +83,7 @@ function renderNoMarketData(rec) {
   // symbol. Offer real market matches alongside the exchange-suffix guesses.
   const queryStr = sym || provider;
   if (queryStr) {
-    const searchRow = el("div", "alias-suggestion");
+    const searchRow = el("div", "alias-suggestion name-search-row");
     searchRow.innerHTML = `<span><span class="spinner"></span> Searching the market for "${esc(queryStr)}"...</span>`;
     card.appendChild(searchRow);
     loadNameSearch(searchRow, queryStr);
@@ -207,6 +222,8 @@ function renderDeepDive(rec) {
   recordView(rec.symbol, rec.name);
   const out = $("#dd-result");
   out.innerHTML = "";
+  out.appendChild(overviewBackBar());
+
   const price = rec.price ? rec.price.value : null;
   const portfolio = rec.portfolio || {};
   const target = portfolio.target || {};
@@ -403,16 +420,39 @@ function renderAnalysisCard(rec) {
   card.appendChild(status);
   card.appendChild(body);
 
+  function renderRetry(refresh) {
+    // The job died (bad response / timeout / lost). Leave the error in `status`
+    // and give the user a way to run it again instead of a dead-end card.
+    body.innerHTML = "";
+    body.appendChild(el("p", "hint",
+      "The analysis didn't finish. Backends fall back automatically " +
+      "(Cursor, then Claude) \u2014 you can just run it again."));
+    const actions = el("div", "analysis-actions");
+    const retry = el("button", "primary", "\u21bb Try again");
+    retry.type = "button";
+    retry.addEventListener("click", () => run(refresh));
+    actions.appendChild(retry);
+    if (!refresh) {
+      const reFresh = el("button", "ghost", "\u21bb Refresh data + analyse");
+      reFresh.type = "button";
+      reFresh.addEventListener("click", () => run(true));
+      actions.appendChild(reFresh);
+    }
+    body.appendChild(actions);
+  }
+
   async function run(refresh) {
     status.classList.remove("err");
     status.innerHTML = `<span class="spinner"></span> starting&hellip;`;
     body.innerHTML = "";
     try {
       const start = await api("/api/analyze/" + encodeURIComponent(sym), "POST", { refresh: !!refresh });
-      await pollDeepJob(start.id, status, async () => { await show(); }, `Analyzing ${sym}`);
+      await pollDeepJob(start.id, status, async () => { await show(); }, `Analyzing ${sym}`,
+        () => renderRetry(refresh));
     } catch (e) {
       status.classList.add("err");
       status.textContent = "analysis failed: " + e.message;
+      renderRetry(refresh);
     }
   }
 
@@ -1020,7 +1060,7 @@ function renderHistory(rec) {
   }
   const table = el("table", "history-table");
   table.innerHTML =
-    `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th></tr></thead>`;
+    `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th><th></th></tr></thead>`;
   const tbody = el("tbody");
   rows.slice(0, 8).forEach((h) => {
     const tr = el("tr");
@@ -1031,11 +1071,39 @@ function renderHistory(rec) {
       `<td class="num">${esc(fmtX(h.ps))}</td>` +
       `<td class="num">${esc(fmtB(h.revenue_ttm_usd_b))}</td>` +
       `<td><span class="dot ${esc(h.data_quality || "INFO")}"></span>${esc(h.data_quality || "INFO")}</td>`;
+    const delCell = el("td", "history-del-cell");
+    if (h.stamp) {
+      const del = el("button", "history-del", "\u2715");
+      del.type = "button";
+      del.title = "Delete this snapshot";
+      del.setAttribute("aria-label", "Delete this snapshot");
+      del.addEventListener("click", () => {
+        const when = h.as_of ? new Date(h.as_of).toLocaleString() : "this";
+        if (!confirm(`Delete the ${when} snapshot for ${rec.symbol}? This cannot be undone.`)) return;
+        del.disabled = true;
+        deleteHistorySnapshot(rec, h.stamp).catch((e) => {
+          del.disabled = false;
+          alert("Delete failed: " + e.message);
+        });
+      });
+      delCell.appendChild(del);
+    }
+    tr.appendChild(delCell);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
   body.appendChild(table);
   return details;
+}
+
+async function deleteHistorySnapshot(rec, stamp) {
+  const res = await api("/api/history/delete", "POST", { symbol: rec.symbol, stamp });
+  rec.history = res.history || [];
+  const slot = $("#dd-result [data-slot='history']");
+  if (slot) {
+    slot.innerHTML = "";
+    slot.appendChild(renderHistory(rec));
+  }
 }
 
 function dataQualityTag(checks) {
