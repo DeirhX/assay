@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { $, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
+import { pollDeepJob } from "./errors";
 
 // ---- analyses -------------------------------------------------------------
 
@@ -192,6 +193,56 @@ function startPipeline(segment) {
   setActiveView("pipeline");
 }
 
+// Open a saved run in this (the canonical) reader from anywhere else in the app
+// -- e.g. the Pipeline routes here instead of rendering the report a second time.
+function openRunInAnalyses(stem) {
+  pushNav({ view: "analyses", run: cleanSlug(stem) });
+  setActiveView("analyses");
+}
+
+function fmtConfidence(c) {
+  if (c == null || c === "") return "";
+  if (typeof c === "number") return c <= 1 ? Math.round(c * 100) + "%" : String(c);
+  return String(c);
+}
+
+// Some reports are a structured segment document (title/comment/sleeves/members)
+// saved as JSON rather than narrative markdown. Rendering that through mdToHtml
+// is an unreadable JSON wall, so detect and lay it out as a table. Returns null
+// when the text isn't such a document (the caller falls back to markdown).
+function renderStructuredReport(raw) {
+  let data;
+  try { data = JSON.parse(raw); } catch { return null; }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  if (!data.members && !data.sleeves && !data.comment) return null;
+  let html = "";
+  if (data.title) html += `<h3 class="rep-title">${esc(data.title)}</h3>`;
+  if (data.comment) html += `<p class="rep-lead">${esc(data.comment)}</p>`;
+  if (Array.isArray(data.sleeves) && data.sleeves.length) {
+    html += `<div class="rep-section-h">Sleeves</div><div class="rep-sleeves">`;
+    data.sleeves.forEach((s) => {
+      html += `<div class="rep-sleeve"><span class="rep-sleeve-name">${esc(s.name || "")}</span>` +
+        (s.description ? `<span class="rep-sleeve-desc">${esc(s.description)}</span>` : "") + `</div>`;
+    });
+    html += `</div>`;
+  }
+  if (Array.isArray(data.members) && data.members.length) {
+    html += `<div class="rep-section-h">Members <span class="rep-count">${data.members.length}</span></div>`;
+    html += `<table class="rep-members"><thead><tr>` +
+      `<th>Symbol</th><th>Sleeve</th><th class="num">Conf.</th><th>Rationale</th></tr></thead><tbody>`;
+    data.members.forEach((m) => {
+      html += `<tr>` +
+        `<td class="rep-sym">${esc(m.symbol || "")}</td>` +
+        `<td class="rep-sleeve-cell">${esc(m.sleeve || "")}</td>` +
+        `<td class="num">${esc(fmtConfidence(m.confidence))}</td>` +
+        `<td class="rep-rat">${esc(m.rationale || "")}</td>` +
+        `</tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  return html || null;
+}
+
 async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
@@ -341,7 +392,8 @@ async function loadAnalysis(stem, { push = true } = {}) {
     doc.innerHTML =
       `<div class="report-doc-head"><span class="report-doc-title">Deep Research report</span>` +
       `<span class="report-doc-note">Verbatim Perplexity output — treat numbers as claims to verify</span></div>`;
-    const body = el("div", "report-doc-body prose", mdToHtml(rec.report));
+    const body = el("div", "report-doc-body prose");
+    body.innerHTML = renderStructuredReport(rec.report) || mdToHtml(rec.report);
     doc.appendChild(body);
     reader.appendChild(doc);
     linkifyTickers(body);
@@ -384,7 +436,160 @@ async function loadAnalysis(stem, { push = true } = {}) {
     reader.appendChild(box);
   }
 
+  // Follow-up Q&A, grounded in this report. Only meaningful once a report exists.
+  if (rec.report) {
+    reader.appendChild(renderDeepQaCard(stem, meta.title || stem));
+  }
+
   reader.scrollTop = 0;
+}
+
+// Continuable follow-up Q&A about a Deep Research run. The thread is archived
+// server-side (next to the run artifacts) so it survives reloads. Mirrors the
+// per-ticker Q&A card but grounds the model in the report + its citations.
+function renderDeepQaCard(stem, title) {
+  const card = el("div", "card qa-card");
+  const head = el("div", "analysis-head");
+  head.appendChild(el("h2", "section", "Ask about this report"));
+  const clearBtn = el("button", "ghost", "Clear thread");
+  clearBtn.type = "button";
+  clearBtn.title = "Discard the archived Q&A and start fresh";
+  head.appendChild(clearBtn);
+  card.appendChild(head);
+
+  const emptyHint = el("p", "hint",
+    "No questions yet. Ask anything about the report \u2014 a company's positioning, a claim worth " +
+    "verifying, or how a name fits your portfolio. The thread is archived so you can pick it up later.");
+  const threadWrap = el("details", "qa-collapse");
+  threadWrap.open = true;
+  const threadSummary = el("summary", "qa-collapse-head collapse-head");
+  const thread = el("div", "qa-thread");
+  threadWrap.appendChild(threadSummary);
+  threadWrap.appendChild(thread);
+  const status = el("div", "dd-status analysis-status");
+  const form = el("div", "qa-form");
+  const input = el("textarea", "qa-input");
+  input.rows = 2;
+  input.placeholder = `Ask a follow-up about "${title}" \u2014 grounded in the report above. Ctrl/\u2318+Enter to send.`;
+  const askBtn = el("button", "primary", "Ask");
+  askBtn.type = "button";
+  form.appendChild(input);
+  form.appendChild(askBtn);
+  card.appendChild(emptyHint);
+  card.appendChild(threadWrap);
+  card.appendChild(form);
+  card.appendChild(status);
+
+  function renderThread(turns) {
+    thread.innerHTML = "";
+    if (!turns.length) {
+      clearBtn.hidden = true;
+      emptyHint.hidden = false;
+      threadWrap.hidden = true;
+      return;
+    }
+    clearBtn.hidden = false;
+    emptyHint.hidden = true;
+    threadWrap.hidden = false;
+    const exchanges = turns.filter((t) => t.role === "user").length;
+    threadSummary.innerHTML =
+      `<span class="collapse-title">Conversation history</span>` +
+      `<span class="collapse-meta">${exchanges} question${exchanges === 1 ? "" : "s"}</span>` +
+      `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
+    turns.forEach((t) => {
+      if (t.role === "user") {
+        const q = el("div", "qa-turn qa-q");
+        q.appendChild(el("div", "qa-role", "You"));
+        q.appendChild(el("div", "qa-text", esc(t.text)));
+        thread.appendChild(q);
+      } else {
+        const a = el("div", "qa-turn qa-a");
+        const meta = [t.backend_label, t.ts ? relAge(t.ts) : null].filter(Boolean).map(esc).join(" \u00b7 ");
+        a.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
+        const prose = el("div", "prose qa-prose");
+        prose.innerHTML = mdToHtml(t.text || "");
+        linkifyTickers(prose);
+        a.appendChild(prose);
+        thread.appendChild(a);
+      }
+    });
+  }
+
+  async function load() {
+    let data;
+    try { data = await api("/api/deep-qa?stem=" + encodeURIComponent(stem)); }
+    catch (_e) { data = { turns: [] }; }
+    renderThread(data.turns || []);
+  }
+
+  let currentJobId = null;
+  let busy = false;
+
+  function setBusy(on) {
+    busy = on;
+    if (on) {
+      askBtn.textContent = "Cancel";
+      askBtn.classList.remove("primary");
+      askBtn.classList.add("ghost");
+      askBtn.title = "Stop this question and ask something else";
+    } else {
+      askBtn.textContent = "Ask";
+      askBtn.classList.add("primary");
+      askBtn.classList.remove("ghost");
+      askBtn.title = "";
+      currentJobId = null;
+    }
+  }
+
+  async function ask() {
+    if (busy) return;
+    const q = input.value.trim();
+    if (!q) return;
+    setBusy(true);
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> thinking&hellip;`;
+    try {
+      const start = await api("/api/deep-qa", "POST", { stem, question: q });
+      currentJobId = start.id;
+      await pollDeepJob(start.id, status, async () => {
+        status.textContent = "";
+        input.value = "";
+        await load();
+      }, `Q&A \u00b7 ${stem}`);
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "question failed: " + e.message;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelAsk() {
+    if (!currentJobId) return;
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> cancelling&hellip;`;
+    try {
+      await api("/api/deep-job/cancel", "POST", { id: currentJobId });
+    } catch (_e) { /* poll loop still winds the job down */ }
+  }
+
+  askBtn.addEventListener("click", () => (busy ? cancelAsk() : ask()));
+  input.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); if (!busy) ask(); }
+  });
+  clearBtn.addEventListener("click", async () => {
+    if (!confirm("Clear the archived Q&A thread for this report?")) return;
+    try {
+      const data = await api("/api/deep-qa", "POST", { stem, clear: true });
+      renderThread(data.turns || []);
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "clear failed: " + e.message;
+    }
+  });
+
+  load();
+  return card;
 }
 
 export {
@@ -400,6 +605,7 @@ export {
   markActiveAnalysis,
   synthBox,
   startPipeline,
+  openRunInAnalyses,
   loadAnalyses,
   loadAnalysis,
 };

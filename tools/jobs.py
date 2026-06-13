@@ -64,6 +64,9 @@ def public(job: dict) -> dict:
         "message": job.get("message", ""),
         "segment": job.get("segment"),
         "date": job.get("date"),
+        # The live Perplexity run URL, surfaced mid-run so the UI can link to the
+        # ongoing analysis (and so a clarification stall is one click away).
+        "source_url": job.get("source_url"),
         "result": job.get("result"),
         "artifact": job.get("artifact"),
         "error": job.get("error"),

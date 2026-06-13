@@ -177,5 +177,87 @@ class RunProc(unittest.TestCase):
                          input_text=None, timeout=1, cancel=lambda: False)
 
 
+class DocQaPrompt(unittest.TestCase):
+    """The Deep Research follow-up prompt grounds the model in the report +
+    citations and the prior thread, and bounds each so it can't grow unbounded."""
+
+    def test_includes_report_question_and_sources(self):
+        p = ta.build_doc_qa_prompt(
+            "Space Exploration", "Rocket Lab is the clearest launch pure-play.",
+            [{"href": "https://example.com/x", "label": "ex\nmore"}],
+            [{"role": "user", "text": "earlier q"}, {"role": "assistant", "text": "earlier a"}],
+            "Is RKLB overvalued?")
+        self.assertIn("Space Exploration", p)
+        self.assertIn("Rocket Lab is the clearest", p)
+        self.assertIn("https://example.com/x", p)
+        self.assertIn("Is RKLB overvalued?", p)
+        self.assertIn("earlier q", p)
+
+    def test_truncates_a_huge_report(self):
+        p = ta.build_doc_qa_prompt("T", "x" * 40000, [], [], "q?")
+        self.assertIn("[report truncated]", p)
+        self.assertLess(len(p), 20000)
+
+    def test_ask_about_doc_runs_through_fallback(self):
+        # ask_about_doc must not be tied to a ticker record; it just builds the
+        # doc prompt and delegates to the generic backend fallback.
+        with mock.patch.object(ta, "_run_with_fallback",
+                               return_value={"ok": True, "report": "ans"}) as m:
+            res = ta.ask_about_doc("T", "doc body", [], [], "q?",
+                                   cfg={"allow_web": False, "providers": []})
+        self.assertTrue(res["ok"])
+        self.assertTrue(m.called)
+        prompt_arg = m.call_args[0][0]
+        self.assertIn("doc body", prompt_arg)
+        self.assertIn("q?", prompt_arg)
+
+
+class FallbackErrorLogging(unittest.TestCase):
+    """A backend failing -- even when the next one succeeds -- must leave a
+    durable record, so a silently-expired Cursor login stops being invisible."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._orig_path = ta.errorlog.LOG_PATH
+        ta.errorlog.LOG_PATH = Path(self._dir.name) / "error_log.jsonl"
+        self._cfg = {"providers": [
+            {"id": "cursor", "enabled": True},
+            {"id": "claude", "enabled": True},
+        ]}
+
+    def tearDown(self):
+        ta.errorlog.LOG_PATH = self._orig_path
+        self._dir.cleanup()
+
+    def test_silent_cursor_fallback_is_logged_as_warning(self):
+        runners = {
+            "cursor": lambda *a, **k: {"ok": False, "fatal": False,
+                                       "error": "Cursor: Authentication required"},
+            "claude": lambda *a, **k: {"ok": True, "report": "ok", "backend": "claude",
+                                       "backend_label": "Claude", "model": "(default)"},
+        }
+        with mock.patch.dict(ta._RUNNERS, runners, clear=False):
+            res = ta._run_with_fallback("p", self._cfg, label="analysis")
+        self.assertTrue(res["ok"])  # claude served it
+        entries = ta.errorlog.recent()
+        self.assertEqual(len(entries), 1)  # the cursor failure, not a total-fail error
+        self.assertEqual(entries[0]["level"], "warning")
+        self.assertEqual(entries[0]["context"]["backend"], "cursor")
+        self.assertEqual(entries[0]["context"]["reason"], "auth")
+        self.assertEqual(entries[0]["context"]["op"], "analysis")
+
+    def test_all_backends_failing_logs_an_error(self):
+        runners = {
+            "cursor": lambda *a, **k: {"ok": False, "fatal": False, "error": "rate limit"},
+            "claude": lambda *a, **k: {"ok": False, "fatal": False, "error": "rate limit"},
+        }
+        with mock.patch.dict(ta._RUNNERS, runners, clear=False):
+            res = ta._run_with_fallback("p", self._cfg, label="analysis")
+        self.assertFalse(res["ok"])
+        levels = [e["level"] for e in ta.errorlog.recent()]
+        self.assertIn("error", levels)  # the aggregate failure
+        self.assertEqual(levels.count("warning"), 2)  # each attempt
+
+
 if __name__ == "__main__":
     unittest.main()
