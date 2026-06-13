@@ -1050,6 +1050,64 @@ def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
             "attempts": attempts}
 
 
+def build_doc_qa_prompt(title: str, document: str, citations: list[dict] | None,
+                        history: list[dict] | None, question: str, *,
+                        allow_web: bool = False) -> str:
+    """A follow-up Q&A prompt grounded in a Deep Research report (not a ticker
+    DATA block). The report is the evidence base; the prior conversation keeps
+    the thread coherent. The report and history are bounded so the prompt stays
+    a sane size as both grow."""
+    doc = (document or "").strip()
+    if len(doc) > 16000:
+        doc = doc[:16000] + "\n…[report truncated]"
+    src_lines = []
+    for c in (citations or [])[:40]:
+        href = str(c.get("href") or "").strip()
+        if not href:
+            continue
+        label = str(c.get("label") or "").split("\n")[0].strip()
+        src_lines.append(f"- {label} {href}".strip())
+    src_block = ("\nSOURCES (citations from the run):\n" + "\n".join(src_lines) + "\n") if src_lines else ""
+    convo = ""
+    for t in [t for t in (history or []) if t.get("text")][-12:]:
+        who = "Q" if t.get("role") == "user" else "A"
+        txt = t["text"].strip()
+        if who == "A" and len(txt) > 1500:
+            txt = txt[:1500] + " …[truncated]"
+        convo += f"{who}: {txt}\n\n"
+    convo_block = ("CONVERSATION SO FAR:\n" + convo) if convo else ""
+    web_rule = _qa_data_rule(allow_web).replace("DATA block", "REPORT").replace("the data", "the report")
+    return f"""You are a skeptical, evidence-driven equity analyst answering a follow-up question about a Deep Research report titled "{title or 'this segment'}" for a self-directed investor. Improve their decision; do not cheerlead.
+
+GROUND RULES
+{web_rule}
+- Be concise and direct. Answer the specific question asked; don't restate the whole report.
+- Tag every company ticker with a leading $ on first mention (e.g. $AMD).
+- The report is narrative synthesis: treat its numbers as claims, and say so when a figure should be verified against a primary source.
+
+REPORT
+{doc}
+{src_block}
+{convo_block}NEW QUESTION:
+{question.strip()}
+
+Answer in Markdown.{' End with a "Sources" line listing any URLs you used.' if allow_web else ''}"""
+
+
+def ask_about_doc(title: str, document: str, citations: list[dict] | None,
+                  history: list[dict] | None, question: str, *, cfg: dict | None = None,
+                  progress: Callable[[str], None] | None = None,
+                  cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Answer a follow-up question grounded in a Deep Research report. Unlike
+    ``ask`` (which is tied to a ticker DATA record and can resume a Claude
+    session), this runs the generic backend fallback with the report as context.
+    Returns the usual {ok, report, backend, backend_label, model, ...} result."""
+    cfg = cfg or load_config()
+    prompt = build_doc_qa_prompt(title, document, citations, history, question,
+                                 allow_web=cfg.get("allow_web", False))
+    return _run_with_fallback(prompt, cfg, progress, cancel)
+
+
 if __name__ == "__main__":
     import argparse
 

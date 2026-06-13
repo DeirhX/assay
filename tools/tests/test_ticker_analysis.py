@@ -177,5 +177,40 @@ class RunProc(unittest.TestCase):
                          input_text=None, timeout=1, cancel=lambda: False)
 
 
+class DocQaPrompt(unittest.TestCase):
+    """The Deep Research follow-up prompt grounds the model in the report +
+    citations and the prior thread, and bounds each so it can't grow unbounded."""
+
+    def test_includes_report_question_and_sources(self):
+        p = ta.build_doc_qa_prompt(
+            "Space Exploration", "Rocket Lab is the clearest launch pure-play.",
+            [{"href": "https://example.com/x", "label": "ex\nmore"}],
+            [{"role": "user", "text": "earlier q"}, {"role": "assistant", "text": "earlier a"}],
+            "Is RKLB overvalued?")
+        self.assertIn("Space Exploration", p)
+        self.assertIn("Rocket Lab is the clearest", p)
+        self.assertIn("https://example.com/x", p)
+        self.assertIn("Is RKLB overvalued?", p)
+        self.assertIn("earlier q", p)
+
+    def test_truncates_a_huge_report(self):
+        p = ta.build_doc_qa_prompt("T", "x" * 40000, [], [], "q?")
+        self.assertIn("[report truncated]", p)
+        self.assertLess(len(p), 20000)
+
+    def test_ask_about_doc_runs_through_fallback(self):
+        # ask_about_doc must not be tied to a ticker record; it just builds the
+        # doc prompt and delegates to the generic backend fallback.
+        with mock.patch.object(ta, "_run_with_fallback",
+                               return_value={"ok": True, "report": "ans"}) as m:
+            res = ta.ask_about_doc("T", "doc body", [], [], "q?",
+                                   cfg={"allow_web": False, "providers": []})
+        self.assertTrue(res["ok"])
+        self.assertTrue(m.called)
+        prompt_arg = m.call_args[0][0]
+        self.assertIn("doc body", prompt_arg)
+        self.assertIn("q?", prompt_arg)
+
+
 if __name__ == "__main__":
     unittest.main()

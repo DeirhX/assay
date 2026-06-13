@@ -362,9 +362,60 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
   color: var(--text); background: rgba(130,170,255,.07); font-size: 13px;
 }
 .alias-suggestion.err { color: var(--bad); border-color: rgba(255,122,122,.4); background: rgba(255,122,122,.08); }
-.alias-suggestion.name-search-row { flex-wrap: wrap; justify-content: flex-start; }
-.alias-suggestion.name-search-row > span:first-child { width: 100%; color: var(--muted); margin-bottom: 2px; }
-.alias-suggestion.name-search-row .ghost { white-space: normal; text-align: left; }
+
+/* "No market data" card: a calm header with an icon, prominent clickable
+   symbol suggestions, and the raw provider error tucked into a collapsible so
+   it stops shouting. */
+.nodata-head { display: flex; gap: 14px; align-items: flex-start; }
+.nodata-icon {
+  flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
+  background: rgba(245, 199, 107, .10); border: 1px solid rgba(245, 199, 107, .30); color: var(--warn);
+}
+.nodata-head-text { min-width: 0; }
+.nodata-head-text h2 { margin: 3px 0 0; }
+.nodata-lead { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+
+.nodata-suggest { margin-top: 16px; }
+.nodata-suggest-label {
+  color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  margin-bottom: 8px; display: flex; align-items: center; gap: 7px;
+}
+.nodata-suggest.err .nodata-suggest-label { color: var(--bad); }
+
+.symbol-suggest-list { display: flex; flex-direction: column; gap: 8px; }
+.symbol-suggest {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 11px 14px; border-radius: var(--radius-soft);
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  cursor: pointer; transition: border-color .15s, background .15s, transform .05s;
+}
+.symbol-suggest:hover { border-color: rgba(130, 170, 255, .55); background: rgba(130, 170, 255, .08); }
+.symbol-suggest:active { transform: translateY(1px); }
+.symbol-suggest .sx-sym { font-weight: 800; font-size: 14px; letter-spacing: .02em; flex: none; }
+.symbol-suggest .sx-name {
+  color: var(--text); font-size: 13px; flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.symbol-suggest .sx-meta { color: var(--muted); font-size: 12px; flex: none; white-space: nowrap; }
+.symbol-suggest .sx-go { color: var(--accent); font-weight: 700; flex: none; opacity: .55; transition: opacity .15s; }
+.symbol-suggest:hover .sx-go { opacity: 1; }
+
+.nodata-detail { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.nodata-detail > summary {
+  cursor: pointer; list-style: none; color: var(--muted); font-size: 12px;
+  user-select: none; display: inline-flex; align-items: center; gap: 6px;
+}
+.nodata-detail > summary::-webkit-details-marker { display: none; }
+.nodata-detail > summary::before { content: "▸"; font-size: 10px; transition: transform .15s; }
+.nodata-detail[open] > summary::before { transform: rotate(90deg); }
+.nodata-detail > summary:hover { color: var(--text); }
+.nodata-detail-body {
+  margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-soft);
+  background: rgba(255, 122, 122, .06); border: 1px solid rgba(255, 122, 122, .22);
+  color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  max-height: 200px; overflow-y: auto;
+}
 
 .checks { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .check { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--border); }
@@ -526,6 +577,8 @@ tr:last-child td { border-bottom: 0; }
 @keyframes pill-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .status { color: var(--muted); font-size: 13px; margin: 10px 2px; min-height: 18px; }
 .status.err { color: var(--bad); }
+.status a, .live-run-link { text-decoration: underline; white-space: nowrap; }
+.live-run-link { margin-left: 6px; font-weight: 600; }
 
 /* Shared "nothing loaded yet" placeholder so empty views stop being a void. */
 .empty-state {
@@ -1239,25 +1292,15 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-head-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .whatif-card { background: var(--panel-2); border: 1px solid var(--accent); border-radius: var(--radius-card); padding: 14px 16px; margin-bottom: 16px; }
 .whatif-title { font-weight: 800; font-size: 15px; margin-bottom: 10px; }
-/* Step 4 final-report block: collapsible so the long narrative doesn't bury the
-   review gate, but present so you can read what's being cross-checked. */
-.pipe-report-view {
+/* Step 4 report access: the report itself lives in the Analyses reader (single
+   canonical reader, with sources + Q&A), so here we just route there rather than
+   duplicate the rendering. */
+.pipe-report-link {
   margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius-card);
-  background: var(--panel-2); overflow: hidden;
+  background: var(--panel-2); padding: 12px 14px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
 }
-.pipe-report-view > summary {
-  cursor: pointer; list-style: none; padding: 11px 14px; font-weight: 700; font-size: 13px;
-  display: flex; align-items: center; gap: 8px; user-select: none;
-}
-.pipe-report-view > summary::-webkit-details-marker { display: none; }
-.pipe-report-view > summary::before {
-  content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s;
-}
-.pipe-report-view[open] > summary::before { transform: rotate(90deg); }
-.pipe-report-view > summary:hover { color: var(--accent); }
-.pipe-report-view #pipe-report-rendered {
-  padding: 8px 18px 16px; max-height: 72vh; overflow-y: auto; border-top: 1px solid var(--border);
-}
+.pipe-report-link-text { color: var(--muted); font-size: 13px; }
 
 /* Collapsible "Full review notes" — the gate's own markdown, rendered as prose
    instead of raw monospace source. */

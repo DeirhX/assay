@@ -484,6 +484,11 @@ def _segment_prompt(name: str) -> dict:
         "Treat the tickers above as individual stocks and the complete scope; "
         "do not ask clarifying questions. If anything is ambiguous, state "
         "assumptions and proceed.\n"
+        "FORMAT: write a prose report in Markdown with section headings, "
+        "paragraphs, bullet lists, and Markdown tables. Do NOT return the answer "
+        "as a JSON object or array, and do NOT wrap the whole response in a code "
+        "block. Structured data (e.g. the comparison) belongs in Markdown tables, "
+        "not JSON.\n"
     )
     if held_lines:
         prompt += (
@@ -548,6 +553,28 @@ def _enrich_deep_run(rec: dict) -> None:
     })
 
 
+def _looks_like_json_doc(text: str) -> bool:
+    """True if `text` is really a JSON object/array rather than a narrative.
+
+    A Deep Research report is prose/markdown; it must never be a bare JSON
+    document. A bad scrape or paste once captured a segment-universe JSON blob
+    and we silently stored it as the `.md`, so the Analyses view rendered raw
+    JSON. We gate on a leading '{'/'[' and an actual successful parse, so genuine
+    markdown (which neither starts with a brace nor parses as JSON) is untouched.
+    A single surrounding ```json fence is stripped before the check.
+    """
+    s = text.strip()
+    fenced = re.match(r"^```[a-zA-Z0-9]*\s*\n(.*)\n```$", s, re.DOTALL)
+    if fenced:
+        s = fenced.group(1).strip()
+    if not s or s[0] not in "{[":
+        return False
+    try:
+        return isinstance(json.loads(s), (dict, list))
+    except (ValueError, TypeError):
+        return False
+
+
 def _save_deep_artifact(body: dict) -> dict:
     segment = _slugify(str(body.get("segment") or ""))
     date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
@@ -557,6 +584,13 @@ def _save_deep_artifact(body: dict) -> dict:
     report = str(body.get("report") or "").strip()
     if not report:
         raise ValueError("report text is required")
+    if _looks_like_json_doc(report):
+        raise ValueError(
+            "report looks like a JSON document, not a Deep Research narrative -- "
+            "the scrape or paste captured structured data instead of the report "
+            "body. Re-scrape the Perplexity answer (the prose/markdown), not a "
+            "JSON blob, before saving."
+        )
     citations = body.get("citations") or []
     if isinstance(citations, str):
         citations = json.loads(citations) if citations.strip() else []
@@ -761,6 +795,95 @@ def _start_qa(symbol: str, question: str) -> dict:
         raise RuntimeError(f"a question for {sym} is already being answered")
     job = _new_job("ticker_qa", symbol=sym)
     threading.Thread(target=_run_qa_job, args=(job["id"], sym, question), daemon=True).start()
+    return _job_public(job)
+
+
+# --------------------------------------------------------------------------- #
+# Deep-research Q&A: continuable follow-up threads about a saved run, grounded
+# in the report markdown + its citations. Stored next to the run artifacts.
+# --------------------------------------------------------------------------- #
+def _deep_qa_path(stem: str) -> Path:
+    return DEEP_DIR / f"{_slugify(stem)}.qa.json"
+
+
+def _load_deep_qa(stem: str) -> dict:
+    stem = _slugify(stem)
+    data = _load(_deep_qa_path(stem))
+    if not isinstance(data, dict):
+        return {"stem": stem, "turns": []}
+    data.setdefault("stem", stem)
+    if not isinstance(data.get("turns"), list):
+        data["turns"] = []
+    return data
+
+
+def _run_deep_qa_job(job_id: str, stem: str, question: str) -> None:
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        report_path = DEEP_DIR / f"{stem}.md"
+        if not report_path.exists():
+            _update_job(job_id, state="error", error=f"no saved report for {stem}")
+            return
+        document = report_path.read_text(encoding="utf-8")
+        sources = _load(DEEP_DIR / f"{stem}.sources.json") or {}
+        citations = sources.get("citations") or []
+        title = (_load(DEEP_DIR / f"{stem}.target-proposal.json") or {}).get("title") or stem
+        thread = _load_deep_qa(stem)
+        _update_job(job_id, state="running", message="thinking…")
+        result = ticker_analysis.ask_about_doc(
+            title, document, citations, thread.get("turns") or [], question,
+            progress=progress, cancel=lambda: jobs.is_cancelled(job_id))
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    if result.get("cancelled") or jobs.is_cancelled(job_id):
+        _update_job(job_id, state="cancelled", message="cancelled")
+        return
+    if not result.get("ok"):
+        _update_job(job_id, state="error", error=result.get("error") or "all Q&A backends failed")
+        return
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    thread.setdefault("created_at", now)
+    thread["updated_at"] = now
+    thread["turns"].append({"role": "user", "text": question, "ts": now})
+    thread["turns"].append({
+        "role": "assistant", "text": result["report"], "ts": now,
+        "backend": result.get("backend"), "backend_label": result.get("backend_label"),
+        "model": result.get("model"), "usage": result.get("usage") or {},
+    })
+    try:
+        _write_json(_deep_qa_path(stem), thread)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"answer produced but not saved: {type(exc).__name__}: {exc}")
+        return
+    _update_job(job_id, state="done", message=f"answered via {result.get('backend_label')}",
+                result={"stem": stem, "turns": len(thread["turns"])})
+
+
+def _deep_qa_running(stem: str) -> bool:
+    return jobs.find(
+        lambda j: j.get("kind") == "deep_qa"
+        and j.get("stem") == stem
+        and j.get("state") in ("queued", "running")
+        and not j.get("cancelled")
+    )
+
+
+def _start_deep_qa(stem: str, question: str) -> dict:
+    stem = _slugify(stem)
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("empty question")
+    if not (DEEP_DIR / f"{stem}.md").exists():
+        raise ValueError(f"no saved report for {stem}")
+    if _deep_qa_running(stem):
+        raise RuntimeError(f"a question for {stem} is already being answered")
+    job = _new_job("deep_qa", stem=stem)
+    threading.Thread(target=_run_deep_qa_job, args=(job["id"], stem, question), daemon=True).start()
     return _job_public(job)
 
 
@@ -1314,6 +1437,7 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
         res = worker.run_deep_research(
             prompt, window_mode=window_mode,
             clarify_answer=_clarify_answer_for(segment), progress=progress,
+            on_url=lambda url: _update_job(job_id, source_url=url),
         )
     except Exception as exc:  # noqa: BLE001
         _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
@@ -1439,7 +1563,8 @@ def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
         _release_active()
         return
 
-    _update_job(job_id, state="running", message="opening run URL")
+    # The import URL is known up front, so surface it as the live link right away.
+    _update_job(job_id, state="running", message="opening run URL", source_url=url)
     try:
         res = worker.fetch_by_url(url, progress=progress)
     except Exception as exc:  # noqa: BLE001
@@ -1689,6 +1814,9 @@ class Handler(BaseHTTPRequestHandler):
                         _load(rel) if rel.suffix == ".json" else rel.read_text(encoding="utf-8")
                     )
             return self._send_json(payload)
+        if path == "/api/deep-qa":
+            stem = (query.get("stem") or [""])[0]
+            return self._send_json(_load_deep_qa(stem))
         if path == "/api/target-model":
             rec = _load(TARGET_MODEL_JSON)
             return self._send_json(rec) if rec else self._send_error_json(404, "target model not found")
@@ -1805,6 +1933,19 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
 
+        if path == "/api/deep-qa":
+            body = self._read_body()
+            stem = _slugify(str(body.get("stem") or ""))
+            if body.get("clear"):
+                _write_json(_deep_qa_path(stem), {"stem": stem, "turns": []})
+                return self._send_json(_load_deep_qa(stem))
+            try:
+                return self._send_json(_start_deep_qa(stem, str(body.get("question") or "")))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
         if path == "/api/deep-job/cancel":
             body = self._read_body()
             job_id = str(body.get("id") or "").strip()
@@ -1835,7 +1976,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/deep-research/save":
             body = self._read_body()
-            return self._send_json(_save_deep_artifact(body))
+            try:
+                return self._send_json(_save_deep_artifact(body))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
 
         if path == "/api/deep-research/run":
             body = self._read_body()

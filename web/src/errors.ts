@@ -2,7 +2,7 @@
 import { $, api, el, esc, relAge, setErrorSink, state } from "./core";
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
 import { pushNav } from "./shell";
-import { mdToHtml } from "./analyses";
+import { mdToHtml, openRunInAnalyses } from "./analyses";
 import { taskEnd, taskStart, taskUpdate } from "./tasks";
 
 // ---- Centralized error center ----------------------------------------------
@@ -96,6 +96,31 @@ function renderErrorCenter() {
   });
 }
 
+// Escape a string for HTML, but turn bare http(s) URLs into clickable links.
+// Job status/error messages embed a Perplexity run URL (e.g. the "answer the
+// clarifying question here" stall) which was previously dropped into
+// textContent as dead plain text. Everything except the URL is escaped, so
+// this stays XSS-safe.
+function linkifyHtml(text) {
+  const s = String(text == null ? "" : text);
+  const re = /(https?:\/\/[^\s<>]+)/g;
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    out += esc(s.slice(last, m.index));
+    let url = m[1];
+    // Don't swallow trailing sentence punctuation into the href.
+    const trail = url.match(/[).,;]+$/);
+    let tail = "";
+    if (trail) { tail = trail[0]; url = url.slice(0, -tail.length); }
+    out += `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)} \u2197</a>` + esc(tail);
+    last = m.index + m[1].length;
+  }
+  out += esc(s.slice(last));
+  return out;
+}
+
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
 async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
@@ -115,7 +140,10 @@ async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
       }
       if (job.state === "queued" || job.state === "running") {
         statusEl.classList.remove("err");
-        statusEl.innerHTML = `<span class="spinner"></span> ${esc(job.message || job.state)}`;
+        const live = job.source_url
+          ? ` <a href="${esc(job.source_url)}" target="_blank" rel="noopener" class="live-run-link">view live run \u2197</a>`
+          : "";
+        statusEl.innerHTML = `<span class="spinner"></span> ${esc(job.message || job.state)}${live}`;
         if (label) taskUpdate(jobId, job.message || job.state);
         continue;
       }
@@ -140,7 +168,7 @@ async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
       }
       statusEl.classList.add("err");
       const jobErr = job.error || job.message || job.state;
-      statusEl.textContent = jobErr;
+      statusEl.innerHTML = linkifyHtml(jobErr);
       recordError("task", `${label || "Background task"} failed: ${jobErr}`);
       if (onFail) onFail(jobErr);
       return;
@@ -396,60 +424,29 @@ function reviewTagClass(v) {
   return "";
 }
 
-// Surface the actual report on Step 4 so the review gate isn't reviewing an
-// invisible document. Reads whatever is in the Step 3 report field (this run's
-// output, an import, or a manual paste) and renders it as prose.
+// Step 4 no longer re-renders the report (the Analyses reader is the single
+// canonical reader, with sources + review + follow-up Q&A in one place). Instead
+// surface a one-click route into that reader for the loaded run, so the review
+// gate's verdict sits next to the full document without duplicating it here.
 function renderPipeReport() {
   const box = document.getElementById("pipe-report-view");
-  const body = document.getElementById("pipe-report-rendered");
-  if (!box || !body) return;
+  if (!box) return;
+  const stem = state.currentDeepRun;
   const raw = ($("#pipe-report")?.value || "").trim();
-  if (!raw) { box.hidden = true; body.innerHTML = ""; return; }
+  if (!raw) { box.hidden = true; box.innerHTML = ""; return; }
   box.hidden = false;
-  // Reports come in two shapes: a narrative markdown deep-dive, or a structured
-  // segment document (title/thesis/sleeves/members) saved as JSON. Rendering the
-  // latter through the markdown path produces an unreadable wall of JSON, so
-  // detect and lay it out properly.
-  body.innerHTML = renderStructuredReport(raw) || mdToHtml(raw);
-}
-
-function fmtConfidence(c) {
-  if (c == null || c === "") return "";
-  if (typeof c === "number") return c <= 1 ? Math.round(c * 100) + "%" : String(c);
-  return String(c);
-}
-
-function renderStructuredReport(raw) {
-  let data;
-  try { data = JSON.parse(raw); } catch { return null; }
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  if (!data.members && !data.sleeves && !data.comment) return null;
-  let html = "";
-  if (data.title) html += `<h3 class="rep-title">${esc(data.title)}</h3>`;
-  if (data.comment) html += `<p class="rep-lead">${esc(data.comment)}</p>`;
-  if (Array.isArray(data.sleeves) && data.sleeves.length) {
-    html += `<div class="rep-section-h">Sleeves</div><div class="rep-sleeves">`;
-    data.sleeves.forEach((s) => {
-      html += `<div class="rep-sleeve"><span class="rep-sleeve-name">${esc(s.name || "")}</span>` +
-        (s.description ? `<span class="rep-sleeve-desc">${esc(s.description)}</span>` : "") + `</div>`;
-    });
-    html += `</div>`;
+  box.innerHTML = "";
+  if (stem) {
+    box.appendChild(el("span", "pipe-report-link-text",
+      "Full report, sources & follow-up Q&A live in the reader."));
+    const btn = el("button", "primary", "Open report & Q&A in Analyses \u2197");
+    btn.type = "button";
+    btn.addEventListener("click", () => openRunInAnalyses(stem));
+    box.appendChild(btn);
+  } else {
+    box.appendChild(el("span", "pipe-report-link-text",
+      "Save the report on the Report step to read it (and ask follow-ups) in Analyses."));
   }
-  if (Array.isArray(data.members) && data.members.length) {
-    html += `<div class="rep-section-h">Members <span class="rep-count">${data.members.length}</span></div>`;
-    html += `<table class="rep-members"><thead><tr>` +
-      `<th>Symbol</th><th>Sleeve</th><th class="num">Conf.</th><th>Rationale</th></tr></thead><tbody>`;
-    data.members.forEach((m) => {
-      html += `<tr>` +
-        `<td class="rep-sym">${esc(m.symbol || "")}</td>` +
-        `<td class="rep-sleeve-cell">${esc(m.sleeve || "")}</td>` +
-        `<td class="num">${esc(fmtConfidence(m.confidence))}</td>` +
-        `<td class="rep-rat">${esc(m.rationale || "")}</td>` +
-        `</tr>`;
-    });
-    html += `</tbody></table>`;
-  }
-  return html || null;
 }
 
 function renderReviewGate(rec) {

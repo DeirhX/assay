@@ -52,96 +52,128 @@ async function saveSymbolAlias(inputSymbol, providerSymbol) {
   });
 }
 
+// Magnifier-with-minus: "we searched and found no market data" — themed via
+// currentColor so it inherits the badge tint.
+const NODATA_ICON_SVG =
+  `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" ` +
+  `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+  `<circle cx="11" cy="11" r="7"></circle><line x1="20.5" y1="20.5" x2="16.4" y2="16.4"></line>` +
+  `<line x1="8" y1="11" x2="14" y2="11"></line></svg>`;
+
+// One rich, clickable suggestion row: bold symbol, company name, exchange/type
+// meta, and an open affordance. Used for both name matches and exchange guesses.
+function symbolSuggestRow({ symbol, name, meta }, onClick) {
+  const btn = el("button", "symbol-suggest");
+  btn.type = "button";
+  btn.title = `Analyze ${symbol}`;
+  btn.innerHTML =
+    `<span class="sx-sym">${esc(symbol)}</span>` +
+    (name ? `<span class="sx-name">${esc(name)}</span>` : `<span class="sx-name"></span>`) +
+    (meta ? `<span class="sx-meta">${esc(meta)}</span>` : "") +
+    `<span class="sx-go" aria-hidden="true">\u2197</span>`;
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
 function renderNoMarketData(rec) {
   const sym = cleanSymbol(rec?.input_symbol || rec?.alias_candidate_for || rec?.symbol || "");
   const provider = rec?.provider_symbol || rec?.symbol || sym;
   const out = $("#dd-result");
   out.innerHTML = "";
   out.appendChild(overviewBackBar());
-  const card = el("div", "card empty-ticker");
+  const card = el("div", "card empty-ticker nodata-card");
   const errors = rec?.provider_errors || rec?.errors || rec?.error;
   const detail = Array.isArray(errors)
     ? errors.join("; ")
     : typeof errors === "object" && errors
       ? Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join("; ")
       : String(errors || "No usable quote, fundamentals, or market-data fields were returned.");
-  card.innerHTML =
-    `<h2 class="section">No market data for ${esc(provider)}</h2>` +
-    `<p class="hint">The data providers did not return usable market data for <strong>${esc(sym || provider)}</strong>. ` +
-    `This is common for broker symbols that need an exchange suffix.</p>` +
-    `<div class="alias-suggestion err">${esc(detail)}</div>`;
 
-  const candidates = exchangeCandidates(sym || provider);
-  if (candidates.length) {
-    const row = el("div", "alias-suggestion");
-    row.innerHTML = `<span>Checking exchange-qualified ticker candidates...</span>`;
-    card.appendChild(row);
-    loadCandidateSuggestions(row, sym || provider, candidates);
-  }
+  const head = el("div", "nodata-head");
+  head.innerHTML =
+    `<span class="nodata-icon">${NODATA_ICON_SVG}</span>` +
+    `<div class="nodata-head-text">` +
+      `<h2 class="section">No market data for ${esc(provider)}</h2>` +
+      `<p class="nodata-lead">No usable quote or fundamentals came back for <strong>${esc(sym || provider)}</strong>. ` +
+      `Broker symbols often need an exchange suffix — pick a real match below.</p>` +
+    `</div>`;
+  card.appendChild(head);
 
-  // Substring / company-name search: maybe they typed a name or a near-miss
-  // symbol. Offer real market matches alongside the exchange-suffix guesses.
+  // Lead with the useful action: company-name / near-miss search. Maybe they
+  // typed a name or a broker symbol that maps to a real listing.
   const queryStr = sym || provider;
   if (queryStr) {
-    const searchRow = el("div", "alias-suggestion name-search-row");
-    searchRow.innerHTML = `<span><span class="spinner"></span> Searching the market for "${esc(queryStr)}"...</span>`;
-    card.appendChild(searchRow);
-    loadNameSearch(searchRow, queryStr);
+    const sec = el("div", "nodata-suggest");
+    sec.innerHTML = `<div class="nodata-suggest-label"><span class="spinner"></span> Searching the market for "${esc(queryStr)}"\u2026</div>`;
+    card.appendChild(sec);
+    loadNameSearch(sec, queryStr);
   }
+
+  // Then the deterministic exchange-suffix guesses (LSE, TSX, …).
+  const candidates = exchangeCandidates(sym || provider);
+  if (candidates.length) {
+    const sec = el("div", "nodata-suggest");
+    sec.innerHTML = `<div class="nodata-suggest-label"><span class="spinner"></span> Checking exchange-qualified candidates\u2026</div>`;
+    card.appendChild(sec);
+    loadCandidateSuggestions(sec, sym || provider, candidates);
+  }
+
+  // The raw provider error is debugging detail, not the headline — tuck it into
+  // a collapsed, de-emphasized panel so it stops dominating the card.
+  const det = el("details", "nodata-detail");
+  det.innerHTML =
+    `<summary>Provider response details</summary>` +
+    `<div class="nodata-detail-body">${esc(detail)}</div>`;
+  card.appendChild(det);
+
   out.appendChild(card);
 }
 
-async function loadNameSearch(row, query) {
+async function loadNameSearch(sec, query) {
   try {
     const result = await api("/api/symbol-search?q=" + encodeURIComponent(query));
     const wanted = cleanSymbol(query);
     const matches = (result.results || []).filter((m) => cleanSymbol(m.symbol) !== wanted);
-    row.innerHTML = "";
+    sec.innerHTML = "";
     if (!matches.length) {
-      row.appendChild(el("span", "", `No market symbols matched "${query}".`));
+      sec.appendChild(el("div", "nodata-suggest-label", `No market symbols matched "${esc(query)}".`));
       return;
     }
-    row.appendChild(el("span", "", "Matching symbols"));
-    matches.forEach((m) => {
-      const meta = [m.name, m.exchange, m.type].filter(Boolean).join(" \u00b7 ");
-      const label = meta ? `${m.symbol} \u2014 ${meta}` : m.symbol;
-      const btn = el("button", "ghost", esc(label));
-      btn.type = "button";
-      btn.title = `Analyze ${m.symbol}`;
-      btn.addEventListener("click", () => pullTicker(m.symbol, { push: false }));
-      row.appendChild(btn);
-    });
+    sec.appendChild(el("div", "nodata-suggest-label", "Matching symbols"));
+    const list = el("div", "symbol-suggest-list");
+    matches.forEach((m) => list.appendChild(symbolSuggestRow(
+      { symbol: m.symbol, name: m.name, meta: [m.exchange, m.type].filter(Boolean).join(" \u00b7 ") },
+      () => pullTicker(m.symbol, { push: false }))));
+    sec.appendChild(list);
   } catch (e) {
-    row.innerHTML = `<span>Symbol search failed: ${esc(e.message)}</span>`;
-    row.classList.add("err");
+    sec.innerHTML = "";
+    sec.classList.add("err");
+    sec.appendChild(el("div", "nodata-suggest-label", `Symbol search failed: ${esc(e.message)}`));
   }
 }
 
-async function loadCandidateSuggestions(row, inputSymbol, candidates) {
+async function loadCandidateSuggestions(sec, inputSymbol, candidates) {
   try {
     const result = await api("/api/symbol-candidates", "POST", {
       input_symbol: inputSymbol,
       candidates,
     });
     const valid = result.candidates || [];
-    row.innerHTML = "";
+    sec.innerHTML = "";
     if (!valid.length) {
-      row.appendChild(el("span", "", "No working exchange-qualified alternatives found."));
+      sec.appendChild(el("div", "nodata-suggest-label", "No working exchange-qualified alternatives found."));
       return;
     }
-    row.appendChild(el("span", "", "Working alternatives"));
-    valid.forEach((candidate) => {
-      const label = candidate.exchange || candidate.currency
-        ? `Try ${candidate.symbol} (${[candidate.exchange, candidate.currency].filter(Boolean).join(", ")})`
-        : `Try ${candidate.symbol}`;
-      const btn = el("button", "ghost", esc(label));
-      btn.type = "button";
-      btn.addEventListener("click", () => pullTicker(candidate.symbol, { push: false, aliasFor: inputSymbol }));
-      row.appendChild(btn);
-    });
+    sec.appendChild(el("div", "nodata-suggest-label", "Exchange-qualified alternatives"));
+    const list = el("div", "symbol-suggest-list");
+    valid.forEach((c) => list.appendChild(symbolSuggestRow(
+      { symbol: c.symbol, name: "", meta: [c.exchange, c.currency].filter(Boolean).join(" \u00b7 ") },
+      () => pullTicker(c.symbol, { push: false, aliasFor: inputSymbol }))));
+    sec.appendChild(list);
   } catch (e) {
-    row.innerHTML = `<span>Could not validate alternate tickers: ${esc(e.message)}</span>`;
-    row.classList.add("err");
+    sec.innerHTML = "";
+    sec.classList.add("err");
+    sec.appendChild(el("div", "nodata-suggest-label", `Could not validate alternate tickers: ${esc(e.message)}`));
   }
 }
 

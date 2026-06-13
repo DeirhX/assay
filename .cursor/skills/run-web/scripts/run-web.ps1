@@ -34,7 +34,25 @@ Set-Location $root
 Write-Host "Repo root: $root" -ForegroundColor DarkGray
 
 # --- Kill stale dev processes (a previous run's reload supervisor + child both
-#     linger and hold port 6060 otherwise) ---
+#     linger and hold port 6060 otherwise). Two passes: a command-line match
+#     (catches the named python/node procs) and a port-owner sweep (catches any
+#     zombie still bound to the API/Vite ports that the name match misses). ---
+function Stop-PortOwners {
+    param([int[]]$Ports)
+    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return }
+    foreach ($port in $Ports) {
+        Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            ForEach-Object {
+                $procPid = $_
+                if ($procPid -and $procPid -ne 0) {
+                    $name = (Get-Process -Id $procPid -ErrorAction SilentlyContinue).ProcessName
+                    Write-Host "Freeing port $port (PID $procPid$(if ($name) { " $name" }))" -ForegroundColor DarkGray
+                    Stop-Process -Id $procPid -Force -ErrorAction SilentlyContinue
+                }
+            }
+    }
+}
 function Stop-WebProcs {
     foreach ($p in @(
             @{ Name = 'python.exe'; Match = '*serve.py*' },
@@ -47,6 +65,7 @@ function Stop-WebProcs {
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
             }
     }
+    Stop-PortOwners -Ports @($ApiPort, 5173)
 }
 Stop-WebProcs
 

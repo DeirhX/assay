@@ -121,6 +121,82 @@ class HoldingsSyncJob(unittest.TestCase):
         self.assertIn("credentials", pub["error"])
 
 
+class DeepArtifactJsonGuard(unittest.TestCase):
+    """A Deep Research report is narrative markdown. A bad scrape/paste once
+    stored a JSON segment-universe blob as the `.md`, which the Analyses view
+    then rendered raw. _save_deep_artifact must refuse a JSON-document body."""
+
+    def test_detects_bare_json_object(self):
+        self.assertTrue(serve._looks_like_json_doc('{"title": "Space", "members": []}'))
+
+    def test_detects_bare_json_array(self):
+        self.assertTrue(serve._looks_like_json_doc('[{"symbol": "RKLB"}]'))
+
+    def test_detects_fenced_json(self):
+        self.assertTrue(serve._looks_like_json_doc('```json\n{"a": 1}\n```'))
+
+    def test_allows_markdown_narrative(self):
+        report = ("# Space Exploration\n\nRocket Lab ($RKLB) is the clearest "
+                  "pure-play launch name.\n\n| Company | Ticker |\n|---|---|\n"
+                  "| Rocket Lab | RKLB |\n")
+        self.assertFalse(serve._looks_like_json_doc(report))
+
+    def test_allows_prose_starting_with_brace_like_text(self):
+        # Brace-led but not valid JSON -> still a narrative, must be allowed.
+        self.assertFalse(serve._looks_like_json_doc("{this is not json, just prose}"))
+
+    def test_save_rejects_json_report(self):
+        with self.assertRaises(ValueError) as ctx:
+            serve._save_deep_artifact({
+                "segment": "space-exploration",
+                "date": "2026-06-13",
+                "report": '{"title": "Space", "sleeves": [], "members": []}',
+            })
+        self.assertIn("JSON document", str(ctx.exception))
+
+
+class DeepQa(unittest.TestCase):
+    """Follow-up Q&A about a saved Deep Research run: GET returns an (empty)
+    thread for an unknown stem, and starting a question for a run with no saved
+    report is a clean 400, not a 500 or a started job."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def _req(self, path, *, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data,
+            headers={"Content-Type": "application/json"}, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read().decode("utf-8"))
+
+    def test_empty_thread_for_unknown_stem(self):
+        status, payload = self._req("/api/deep-qa?stem=does-not-exist-2026-01-01")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["turns"], [])
+
+    def test_question_without_report_is_400(self):
+        status, payload = self._req(
+            "/api/deep-qa", method="POST",
+            body={"stem": "no-such-run-2026-01-01", "question": "why?"})
+        self.assertEqual(status, 400)
+        self.assertIn("no saved report", payload["error"])
+
+
 class HostGuard(unittest.TestCase):
     def test_non_loopback_host_is_refused(self):
         # The guard fires before any socket is bound, so this never serves.
