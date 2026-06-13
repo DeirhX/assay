@@ -63,7 +63,43 @@ function renderNoMarketData(rec) {
     card.appendChild(row);
     loadCandidateSuggestions(row, sym || provider, candidates);
   }
+
+  // Substring / company-name search: maybe they typed a name or a near-miss
+  // symbol. Offer real market matches alongside the exchange-suffix guesses.
+  const queryStr = sym || provider;
+  if (queryStr) {
+    const searchRow = el("div", "alias-suggestion");
+    searchRow.innerHTML = `<span><span class="spinner"></span> Searching the market for "${esc(queryStr)}"...</span>`;
+    card.appendChild(searchRow);
+    loadNameSearch(searchRow, queryStr);
+  }
   out.appendChild(card);
+}
+
+async function loadNameSearch(row, query) {
+  try {
+    const result = await api("/api/symbol-search?q=" + encodeURIComponent(query));
+    const wanted = cleanSymbol(query);
+    const matches = (result.results || []).filter((m) => cleanSymbol(m.symbol) !== wanted);
+    row.innerHTML = "";
+    if (!matches.length) {
+      row.appendChild(el("span", "", `No market symbols matched "${query}".`));
+      return;
+    }
+    row.appendChild(el("span", "", "Matching symbols"));
+    matches.forEach((m) => {
+      const meta = [m.name, m.exchange, m.type].filter(Boolean).join(" \u00b7 ");
+      const label = meta ? `${m.symbol} \u2014 ${meta}` : m.symbol;
+      const btn = el("button", "ghost", esc(label));
+      btn.type = "button";
+      btn.title = `Analyze ${m.symbol}`;
+      btn.addEventListener("click", () => pullTicker(m.symbol, { push: false }));
+      row.appendChild(btn);
+    });
+  } catch (e) {
+    row.innerHTML = `<span>Symbol search failed: ${esc(e.message)}</span>`;
+    row.classList.add("err");
+  }
 }
 
 async function loadCandidateSuggestions(row, inputSymbol, candidates) {

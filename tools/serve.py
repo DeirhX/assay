@@ -172,6 +172,19 @@ def _symbol_candidates(body: dict) -> dict:
     return {"input_symbol": src, "candidates": valid, "invalid": invalid}
 
 
+def _symbol_search(query: str, *, limit: int = 8) -> dict:
+    """Substring / company-name ticker search via Yahoo. Best-effort: a provider
+    hiccup returns an empty list rather than an error so the UI degrades cleanly."""
+    q = (query or "").strip()
+    if not q:
+        return {"query": "", "results": []}
+    try:
+        results = yahoo.search(q, limit=limit)
+    except Exception as exc:  # noqa: BLE001 - search is a nicety, never fatal
+        return {"query": q, "results": [], "error": str(exc)}
+    return {"query": q, "results": results}
+
+
 def _setup_status(*, run_checks: bool = False) -> dict:
     return {
         "llm": ticker_analysis.setup_status(run_checks=run_checks),
@@ -1564,6 +1577,9 @@ class Handler(BaseHTTPRequestHandler):
             name = path.rsplit("/", 1)[-1].lower()
             rec = _load(SEGMENT_OUT_DIR / f"{name}.json")
             return self._send_json(rec) if rec else self._send_error_json(404, f"no cached segment {name}")
+        if path == "/api/symbol-search":
+            q = (query.get("q") or [""])[0]
+            return self._send_json(_symbol_search(q))
         return self._send_error_json(404, "unknown endpoint")
 
     def do_POST(self):

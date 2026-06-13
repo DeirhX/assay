@@ -95,6 +95,55 @@ def _raw(node: Any) -> float | None:
     return None
 
 
+def search(query: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Symbol / company-name search for a partial string.
+
+    Hits Yahoo's public ``/v1/finance/search`` (no crumb needed) and returns
+    equity-ish matches so the UI can suggest real tickers when someone types a
+    name or a not-quite-right symbol. Best-effort: a hiccup falls back to the
+    authenticated opener, and the caller treats failures as "no matches".
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    url = (
+        "https://query1.finance.yahoo.com/v1/finance/search?"
+        + urllib.parse.urlencode({
+            "q": q,
+            "quotesCount": max(1, min(limit * 3, 25)),
+            "newsCount": 0,
+            "listsCount": 0,
+            "enableFuzzyQuery": "false",
+        })
+    )
+    try:
+        data = get_json(url)
+    except ProviderError:
+        opener, _crumb = _session()
+        data = get_json(url, opener=opener)
+
+    allowed = {"EQUITY", "ETF"}
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in data.get("quotes") or []:
+        if not isinstance(item, dict):
+            continue
+        sym = str(item.get("symbol") or "").strip().upper()
+        qtype = str(item.get("quoteType") or "").upper()
+        if not sym or sym in seen or qtype not in allowed:
+            continue
+        seen.add(sym)
+        out.append({
+            "symbol": sym,
+            "name": (item.get("longname") or item.get("shortname") or "").strip(),
+            "exchange": str(item.get("exchDisp") or item.get("exchange") or "").strip(),
+            "type": str(item.get("typeDisp") or qtype.title()).strip(),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def chart(symbol: str, *, rng: str = "1y", interval: str = "1d") -> dict[str, Any]:
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/"
