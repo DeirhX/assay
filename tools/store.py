@@ -18,18 +18,25 @@ import re
 from pathlib import Path
 
 
-def load(path: Path):
+def load(path: Path, default=None):
+    """Forgiving JSON read: missing or corrupt file returns ``default``.
+
+    Most callers treat "no data" and "bad data" the same way (fall back to a
+    live pull / empty default), so a corrupt file is not worth a stack trace.
+    Pass ``default`` (e.g. ``{}`` or ``[]``) when the caller wants a concrete
+    empty shape instead of ``None``.
+    """
     if not path.exists():
-        return None
+        return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return None
+        return default
 
 
-def write_json(path: Path, payload) -> None:
+def write_json(path: Path, payload, *, sort_keys: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2, sort_keys=sort_keys) + "\n", encoding="utf-8")
 
 
 def write_text(path: Path, payload: str) -> None:

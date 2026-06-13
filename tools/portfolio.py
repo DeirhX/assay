@@ -7,24 +7,16 @@ rule imply?" That is how portfolios become haunted by tiny inconsistent lies.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
+
+from store import load as load_json  # forgiving JSON read shared with the server
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
-
-
-def load_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
 
 
 DATA_MISSING_HINT = (

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import re
 import sys
 from pathlib import Path
@@ -28,6 +27,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import decision_label, holdings_weights, portfolio_context  # noqa: E402
+from store import load as _load, write_json as _store_write_json  # noqa: E402
 from providers import fmp, sec_edgar, yahoo  # noqa: E402
 from providers.common import (  # noqa: E402
     ProviderError,
@@ -515,18 +515,10 @@ def _history_stamp(as_of: str) -> str:
     return parsed.astimezone(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _load(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
 def _write(path: Path, record: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    # Research records keep their authored key order (thesis, metrics, ...);
+    # unlike the server's config writes we deliberately do not sort_keys.
+    _store_write_json(path, record, sort_keys=False)
 
 
 def main() -> int:
