@@ -1171,12 +1171,19 @@ a.tlink:hover { border-bottom-style: solid; }
 .risk-contrib-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 14px; margin-top: 8px; }
 .risk-contrib-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
 
+/* The matrix fits the panel width instead of scrolling: cells cap at a readable
+   size for small books and shrink to fit as names grow. Past ~12 names the grid
+   goes "compact" -- color-only cells (the signal is the colour) with rotated
+   column labels and the exact value on hover -- so it never overflows sideways. */
 .risk-heatmap-wrap { overflow-x: auto; }
-.risk-heatmap { display: grid; gap: 2px; font-size: 11px; min-width: max-content; }
+.risk-heatmap { display: grid; gap: 2px; font-size: 11px; }
 .risk-hm-corner { }
 .risk-hm-col, .risk-hm-row { color: var(--muted); font-weight: 700; padding: 3px; text-align: center; }
-.risk-hm-row { text-align: right; padding-right: 8px; }
-.risk-hm-cell { text-align: center; padding: 4px 2px; border-radius: 4px; font-variant-numeric: tabular-nums; color: var(--text); }
+.risk-hm-row { text-align: right; padding-right: 8px; white-space: nowrap; }
+.risk-hm-cell { display: flex; align-items: center; justify-content: center; min-height: 22px; padding: 2px; border-radius: 4px; font-variant-numeric: tabular-nums; color: var(--text); overflow: hidden; }
+.risk-heatmap.compact { gap: 1px; }
+.risk-heatmap.compact .risk-hm-cell { font-size: 0; }
+.risk-heatmap.compact .risk-hm-col { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; padding: 4px 0; }
 
 .risk-pos-table { width: 100%; border-collapse: collapse; }
 .risk-pos-table th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--border); }

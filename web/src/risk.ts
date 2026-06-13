@@ -97,7 +97,7 @@ function renderRisk(r) {
   if (syms.length) {
     const sec = el("div", "risk-section");
     sec.appendChild(el("h3", null, "Correlation matrix"));
-    sec.appendChild(el("p", "hint", "Daily-return correlation. Red = move together (concentration), green = a genuine hedge."));
+    sec.appendChild(el("p", "hint", "Daily-return correlation. Red = move together (concentration), green = a genuine hedge. Hover any cell for the exact value."));
     sec.appendChild(heatmap(syms, r.correlation.matrix));
     out.appendChild(sec);
   }
@@ -152,7 +152,11 @@ function stressCard(s) {
 function heatmap(syms, matrix) {
   const wrap = el("div", "risk-heatmap-wrap");
   const grid = el("div", "risk-heatmap");
-  grid.style.gridTemplateColumns = `minmax(48px, auto) repeat(${syms.length}, minmax(34px, 1fr))`;
+  // Cap cell width (so a small book doesn't get absurd squares) but let columns
+  // shrink to fit the panel as names grow -- no horizontal scroll either way.
+  // Past the threshold, drop numbers and rely on colour + hover for the value.
+  if (syms.length > 12) grid.classList.add("compact");
+  grid.style.gridTemplateColumns = `minmax(44px, max-content) repeat(${syms.length}, minmax(0, 60px))`;
   grid.appendChild(el("div", "risk-hm-corner"));
   syms.forEach((s) => grid.appendChild(el("div", "risk-hm-col", esc(s))));
   syms.forEach((rowSym) => {
