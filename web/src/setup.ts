@@ -358,7 +358,7 @@ function errLogEntryHtml(e) {
 async function renderErrorLog(open = false) {
   const card = document.getElementById("setup-errlog");
   if (!card) return;
-  let entries = [];
+  let entries;
   try {
     const r = await api("/api/error-log?limit=100");
     entries = r.entries || [];
