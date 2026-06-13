@@ -197,7 +197,7 @@ def _main() -> int:
     portfolio.require_data()
     entries = load_entries()
     if args.show or True:
-        holdings = store.load(REPO_ROOT / "data" / "current-holdings.json")
+        holdings = store.load(portfolio.HOLDINGS_JSON)
         print(json.dumps({
             "entries": entries,
             "calibration": calibrate(entries, price_map_from_holdings(holdings)),

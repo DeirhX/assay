@@ -37,10 +37,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- single source of truth for position weights
 from hygiene import SEV_RANK  # noqa: E402  -- shared severity rank
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
-TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
+from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON  # noqa: E402  -- canonical data paths
 
 EPS = 0.01  # weights are 2-decimal percents; tolerate rounding noise
 COVERAGE_WARN_PCT = 1.0  # an untargeted held name at/above this size is a real gap, not a stub
