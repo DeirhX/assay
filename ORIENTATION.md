@@ -16,6 +16,10 @@ private data repo).
 | Holdings snapshot | `data/current-holdings.json`, `data/current-holdings-summary.md` (private `data` submodule) | Sanitized IBKR snapshot: no account id, no token, no raw XML. |
 | Static generated values | `tools/generate_site.py` | Keeps NAV/position snippets in markdown and HTML synced to holdings JSON. |
 | Rebalance validator | `tools/rebalance.py` | Compares current weights against `data/target-model.json`. |
+| Risk lens | `tools/risk.py` | Correlation, volatility, effective-bets, and factor-shock stress over held names (`GET /api/risk`). |
+| Tax-lot planner | `tools/tax_lots.py` | Czech 3-year-aware lot selection for a trim; enriches the rebalance plan (`POST /api/tax-plan`). |
+| What-if simulator | `tools/whatif.py` | Recomputes post-trade weights/cash/realized-tax for a staged basket (`POST /api/whatif`). |
+| Decision journal | `tools/journal.py`, `data/journal.json` (submodule) | Append-only decisions + outcome calibration (`GET/POST /api/journal`). |
 | Claim validator | `tools/verify_claims.py`, `data/research-claims.json` (submodule) | Checks valuation claims for arithmetic consistency and snapshot drift. |
 | Research Console | `tools/serve.py`, `tools/research_pull.py`, `web/` | Local live research UI/API using Yahoo, SEC EDGAR, optional FMP. |
 | Research segments | `data/segments/*.json` (submodule) | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
@@ -172,6 +176,7 @@ When starting a new Cursor chat in this repo, ask it to use the relevant skills:
 - `portfolio-rebalancing`: allocation thesis, targets, Czech tax context.
 - `ibkr-holdings`: portfolio refresh and sanitized holdings context.
 - `research-console`: local live numeric research.
+- `run-web`: start both halves of the app (Python API + Vite frontend) locally.
 - `perplexity-deep-research`: browser-based Perplexity Pro Deep Research.
 - `rebalancing-site`: static page maintenance and navigation rules.
 

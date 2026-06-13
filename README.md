@@ -141,7 +141,7 @@ tab checks the local pieces that cannot be safely committed to the repo:
 - **Environment**: set `SEC_USER_AGENT` before starting the server. `FMP_API_KEY`
   is optional and adds a third market-data opinion when available.
 - **LLM CLIs**: install and authorize at least one local analysis CLI. Assay uses
-  `claude` first and `cursor-agent` as fallback for single-ticker analyst notes.
+  `cursor-agent` first and `claude` as fallback for single-ticker analyst notes.
   Run each CLI once in a terminal and complete its login flow, then use the Setup
   tab's smoke check. A binary being on `PATH` is not enough; the check verifies
   that authorization actually works.
@@ -182,6 +182,7 @@ This directory includes project-scoped Cursor skills under `.cursor/skills/`:
 - `portfolio-rebalancing` — continue the portfolio allocation and stock research workflow.
 - `rebalancing-site` — maintain the static HTML mini-site.
 - `research-console` — run/extend the local live research console.
+- `run-web` — start the Python API server and the Vite frontend together locally.
 - `perplexity-deep-research` — run in-app Perplexity Deep Research through browser automation using Pro included quota.
 
 In a new chat/workspace, ask Cursor to read `ORIENTATION.md` and use the relevant project skills before changing recommendations, pages, target models, or research data.

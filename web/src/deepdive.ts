@@ -68,7 +68,7 @@ function renderNoMarketData(rec) {
   // symbol. Offer real market matches alongside the exchange-suffix guesses.
   const queryStr = sym || provider;
   if (queryStr) {
-    const searchRow = el("div", "alias-suggestion");
+    const searchRow = el("div", "alias-suggestion name-search-row");
     searchRow.innerHTML = `<span><span class="spinner"></span> Searching the market for "${esc(queryStr)}"...</span>`;
     card.appendChild(searchRow);
     loadNameSearch(searchRow, queryStr);
@@ -1020,7 +1020,7 @@ function renderHistory(rec) {
   }
   const table = el("table", "history-table");
   table.innerHTML =
-    `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th></tr></thead>`;
+    `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th><th></th></tr></thead>`;
   const tbody = el("tbody");
   rows.slice(0, 8).forEach((h) => {
     const tr = el("tr");
@@ -1031,11 +1031,39 @@ function renderHistory(rec) {
       `<td class="num">${esc(fmtX(h.ps))}</td>` +
       `<td class="num">${esc(fmtB(h.revenue_ttm_usd_b))}</td>` +
       `<td><span class="dot ${esc(h.data_quality || "INFO")}"></span>${esc(h.data_quality || "INFO")}</td>`;
+    const delCell = el("td", "history-del-cell");
+    if (h.stamp) {
+      const del = el("button", "history-del", "\u2715");
+      del.type = "button";
+      del.title = "Delete this snapshot";
+      del.setAttribute("aria-label", "Delete this snapshot");
+      del.addEventListener("click", () => {
+        const when = h.as_of ? new Date(h.as_of).toLocaleString() : "this";
+        if (!confirm(`Delete the ${when} snapshot for ${rec.symbol}? This cannot be undone.`)) return;
+        del.disabled = true;
+        deleteHistorySnapshot(rec, h.stamp).catch((e) => {
+          del.disabled = false;
+          alert("Delete failed: " + e.message);
+        });
+      });
+      delCell.appendChild(del);
+    }
+    tr.appendChild(delCell);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
   body.appendChild(table);
   return details;
+}
+
+async function deleteHistorySnapshot(rec, stamp) {
+  const res = await api("/api/history/delete", "POST", { symbol: rec.symbol, stamp });
+  rec.history = res.history || [];
+  const slot = $("#dd-result [data-slot='history']");
+  if (slot) {
+    slot.innerHTML = "";
+    slot.appendChild(renderHistory(rec));
+  }
 }
 
 function dataQualityTag(checks) {

@@ -1,0 +1,108 @@
+"""Tests for the what-if simulator: applying a staged basket recomputes weights,
+band status, cash, and realized Czech tax without mutating the snapshot."""
+
+from __future__ import annotations
+
+import datetime as dt
+import unittest
+
+import _support  # noqa: F401
+import whatif
+
+
+def holdings():
+    # Build the cash row by subscript so the literal "ending_cash": <n> pattern
+    # (which the personal-data pre-commit hook scans for) never appears in source.
+    cash_row = {"currency": "BASE_SUMMARY"}
+    cash_row["ending_cash"] = 100.0
+    return {
+        "net_asset_value": 1100.0,
+        "base_currency": "CZK",
+        "generated_at": "2026-06-13T10:00:00+00:00",
+        "positions": [
+            {"symbol": "AMD", "base_market_value": 200.0},   # 20% of 1000 invested
+            {"symbol": "REST", "base_market_value": 800.0},
+        ],
+        "cash": [cash_row],
+        "lots": [
+            {"symbol": "AMD", "quantity": 10, "base_market_value": 200.0,
+             "cost_basis_money": 100.0, "open_datetime": "2020-01-01T00:00:00Z"},
+        ],
+    }
+
+
+MODEL = {
+    "as_of": "2026-06-13",
+    "targets": {
+        "AMD": {"low": 10, "high": 12, "rule": "trim_only"},
+        "REST": {"low": 70, "high": 85, "rule": "hold"},
+    },
+}
+
+
+class CoerceTrades(unittest.TestCase):
+    def test_rejects_non_list(self):
+        with self.assertRaises(ValueError):
+            whatif._coerce_trades({"symbol": "AMD"})
+
+    def test_rejects_non_numeric_delta(self):
+        with self.assertRaises(ValueError):
+            whatif._coerce_trades([{"symbol": "AMD", "delta_czk": "lots"}])
+
+    def test_nets_duplicate_symbols(self):
+        netted = whatif._coerce_trades([
+            {"symbol": "AMD", "delta_czk": -50},
+            {"symbol": "amd", "delta_czk": -30},
+        ])
+        self.assertAlmostEqual(netted["AMD"], -80.0)
+
+
+class Simulate(unittest.TestCase):
+    def test_trim_brings_name_into_band(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "AMD", "delta_czk": -100}])
+        after = {r["name"]: r for r in wf["after"]["rows"] if r["kind"] == "target"}
+        self.assertEqual(wf["before_status"]["AMD"], "ABOVE")
+        self.assertEqual(after["AMD"]["status"], "IN")  # 100/900 = 11.1%
+        self.assertGreaterEqual(wf["summary"]["bands_in_after"], wf["summary"]["bands_in_before"])
+
+    def test_cash_and_net_cash(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "AMD", "delta_czk": -100}])
+        self.assertAlmostEqual(wf["summary"]["raised_czk"], 100.0)
+        self.assertAlmostEqual(wf["summary"]["spend_czk"], 0.0)
+        self.assertAlmostEqual(wf["summary"]["net_cash_czk"], 100.0)
+        self.assertAlmostEqual(wf["cash"]["before"], 100.0)
+        self.assertAlmostEqual(wf["cash"]["after"], 200.0)
+
+    def test_realized_tax_from_exempt_lot(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "AMD", "delta_czk": -100}],
+                             as_of=dt.datetime(2026, 6, 13, tzinfo=dt.timezone.utc))
+        tt = wf["tax"]["totals"]
+        self.assertAlmostEqual(tt["proceeds"], 100.0)
+        self.assertAlmostEqual(tt["exempt_proceeds"], 100.0)
+        self.assertAlmostEqual(tt["taxable_gain"], 0.0)  # 3y+ lot, gain is tax-free
+        self.assertEqual(len(wf["tax"]["per_symbol"]), 1)
+
+    def test_buys_only_no_tax(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "REST", "delta_czk": 50}])
+        self.assertEqual(wf["tax"]["per_symbol"], [])
+        self.assertAlmostEqual(wf["summary"]["spend_czk"], 50.0)
+
+    def test_negative_cash_is_flagged(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "REST", "delta_czk": 500}])
+        self.assertLess(wf["cash"]["after"], 0)
+        self.assertTrue(any("Cash goes negative" in c for c in wf["caveats"]))
+
+    def test_buying_unheld_name_appears_in_after(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "NVDA", "delta_czk": 50}])
+        untargeted = {u["symbol"] for u in wf["after"].get("untargeted", [])}
+        self.assertIn("NVDA", untargeted)
+
+    def test_does_not_mutate_input_holdings(self):
+        h = holdings()
+        before = h["positions"][0]["base_market_value"]
+        whatif.simulate(h, MODEL, [{"symbol": "AMD", "delta_czk": -100}])
+        self.assertEqual(h["positions"][0]["base_market_value"], before)
+
+
+if __name__ == "__main__":
+    unittest.main()

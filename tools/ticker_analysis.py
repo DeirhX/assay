@@ -59,8 +59,8 @@ CONFIG_PATH = REPO_ROOT / "data" / "analysis-config.json"
 # CONFIG_PATH is shallow-merged over this (see load_config).
 DEFAULT_CONFIG: dict[str, Any] = {
     "providers": [
-        {"id": "claude", "enabled": True, "model": "", "extra_args": []},
         {"id": "cursor", "enabled": True, "model": "", "extra_args": []},
+        {"id": "claude", "enabled": True, "model": "", "extra_args": []},
     ],
     "timeout_sec": 300,
     # When true, backends may use their web tools for fresher context. Off by

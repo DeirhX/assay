@@ -19,7 +19,9 @@ py -3 tools/serve.py            # http://127.0.0.1:6060  (localhost only)
 ```
 
 For frontend development use `npm run dev` (Vite on `http://localhost:5173`
-with HMR, proxying `/api` to the Python server) alongside `serve.py`.
+with HMR, proxying `/api` to the Python server) alongside `serve.py`. To start
+both halves together, use the `run-web` skill
+(`pwsh .cursor/skills/run-web/scripts/run-web.ps1`).
 
 CLI equivalents (no server):
 
@@ -40,7 +42,10 @@ py -3 tools/research_pull.py --segment semiconductors
   `data/research/<SYM>.json`, ignored ticker history snapshots under
   `data/cache/research-history/<SYM>/`, and `data/research/segments/<name>.json`.
   It also attaches portfolio/target-model context, segment research scores, and
-  compact Yahoo daily-close price history for the Deep Dive chart.
+  compact Yahoo daily-close price history for the Deep Dive chart. A pull with no
+  usable data (no price and no metrics) is not written to history; `delete_history`
+  drops a single snapshot via `POST /api/history/delete` (the Deep Dive history
+  table's delete button).
 - `tools/review_deep_research.py` -- reviews saved Perplexity Deep Research
   artifacts against sources, deterministic ticker data, holdings, and target rules.
 - `tools/serve.py` -- stdlib `http.server`; serves the built SPA (`web/dist/`)

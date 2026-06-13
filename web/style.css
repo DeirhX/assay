@@ -354,6 +354,9 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
   color: var(--text); background: rgba(130,170,255,.07); font-size: 13px;
 }
 .alias-suggestion.err { color: var(--bad); border-color: rgba(255,122,122,.4); background: rgba(255,122,122,.08); }
+.alias-suggestion.name-search-row { flex-wrap: wrap; justify-content: flex-start; }
+.alias-suggestion.name-search-row > span:first-child { width: 100%; color: var(--muted); margin-bottom: 2px; }
+.alias-suggestion.name-search-row .ghost { white-space: normal; text-align: left; }
 
 .checks { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .check { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--border); }
@@ -465,6 +468,15 @@ tr:last-child td { border-bottom: 0; }
 }
 .history-table tbody tr { cursor: default; }
 .history-table tbody tr:hover { background: transparent; }
+.history-del-cell { text-align: right; width: 1%; white-space: nowrap; }
+.history-del {
+  background: transparent; border: none; color: var(--muted);
+  font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 6px;
+  cursor: pointer; opacity: .55; transition: opacity .12s, color .12s, background .12s;
+}
+.history-table tbody tr:hover .history-del { opacity: 1; }
+.history-del:hover { color: var(--bad); background: rgba(255,90,90,.12); }
+.history-del:disabled { opacity: .3; cursor: default; }
 .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .dot.ERROR { background: var(--bad); } .dot.WARN { background: var(--warn); } .dot.INFO { background: var(--good); }
@@ -1117,3 +1129,80 @@ a.tlink:hover { border-bottom-style: solid; }
   .reb-plan { grid-area: plan; }
   .reb-proj { grid-area: proj; }
 }
+
+/* ---- risk lens ---------------------------------------------------------- */
+.risk-range-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.risk-range-label select { width: auto; }
+.risk-caveat {
+  background: rgba(245,199,107,.07); border: 1px solid rgba(245,199,107,.4);
+  border-radius: var(--radius-soft); padding: 12px 14px; margin-bottom: 16px; font-size: 13px;
+}
+.risk-caveat strong { color: var(--warn); }
+.risk-caveat ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+.risk-caveat li { margin: 4px 0; }
+
+.risk-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.risk-stat { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; cursor: help; }
+.risk-stat-k { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.risk-stat-v { font-size: 22px; font-weight: 800; }
+
+.risk-section { margin-top: 22px; }
+.risk-section h3 { margin: 0 0 4px; font-size: 15px; }
+
+.risk-stress { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 10px 13px; margin-bottom: 8px; }
+.risk-stress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.risk-stress-name { font-weight: 700; }
+.risk-stress-name small { color: var(--muted); font-weight: 600; }
+.risk-stress-impact { font-weight: 800; font-size: 16px; white-space: nowrap; }
+.risk-stress .hint { margin: 4px 0 0; }
+.risk-contrib { margin-top: 8px; }
+.risk-contrib summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.risk-contrib-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 14px; margin-top: 8px; }
+.risk-contrib-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.risk-heatmap-wrap { overflow-x: auto; }
+.risk-heatmap { display: grid; gap: 2px; font-size: 11px; min-width: max-content; }
+.risk-hm-corner { }
+.risk-hm-col, .risk-hm-row { color: var(--muted); font-weight: 700; padding: 3px; text-align: center; }
+.risk-hm-row { text-align: right; padding-right: 8px; }
+.risk-hm-cell { text-align: center; padding: 4px 2px; border-radius: 4px; font-variant-numeric: tabular-nums; color: var(--text); }
+
+.risk-pos-table { width: 100%; border-collapse: collapse; }
+.risk-pos-table th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.risk-pos-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.risk-pos-table tbody tr { cursor: default; }
+
+/* ---- tax-lot breakdown in the rebalance view ---------------------------- */
+.reb-tax { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 8px 12px; margin: 2px 0 6px; }
+.reb-tax > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.reb-tax > summary:hover { color: var(--text); }
+.reb-tax-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.reb-tax-row { display: grid; grid-template-columns: minmax(96px, auto) 1fr auto auto; gap: 10px; align-items: center; font-size: 13px; font-variant-numeric: tabular-nums; }
+.reb-tax-date { color: var(--muted); }
+.reb-tax-date small { margin-left: 6px; }
+.reb-tax .hint { margin: 8px 0 0; }
+
+/* ---- what-if projection panel ------------------------------------------- */
+.reb-head-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.whatif-card { background: var(--panel-2); border: 1px solid var(--accent); border-radius: var(--radius-card); padding: 14px 16px; margin-bottom: 16px; }
+.whatif-title { font-weight: 800; font-size: 15px; margin-bottom: 10px; }
+.whatif-table { width: 100%; border-collapse: collapse; margin: 6px 0 4px; }
+.whatif-table th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 700; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.whatif-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.whatif-table tbody tr { cursor: default; }
+.whatif-card .hint { margin: 8px 0 0; }
+
+/* ---- decision journal --------------------------------------------------- */
+.jrnl-form { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 14px 16px; margin-bottom: 18px; }
+.jrnl-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 14px; margin-bottom: 10px; }
+.jrnl-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.jrnl-form textarea { resize: vertical; }
+.jrnl-list { display: flex; flex-direction: column; gap: 8px; }
+.jrnl-entry { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 10px 13px; }
+.jrnl-entry-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.jrnl-sym { font-weight: 800; }
+.jrnl-when { color: var(--muted); font-size: 12px; margin-left: auto; }
+.jrnl-thesis { margin-top: 6px; font-size: 14px; }
+.jrnl-expected { margin-top: 4px; font-size: 13px; color: var(--muted); }
+.jrnl-outcome { display: flex; gap: 8px; margin-top: 8px; }
+.jrnl-outcome-input { max-width: 130px; }
