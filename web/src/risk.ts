@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, apiLoad, el, esc, fmtStamp, statTile } from "./core";
+import { $, apiLoad, el, esc, fmtStamp, simpleTable, statTile } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
@@ -173,27 +173,23 @@ function volClass(v) {
 function posTable(positions) {
   const vols = positions.map((p) => p.ann_vol_pct).filter((v) => v != null);
   const maxVol = vols.length ? Math.max(...vols) : 0;
-  const tbl = el("table", "risk-pos-table");
-  tbl.innerHTML =
-    `<thead><tr><th>Name</th><th class="num">Weight</th><th class="num">Norm. weight</th><th>Ann. vol</th></tr></thead>`;
-  const body = el("tbody");
-  positions.forEach((p) => {
-    const tr = el("tr");
-    const v = p.ann_vol_pct;
-    const cls = volClass(v);
-    const fill = maxVol > 0 && v != null ? Math.max(3, Math.round((v / maxVol) * 100)) : 0;
-    tr.innerHTML =
-      `<td class="risk-pos-sym">${esc(p.symbol)}</td>` +
-      `<td class="num">${fmtPct1(p.weight_pct)}</td>` +
-      `<td class="num muted">${fmtPct1(p.norm_weight_pct)}</td>` +
-      `<td class="risk-vol-cell">` +
-        `<span class="risk-vol-track"><span class="risk-vol-bar ${cls}" style="width:${fill}%"></span></span>` +
-        `<span class="risk-vol-val ${cls}">${fmtPct1(v)}</span>` +
-      `</td>`;
-    body.appendChild(tr);
+  return simpleTable({
+    className: "risk-pos-table",
+    head: `<tr><th>Name</th><th class="num">Weight</th><th class="num">Norm. weight</th><th>Ann. vol</th></tr>`,
+    rows: positions,
+    cells: (p) => {
+      const v = p.ann_vol_pct;
+      const cls = volClass(v);
+      const fill = maxVol > 0 && v != null ? Math.max(3, Math.round((v / maxVol) * 100)) : 0;
+      return `<td class="risk-pos-sym">${esc(p.symbol)}</td>` +
+        `<td class="num">${fmtPct1(p.weight_pct)}</td>` +
+        `<td class="num muted">${fmtPct1(p.norm_weight_pct)}</td>` +
+        `<td class="risk-vol-cell">` +
+          `<span class="risk-vol-track"><span class="risk-vol-bar ${cls}" style="width:${fill}%"></span></span>` +
+          `<span class="risk-vol-val ${cls}">${fmtPct1(v)}</span>` +
+        `</td>`;
+    },
   });
-  tbl.appendChild(body);
-  return tbl;
 }
 
 function initRiskControls() {

@@ -223,6 +223,33 @@ function statTile(label: string, value: string, opts: StatTileOpts = {}): HTMLEl
   return c;
 }
 
+// A non-sortable HTML table: a <thead> from a fixed header row plus a <tbody>
+// whose rows come from `cells(item)` (returns the row's inner HTML). `onRow` is
+// the escape hatch for rows that need imperative DOM (e.g. a delete button with
+// a listener) appended after the string cells. The sortable segment peer table
+// is deliberately not built on this -- its column/sort machinery is richer.
+interface SimpleTableOpts<T> {
+  className?: string;
+  head: string;
+  rows: T[];
+  cells: (item: T, index: number) => string;
+  onRow?: (tr: HTMLTableRowElement, item: T, index: number) => void;
+}
+
+function simpleTable<T>(o: SimpleTableOpts<T>): HTMLTableElement {
+  const tbl = el("table", o.className);
+  tbl.innerHTML = `<thead>${o.head}</thead>`;
+  const body = el("tbody");
+  o.rows.forEach((item, i) => {
+    const tr = el("tr");
+    tr.innerHTML = o.cells(item, i);
+    if (o.onRow) o.onRow(tr, item, i);
+    body.appendChild(tr);
+  });
+  tbl.appendChild(body);
+  return tbl;
+}
+
 interface ApiLoadOpts<T> {
   path: string;
   render: (data: T) => void;
@@ -281,6 +308,7 @@ export {
   loadError,
   emptyState,
   statTile,
+  simpleTable,
   apiLoad,
 };
-export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts };
+export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts, SimpleTableOpts };

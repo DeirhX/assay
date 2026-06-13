@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createQaCard, ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
-import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, state } from "./core";
+import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, simpleTable, state } from "./core";
 import { pollDeepJob } from "./errors";
 import { cleanSymbol, downloadText, modelLabel, pushNav, setActiveView } from "./shell";
 import { recordView, relTime, renderViewedTickers } from "./viewed";
@@ -957,40 +957,40 @@ function renderHistory(rec) {
     body.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
     return details;
   }
-  const table = el("table", "history-table");
-  table.innerHTML =
-    `<thead><tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th><th></th></tr></thead>`;
-  const tbody = el("tbody");
-  rows.slice(0, 8).forEach((h) => {
-    const tr = el("tr");
-    tr.innerHTML =
+  const table = simpleTable({
+    className: "history-table",
+    head: `<tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th><th></th></tr>`,
+    rows: rows.slice(0, 8),
+    cells: (h) =>
       `<td>${esc(h.as_of ? new Date(h.as_of).toLocaleString() : "n/a")}</td>` +
       `<td class="num">${esc(fmtPrice(h.price))}</td>` +
       `<td class="num">${esc(fmtX(h.pe_fwd))}</td>` +
       `<td class="num">${esc(fmtX(h.ps))}</td>` +
       `<td class="num">${esc(fmtB(h.revenue_ttm_usd_b))}</td>` +
-      `<td><span class="dot ${esc(h.data_quality || "INFO")}"></span>${esc(h.data_quality || "INFO")}</td>`;
-    const delCell = el("td", "history-del-cell");
-    if (h.stamp) {
-      const del = el("button", "history-del", "\u2715");
-      del.type = "button";
-      del.title = "Delete this snapshot";
-      del.setAttribute("aria-label", "Delete this snapshot");
-      del.addEventListener("click", () => {
-        const when = h.as_of ? new Date(h.as_of).toLocaleString() : "this";
-        if (!confirm(`Delete the ${when} snapshot for ${rec.symbol}? This cannot be undone.`)) return;
-        del.disabled = true;
-        deleteHistorySnapshot(rec, h.stamp).catch((e) => {
-          del.disabled = false;
-          alert("Delete failed: " + e.message);
+      `<td><span class="dot ${esc(h.data_quality || "INFO")}"></span>${esc(h.data_quality || "INFO")}</td>`,
+    onRow: (tr, h) => {
+      // The delete column carries a per-row listener, so it's appended as real
+      // DOM after the string cells rather than baked into the cells() HTML.
+      const delCell = el("td", "history-del-cell");
+      if (h.stamp) {
+        const del = el("button", "history-del", "\u2715");
+        del.type = "button";
+        del.title = "Delete this snapshot";
+        del.setAttribute("aria-label", "Delete this snapshot");
+        del.addEventListener("click", () => {
+          const when = h.as_of ? new Date(h.as_of).toLocaleString() : "this";
+          if (!confirm(`Delete the ${when} snapshot for ${rec.symbol}? This cannot be undone.`)) return;
+          del.disabled = true;
+          deleteHistorySnapshot(rec, h.stamp).catch((e) => {
+            del.disabled = false;
+            alert("Delete failed: " + e.message);
+          });
         });
-      });
-      delCell.appendChild(del);
-    }
-    tr.appendChild(delCell);
-    tbody.appendChild(tr);
+        delCell.appendChild(del);
+      }
+      tr.appendChild(delCell);
+    },
   });
-  table.appendChild(tbody);
   body.appendChild(table);
   return details;
 }
