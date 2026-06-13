@@ -18,6 +18,7 @@
       <button class="tab" data-view="risk">Risk</button>
       <button class="tab" data-view="journal">Journal</button>
       <button class="tab" data-view="holdings">Holdings</button>
+      <button class="tab" data-view="history">History</button>
     </div>
     <div class="spacer"></div>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
@@ -383,6 +384,22 @@
       <div class="hint">Your sanitized IBKR positions, cash, and tax lots. Resync runs a read-only Flex pull — a point-in-time snapshot, not live prices. Weights are % of NAV from base-currency market value; refresh before acting on exact figures.</div>
       <div class="status" id="hold-status"></div>
       <div id="hold-result"></div>
+    </section>
+
+    <!-- HISTORY -->
+    <section class="view" id="view-history">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Portfolio history</h2>
+          <p class="hint">Your entire executed-trade ledger and day-by-day portfolio value, reconstructed via read-only Flex one ≤365-day window at a time, back to account inception. The chart plots NAV over time with every buy (green) and sell (red) marked on the day it happened. Requires a Flex query that includes the <strong>Trades</strong> section and the <strong>Net Asset Value (NAV) in Base</strong> section (that one emits the daily NAV; not the same as “Change in NAV”). Set <code>IBKR_FLEX_HISTORY_QUERY_ID</code>. Cached privately — not committed.</p>
+        </div>
+        <div class="reb-head-actions">
+          <button class="primary" id="hist-sync" type="button" title="Fetch only the days since the last pull and merge them in (read-only). The first ever run builds the complete history back to inception.">Update from IBKR</button>
+          <button class="ghost" id="hist-full" type="button" title="Discard the cache and rebuild the entire history back to inception (read-only, slower).">Rebuild full</button>
+        </div>
+      </div>
+      <div class="status" id="hist-status"></div>
+      <div id="hist-result"></div>
     </section>
 
     <!-- SETUP -->

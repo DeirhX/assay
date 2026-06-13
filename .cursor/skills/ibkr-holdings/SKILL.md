@@ -39,6 +39,52 @@ submodule, never in the public tree. The writes are:
 
 The Flex query is read-only and cannot trade. It returns a generated snapshot, not streaming live prices. Always report `generated_at`, report dates, and whether prices are stale.
 
+## Full Trade & NAV History
+
+The snapshot reader answers "what do I hold now". To reconstruct the **entire
+trading and portfolio-value history** (every executed trade + the day-by-day NAV
+series, back to inception), use `tools/ibkr_history.py`. It walks the account
+backward one ≤365-day Flex window at a time (the Flex per-request cap), stopping
+after two empty windows or a safety cap, and de-duplicates across overlapping
+windows. Real-world Flex friction is handled: it anchors windows to the latest
+*available* day (Flex 1003s a window ending today/an unsettled day), backs off on
+rate limits (1018), and binary-searches the largest servable window for accounts
+younger than a year.
+
+**Incremental by default.** Once a cache exists, a re-run fetches only the days
+since it was last covered (with a 7-day overlap to absorb Flex restatements) and
+merges them in — typically a single Flex request. The first run, or `--full`,
+rebuilds the whole thing back to inception. The result carries a
+`summary.update` block (`new_trades`, `new_nav_points`, …) describing the delta.
+
+This needs a Flex query that includes the **Trades** section (tick Executions)
+and the **Net Asset Value (NAV) in Base** section (CashTransactions optional).
+Use the exact UI labels: there is no checkbox called "EquitySummaryInBase" — that
+is only the XML tag the "Net Asset Value (NAV) in Base" section emits. Do not pick
+"Change in NAV" instead; that is a single per-period summary, not the daily NAV
+series. The snapshot query (OpenPositions only) will not work. Create a dedicated
+Activity Flex query for history and set `IBKR_FLEX_HISTORY_QUERY_ID` in
+`tools/secrets.env` (it falls back to `IBKR_FLEX_QUERY_ID` if you put everything
+in one query).
+
+Easiest: click **Update from IBKR** in the History tab (or **Rebuild full** to
+force a complete rebuild), which runs this as a background job (kind
+`ibkr_history`, POST `/api/portfolio-history/sync` with optional `{"full":true}`)
+and renders a NAV-over-time chart with buy/sell markers. CLI equivalent:
+
+```powershell
+# Incremental top-up when the cache exists; full build on the first run.
+py -3 "tools/ibkr_history.py" --out "data/cache/ibkr/portfolio-history.json" -v
+# Force a complete rebuild back to inception:
+py -3 "tools/ibkr_history.py" --out "data/cache/ibkr/portfolio-history.json" --full -v
+```
+
+The normalized payload (`nav_series`, `trades`, `cash_transactions`, `summary`)
+is cached at `data/cache/ibkr/portfolio-history.json` — **gitignored**, since it
+is the entire personal trade ledger. Read-only, like the snapshot reader. For
+Czech 3-year eligibility still use the open-lot `open_datetime` from the snapshot,
+not the trade ledger's realized rows.
+
 ## Repo-Local Cached Snapshot
 
 This repo also stores a sanitized holdings snapshot for continuity:

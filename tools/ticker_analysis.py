@@ -52,6 +52,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+import errorlog
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "data" / "analysis-config.json"
 
@@ -718,9 +720,13 @@ def _ordered_providers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _run_with_fallback(prompt: str, cfg: dict,
                        progress: Callable[[str], None] | None = None,
-                       cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
+                       cancel: Callable[[], bool] | None = None,
+                       *, label: str = "") -> dict[str, Any]:
     """Run a prompt through the configured backends in order, falling back on
-    quota/auth failure. Returns the first success, or an aggregate error."""
+    quota/auth failure. Returns the first success, or an aggregate error.
+
+    ``label`` is a short tag for the operational error log (e.g. "analysis",
+    "qa") so a logged backend failure says what kind of request it choked on."""
     attempts: list[str] = []
     for provider in _ordered_providers(cfg):
         if not provider.get("enabled"):
@@ -739,13 +745,25 @@ def _run_with_fallback(prompt: str, cfg: dict,
             # User pulled the plug: don't fall through to the next backend and
             # spend more quota on a request they no longer want.
             return {"ok": False, "cancelled": True, "error": "cancelled", "attempts": attempts}
-        attempts.append(res.get("error", f"{pid} failed"))
+        blob = res.get("error", "") or f"{pid} failed"
+        attempts.append(blob)
+        # A real failure worth a durable record -- crucially, this fires even when
+        # the *next* backend goes on to succeed, so a Cursor login silently
+        # expiring (and us quietly serving from Claude) stops being invisible.
+        reason = ("auth" if _looks_like_auth(blob)
+                  else "quota" if _looks_like_quota(blob)
+                  else "error")
+        errorlog.warn("llm_backend", blob, backend=pid, reason=reason,
+                      fatal=bool(res.get("fatal")), op=label or None)
         if res.get("fatal"):
             # A real failure (timeout / bad output), not a quota miss: stop here
             # rather than burning the fallback on the same broken input.
             break
         if progress:
             progress(f"{PROVIDER_LABELS.get(pid, pid)} unavailable, trying next…")
+    errorlog.error("llm_backend",
+                   "all analysis backends failed: " + ("; ".join(attempts) or "none enabled"),
+                   op=label or None)
     return {"ok": False, "error": "; ".join(attempts) or "no enabled backends available",
             "attempts": attempts}
 
@@ -756,7 +774,7 @@ def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
     """Generate the structured in-depth note over the deterministic dossier."""
     cfg = cfg or load_config()
     return _run_with_fallback(build_prompt(rec, allow_web=cfg.get("allow_web", False)),
-                              cfg, progress, cancel)
+                              cfg, progress, cancel, label="analysis")
 
 
 # --------------------------------------------------------------------------- #
@@ -847,7 +865,7 @@ def draft_segment_members(query: str, *, cfg: dict | None = None,
     error}. Members are raw model output; the caller validates symbols."""
     cfg = cfg or load_config()
     prompt = build_segment_draft_prompt(query, allow_web=cfg.get("allow_web", False))
-    res = _run_with_fallback(prompt, cfg, progress, cancel)
+    res = _run_with_fallback(prompt, cfg, progress, cancel, label="segment-draft")
     if not res.get("ok"):
         return {"ok": False, "cancelled": bool(res.get("cancelled")),
                 "error": res.get("error") or "all analysis backends failed"}
@@ -1105,7 +1123,7 @@ def ask_about_doc(title: str, document: str, citations: list[dict] | None,
     cfg = cfg or load_config()
     prompt = build_doc_qa_prompt(title, document, citations, history, question,
                                  allow_web=cfg.get("allow_web", False))
-    return _run_with_fallback(prompt, cfg, progress, cancel)
+    return _run_with_fallback(prompt, cfg, progress, cancel, label="doc-qa")
 
 
 if __name__ == "__main__":

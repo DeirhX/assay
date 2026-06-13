@@ -212,5 +212,52 @@ class DocQaPrompt(unittest.TestCase):
         self.assertIn("q?", prompt_arg)
 
 
+class FallbackErrorLogging(unittest.TestCase):
+    """A backend failing -- even when the next one succeeds -- must leave a
+    durable record, so a silently-expired Cursor login stops being invisible."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._orig_path = ta.errorlog.LOG_PATH
+        ta.errorlog.LOG_PATH = Path(self._dir.name) / "error_log.jsonl"
+        self._cfg = {"providers": [
+            {"id": "cursor", "enabled": True},
+            {"id": "claude", "enabled": True},
+        ]}
+
+    def tearDown(self):
+        ta.errorlog.LOG_PATH = self._orig_path
+        self._dir.cleanup()
+
+    def test_silent_cursor_fallback_is_logged_as_warning(self):
+        runners = {
+            "cursor": lambda *a, **k: {"ok": False, "fatal": False,
+                                       "error": "Cursor: Authentication required"},
+            "claude": lambda *a, **k: {"ok": True, "report": "ok", "backend": "claude",
+                                       "backend_label": "Claude", "model": "(default)"},
+        }
+        with mock.patch.dict(ta._RUNNERS, runners, clear=False):
+            res = ta._run_with_fallback("p", self._cfg, label="analysis")
+        self.assertTrue(res["ok"])  # claude served it
+        entries = ta.errorlog.recent()
+        self.assertEqual(len(entries), 1)  # the cursor failure, not a total-fail error
+        self.assertEqual(entries[0]["level"], "warning")
+        self.assertEqual(entries[0]["context"]["backend"], "cursor")
+        self.assertEqual(entries[0]["context"]["reason"], "auth")
+        self.assertEqual(entries[0]["context"]["op"], "analysis")
+
+    def test_all_backends_failing_logs_an_error(self):
+        runners = {
+            "cursor": lambda *a, **k: {"ok": False, "fatal": False, "error": "rate limit"},
+            "claude": lambda *a, **k: {"ok": False, "fatal": False, "error": "rate limit"},
+        }
+        with mock.patch.dict(ta._RUNNERS, runners, clear=False):
+            res = ta._run_with_fallback("p", self._cfg, label="analysis")
+        self.assertFalse(res["ok"])
+        levels = [e["level"] for e in ta.errorlog.recent()]
+        self.assertIn("error", levels)  # the aggregate failure
+        self.assertEqual(levels.count("warning"), 2)  # each attempt
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,10 @@ decision logic (`portfolio`, `rebalance` model validation), the claim verifier
 (`verify_claims` identity/staleness checks), the site generator
 (`generate_site` GEN-marker replacement and `--check` semantics), the review
 gate (`review_deep_research` conflicts, proposals, blocks), the IBKR Flex XML
-parser (`ibkr_portfolio`), the server's request guards (`serve` malformed-JSON
+parser (`ibkr_portfolio`) and the windowed trade/NAV history reconstructor
+(`ibkr_history` window planning, trade/NAV parsing, dedupe, inception detection,
+incremental top-up merge, anchor/rate-limit/1003 handling),
+the server's request guards (`serve` malformed-JSON
 400s, body-size cap, loopback-only host refusal), the identifier guards
 (`store`), the job registry incl. cooperative cancel (`jobs`), the
 analysis layer's web-tool wiring, timeouts, grounding-rule switch, config
@@ -282,6 +285,30 @@ from IO so the tests run offline.
   directional calls against later prices (recorded outcome or live snapshot mark):
   a buy is "right" if it rose, a trim if it fell. API: `GET/POST /api/journal`,
   `POST /api/journal/outcome`.
+- `ibkr_history.py` -- **full trade + NAV history** via read-only Flex. Where
+  `ibkr_portfolio.py` answers "what do I hold now", this answers "how did I get
+  here": the complete executed-trade ledger plus the day-by-day NAV series, back
+  to account inception. Flex caps a request at 365 days, so it walks backward one
+  window at a time, stopping after two empty windows (inception) or a safety cap;
+  trades/cash dedupe by IBKR id, NAV by report date. It anchors windows to the
+  latest *available* day (Flex 1003s a window ending today/an unsettled day), backs
+  off on rate limits (1018), and binary-searches the largest servable window for
+  sub-year-old accounts. Reuses the snapshot reader's HTTP/parse primitives
+  (`fetch_report` gained optional `from_date`/`to_date`). **Incremental by
+  default** (`extend_history`): once the cache exists, a re-run fetches only the
+  days since it was last covered (7-day overlap to absorb restatements) and merges
+  them — usually a single request; `--full` (or `{"full":true}` on the endpoint)
+  forces a complete rebuild, and the payload carries a `summary.update` delta.
+  Requires a Flex query that includes the **Trades** section and the **Net Asset
+  Value (NAV) in Base** section (the UI label; it emits the `EquitySummaryInBase`
+  daily-NAV rows — not the same as the "Change in NAV" period summary) —
+  set `IBKR_FLEX_HISTORY_QUERY_ID` in `tools/secrets.env` (falls back
+  to `IBKR_FLEX_QUERY_ID`). `POST /api/portfolio-history/sync` runs it as a
+  registered background job (kind `ibkr_history`, polled via `/api/deep-job`); the
+  normalized result is cached privately at `data/cache/ibkr/portfolio-history.json`
+  (gitignored — it is the entire personal trade ledger) and read via
+  `GET /api/portfolio-history`. Surfaced in the **History** tab as a NAV-over-time
+  chart with every buy/sell marked.
 
 All recommendations are analysis, not financial or tax advice.
 

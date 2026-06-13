@@ -6,12 +6,14 @@ ephemeral loopback port -- offline, no data submodule needed."""
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 
 import _support  # noqa: F401
@@ -195,6 +197,57 @@ class DeepQa(unittest.TestCase):
             body={"stem": "no-such-run-2026-01-01", "question": "why?"})
         self.assertEqual(status, 400)
         self.assertIn("no saved report", payload["error"])
+
+
+class ErrorLogEndpoint(unittest.TestCase):
+    """GET returns recent incidents newest-first; POST {clear:true} wipes it.
+    The log path is redirected to a temp file so the real data/ dir is untouched."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._orig = serve.errorlog.LOG_PATH
+        serve.errorlog.LOG_PATH = Path(self._dir.name) / "error_log.jsonl"
+
+    def tearDown(self):
+        serve.errorlog.LOG_PATH = self._orig
+        self._dir.cleanup()
+
+    def _req(self, path, *, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data,
+            headers={"Content-Type": "application/json"}, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read().decode("utf-8"))
+
+    def test_get_returns_recent_entries_newest_first(self):
+        serve.errorlog.warn("llm_backend", "cursor auth", backend="cursor")
+        serve.errorlog.error("server", "boom")
+        status, payload = self._req("/api/error-log")
+        self.assertEqual(status, 200)
+        self.assertEqual([e["message"] for e in payload["entries"]], ["boom", "cursor auth"])
+
+    def test_post_clear_wipes(self):
+        serve.errorlog.error("server", "boom")
+        status, payload = self._req("/api/error-log", method="POST", body={"clear": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["entries"], [])
 
 
 class HostGuard(unittest.TestCase):

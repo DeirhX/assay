@@ -63,6 +63,8 @@ import whatif  # noqa: E402
 import journal  # noqa: E402
 import generate_site  # noqa: E402
 import jobs  # noqa: E402
+import ibkr_history  # noqa: E402  -- full trade + NAV history via windowed Flex
+import errorlog  # noqa: E402
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -1216,6 +1218,79 @@ def _start_holdings_sync() -> dict:
     return _job_public(job)
 
 
+# Full trade + NAV history is a separate, slower pull: it walks the account back
+# to inception one ≤365-day Flex window at a time. Like the snapshot sync it runs
+# as a registered background job so it survives navigation and shows in the pill.
+# The normalized result lands in the gitignored cache (it is the entire personal
+# trade ledger), not the curated, committed snapshot.
+IBKR_HISTORY_JSON = IBKR_CACHE_DIR / "portfolio-history.json"
+
+
+def _sync_history(progress=None, *, full: bool = False) -> dict:
+    """Reconstruct or top up the trade + NAV history via the vendored Flex reader
+    and cache the normalized payload. Read-only. Credentials resolve from the
+    gitignored tools/secrets.env (IBKR_FLEX_HISTORY_QUERY_ID, falling back to
+    IBKR_FLEX_QUERY_ID).
+
+    Incremental by default: if a cache already exists it fetches only the days
+    since it was last covered and merges them in (usually a single Flex request).
+    ``full=True`` forces a complete rebuild back to inception. Returns the payload."""
+    token, query_id = ibkr_history.resolve_history_credentials()
+    existing = None if full else _history_payload()
+    if existing:
+        payload = ibkr_history.extend_history(existing, token, query_id, progress=progress)
+    else:
+        payload = ibkr_history.build_history(token, query_id, progress=progress)
+    IBKR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _write_json(IBKR_HISTORY_JSON, payload, sort_keys=False)
+    return payload
+
+
+def _history_running() -> bool:
+    return jobs.find(
+        lambda j: j.get("kind") == "ibkr_history"
+        and j.get("state") in ("queued", "running")
+        and not j.get("cancelled")
+    )
+
+
+def _run_history_sync_job(job_id: str, full: bool = False) -> None:
+    verb = "rebuilding full" if full else "updating"
+    _update_job(job_id, state="running",
+                message=f"{verb} trade + NAV history from IBKR (read-only)…")
+    try:
+        payload = _sync_history(progress=lambda msg: _update_job(job_id, message=msg), full=full)
+    except ValueError as exc:  # expected, user-actionable (bad creds, query missing sections)
+        _update_job(job_id, state="error", error=str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 -- never let the worker thread die silently
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+    s = payload.get("summary", {})
+    upd = s.get("update")
+    if upd:
+        msg = (f"updated: +{upd['new_trades']} trades, +{upd['new_nav_points']} NAV "
+               f"points since {upd['previous_to_date'] or 'last pull'}")
+    else:
+        msg = f"reconstructed {s.get('n_trades', 0)} trades over {s.get('windows', 0)} window(s)"
+    _update_job(job_id, state="done", message=msg,
+                result={"summary": s, "from_date": payload.get("from_date"),
+                        "to_date": payload.get("to_date")})
+
+
+def _start_history_sync(full: bool = False) -> dict:
+    if _history_running():
+        raise RuntimeError("a portfolio-history pull is already running")
+    job = _new_job("ibkr_history")
+    threading.Thread(target=_run_history_sync_job, args=(job["id"], full), daemon=True).start()
+    return _job_public(job)
+
+
+def _history_payload() -> dict | None:
+    """The cached normalized history, or None if it hasn't been pulled yet."""
+    return _load(IBKR_HISTORY_JSON)
+
+
 def _regenerate_site() -> dict:
     """Re-render the derived report pages from the current data snapshot. Wraps
     generate_site.regenerate() so a failure degrades gracefully into the payload
@@ -1661,9 +1736,14 @@ class Handler(BaseHTTPRequestHandler):
         # full traceback to the terminal so we can actually debug, but hand the
         # browser a clean JSON envelope the frontend's error center understands.
         if isinstance(exc, research_pull.ProviderError):  # type: ignore[attr-defined]
+            # An upstream data source (Yahoo/SEC/FMP) misbehaved -- that's an
+            # expected external hiccup (and "ticker not found" lives here too),
+            # not one of our incidents, so it stays out of the error log.
             return self._send_error_json(502, f"data source error: {exc}")
         sys.stderr.write(f"[serve] unhandled error on {self.command} {self.path}:\n")
         traceback.print_exc()
+        errorlog.error("server", f"{type(exc).__name__}: {exc}",
+                       request=f"{self.command} {self.path}")
         return self._send_error_json(500, f"{type(exc).__name__}: {exc}")
 
     def _serve_static(self, rel: str):
@@ -1737,6 +1817,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
         if path == "/api/holdings":
             return self._send_json(holdings_payload())
+        if path == "/api/portfolio-history":
+            payload = _history_payload()
+            if not payload:
+                return self._send_error_json(404, "no portfolio history yet — pull it from IBKR (History tab)")
+            return self._send_json(payload)
         if path == "/api/rebalance":
             model = _load(TARGET_MODEL_JSON)
             holdings = _load(HOLDINGS_JSON)
@@ -1771,6 +1856,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"runs": _deep_runs()})
         if path == "/api/reports":
             return self._send_json({"reports": _static_reports()})
+        if path == "/api/error-log":
+            try:
+                limit = int((query.get("limit") or ["200"])[0])
+            except ValueError:
+                limit = 200
+            return self._send_json({"entries": errorlog.recent(max(1, min(limit, errorlog.MAX_ENTRIES)))})
         if path == "/api/tickers":
             return self._send_json({"tickers": _known_tickers()})
         if path == "/api/ticker-index":
@@ -1899,6 +1990,13 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
 
+        if path == "/api/portfolio-history/sync":
+            full = bool(self._read_body().get("full"))
+            try:
+                return self._send_json(_start_history_sync(full=full))
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
+
         if path == "/api/site/regenerate":
             res = _regenerate_site()
             if not res.get("ok"):
@@ -1945,6 +2043,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_error_json(400, str(exc))
             except RuntimeError as exc:
                 return self._send_error_json(409, str(exc))
+
+        if path == "/api/error-log":
+            body = self._read_body()
+            if body.get("clear"):
+                errorlog.clear()
+            return self._send_json({"entries": errorlog.recent()})
 
         if path == "/api/deep-job/cancel":
             body = self._read_body()

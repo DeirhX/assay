@@ -13,9 +13,14 @@ deterministic push → PR → auto-merge → sync tail.
 ## Repo facts (don't relearn these)
 
 - **Squash merges only.** Every merged PR is one squash commit (`… (#N)`).
-- **Branch protection requires CI**, so a direct merge is rejected — you MUST
-  use auto-merge (`--auto`), which lands the PR the moment both checks pass:
+- **Branch protection requires CI** to pass before a merge is allowed:
   *Python lint + unittest suite* and *Frontend typecheck + tests + build*.
+- **Auto-merge may be DISABLED at the repo level** (`gh pr merge --auto` then
+  fails with "Auto merge is not allowed for this repository"). If so, fall back
+  to: wait for both checks to go green, then `gh pr merge <N> --squash
+  --delete-branch` (a manual squash merge, which branch protection permits once
+  CI is green). `scripts/ship.ps1` attempts `--auto` and you handle the
+  fallback if it's refused.
 - **Default shell is PowerShell 7, no heredoc.** Write commit/PR text to files
   (`COMMIT_MSG.txt`, `PR_BODY.txt`) and use `-F` / `--body-file`. Those names
   plus `.env*`, `secrets.*`, `*.token` are already gitignored.
@@ -51,9 +56,22 @@ Stage explicit paths, not `git add -A`. Typical: `git add tools web .cursor …`
   `rg` may be absent in PowerShell — use `git diff --cached | Select-String`.
   If anything sensitive appears, STOP and ask.
 
-### 4. Verify locally
-`py -3 -m pytest tools/tests -q` and `npm run build`. CI runs these anyway, but
-local failure is faster feedback than a blocked PR.
+### 4. Verify locally — run EVERYTHING CI runs, not just the build
+CI has two required jobs and will block the PR if either fails. Reproduce both
+locally first; `npm run build` alone is NOT enough (it skips lint/typecheck/tests
+— exactly the checks that catch real breakage).
+
+```powershell
+py -3 -m pytest tools/tests -q          # Python lint + unittest job
+npm install                              # ensure the toolchain matches package.json
+npm run lint; npm run typecheck; npm run test; npm run build   # Frontend job, in CI's order
+```
+
+- **Run `npm install` first.** A stale `node_modules` (missing `eslint`/`vitest`
+  after a dependency bump landed on `main`) makes the frontend checks silently
+  un-runnable locally, so you push a lint/type error CI then rejects. If `lint`
+  or `test` reports the binary "is not recognized", you skipped this.
+- Any failure here = fix before pushing. A red CI run wastes a full cycle.
 
 ### 5. Commit
 Write the message to `COMMIT_MSG.txt`, then `git commit -F COMMIT_MSG.txt`.
