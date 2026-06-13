@@ -1492,7 +1492,22 @@ def _clarify_answer_for(segment: str) -> str:
     )
 
 
-def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode: str) -> None:
+# Appended to the import-failure message of the deep-research job so a user who
+# never set Playwright up gets the install commands inline.
+_PLAYWRIGHT_INSTALL_HINT = (
+    ". Install with `py -3 -m pip install playwright` then "
+    "`py -3 -m playwright install chromium`."
+)
+
+
+def _browser_job(job_id: str, *, running_msg: str, call, handle, install_hint: str = "") -> None:
+    """Shared scaffold for the three Playwright-backed jobs (deep run, login,
+    import). It owns the boilerplate that was duplicated across all three: import
+    the worker (mapping a missing Playwright to an error), flip the job to
+    running, capture worker exceptions, and ALWAYS release the single active-job
+    slot via finally. `call(worker, progress)` performs the actual worker call
+    and returns its result dict; `handle(res)` maps that result to job state and
+    must not release the slot itself."""
     def progress(msg: str) -> None:
         _update_job(job_id, message=msg)
 
@@ -1500,102 +1515,108 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
         import pplx_deep_research as worker
     except Exception as exc:  # noqa: BLE001
         _update_job(job_id, state="error",
-                    error=("Playwright not available: "
-                           f"{type(exc).__name__}: {exc}. Install with "
-                           "`py -3 -m pip install playwright` then "
-                           "`py -3 -m playwright install chromium`."))
+                    error=f"Playwright not available: {type(exc).__name__}: {exc}{install_hint}")
         _release_active()
         return
 
-    _update_job(job_id, state="running", message="starting browser")
+    _update_job(job_id, state="running", message=running_msg)
     try:
-        res = worker.run_deep_research(
+        res = call(worker, progress)
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        _release_active()
+        return
+
+    try:
+        handle(res)
+    finally:
+        _release_active()
+
+
+def _save_run_result(job_id: str, res: dict, segment: str, date: str, *,
+                     source_url, auth_label: str, done_msg: str) -> None:
+    """Shared 'done' handling for the deep-run and import jobs: persist the
+    artifact, refresh auth state, and finish the job with a uniform result.
+    Leaves the active-slot release to the _browser_job scaffold."""
+    try:
+        artifact = _save_deep_artifact({
+            "segment": segment,
+            "date": date,
+            "report": res.get("report", ""),
+            "citations": res.get("citations", []),
+            "source_url": source_url,
+        })
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
+        return
+    _set_auth_state(True, auth_label)
+    _update_job(job_id, state="done", message=done_msg,
+                result={
+                    "source_url": source_url,
+                    "citations": res.get("citations", []),
+                    "report_chars": len(res.get("report", "")),
+                },
+                artifact=artifact)
+
+
+def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode: str) -> None:
+    def call(worker, progress):
+        return worker.run_deep_research(
             prompt, window_mode=window_mode,
             clarify_answer=_clarify_answer_for(segment), progress=progress,
             on_url=lambda url: _update_job(job_id, source_url=url),
         )
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        _release_active()
-        return
 
-    status = res.get("status")
-    if status == "done":
-        try:
-            artifact = _save_deep_artifact({
-                "segment": segment,
-                "date": date,
-                "report": res.get("report", ""),
-                "citations": res.get("citations", []),
-                "source_url": res.get("source_url", ""),
-            })
-        except Exception as exc:  # noqa: BLE001
-            _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
-            _release_active()
-            return
-        _set_auth_state(True, "deep run")
-        _update_job(job_id, state="done", message="report saved",
-                    result={
-                        "source_url": res.get("source_url"),
-                        "citations": res.get("citations", []),
-                        "report_chars": len(res.get("report", "")),
-                    },
-                    artifact=artifact)
-    elif status == "needs_login":
-        _set_auth_state(False, "run hit login wall")
-        _update_job(job_id, state="needs_login",
-                    message="Not logged in. Use 'Set up Perplexity login' once, then re-run.")
-    elif status == "needs_captcha":
-        _update_job(job_id, state="error",
-                    error=("A human-verification check (CAPTCHA) appeared and was not "
-                           "solved in time. Re-run, and when the browser window pops to "
-                           "the front, complete the check to continue."))
-    elif status == "computer_trap":
-        _update_job(job_id, state="error",
-                    error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
-    elif status == "needs_clarification":
-        _update_job(job_id, state="error",
-                    error=("Perplexity kept asking clarifying questions. Open "
-                           f"{res.get('source_url')} , answer it there, then paste "
-                           "the finished report on the Report step."))
-    elif status == "timeout":
-        url = res.get("source_url") or ""
-        detail = "Deep Research timed out before a finished report could be confirmed."
-        if url:
-            detail += f" If the Perplexity page later finishes, import this URL: {url}"
-        _update_job(job_id, state="error", error=detail)
-    else:
-        _update_job(job_id, state="error",
-                    error=res.get("detail") or f"deep research {status}")
-    _release_active()
+    def handle(res: dict) -> None:
+        status = res.get("status")
+        if status == "done":
+            _save_run_result(job_id, res, segment, date,
+                             source_url=res.get("source_url"),
+                             auth_label="deep run", done_msg="report saved")
+        elif status == "needs_login":
+            _set_auth_state(False, "run hit login wall")
+            _update_job(job_id, state="needs_login",
+                        message="Not logged in. Use 'Set up Perplexity login' once, then re-run.")
+        elif status == "needs_captcha":
+            _update_job(job_id, state="error",
+                        error=("A human-verification check (CAPTCHA) appeared and was not "
+                               "solved in time. Re-run, and when the browser window pops to "
+                               "the front, complete the check to continue."))
+        elif status == "computer_trap":
+            _update_job(job_id, state="error",
+                        error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
+        elif status == "needs_clarification":
+            _update_job(job_id, state="error",
+                        error=("Perplexity kept asking clarifying questions. Open "
+                               f"{res.get('source_url')} , answer it there, then paste "
+                               "the finished report on the Report step."))
+        elif status == "timeout":
+            url = res.get("source_url") or ""
+            detail = "Deep Research timed out before a finished report could be confirmed."
+            if url:
+                detail += f" If the Perplexity page later finishes, import this URL: {url}"
+            _update_job(job_id, state="error", error=detail)
+        else:
+            _update_job(job_id, state="error",
+                        error=res.get("detail") or f"deep research {status}")
+
+    _browser_job(job_id, running_msg="starting browser", call=call, handle=handle,
+                 install_hint=_PLAYWRIGHT_INSTALL_HINT)
 
 
 def _run_login_job(job_id: str) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
+    def call(worker, progress):
+        return worker.ensure_login(progress=progress)
 
-    try:
-        import pplx_deep_research as worker
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error",
-                    error=f"Playwright not available: {type(exc).__name__}: {exc}")
-        _release_active()
-        return
+    def handle(res: dict) -> None:
+        if res.get("status") == "logged_in":
+            _set_auth_state(True, "login window")
+            _update_job(job_id, state="done", message="Perplexity login confirmed")
+        else:
+            _update_job(job_id, state="error", message="login window timed out",
+                        error="login not completed in time")
 
-    _update_job(job_id, state="running", message="opening login window")
-    try:
-        res = worker.ensure_login(progress=progress)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        _release_active()
-        return
-    if res.get("status") == "logged_in":
-        _set_auth_state(True, "login window")
-        _update_job(job_id, state="done", message="Perplexity login confirmed")
-    else:
-        _update_job(job_id, state="error", message="login window timed out",
-                    error="login not completed in time")
-    _release_active()
+    _browser_job(job_id, running_msg="opening login window", call=call, handle=handle)
 
 
 def _start_deep_research(body: dict) -> dict:
@@ -1627,64 +1648,34 @@ def _start_login() -> dict:
 
 
 def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
+    def call(worker, progress):
+        # The import URL is known up front -> surface it as the live link now.
+        _update_job(job_id, source_url=url)
+        return worker.fetch_by_url(url, progress=progress)
 
-    try:
-        import pplx_deep_research as worker
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error",
-                    error=f"Playwright not available: {type(exc).__name__}: {exc}")
-        _release_active()
-        return
+    def handle(res: dict) -> None:
+        status = res.get("status")
+        if status == "done":
+            _save_run_result(job_id, res, segment, date,
+                             source_url=res.get("source_url", url),
+                             auth_label="import", done_msg="imported report saved")
+        elif status == "needs_login":
+            _set_auth_state(False, "import hit login wall")
+            _update_job(job_id, state="needs_login",
+                        message="Not logged in. Use 'Set up Perplexity login' once, then import.")
+        elif status == "needs_captcha":
+            _update_job(job_id, state="error",
+                        error=("A human-verification check (CAPTCHA) appeared and was not "
+                               "solved in time. Re-run the import and complete the check "
+                               "when the browser window appears."))
+        elif status == "needs_clarification":
+            _update_job(job_id, state="error",
+                        error="That run is still awaiting a clarifying answer. Answer it in "
+                              "Perplexity, wait for it to finish, then import again.")
+        else:
+            _update_job(job_id, state="error", error=res.get("detail") or f"import {status}")
 
-    # The import URL is known up front, so surface it as the live link right away.
-    _update_job(job_id, state="running", message="opening run URL", source_url=url)
-    try:
-        res = worker.fetch_by_url(url, progress=progress)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        _release_active()
-        return
-
-    status = res.get("status")
-    if status == "done":
-        try:
-            artifact = _save_deep_artifact({
-                "segment": segment,
-                "date": date,
-                "report": res.get("report", ""),
-                "citations": res.get("citations", []),
-                "source_url": res.get("source_url", url),
-            })
-        except Exception as exc:  # noqa: BLE001
-            _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
-            _release_active()
-            return
-        _set_auth_state(True, "import")
-        _update_job(job_id, state="done", message="imported report saved",
-                    result={
-                        "source_url": res.get("source_url", url),
-                        "citations": res.get("citations", []),
-                        "report_chars": len(res.get("report", "")),
-                    },
-                    artifact=artifact)
-    elif status == "needs_login":
-        _set_auth_state(False, "import hit login wall")
-        _update_job(job_id, state="needs_login",
-                    message="Not logged in. Use 'Set up Perplexity login' once, then import.")
-    elif status == "needs_captcha":
-        _update_job(job_id, state="error",
-                    error=("A human-verification check (CAPTCHA) appeared and was not "
-                           "solved in time. Re-run the import and complete the check "
-                           "when the browser window appears."))
-    elif status == "needs_clarification":
-        _update_job(job_id, state="error",
-                    error="That run is still awaiting a clarifying answer. Answer it in "
-                          "Perplexity, wait for it to finish, then import again.")
-    else:
-        _update_job(job_id, state="error", error=res.get("detail") or f"import {status}")
-    _release_active()
+    _browser_job(job_id, running_msg="opening run URL", call=call, handle=handle)
 
 
 def _start_import(body: dict) -> dict:
@@ -1713,6 +1704,87 @@ _MAX_BODY_BYTES = 5 * 1024 * 1024
 
 class _BadRequest(ValueError):
     """A client-side request problem that should map to HTTP 400, not 500."""
+
+
+# --------------------------------------------------------------------------- #
+# Declarative API route tables. Each entry maps a path to a Handler method name;
+# do_GET/do_POST resolve an exact match first, then the longest matching prefix.
+# Adding an endpoint is a one-line table edit plus a handler method, instead of
+# growing a 100-line if/elif chain. Prefix handlers read their own tail (symbol,
+# segment, stem) off the path exactly as the old inline branches did.
+# --------------------------------------------------------------------------- #
+_GET_EXACT = {
+    "/api/dev/livereload": "_get_livereload",
+    "/api/holdings": "_get_holdings",
+    "/api/portfolio-history": "_get_portfolio_history",
+    "/api/rebalance": "_get_rebalance",
+    "/api/risk": "_get_risk",
+    "/api/journal": "_get_journal",
+    "/api/segments": "_get_segments",
+    "/api/deep-runs": "_get_deep_runs",
+    "/api/reports": "_get_reports",
+    "/api/error-log": "_get_error_log",
+    "/api/tickers": "_get_tickers",
+    "/api/ticker-index": "_get_ticker_index",
+    "/api/analysis-config": "_get_analysis_config",
+    "/api/setup/status": "_get_setup_status",
+    "/api/analysis-models": "_get_analysis_models",
+    "/api/deep-research/login-status": "_get_login_status",
+    "/api/deep-job": "_get_deep_job",
+    "/api/deep-prompt": "_get_deep_prompt",
+    "/api/deep-qa": "_get_deep_qa",
+    "/api/target-model": "_get_target_model",
+    "/api/symbol-aliases": "_get_symbol_aliases",
+    "/api/symbol-search": "_get_symbol_search",
+}
+_GET_PREFIX = [
+    ("/api/segment-def/", "_get_segment_def"),
+    ("/api/deep-run/", "_get_deep_run"),
+    ("/api/research/", "_get_research"),
+    ("/api/analysis/", "_get_analysis"),
+    ("/api/qa/", "_get_qa"),
+    ("/api/history/", "_get_history"),
+    ("/api/price-history/", "_get_price_history"),
+    ("/api/segment/", "_get_segment"),
+]
+_POST_EXACT = {
+    "/api/segment-draft": "_post_segment_draft",
+    "/api/holdings/sync": "_post_holdings_sync",
+    "/api/portfolio-history/sync": "_post_portfolio_history_sync",
+    "/api/site/regenerate": "_post_site_regenerate",
+    "/api/deep-job/cancel": "_post_deep_job_cancel",
+    "/api/deep-qa": "_post_deep_qa",
+    "/api/error-log": "_post_error_log",
+    "/api/analysis-config": "_post_analysis_config",
+    "/api/setup/check": "_post_setup_check",
+    "/api/setup/ibkr": "_post_setup_ibkr",
+    "/api/deep-research/save": "_post_deep_save",
+    "/api/deep-research/run": "_post_deep_run",
+    "/api/deep-research/login": "_post_deep_login",
+    "/api/deep-research/import": "_post_deep_import",
+    "/api/deep-research/verify-login": "_post_verify_login",
+    "/api/deep-research/review": "_post_review",
+    "/api/target-proposal/apply": "_post_proposal_apply",
+    "/api/history/delete": "_post_history_delete",
+    "/api/tax-plan": "_post_tax_plan",
+    "/api/whatif": "_post_whatif",
+    "/api/journal": "_post_journal",
+    "/api/journal/outcome": "_post_journal_outcome",
+    "/api/symbol-alias": "_post_symbol_alias",
+    "/api/symbol-candidates": "_post_symbol_candidates",
+}
+_POST_PREFIX = [
+    ("/api/segment-def/", "_post_segment_def"),
+    ("/api/analyze/", "_post_analyze"),
+    ("/api/qa/", "_post_qa"),
+    ("/api/pull-segment/", "_post_pull_segment"),
+    ("/api/pull/", "_post_pull"),
+    ("/api/thesis/", "_post_thesis"),
+]
+# Match the most specific (longest) prefix first so e.g. /api/pull-segment/ wins
+# over /api/pull/ regardless of table order.
+_GET_PREFIX.sort(key=lambda kv: -len(kv[0]))
+_POST_PREFIX.sort(key=lambda kv: -len(kv[0]))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1813,149 +1885,188 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_unexpected(exc)
 
     def _handle_get_api(self, path: str, query: dict[str, list[str]]):
-        if path == "/api/dev/livereload":
-            return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
-        if path == "/api/holdings":
-            return self._send_json(holdings_payload())
-        if path == "/api/portfolio-history":
-            payload = _history_payload()
-            if not payload:
-                return self._send_error_json(404, "no portfolio history yet — pull it from IBKR (History tab)")
-            return self._send_json(payload)
-        if path == "/api/rebalance":
-            model = _load(TARGET_MODEL_JSON)
-            holdings = _load(HOLDINGS_JSON)
-            if not model:
-                return self._send_error_json(404, "no target model — data/target-model.json missing")
-            if not holdings:
-                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
-            return self._send_json(tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings))
-        if path == "/api/risk":
-            holdings = _load(HOLDINGS_JSON)
-            if not holdings:
-                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
-            rng_key = (query.get("range") or ["1y"])[0].lower()
-            rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
-            with _PULL_LOCK:
-                return self._send_json(risk.risk_report(holdings, rng=rng))
-        if path == "/api/journal":
-            entries = journal.load_entries()
-            price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
-            return self._send_json({
-                "entries": list(reversed(entries)),  # newest first for the UI
-                "calibration": journal.calibrate(entries, price_map),
-                "actions": sorted(journal.ACTIONS),
-            })
-        if path == "/api/segments":
-            return self._send_json({"segments": _segments_list()})
-        if path.startswith("/api/segment-def/"):
-            name = path.rsplit("/", 1)[-1].lower()
-            rec = _load(_segment_path(name))
-            return self._send_json(rec) if rec else self._send_error_json(404, f"unknown segment {name}")
-        if path == "/api/deep-runs":
-            return self._send_json({"runs": _deep_runs()})
-        if path == "/api/reports":
-            return self._send_json({"reports": _static_reports()})
-        if path == "/api/error-log":
-            try:
-                limit = int((query.get("limit") or ["200"])[0])
-            except ValueError:
-                limit = 200
-            return self._send_json({"entries": errorlog.recent(max(1, min(limit, errorlog.MAX_ENTRIES)))})
-        if path == "/api/tickers":
-            return self._send_json({"tickers": _known_tickers()})
-        if path == "/api/ticker-index":
-            return self._send_json({"tickers": _ticker_index()})
-        if path == "/api/analysis-config":
-            return self._send_json({
-                "config": ticker_analysis.load_config(),
-                "available": ticker_analysis.available_backends(),
-                "labels": ticker_analysis.PROVIDER_LABELS,
-            })
-        if path == "/api/setup/status":
-            return self._send_json(_setup_status())
-        if path == "/api/analysis-models":
-            force = (query.get("refresh") or ["0"])[0] in ("1", "true")
-            return self._send_json({"models": ticker_analysis.provider_models(force=force)})
-        if path == "/api/deep-research/login-status":
-            return self._send_json(_get_auth_state())
-        if path == "/api/deep-job":
-            job_id = (query.get("id") or [""])[0]
-            pub = jobs.get_public(job_id)
-            if not pub:
-                return self._send_error_json(404, f"unknown job {job_id}")
-            return self._send_json(pub)
-        if path == "/api/deep-prompt":
-            name = (query.get("segment") or [""])[0]
-            try:
-                return self._send_json(_segment_prompt(name))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-        if path.startswith("/api/deep-run/"):
-            stem = _slugify(path.rsplit("/", 1)[-1])
-            payload = {"stem": stem}
-            for suffix, rel in {
-                "report": DEEP_DIR / f"{stem}.md",
-                "sources": DEEP_DIR / f"{stem}.sources.json",
-                "review": DEEP_DIR / f"{stem}.review.md",
-                "proposal": DEEP_DIR / f"{stem}.target-proposal.json",
-            }.items():
-                if rel.exists():
-                    payload[suffix] = (
-                        _load(rel) if rel.suffix == ".json" else rel.read_text(encoding="utf-8")
-                    )
-            return self._send_json(payload)
-        if path == "/api/deep-qa":
-            stem = (query.get("stem") or [""])[0]
-            return self._send_json(_load_deep_qa(stem))
-        if path == "/api/target-model":
-            rec = _load(TARGET_MODEL_JSON)
-            return self._send_json(rec) if rec else self._send_error_json(404, "target model not found")
-        if path == "/api/symbol-aliases":
-            return self._send_json({"aliases": _symbol_aliases()})
-        if path.startswith("/api/research/"):
+        name = _GET_EXACT.get(path)
+        if name is None:
+            for prefix, handler in _GET_PREFIX:
+                if path.startswith(prefix):
+                    name = handler
+                    break
+        if name is None:
+            return self._send_error_json(404, "unknown endpoint")
+        return getattr(self, name)(path, query)
+
+    # ---- GET handlers (one per _GET_EXACT / _GET_PREFIX entry) -------------
+    def _get_livereload(self, path, query):
+        return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
+
+    def _get_holdings(self, path, query):
+        return self._send_json(holdings_payload())
+
+    def _get_portfolio_history(self, path, query):
+        payload = _history_payload()
+        if not payload:
+            return self._send_error_json(404, "no portfolio history yet — pull it from IBKR (History tab)")
+        return self._send_json(payload)
+
+    def _get_error_log(self, path, query):
+        try:
+            limit = int((query.get("limit") or ["200"])[0])
+        except ValueError:
+            limit = 200
+        return self._send_json({"entries": errorlog.recent(max(1, min(limit, errorlog.MAX_ENTRIES)))})
+
+    def _get_deep_qa(self, path, query):
+        stem = (query.get("stem") or [""])[0]
+        return self._send_json(_load_deep_qa(stem))
+
+    def _get_rebalance(self, path, query):
+        model = _load(TARGET_MODEL_JSON)
+        holdings = _load(HOLDINGS_JSON)
+        if not model:
+            return self._send_error_json(404, "no target model — data/target-model.json missing")
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        return self._send_json(tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings))
+
+    def _get_risk(self, path, query):
+        holdings = _load(HOLDINGS_JSON)
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        rng_key = (query.get("range") or ["1y"])[0].lower()
+        rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
+        with _PULL_LOCK:
+            return self._send_json(risk.risk_report(holdings, rng=rng))
+
+    def _get_journal(self, path, query):
+        entries = journal.load_entries()
+        price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
+        return self._send_json({
+            "entries": list(reversed(entries)),  # newest first for the UI
+            "calibration": journal.calibrate(entries, price_map),
+            "actions": sorted(journal.ACTIONS),
+        })
+
+    def _get_segments(self, path, query):
+        return self._send_json({"segments": _segments_list()})
+
+    def _get_segment_def(self, path, query):
+        name = path.rsplit("/", 1)[-1].lower()
+        rec = _load(_segment_path(name))
+        return self._send_json(rec) if rec else self._send_error_json(404, f"unknown segment {name}")
+
+    def _get_deep_runs(self, path, query):
+        return self._send_json({"runs": _deep_runs()})
+
+    def _get_reports(self, path, query):
+        return self._send_json({"reports": _static_reports()})
+
+    def _get_tickers(self, path, query):
+        return self._send_json({"tickers": _known_tickers()})
+
+    def _get_ticker_index(self, path, query):
+        return self._send_json({"tickers": _ticker_index()})
+
+    def _get_analysis_config(self, path, query):
+        return self._send_json({
+            "config": ticker_analysis.load_config(),
+            "available": ticker_analysis.available_backends(),
+            "labels": ticker_analysis.PROVIDER_LABELS,
+        })
+
+    def _get_setup_status(self, path, query):
+        return self._send_json(_setup_status())
+
+    def _get_analysis_models(self, path, query):
+        force = (query.get("refresh") or ["0"])[0] in ("1", "true")
+        return self._send_json({"models": ticker_analysis.provider_models(force=force)})
+
+    def _get_login_status(self, path, query):
+        return self._send_json(_get_auth_state())
+
+    def _get_deep_job(self, path, query):
+        job_id = (query.get("id") or [""])[0]
+        pub = jobs.get_public(job_id)
+        if not pub:
+            return self._send_error_json(404, f"unknown job {job_id}")
+        return self._send_json(pub)
+
+    def _get_deep_prompt(self, path, query):
+        name = (query.get("segment") or [""])[0]
+        try:
+            return self._send_json(_segment_prompt(name))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _get_deep_run(self, path, query):
+        stem = _slugify(path.rsplit("/", 1)[-1])
+        payload = {"stem": stem}
+        for suffix, rel in {
+            "report": DEEP_DIR / f"{stem}.md",
+            "sources": DEEP_DIR / f"{stem}.sources.json",
+            "review": DEEP_DIR / f"{stem}.review.md",
+            "proposal": DEEP_DIR / f"{stem}.target-proposal.json",
+        }.items():
+            if rel.exists():
+                payload[suffix] = (
+                    _load(rel) if rel.suffix == ".json" else rel.read_text(encoding="utf-8")
+                )
+        return self._send_json(payload)
+
+    def _get_target_model(self, path, query):
+        rec = _load(TARGET_MODEL_JSON)
+        return self._send_json(rec) if rec else self._send_error_json(404, "target model not found")
+
+    def _get_symbol_aliases(self, path, query):
+        return self._send_json({"aliases": _symbol_aliases()})
+
+    def _get_research(self, path, query):
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+        provider_sym = _resolve_symbol(sym)
+        rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
+        return self._send_json(_annotate_symbol_record(rec, sym, provider_sym)) if rec else self._send_error_json(404, f"no cached research for {sym}")
+
+    def _get_analysis(self, path, query):
+        try:
             sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            provider_sym = _resolve_symbol(sym)
-            rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
-            return self._send_json(_annotate_symbol_record(rec, sym, provider_sym)) if rec else self._send_error_json(404, f"no cached research for {sym}")
-        if path.startswith("/api/analysis/"):
-            try:
-                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            rec = _latest_analysis(_resolve_symbol(sym))
-            return self._send_json(rec) if rec else self._send_error_json(404, f"no analysis for {sym}")
-        if path.startswith("/api/qa/"):
-            try:
-                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            return self._send_json(_load_qa(_resolve_symbol(sym)))
-        if path.startswith("/api/history/"):
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        rec = _latest_analysis(_resolve_symbol(sym))
+        return self._send_json(rec) if rec else self._send_error_json(404, f"no analysis for {sym}")
+
+    def _get_qa(self, path, query):
+        try:
             sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            provider_sym = _resolve_symbol(sym)
-            return self._send_json({"symbol": sym, "provider_symbol": provider_sym, "history": research_pull.history_for(provider_sym)})
-        if path.startswith("/api/price-history/"):
-            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            provider_sym = _resolve_symbol(sym)
-            rng_key = (query.get("range") or ["1y"])[0].lower()
-            rng, interval = PRICE_HISTORY_RANGES.get(rng_key, PRICE_HISTORY_RANGES["1y"])
-            try:
-                result = yahoo.chart(provider_sym, rng=rng, interval=interval)
-                ph = yahoo.price_history_from_chart(result, rng=rng, interval=interval)
-            except Exception as exc:  # noqa: BLE001 - surface provider failure to UI
-                return self._send_error_json(502, f"price history failed for {sym}: {exc}")
-            if not ph:
-                return self._send_error_json(404, f"no price history for {sym}")
-            return self._send_json(ph)
-        if path.startswith("/api/segment/"):
-            name = path.rsplit("/", 1)[-1].lower()
-            rec = _load(SEGMENT_OUT_DIR / f"{name}.json")
-            return self._send_json(rec) if rec else self._send_error_json(404, f"no cached segment {name}")
-        if path == "/api/symbol-search":
-            q = (query.get("q") or [""])[0]
-            return self._send_json(_symbol_search(q))
-        return self._send_error_json(404, "unknown endpoint")
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        return self._send_json(_load_qa(_resolve_symbol(sym)))
+
+    def _get_history(self, path, query):
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+        provider_sym = _resolve_symbol(sym)
+        return self._send_json({"symbol": sym, "provider_symbol": provider_sym, "history": research_pull.history_for(provider_sym)})
+
+    def _get_price_history(self, path, query):
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+        provider_sym = _resolve_symbol(sym)
+        rng_key = (query.get("range") or ["1y"])[0].lower()
+        rng, interval = PRICE_HISTORY_RANGES.get(rng_key, PRICE_HISTORY_RANGES["1y"])
+        try:
+            result = yahoo.chart(provider_sym, rng=rng, interval=interval)
+            ph = yahoo.price_history_from_chart(result, rng=rng, interval=interval)
+        except Exception as exc:  # noqa: BLE001 - surface provider failure to UI
+            return self._send_error_json(502, f"price history failed for {sym}: {exc}")
+        if not ph:
+            return self._send_error_json(404, f"no price history for {sym}")
+        return self._send_json(ph)
+
+    def _get_segment(self, path, query):
+        name = path.rsplit("/", 1)[-1].lower()
+        rec = _load(SEGMENT_OUT_DIR / f"{name}.json")
+        return self._send_json(rec) if rec else self._send_error_json(404, f"no cached segment {name}")
+
+    def _get_symbol_search(self, path, query):
+        q = (query.get("q") or [""])[0]
+        return self._send_json(_symbol_search(q))
 
     def do_POST(self):
         path = urlparse(self.path).path
@@ -1967,300 +2078,306 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_unexpected(exc)
 
     def _handle_post_api(self, path: str):
-        if path == "/api/segment-draft":
-            body = self._read_body()
-            try:
-                return self._send_json(_start_segment_draft(str(body.get("query") or "")))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
+        name = _POST_EXACT.get(path)
+        if name is None:
+            for prefix, handler in _POST_PREFIX:
+                if path.startswith(prefix):
+                    name = handler
+                    break
+        if name is None:
+            return self._send_error_json(404, "unknown endpoint")
+        return getattr(self, name)(path)
 
-        if path.startswith("/api/segment-def/"):
-            name = _slugify(path.rsplit("/", 1)[-1])
-            body = self._read_body()
-            try:
-                definition = _validate_segment_definition(body.get("definition") or body)
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
-            return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
+    # ---- POST handlers (one per _POST_EXACT / _POST_PREFIX entry) ----------
+    def _post_segment_draft(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_start_segment_draft(str(body.get("query") or "")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
 
-        if path == "/api/holdings/sync":
-            try:
-                return self._send_json(_start_holdings_sync())
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
+    def _post_segment_def(self, path):
+        name = _slugify(path.rsplit("/", 1)[-1])
+        body = self._read_body()
+        try:
+            definition = _validate_segment_definition(body.get("definition") or body)
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
+        return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
 
-        if path == "/api/portfolio-history/sync":
-            full = bool(self._read_body().get("full"))
-            try:
-                return self._send_json(_start_history_sync(full=full))
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
+    def _post_holdings_sync(self, path):
+        try:
+            return self._send_json(_start_holdings_sync())
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
 
-        if path == "/api/site/regenerate":
-            res = _regenerate_site()
-            if not res.get("ok"):
-                return self._send_error_json(400, res.get("error") or "regeneration failed")
-            return self._send_json(res)
+    def _post_portfolio_history_sync(self, path):
+        full = bool(self._read_body().get("full"))
+        try:
+            return self._send_json(_start_history_sync(full=full))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
 
-        if path.startswith("/api/analyze/"):
-            try:
-                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            body = self._read_body()
-            try:
-                return self._send_json(_start_analysis(_resolve_symbol(sym), bool(body.get("refresh"))))
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
+    def _post_deep_qa(self, path):
+        body = self._read_body()
+        stem = _slugify(str(body.get("stem") or ""))
+        if body.get("clear"):
+            _write_json(_deep_qa_path(stem), {"stem": stem, "turns": []})
+            return self._send_json(_load_deep_qa(stem))
+        try:
+            return self._send_json(_start_deep_qa(stem, str(body.get("question") or "")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
 
-        if path.startswith("/api/qa/"):
-            try:
-                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            provider_sym = _resolve_symbol(sym)
-            body = self._read_body()
-            if body.get("clear"):
-                _write_json(_qa_path(provider_sym), {"symbol": provider_sym, "turns": []})
-                return self._send_json(_load_qa(provider_sym))
-            try:
-                return self._send_json(_start_qa(provider_sym, str(body.get("question") or "")))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
+    def _post_error_log(self, path):
+        body = self._read_body()
+        if body.get("clear"):
+            errorlog.clear()
+        return self._send_json({"entries": errorlog.recent()})
 
-        if path == "/api/deep-qa":
-            body = self._read_body()
-            stem = _slugify(str(body.get("stem") or ""))
-            if body.get("clear"):
-                _write_json(_deep_qa_path(stem), {"stem": stem, "turns": []})
-                return self._send_json(_load_deep_qa(stem))
-            try:
-                return self._send_json(_start_deep_qa(stem, str(body.get("question") or "")))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
+    def _post_site_regenerate(self, path):
+        res = _regenerate_site()
+        if not res.get("ok"):
+            return self._send_error_json(400, res.get("error") or "regeneration failed")
+        return self._send_json(res)
 
-        if path == "/api/error-log":
-            body = self._read_body()
-            if body.get("clear"):
-                errorlog.clear()
-            return self._send_json({"entries": errorlog.recent()})
-
-        if path == "/api/deep-job/cancel":
-            body = self._read_body()
-            job_id = str(body.get("id") or "").strip()
-            if not job_id:
-                return self._send_error_json(400, "missing job id")
-            ok = jobs.cancel_job(job_id)
-            return self._send_json({"id": job_id, "cancelled": ok})
-
-        if path == "/api/analysis-config":
-            body = self._read_body()
-            return self._send_json({
-                "config": ticker_analysis.save_config(body.get("config") or body),
-                "available": ticker_analysis.available_backends(),
-                "labels": ticker_analysis.PROVIDER_LABELS,
-            })
-
-        if path == "/api/setup/check":
-            return self._send_json(_setup_status(run_checks=True))
-
-        if path == "/api/setup/ibkr":
-            body = self._read_body()
-            try:
-                return self._send_json(_save_ibkr_secrets(body))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            except OSError as exc:
-                return self._send_error_json(500, f"could not write secrets: {exc}")
-
-        if path == "/api/deep-research/save":
-            body = self._read_body()
-            try:
-                return self._send_json(_save_deep_artifact(body))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-
-        if path == "/api/deep-research/run":
-            body = self._read_body()
-            try:
-                return self._send_json(_start_deep_research(body))
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
-
-        if path == "/api/deep-research/login":
-            try:
-                return self._send_json(_start_login())
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
-
-        if path == "/api/deep-research/import":
-            body = self._read_body()
-            try:
-                return self._send_json(_start_import(body))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
-
-        if path == "/api/deep-research/verify-login":
-            try:
-                return self._send_json(_verify_login())
-            except RuntimeError as exc:
-                return self._send_error_json(409, str(exc))
-
-        if path == "/api/deep-research/review":
-            body = self._read_body()
-            segment = str(body.get("segment") or "")
-            date = str(body.get("date") or "")
-            if not segment or not date:
-                return self._send_error_json(400, "segment and date are required")
-            # review() raises SystemExit (a BaseException) when the report or
-            # segment definition is missing. That is NOT caught by do_POST's
-            # `except Exception`, so it would kill the worker thread and return
-            # nothing to the browser. Translate it into a clean 400 instead.
-            try:
-                return self._send_json(review_deep_research.review(segment, date))
-            except SystemExit as exc:
-                return self._send_error_json(400, str(exc) or "missing report for this segment + date")
-
-        if path == "/api/target-proposal/apply":
-            body = self._read_body()
-            return self._send_json(_apply_target_proposal(
-                str(body.get("segment") or ""),
-                str(body.get("date") or ""),
-                bool(body.get("confirm")),
-                allow_blocked=bool(body.get("allow_blocked")),
-            ))
-
-        if path == "/api/history/delete":
-            body = self._read_body()
-            try:
-                sym = _safe_symbol(str(body.get("symbol") or ""))
-                provider_sym = _resolve_symbol(sym)
-                removed = research_pull.delete_history(provider_sym, str(body.get("stamp") or ""))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            return self._send_json({
-                "symbol": sym,
-                "removed": removed,
-                "history": research_pull.history_for(provider_sym),
-            })
-
-        if path == "/api/tax-plan":
-            body = self._read_body()
-            holdings = _load(HOLDINGS_JSON)
-            if not holdings:
-                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
-            try:
-                sym = _safe_symbol(str(body.get("symbol") or ""))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            try:
-                amount = float(body.get("amount_czk"))
-            except (TypeError, ValueError):
-                return self._send_error_json(400, "amount_czk must be a number")
-            return self._send_json(tax_lots.breakdown_for_symbol(holdings, sym, amount))
-
-        if path == "/api/whatif":
-            body = self._read_body()
-            holdings = _load(HOLDINGS_JSON)
-            model = _load(TARGET_MODEL_JSON)
-            if not holdings or not model:
-                return self._send_error_json(404, "need both a holdings snapshot and a target model")
-            try:
-                return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-
-        if path == "/api/journal":
-            body = self._read_body()
-            try:
-                journal.add_entry(body)
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            entries = journal.load_entries()
-            price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
-            return self._send_json({
-                "entries": list(reversed(entries)),
-                "calibration": journal.calibrate(entries, price_map),
-                "actions": sorted(journal.ACTIONS),
-            })
-
-        if path == "/api/journal/outcome":
-            body = self._read_body()
-            try:
-                journal.record_outcome(str(body.get("id") or ""), body.get("price"), str(body.get("note") or ""))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-            entries = journal.load_entries()
-            price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
-            return self._send_json({
-                "entries": list(reversed(entries)),
-                "calibration": journal.calibrate(entries, price_map),
-                "actions": sorted(journal.ACTIONS),
-            })
-
-        if path == "/api/symbol-alias":
-            body = self._read_body()
-            try:
-                return self._send_json(_save_symbol_alias(body))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-
-        if path == "/api/symbol-candidates":
-            body = self._read_body()
-            try:
-                return self._send_json(_symbol_candidates(body))
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
-
-        if path.startswith("/api/pull/"):
-            try:
-                sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            except ValueError:
-                return self._send_error_json(400, "bad symbol")
-            provider_sym = _resolve_symbol(sym)
-            with _PULL_LOCK:
-                rec = research_pull.pull_ticker(provider_sym)
-            return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
-
-        if path.startswith("/api/pull-segment/"):
-            name = path.rsplit("/", 1)[-1].lower()
-            if not (SEGMENT_DEF_DIR / f"{name}.json").exists():
-                return self._send_error_json(404, f"unknown segment {name}")
-            with _PULL_LOCK:
-                rec = research_pull.pull_segment(name)
-            return self._send_json(rec)
-
-        if path.startswith("/api/thesis/"):
+    def _post_analyze(self, path):
+        try:
             sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-            provider_sym = _resolve_symbol(sym)
-            rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
-            if not rec:
-                return self._send_error_json(404, f"pull {sym} before saving a thesis")
-            body = self._read_body()
-            import datetime as dt
-            rec["thesis"] = {
-                "summary": body.get("summary", ""),
-                "action": body.get("action", ""),
-                "drivers": body.get("drivers", []),
-                "downside_triggers": body.get("downside_triggers", []),
-                "source_confidence": body.get("source_confidence", ""),
-                "review_after": body.get("review_after", ""),
-                "source_artifact": body.get("source_artifact", ""),
-                "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-            }
-            (RESEARCH_DIR / f"{provider_sym}.json").write_text(
-                json.dumps(rec, indent=2) + "\n", encoding="utf-8"
-            )
-            return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        body = self._read_body()
+        try:
+            return self._send_json(_start_analysis(_resolve_symbol(sym), bool(body.get("refresh"))))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
 
-        return self._send_error_json(404, "unknown endpoint")
+    def _post_qa(self, path):
+        try:
+            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        provider_sym = _resolve_symbol(sym)
+        body = self._read_body()
+        if body.get("clear"):
+            _write_json(_qa_path(provider_sym), {"symbol": provider_sym, "turns": []})
+            return self._send_json(_load_qa(provider_sym))
+        try:
+            return self._send_json(_start_qa(provider_sym, str(body.get("question") or "")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
+
+    def _post_deep_job_cancel(self, path):
+        body = self._read_body()
+        job_id = str(body.get("id") or "").strip()
+        if not job_id:
+            return self._send_error_json(400, "missing job id")
+        ok = jobs.cancel_job(job_id)
+        return self._send_json({"id": job_id, "cancelled": ok})
+
+    def _post_analysis_config(self, path):
+        body = self._read_body()
+        return self._send_json({
+            "config": ticker_analysis.save_config(body.get("config") or body),
+            "available": ticker_analysis.available_backends(),
+            "labels": ticker_analysis.PROVIDER_LABELS,
+        })
+
+    def _post_setup_check(self, path):
+        return self._send_json(_setup_status(run_checks=True))
+
+    def _post_setup_ibkr(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_save_ibkr_secrets(body))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except OSError as exc:
+            return self._send_error_json(500, f"could not write secrets: {exc}")
+
+    def _post_deep_save(self, path):
+        body = self._read_body()
+        return self._send_json(_save_deep_artifact(body))
+
+    def _post_deep_run(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_start_deep_research(body))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
+
+    def _post_deep_login(self, path):
+        try:
+            return self._send_json(_start_login())
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
+
+    def _post_deep_import(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_start_import(body))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
+
+    def _post_verify_login(self, path):
+        try:
+            return self._send_json(_verify_login())
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
+
+    def _post_review(self, path):
+        body = self._read_body()
+        segment = str(body.get("segment") or "")
+        date = str(body.get("date") or "")
+        if not segment or not date:
+            return self._send_error_json(400, "segment and date are required")
+        # review() raises SystemExit (a BaseException) when the report or
+        # segment definition is missing. That is NOT caught by do_POST's
+        # `except Exception`, so it would kill the worker thread and return
+        # nothing to the browser. Translate it into a clean 400 instead.
+        try:
+            return self._send_json(review_deep_research.review(segment, date))
+        except SystemExit as exc:
+            return self._send_error_json(400, str(exc) or "missing report for this segment + date")
+
+    def _post_proposal_apply(self, path):
+        body = self._read_body()
+        return self._send_json(_apply_target_proposal(
+            str(body.get("segment") or ""),
+            str(body.get("date") or ""),
+            bool(body.get("confirm")),
+            allow_blocked=bool(body.get("allow_blocked")),
+        ))
+
+    def _post_history_delete(self, path):
+        body = self._read_body()
+        try:
+            sym = _safe_symbol(str(body.get("symbol") or ""))
+            provider_sym = _resolve_symbol(sym)
+            removed = research_pull.delete_history(provider_sym, str(body.get("stamp") or ""))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        return self._send_json({
+            "symbol": sym,
+            "removed": removed,
+            "history": research_pull.history_for(provider_sym),
+        })
+
+    def _post_tax_plan(self, path):
+        body = self._read_body()
+        holdings = _load(HOLDINGS_JSON)
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        try:
+            sym = _safe_symbol(str(body.get("symbol") or ""))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        try:
+            amount = float(body.get("amount_czk"))
+        except (TypeError, ValueError):
+            return self._send_error_json(400, "amount_czk must be a number")
+        return self._send_json(tax_lots.breakdown_for_symbol(holdings, sym, amount))
+
+    def _post_whatif(self, path):
+        body = self._read_body()
+        holdings = _load(HOLDINGS_JSON)
+        model = _load(TARGET_MODEL_JSON)
+        if not holdings or not model:
+            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        try:
+            return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _post_journal(self, path):
+        body = self._read_body()
+        try:
+            journal.add_entry(body)
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        entries = journal.load_entries()
+        price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
+        return self._send_json({
+            "entries": list(reversed(entries)),
+            "calibration": journal.calibrate(entries, price_map),
+            "actions": sorted(journal.ACTIONS),
+        })
+
+    def _post_journal_outcome(self, path):
+        body = self._read_body()
+        try:
+            journal.record_outcome(str(body.get("id") or ""), body.get("price"), str(body.get("note") or ""))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        entries = journal.load_entries()
+        price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
+        return self._send_json({
+            "entries": list(reversed(entries)),
+            "calibration": journal.calibrate(entries, price_map),
+            "actions": sorted(journal.ACTIONS),
+        })
+
+    def _post_symbol_alias(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_save_symbol_alias(body))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _post_symbol_candidates(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_symbol_candidates(body))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _post_pull(self, path):
+        try:
+            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+        except ValueError:
+            return self._send_error_json(400, "bad symbol")
+        provider_sym = _resolve_symbol(sym)
+        with _PULL_LOCK:
+            rec = research_pull.pull_ticker(provider_sym)
+        return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
+
+    def _post_pull_segment(self, path):
+        name = path.rsplit("/", 1)[-1].lower()
+        if not (SEGMENT_DEF_DIR / f"{name}.json").exists():
+            return self._send_error_json(404, f"unknown segment {name}")
+        with _PULL_LOCK:
+            rec = research_pull.pull_segment(name)
+        return self._send_json(rec)
+
+    def _post_thesis(self, path):
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
+        provider_sym = _resolve_symbol(sym)
+        rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
+        if not rec:
+            return self._send_error_json(404, f"pull {sym} before saving a thesis")
+        body = self._read_body()
+        import datetime as dt
+        rec["thesis"] = {
+            "summary": body.get("summary", ""),
+            "action": body.get("action", ""),
+            "drivers": body.get("drivers", []),
+            "downside_triggers": body.get("downside_triggers", []),
+            "source_confidence": body.get("source_confidence", ""),
+            "review_after": body.get("review_after", ""),
+            "source_artifact": body.get("source_artifact", ""),
+            "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        }
+        (RESEARCH_DIR / f"{provider_sym}.json").write_text(
+            json.dumps(rec, indent=2) + "\n", encoding="utf-8"
+        )
+        return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
 
 def main() -> int:
