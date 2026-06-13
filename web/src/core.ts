@@ -171,6 +171,66 @@ async function api<T = any>(path: string, method: string = "GET", body: unknown 
   return data;
 }
 
+// ---- shared load / status / empty-state choreography ----------------------
+// Every data view used to hand-roll the same dance: set a "Loading…" status,
+// clear the result container, await an api() call, render, blank the status, and
+// on failure write "Could not load X: <msg>" with the .err class. These helpers
+// centralize that so a view is one declarative call, and empty states stop being
+// an ad-hoc blank div in one view and a friendly message in the next.
+
+const spinner = (): string => '<span class="spinner"></span>';
+
+// Loading text into a status line (optionally with the spinner). Clears any
+// prior error styling so a retry doesn't stay red.
+function setLoading(statusEl: HTMLElement | null, msg: string, spin = false): void {
+  if (!statusEl) return;
+  statusEl.classList.remove("err");
+  statusEl.innerHTML = (spin ? spinner() + " " : "") + esc(msg);
+}
+
+// The canonical failure line: "<label>: <message>" in the error colour.
+function loadError(statusEl: HTMLElement | null, label: string, err: unknown): void {
+  if (!statusEl) return;
+  statusEl.textContent = `${label}: ${(err as Error)?.message ?? String(err)}`;
+  statusEl.classList.add("err");
+}
+
+// A consistent, centered placeholder for "nothing here yet" containers.
+function emptyState(out: HTMLElement | null, html: string): void {
+  if (out) out.innerHTML = `<div class="empty-state">${html}</div>`;
+}
+
+interface ApiLoadOpts<T> {
+  path: string;
+  render: (data: T) => void;
+  status?: HTMLElement | null;
+  // Containers to blank before the request and again on failure.
+  clear?: (HTMLElement | null | undefined)[];
+  loading?: string;
+  errorLabel?: string;
+  method?: string;
+  body?: unknown;
+  spin?: boolean;
+}
+
+// Convenience wrapper for the uniform "status + clear + fetch + render" views
+// (risk, rebalance, journal). Views whose status line becomes a persistent
+// summary (holdings, segment) should compose setLoading/loadError directly.
+async function apiLoad<T = any>(o: ApiLoadOpts<T>): Promise<void> {
+  const status = o.status ?? null;
+  setLoading(status, o.loading ?? "Loading…", o.spin);
+  (o.clear || []).forEach((c) => { if (c) c.innerHTML = ""; });
+  try {
+    const data = await api<T>(o.path, o.method, o.body);
+    o.render(data);
+    if (status) status.textContent = "";
+  } catch (e) {
+    (o.clear || []).forEach((c) => { if (c) c.innerHTML = ""; });
+    if (status) loadError(status, o.errorLabel ?? "Could not load", e);
+    else throw e;
+  }
+}
+
 export {
   state,
   $,
@@ -193,5 +253,10 @@ export {
   applyPrivacyMode,
   api,
   setErrorSink,
+  spinner,
+  setLoading,
+  loadError,
+  emptyState,
+  apiLoad,
 };
-export type { AppState, Num, ErrorSink, AppError };
+export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts };

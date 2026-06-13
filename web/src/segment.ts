@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtX, pctClass, relAge, scoreClass, state } from "./core";
+import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, spinner, state } from "./core";
 import { analyzeFromAnywhere } from "./rebalance";
 import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
@@ -63,15 +63,14 @@ async function runSegmentPull(name, { push = true } = {}) {
   setActiveView("segment");
   $("#segment-select").value = name;
   status.classList.remove("err");
-  status.innerHTML = `<span class="spinner"></span> Pulling every peer in "${esc(name)}" live — this takes a bit...`;
+  status.innerHTML = `${spinner()} Pulling every peer in "${esc(name)}" live — this takes a bit...`;
   $("#segment-run").disabled = true;
   try {
     const rec = await api("/api/pull-segment/" + encodeURIComponent(name), "POST");
     status.textContent = `Pulled ${rec.members.length} names at ${new Date(rec.as_of).toLocaleString()}`;
     renderSegment(rec);
   } catch (e) {
-    status.textContent = "Segment pull failed: " + e.message;
-    status.classList.add("err");
+    loadError(status, "Segment pull failed", e);
   } finally {
     $("#segment-run").disabled = false;
   }
@@ -103,6 +102,13 @@ async function loadCachedSegment(name, { push = false } = {}) {
 
 $("#segment-run").addEventListener("click", () => runSegmentPull($("#segment-select").value));
 $("#segment-load").addEventListener("click", () => loadCachedSegment($("#segment-select").value, { push: true }));
+
+// Seed the result area so an un-loaded Segment tab is a clear prompt, not a void.
+// Any pull/cache load replaces this; a deep-link to ?segment= loads over it.
+emptyState($("#seg-result"),
+  "<strong>No segment loaded</strong>" +
+  "Pick a peer universe above, then <em>Run live pull</em> (~30-60s for ~20 names) " +
+  "or <em>Load cached</em> for the last saved table.");
 
 const SEG_COLS = [
   ["symbol", "Symbol", false],

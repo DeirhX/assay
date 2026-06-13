@@ -1,25 +1,19 @@
 // @ts-nocheck
-import { $, api, el, esc, fmtCZK, fmtStamp, sensitive } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive } from "./core";
 
 // ---- decision journal + calibration ----------------------------------------
 const correctClass = (c) => (c === true ? "good" : c === false ? "bad" : "muted");
 const moveClass = (m) => (m == null ? "muted" : m > 0 ? "good" : m < 0 ? "bad" : "muted");
 
 async function loadJournal() {
-  const status = $("#journal-status");
-  const out = $("#journal-result");
-  status.classList.remove("err");
-  status.textContent = "Loading journal…";
-  out.innerHTML = "";
-  try {
-    const data = await api("/api/journal");
-    status.textContent = "";
-    renderJournal(data);
-  } catch (e) {
-    out.innerHTML = "";
-    status.textContent = "Could not load journal: " + e.message;
-    status.classList.add("err");
-  }
+  await apiLoad({
+    path: "/api/journal",
+    status: $("#journal-status"),
+    clear: [$("#journal-result")],
+    loading: "Loading journal…",
+    errorLabel: "Could not load journal",
+    render: renderJournal,
+  });
 }
 
 function renderJournal(data) {
@@ -54,7 +48,9 @@ function renderJournal(data) {
 
   const entries = data.entries || [];
   if (!entries.length) {
-    out.appendChild(el("div", "hint", "No decisions logged yet. Use the form above, or \u201cLog to journal\u201d from a simulated basket."));
+    out.appendChild(el("div", "empty-state",
+      "<strong>No decisions logged yet</strong>" +
+      "Use the form above, or \u201cLog to journal\u201d from a simulated basket."));
     return;
   }
 
