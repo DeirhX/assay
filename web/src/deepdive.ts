@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createQaCard, ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
-import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, simpleTable, state } from "./core";
+import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, sectionCard, simpleTable, state } from "./core";
 import { pollDeepJob } from "./errors";
 import { cleanSymbol, downloadText, modelLabel, pushNav, setActiveView } from "./shell";
 import { recordView, relTime, renderViewedTickers } from "./viewed";
@@ -328,8 +328,7 @@ function renderDeepDive(rec) {
   if (chart) out.appendChild(chart);
 
   // decision context
-  const dcard = el("div", "card");
-  dcard.appendChild(el("h2", "section", "Decision context"));
+  const dcard = sectionCard("Decision context");
   const dgrid = el("div", "dossier-grid");
   const band = target.low != null && target.high != null ? `${fmtWeight(target.low)} - ${fmtWeight(target.high)}` : "n/a";
   const gap = portfolio.gap_to_band_pct == null ? "n/a" : fmtSignedWeight(portfolio.gap_to_band_pct);
@@ -372,8 +371,7 @@ function renderDeepDive(rec) {
   out.appendChild(trust);
 
   // metrics
-  const mcard = el("div", "card");
-  mcard.appendChild(el("h2", "section", "Valuation & fundamentals"));
+  const mcard = sectionCard("Valuation & fundamentals");
   const grid = el("div", "metrics-grid");
   METRIC_ROWS.forEach(([key, label, fmt]) => {
     const node = rec.metrics ? rec.metrics[key] : null;
@@ -390,8 +388,7 @@ function renderDeepDive(rec) {
 
   // momentum
   const mo = rec.momentum || {};
-  const mom = el("div", "card");
-  mom.appendChild(el("h2", "section", "Momentum"));
+  const mom = sectionCard("Momentum");
   const mgrid = el("div", "metrics-grid");
   [["chg_1m_pct", "1 month"], ["chg_3m_pct", "3 months"], ["chg_6m_pct", "6 months"], ["chg_12m_pct", "12 months"], ["pct_below_52w_high", "vs 52w high"], ["high_52w", "52w high"], ["low_52w", "52w low"]].forEach(([k, lbl]) => {
     const v = mo[k];
@@ -753,8 +750,7 @@ function renderBusiness(rec) {
   const p = rec.profile || {};
   if (!p.summary && !p.sector && !p.industry) return null;
 
-  const card = el("div", "card biz-card");
-  card.appendChild(el("h2", "section", "Business"));
+  const card = sectionCard("Business", "biz-card");
 
   const bits = [];
   if (p.sector) bits.push(esc(p.sector));

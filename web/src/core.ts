@@ -223,6 +223,18 @@ function statTile(label: string, value: string, opts: StatTileOpts = {}): HTMLEl
   return c;
 }
 
+// A plain panel: a `.card` with a `.section` heading, content appended by the
+// caller. `extra` adds further classes to the card (e.g. "biz-card"). `title` is
+// inserted as-is (callers pass esc()'d text when it's dynamic), matching the
+// hand-rolled sites this replaces. Cards with a toolbar/button beside the title
+// (analysis-head) or a collapsible body keep their own builders -- they're a
+// different shape, not this one.
+function sectionCard(title: string, extra = ""): HTMLElement {
+  const card = el("div", extra ? "card " + extra : "card");
+  card.appendChild(el("h2", "section", title));
+  return card;
+}
+
 // A non-sortable HTML table: a <thead> from a fixed header row plus a <tbody>
 // whose rows come from `cells(item)` (returns the row's inner HTML). `onRow` is
 // the escape hatch for rows that need imperative DOM (e.g. a delete button with
@@ -308,6 +320,7 @@ export {
   loadError,
   emptyState,
   statTile,
+  sectionCard,
   simpleTable,
   apiLoad,
 };

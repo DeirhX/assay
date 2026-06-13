@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, el, esc, relAge, setErrorSink, state } from "./core";
+import { $, api, el, esc, relAge, sectionCard, setErrorSink, state } from "./core";
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
 import { pushNav } from "./shell";
 import { mdToHtml, openRunInAnalyses } from "./analyses";
@@ -452,8 +452,7 @@ function renderPipeReport() {
 function renderReviewGate(rec) {
   const out = $("#pipe-review-output");
   out.innerHTML = "";
-  const card = el("div", "card");
-  card.appendChild(el("h2", "section", "Review gate output"));
+  const card = sectionCard("Review gate output");
   if (rec.source_summary) {
     const b = rec.source_summary.buckets || {};
     card.appendChild(el("div", "badges",

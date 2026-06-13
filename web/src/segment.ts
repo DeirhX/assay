@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, spinner, state } from "./core";
+import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import { analyzeFromAnywhere } from "./rebalance";
 import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
@@ -131,8 +131,7 @@ function renderSegment(rec) {
   state.lastSegment = rec;
   const out = $("#seg-result");
   out.innerHTML = "";
-  const card = el("div", "card");
-  card.appendChild(el("h2", "section", esc(rec.title) + " — peer comparison"));
+  const card = sectionCard(esc(rec.title) + " — peer comparison");
   const table = el("table", "segment-table");
   const thead = el("thead");
   const htr = el("tr");
