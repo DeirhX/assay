@@ -200,6 +200,29 @@ function emptyState(out: HTMLElement | null, html: string): void {
   if (out) out.innerHTML = `<div class="empty-state">${html}</div>`;
 }
 
+// A labelled KPI tile (uppercase key over a big value), shared by the rebalance,
+// journal, and risk headlines. `family` selects the CSS class set ("reb-stat" vs
+// "risk-stat") since those differ in size/affordance; `cls` colours the value
+// (good/warn/bad/muted). Pass html:true when the value is pre-built markup
+// (e.g. a sensitive() wrapper) that must not be escaped.
+interface StatTileOpts {
+  cls?: string;
+  title?: string;
+  html?: boolean;
+  family?: string;
+}
+
+function statTile(label: string, value: string, opts: StatTileOpts = {}): HTMLElement {
+  const family = opts.family || "reb-stat";
+  const c = el("div", family);
+  if (opts.title) c.title = opts.title;
+  const valHtml = opts.html ? value : esc(value);
+  c.innerHTML =
+    `<span class="${family}-k">${esc(label)}</span>` +
+    `<span class="${family}-v ${esc(opts.cls || "")}">${valHtml}</span>`;
+  return c;
+}
+
 interface ApiLoadOpts<T> {
   path: string;
   render: (data: T) => void;
@@ -257,6 +280,7 @@ export {
   setLoading,
   loadError,
   emptyState,
+  statTile,
   apiLoad,
 };
-export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts };
+export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts };

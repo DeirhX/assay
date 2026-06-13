@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive, statTile } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -285,11 +285,7 @@ function renderRebalance(plan) {
 }
 
 // ---- what-if "after" panel -------------------------------------------------
-function whatifStat(label, valueHtml, cls) {
-  const c = el("div", "reb-stat");
-  c.innerHTML = `<span class="reb-stat-k">${esc(label)}</span><span class="reb-stat-v ${esc(cls)}">${valueHtml}</span>`;
-  return c;
-}
+const whatifStat = (label, valueHtml, cls) => statTile(label, valueHtml, { cls, html: true });
 
 function renderWhatif(wf) {
   const box = $("#reb-whatif");

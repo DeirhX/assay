@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, apiLoad, el, esc, fmtStamp } from "./core";
+import { $, apiLoad, el, esc, fmtStamp, statTile } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
@@ -105,14 +105,7 @@ function renderRisk(r) {
   }
 }
 
-function statCard(label, value, cls, title) {
-  const c = el("div", "risk-stat");
-  c.title = title || "";
-  c.innerHTML =
-    `<span class="risk-stat-k">${esc(label)}</span>` +
-    `<span class="risk-stat-v ${esc(cls)}">${esc(value)}</span>`;
-  return c;
-}
+const statCard = (label, value, cls, title) => statTile(label, value, { cls, title, family: "risk-stat" });
 
 function stressCard(s) {
   const card = el("div", "risk-stress");
