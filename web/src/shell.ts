@@ -138,7 +138,7 @@ function maybeShowSelChip() {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return hideSelChip();
   const raw = sel.toString().trim();
-  if (!/^[A-Za-z][A-Za-z.\-]{0,6}$/.test(raw)) return hideSelChip();  // ticker-shaped only
+  if (!/^[A-Za-z][A-Za-z.-]{0,6}$/.test(raw)) return hideSelChip();  // ticker-shaped only
   const node = sel.anchorNode;
   const host = node && (node.nodeType === 3 ? node.parentElement : node);
   if (!host || !host.closest(".report-doc-body, .biz-summary, .prose")) return hideSelChip();

@@ -196,9 +196,7 @@ async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
   list.innerHTML = '<div class="hint">Loading…</div>';
-  let runs = [];
-  let reports = [];
-  let segments = [];
+  let runs, reports, segments;
   try {
     [runs, reports, segments] = await Promise.all([
       api("/api/deep-runs").then((d) => d.runs || []),
@@ -372,7 +370,7 @@ async function loadAnalysis(stem, { push = true } = {}) {
     citations.forEach((c) => {
       const li = el("li", "cite");
       let host = c.href || "";
-      try { host = new URL(c.href).hostname.replace(/^www\./, ""); } catch (_e) {}
+      try { host = new URL(c.href).hostname.replace(/^www\./, ""); } catch { /* not a URL: keep raw href */ }
       const parts = String(c.label || "").split("\n").map((s) => s.trim()).filter(Boolean);
       const name = parts.find((p) => !/^https?:/i.test(p)) || host;
       const desc = parts.find((p) => !/^https?:/i.test(p) && p !== name) || "";
