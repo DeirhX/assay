@@ -16,6 +16,30 @@ import { renderViewedTickers } from "./viewed";
 // ---- location state --------------------------------------------------------
 const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "history", "setup"]);
 
+// Two-level navigation: the header exposes three top-level GROUPS, each of which
+// fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
+// the flat `view` (so deep links + history stay stable); the group is derived.
+// `segment` is intentionally absent from any sub-tab bar -- it's folded into the
+// research flow (reached via the pipeline's deterministic pull or a segment row)
+// rather than being a destination of its own. `setup` (the gear) sits outside
+// the group bar entirely.
+const VIEW_GROUP = {
+  deepdive: "deepdive",
+  analyses: "research", pipeline: "research", segment: "research",
+  holdings: "portfolio", history: "portfolio", rebalance: "portfolio", risk: "portfolio", journal: "portfolio",
+  setup: "setup",
+};
+// Which sub-tab lights up for a given view. Holdings + History are merged behind
+// one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
+const VIEW_SUBTAB = {
+  analyses: "analyses", pipeline: "pipeline",
+  holdings: "positions", history: "positions", rebalance: "rebalance", risk: "risk", journal: "journal",
+};
+const GROUP_DEFAULT = { deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+// Remember the last view visited within each group so re-clicking a group header
+// returns you where you were, not always to the group's default.
+const lastViewByGroup = { deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
 // Segment names are server slugs: lowercase alphanumerics + hyphens. Guards
@@ -86,9 +110,33 @@ function navForView(view) {
   return nav;
 }
 
+// Sync the header chrome (group buttons, sub-tab bar, positions toggle) to the
+// active view. Kept separate from data loading so navigation logic stays legible.
+function updateChrome(active) {
+  const group = VIEW_GROUP[active] || "deepdive";
+  if (lastViewByGroup[group]) lastViewByGroup[group] = active;
+
+  document.querySelectorAll(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+
+  // The sub-tab bar only exists for groups that fan out (research, portfolio).
+  const subbar = $("#subbar");
+  const groupHasSubtabs = group === "research" || group === "portfolio";
+  if (subbar) subbar.hidden = !groupHasSubtabs;
+  document.querySelectorAll(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
+  const wantSub = VIEW_SUBTAB[active];
+  document.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
+
+  // Positions (holdings + history) share a Now / Over-time toggle in-content.
+  document.querySelectorAll(".pos-toggle button").forEach((b) => {
+    const isNow = b.dataset.pos === "now";
+    b.classList.toggle("active", (isNow && active === "holdings") || (!isNow && active === "history"));
+  });
+}
+
 function setActiveView(view) {
   const active = VIEWS.has(view) ? view : "deepdive";
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $("#view-" + active).classList.add("active");
   if (active === "holdings") loadHoldings();
@@ -168,11 +216,41 @@ function maybeShowSelChip() {
 // run at import time: the core<->errors<->shell import cycle can evaluate shell
 // before core's `$`/`el`/`api` consts are initialized, throwing a TDZ error.
 function initShell() {
-  document.querySelectorAll(".tab").forEach((btn) => {
+  const goToView = (view) => {
+    pushNav(navForView(view));
+    restoreNav(navFromUrl());
+  };
+
+  // Direct view targets: the settings gear (.tab) and the secondary sub-tabs.
+  document.querySelectorAll(".tab, .subtab").forEach((btn) => {
+    btn.addEventListener("click", () => goToView(btn.dataset.view));
+  });
+
+  // Top-level group headers jump to wherever you last were in that group (or its
+  // default on first visit), giving the three-item nav some memory.
+  document.querySelectorAll(".group").forEach((btn) => {
     btn.addEventListener("click", () => {
-      pushNav(navForView(btn.dataset.view));
-      restoreNav(navFromUrl());
+      const group = btn.dataset.group;
+      goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || "deepdive");
     });
+  });
+
+  // Persistent header search: analyze any ticker from anywhere in the app.
+  const topTicker = $("#top-ticker");
+  if (topTicker) {
+    const submit = () => {
+      const sym = cleanSymbol(topTicker.value);
+      if (sym) { openTicker(sym); topTicker.value = ""; topTicker.blur(); }
+    };
+    topTicker.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  }
+
+  // Positions Now / Over-time toggle: two views (holdings, history) behind one
+  // sub-tab. Delegated so it works for the toggle in either section.
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest ? e.target.closest(".pos-toggle button") : null;
+    if (!b) return;
+    goToView(b.dataset.pos === "over" ? "history" : "holdings");
   });
 
   window.addEventListener("popstate", (event) => {
