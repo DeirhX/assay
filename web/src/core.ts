@@ -200,6 +200,68 @@ function emptyState(out: HTMLElement | null, html: string): void {
   if (out) out.innerHTML = `<div class="empty-state">${html}</div>`;
 }
 
+// A labelled KPI tile (uppercase key over a big value), shared by the rebalance,
+// journal, and risk headlines. `family` selects the CSS class set ("reb-stat" vs
+// "risk-stat") since those differ in size/affordance; `cls` colours the value
+// (good/warn/bad/muted). Pass html:true when the value is pre-built markup
+// (e.g. a sensitive() wrapper) that must not be escaped.
+interface StatTileOpts {
+  cls?: string;
+  title?: string;
+  html?: boolean;
+  family?: string;
+}
+
+function statTile(label: string, value: string, opts: StatTileOpts = {}): HTMLElement {
+  const family = opts.family || "reb-stat";
+  const c = el("div", family);
+  if (opts.title) c.title = opts.title;
+  const valHtml = opts.html ? value : esc(value);
+  c.innerHTML =
+    `<span class="${family}-k">${esc(label)}</span>` +
+    `<span class="${family}-v ${esc(opts.cls || "")}">${valHtml}</span>`;
+  return c;
+}
+
+// A plain panel: a `.card` with a `.section` heading, content appended by the
+// caller. `extra` adds further classes to the card (e.g. "biz-card"). `title` is
+// inserted as-is (callers pass esc()'d text when it's dynamic), matching the
+// hand-rolled sites this replaces. Cards with a toolbar/button beside the title
+// (analysis-head) or a collapsible body keep their own builders -- they're a
+// different shape, not this one.
+function sectionCard(title: string, extra = ""): HTMLElement {
+  const card = el("div", extra ? "card " + extra : "card");
+  card.appendChild(el("h2", "section", title));
+  return card;
+}
+
+// A non-sortable HTML table: a <thead> from a fixed header row plus a <tbody>
+// whose rows come from `cells(item)` (returns the row's inner HTML). `onRow` is
+// the escape hatch for rows that need imperative DOM (e.g. a delete button with
+// a listener) appended after the string cells. The sortable segment peer table
+// is deliberately not built on this -- its column/sort machinery is richer.
+interface SimpleTableOpts<T> {
+  className?: string;
+  head: string;
+  rows: T[];
+  cells: (item: T, index: number) => string;
+  onRow?: (tr: HTMLTableRowElement, item: T, index: number) => void;
+}
+
+function simpleTable<T>(o: SimpleTableOpts<T>): HTMLTableElement {
+  const tbl = el("table", o.className);
+  tbl.innerHTML = `<thead>${o.head}</thead>`;
+  const body = el("tbody");
+  o.rows.forEach((item, i) => {
+    const tr = el("tr");
+    tr.innerHTML = o.cells(item, i);
+    if (o.onRow) o.onRow(tr, item, i);
+    body.appendChild(tr);
+  });
+  tbl.appendChild(body);
+  return tbl;
+}
+
 interface ApiLoadOpts<T> {
   path: string;
   render: (data: T) => void;
@@ -257,6 +319,9 @@ export {
   setLoading,
   loadError,
   emptyState,
+  statTile,
+  sectionCard,
+  simpleTable,
   apiLoad,
 };
-export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts };
+export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts, SimpleTableOpts };

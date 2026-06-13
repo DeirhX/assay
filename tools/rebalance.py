@@ -36,18 +36,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- single source of truth for position weights
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
-TARGET_MODEL_JSON = REPO_ROOT / "data" / "target-model.json"
+from hygiene import SEV_RANK  # noqa: E402  -- shared severity rank
+from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON  # noqa: E402  -- canonical data paths
 
 EPS = 0.01  # weights are 2-decimal percents; tolerate rounding noise
 COVERAGE_WARN_PCT = 1.0  # an untargeted held name at/above this size is a real gap, not a stub
 
 VALID_RULES = {"accumulate", "trim_only", "do_not_add", "reduce", "hold", "wait", "avoid"}
 NO_BUY_RULES = {"trim_only", "do_not_add", "reduce", "avoid"}
-
-SEV_ORDER = {"ERROR": 0, "WARN": 1, "INFO": 2}
 
 
 class Finding:
@@ -434,7 +430,7 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
 
 
 def report(findings: list[Finding], strict: bool) -> int:
-    findings.sort(key=lambda f: (SEV_ORDER.get(f.severity, 9), f.area))
+    findings.sort(key=lambda f: (SEV_RANK.get(f.severity, 9), f.area))
     for f in findings:
         print(f"[{f.severity}] {f.area}: {f.message}")
     errors = sum(1 for f in findings if f.severity == "ERROR")

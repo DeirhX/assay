@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive, simpleTable, statTile } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -285,11 +285,7 @@ function renderRebalance(plan) {
 }
 
 // ---- what-if "after" panel -------------------------------------------------
-function whatifStat(label, valueHtml, cls) {
-  const c = el("div", "reb-stat");
-  c.innerHTML = `<span class="reb-stat-k">${esc(label)}</span><span class="reb-stat-v ${esc(cls)}">${valueHtml}</span>`;
-  return c;
-}
+const whatifStat = (label, valueHtml, cls) => statTile(label, valueHtml, { cls, html: true });
 
 function renderWhatif(wf) {
   const box = $("#reb-whatif");
@@ -317,23 +313,20 @@ function renderWhatif(wf) {
 
   const afterRows = {};
   ((wf.after && wf.after.rows) || []).forEach((r) => { if (r.kind === "target") afterRows[r.name] = r; });
-  const tbl = el("table", "whatif-table");
-  tbl.innerHTML = `<thead><tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr></thead>`;
-  const body = el("tbody");
-  wf.trades.forEach((t) => {
-    const ar = afterRows[t.symbol];
-    const before = (wf.before_status && wf.before_status[t.symbol]) || "\u2014";
-    const tr = el("tr");
-    tr.innerHTML =
-      `<td>${esc(t.symbol)}</td>` +
-      `<td class="num">${sensitive(`${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`, "trade size")}</td>` +
-      `<td><span class="chip ${rebStatusClass(before)}">${esc(before)}</span></td>` +
-      `<td>${ar ? `<span class="chip ${rebStatusClass(ar.status)}">${esc(ar.status)}</span>` : "\u2014"}</td>` +
-      `<td class="num">${ar ? ar.current_pct.toFixed(2) + "%" : "\u2014"}</td>`;
-    body.appendChild(tr);
-  });
-  tbl.appendChild(body);
-  card.appendChild(tbl);
+  card.appendChild(simpleTable({
+    className: "whatif-table",
+    head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr>`,
+    rows: wf.trades,
+    cells: (t) => {
+      const ar = afterRows[t.symbol];
+      const before = (wf.before_status && wf.before_status[t.symbol]) || "\u2014";
+      return `<td>${esc(t.symbol)}</td>` +
+        `<td class="num">${sensitive(`${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`, "trade size")}</td>` +
+        `<td><span class="chip ${rebStatusClass(before)}">${esc(before)}</span></td>` +
+        `<td>${ar ? `<span class="chip ${rebStatusClass(ar.status)}">${esc(ar.status)}</span>` : "\u2014"}</td>` +
+        `<td class="num">${ar ? ar.current_pct.toFixed(2) + "%" : "\u2014"}</td>`;
+    },
+  }));
 
   const tt = wf.tax && wf.tax.totals;
   if (tt && (tt.proceeds || tt.taxable_gain || tt.exempt_proceeds || tt.harvestable_loss)) {

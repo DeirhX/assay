@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive, statTile } from "./core";
 
 // ---- decision journal + calibration ----------------------------------------
 const correctClass = (c) => (c === true ? "good" : c === false ? "bad" : "muted");
@@ -111,12 +111,7 @@ function entryCard(e, scored) {
   return card;
 }
 
-function jStat(label, value, cls, title) {
-  const c = el("div", "reb-stat");
-  c.title = title || "";
-  c.innerHTML = `<span class="reb-stat-k">${esc(label)}</span><span class="reb-stat-v ${esc(cls)}">${esc(value)}</span>`;
-  return c;
-}
+const jStat = (label, value, cls, title) => statTile(label, value, { cls, title });
 
 function initJournalControls() {
   const add = $("#jrnl-add");

@@ -456,7 +456,7 @@ def _main() -> int:
     args = parser.parse_args()
 
     portfolio.require_data()
-    holdings = store.load(REPO_ROOT / "data" / "current-holdings.json")
+    holdings = store.load(portfolio.HOLDINGS_JSON)
     if not holdings:
         raise SystemExit("no holdings snapshot — sync from IBKR first")
     print(json.dumps(risk_report(holdings, rng=args.range), indent=2))

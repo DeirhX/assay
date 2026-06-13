@@ -447,19 +447,22 @@ async function loadAnalysis(stem, { push = true } = {}) {
 // Continuable follow-up Q&A about a Deep Research run. The thread is archived
 // server-side (next to the run artifacts) so it survives reloads. Mirrors the
 // per-ticker Q&A card but grounds the model in the report + its citations.
-function renderDeepQaCard(stem, title) {
+// Shared archive-and-continue Q&A card used by both the per-ticker dossier and
+// the Deep Research reader. The shell (collapsible thread, ask/cancel form,
+// background-job polling, clear-with-confirm) is identical; callers pass the copy
+// and the three endpoints the turns live behind, plus optional per-turn meta,
+// token-usage HTML, and a pre-render hook (e.g. loading the ticker set).
+function createQaCard(opts) {
   const card = el("div", "card qa-card");
   const head = el("div", "analysis-head");
-  head.appendChild(el("h2", "section", "Ask about this report"));
+  head.appendChild(el("h2", "section", esc(opts.title)));
   const clearBtn = el("button", "ghost", "Clear thread");
   clearBtn.type = "button";
   clearBtn.title = "Discard the archived Q&A and start fresh";
   head.appendChild(clearBtn);
   card.appendChild(head);
 
-  const emptyHint = el("p", "hint",
-    "No questions yet. Ask anything about the report \u2014 a company's positioning, a claim worth " +
-    "verifying, or how a name fits your portfolio. The thread is archived so you can pick it up later.");
+  const emptyHint = el("p", "hint", opts.emptyHint);
   const threadWrap = el("details", "qa-collapse");
   threadWrap.open = true;
   const threadSummary = el("summary", "qa-collapse-head collapse-head");
@@ -470,7 +473,7 @@ function renderDeepQaCard(stem, title) {
   const form = el("div", "qa-form");
   const input = el("textarea", "qa-input");
   input.rows = 2;
-  input.placeholder = `Ask a follow-up about "${title}" \u2014 grounded in the report above. Ctrl/\u2318+Enter to send.`;
+  input.placeholder = opts.placeholder;
   const askBtn = el("button", "primary", "Ask");
   askBtn.type = "button";
   form.appendChild(input);
@@ -504,12 +507,14 @@ function renderDeepQaCard(stem, title) {
         thread.appendChild(q);
       } else {
         const a = el("div", "qa-turn qa-a");
-        const meta = [t.backend_label, t.ts ? relAge(t.ts) : null].filter(Boolean).map(esc).join(" \u00b7 ");
+        const meta = (opts.turnMeta ? opts.turnMeta(t) : []).filter(Boolean).map(esc).join(" \u00b7 ");
         a.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
         const prose = el("div", "prose qa-prose");
         prose.innerHTML = mdToHtml(t.text || "");
         linkifyTickers(prose);
         a.appendChild(prose);
+        const usage = opts.usageHtml ? opts.usageHtml(t) : "";
+        if (usage) a.insertAdjacentHTML("beforeend", usage);
         thread.appendChild(a);
       }
     });
@@ -517,8 +522,9 @@ function renderDeepQaCard(stem, title) {
 
   async function load() {
     let data;
-    try { data = await api("/api/deep-qa?stem=" + encodeURIComponent(stem)); }
+    try { data = await opts.loadThread(); }
     catch (_e) { data = { turns: [] }; }
+    if (opts.prepare) await opts.prepare();
     renderThread(data.turns || []);
   }
 
@@ -549,13 +555,13 @@ function renderDeepQaCard(stem, title) {
     status.classList.remove("err");
     status.innerHTML = `<span class="spinner"></span> thinking&hellip;`;
     try {
-      const start = await api("/api/deep-qa", "POST", { stem, question: q });
+      const start = await opts.postQuestion(q);
       currentJobId = start.id;
       await pollDeepJob(start.id, status, async () => {
         status.textContent = "";
         input.value = "";
         await load();
-      }, `Q&A \u00b7 ${stem}`);
+      }, opts.pollLabel);
     } catch (e) {
       status.classList.add("err");
       status.textContent = "question failed: " + e.message;
@@ -564,6 +570,9 @@ function renderDeepQaCard(stem, title) {
     }
   }
 
+  // Cancel the in-flight question (kills the CLI subprocess server-side). The
+  // poll loop observes the cancelled state on its next tick and winds down,
+  // re-enabling the Ask button so a different question can be asked.
   async function cancelAsk() {
     if (!currentJobId) return;
     status.classList.remove("err");
@@ -578,9 +587,9 @@ function renderDeepQaCard(stem, title) {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); if (!busy) ask(); }
   });
   clearBtn.addEventListener("click", async () => {
-    if (!confirm("Clear the archived Q&A thread for this report?")) return;
+    if (!confirm(opts.confirmMsg)) return;
     try {
-      const data = await api("/api/deep-qa", "POST", { stem, clear: true });
+      const data = await opts.clearThread();
       renderThread(data.turns || []);
     } catch (e) {
       status.classList.add("err");
@@ -590,6 +599,22 @@ function renderDeepQaCard(stem, title) {
 
   load();
   return card;
+}
+
+function renderDeepQaCard(stem, title) {
+  return createQaCard({
+    title: "Ask about this report",
+    emptyHint:
+      "No questions yet. Ask anything about the report \u2014 a company's positioning, a claim worth " +
+      "verifying, or how a name fits your portfolio. The thread is archived so you can pick it up later.",
+    placeholder: `Ask a follow-up about "${title}" \u2014 grounded in the report above. Ctrl/\u2318+Enter to send.`,
+    pollLabel: `Q&A \u00b7 ${stem}`,
+    confirmMsg: "Clear the archived Q&A thread for this report?",
+    loadThread: () => api("/api/deep-qa?stem=" + encodeURIComponent(stem)),
+    postQuestion: (q) => api("/api/deep-qa", "POST", { stem, question: q }),
+    clearThread: () => api("/api/deep-qa", "POST", { stem, clear: true }),
+    turnMeta: (t) => [t.backend_label, t.ts ? relAge(t.ts) : null],
+  });
 }
 
 export {
@@ -604,6 +629,7 @@ export {
   analysisBadges,
   markActiveAnalysis,
   synthBox,
+  createQaCard,
   startPipeline,
   openRunInAnalyses,
   loadAnalyses,

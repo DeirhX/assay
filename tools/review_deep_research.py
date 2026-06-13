@@ -25,7 +25,8 @@ import sys
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from portfolio import holdings_weights  # noqa: E402  -- single source of truth for weights
+from hygiene import worst_severity  # noqa: E402  -- shared severity reducer
+from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON, holdings_weights  # noqa: E402
 from store import load as load_json, write_json  # noqa: E402  -- shared forgiving JSON IO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -33,8 +34,6 @@ DATA_DIR = REPO_ROOT / "data"
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 RESEARCH_DIR = DATA_DIR / "research"
 DEEP_DIR = RESEARCH_DIR / "deep"
-HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
-TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 
 SOURCE_BUCKETS = {
     "primary_ir": [
@@ -72,7 +71,6 @@ SOURCE_BUCKETS = {
     ],
 }
 
-SEV_RANK = {"ERROR": 0, "WARN": 1, "INFO": 2}
 # Review-gate tiers: BLOCK halts an apply, WARN needs a deliberate decision, FYI
 # is hygiene. ERROR-level deterministic data maps to BLOCK.
 LEVEL_RANK = {"BLOCK": 0, "WARN": 1, "FYI": 2}
@@ -138,12 +136,6 @@ def current_weights(holdings: dict[str, Any]) -> dict[str, float]:
     """Single source of truth: see portfolio.holdings_weights (market value over
     invested book). Do not read the broker's notional-poisoned percent_of_nav."""
     return holdings_weights(holdings)
-
-
-def worst_severity(checks: list[dict[str, str]]) -> str:
-    if not checks:
-        return "INFO"
-    return min((c.get("severity", "INFO") for c in checks), key=lambda s: SEV_RANK.get(s, 9))
 
 
 def metric_display(rec: dict[str, Any], key: str) -> str:

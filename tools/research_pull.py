@@ -27,6 +27,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import decision_label, holdings_weights, portfolio_context  # noqa: E402
+from hygiene import rel_diff as _rel, worst_severity as _worst_severity  # noqa: E402
 from store import load as _load, write_json as _store_write_json  # noqa: E402
 from providers import fmp, sec_edgar, yahoo  # noqa: E402
 from providers.common import (  # noqa: E402
@@ -65,10 +66,6 @@ PRICE_TOL = 0.03
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-
-
-def _rel(a: float, b: float) -> float:
-    return float("inf") if b == 0 else abs(a - b) / abs(b)
 
 
 def _val(node: dict[str, Any] | None) -> float | None:
@@ -362,13 +359,6 @@ def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
     if write:
         _write(SEGMENT_OUT_DIR / f"{name}.json", record)
     return record
-
-
-def _worst_severity(checks: list[dict[str, str]]) -> str:
-    order = {"ERROR": 0, "WARN": 1, "INFO": 2}
-    if not checks:
-        return "INFO"
-    return min((c["severity"] for c in checks), key=lambda s: order.get(s, 9))
 
 
 def _research_score(rec: dict[str, Any], worst: str) -> int:
