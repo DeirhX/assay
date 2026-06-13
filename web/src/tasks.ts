@@ -1,15 +1,15 @@
-// @ts-nocheck
-import { $, el, esc } from "./core";
+import { el, esc } from "./core";
 
 // ---- Global "task running" pill --------------------------------------------
 // A page-level affordance so a long LLM job (analysis, Q&A, deep research) is
 // visible even when the originating card is scrolled off screen. Driven by the
 // shared pollDeepJob loop; multiple concurrent jobs collapse into one pill with
 // a "+N" badge for the rest.
-const activeTasks = new Map(); // jobId -> { label, message }
-let _pillEl = null;
+interface TaskInfo { label: string; message: string; }
+const activeTasks = new Map<string, TaskInfo>(); // jobId -> { label, message }
+let _pillEl: HTMLElement | null = null;
 
-function ensureTaskPill() {
+function ensureTaskPill(): HTMLElement {
   if (_pillEl) return _pillEl;
   _pillEl = el("div", "global-pill");
   _pillEl.hidden = true;
@@ -33,12 +33,12 @@ function renderTaskPill() {
     `<span class="spinner"></span><span class="global-pill-text">${esc(label)}</span>${more}`;
 }
 
-function taskStart(id, label) { activeTasks.set(id, { label, message: "" }); renderTaskPill(); }
-function taskUpdate(id, message) {
+function taskStart(id: string, label: string) { activeTasks.set(id, { label, message: "" }); renderTaskPill(); }
+function taskUpdate(id: string, message: string) {
   const t = activeTasks.get(id);
   if (t) { t.message = message || ""; renderTaskPill(); }
 }
-function taskEnd(id) { activeTasks.delete(id); renderTaskPill(); }
+function taskEnd(id: string) { activeTasks.delete(id); renderTaskPill(); }
 
 export {
   activeTasks,

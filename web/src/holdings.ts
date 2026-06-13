@@ -1,4 +1,4 @@
-// @ts-nocheck
+import type { HoldingPosition, HoldingsPayload } from "./api-types";
 import { $, api, el, esc, fmtStamp, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./rebalance";
 
@@ -8,7 +8,7 @@ async function loadHoldings() {
   const out = $("#hold-result");
   status.textContent = "Loading portfolio snapshot...";
   try {
-    const h = await api("/api/holdings");
+    const h = await api<HoldingsPayload>("/api/holdings");
     state.nav = h.net_asset_value;
     state.holdings = {};
     (h.positions || []).forEach((p) => {
@@ -100,7 +100,7 @@ async function loadHoldings() {
   }
 }
 
-function isResearchableHolding(position) {
+function isResearchableHolding(position: HoldingPosition) {
   if (position.researchable === false) return false;
   if (position.asset_class === "OPT") return false;
   const symbol = String(position.symbol || "").toUpperCase();

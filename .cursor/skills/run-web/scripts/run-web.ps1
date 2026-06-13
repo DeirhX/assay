@@ -33,7 +33,8 @@ if (-not $root) { throw "Could not find repo root (package.json) above $PSScript
 Set-Location $root
 Write-Host "Repo root: $root" -ForegroundColor DarkGray
 
-# --- Kill stale dev processes (the serve.py hot-reload does not rebind the port) ---
+# --- Kill stale dev processes (a previous run's reload supervisor + child both
+#     linger and hold port 6060 otherwise) ---
 function Stop-WebProcs {
     foreach ($p in @(
             @{ Name = 'python.exe'; Match = '*serve.py*' },
@@ -67,6 +68,7 @@ if (Get-Command py -ErrorAction SilentlyContinue) {
     $py = 'py'
     $pyArgs = @('-3', 'tools/serve.py')
 }
+$pyArgs += @('--port', "$ApiPort")
 
 if ($Mode -eq 'prod') {
     Write-Host "Building SPA (prod)..." -ForegroundColor Cyan
@@ -76,9 +78,13 @@ if ($Mode -eq 'prod') {
     return
 }
 
-# --- dev: backend in background, Vite in foreground; tear down backend on exit ---
-Write-Host "Starting API backend (serve.py) on :$ApiPort ..." -ForegroundColor Cyan
-$backend = Start-Process -FilePath $py -ArgumentList $pyArgs -PassThru -NoNewWindow
+# --- dev: backend in background, Vite in foreground; tear down backend on exit.
+#     --reload runs serve.py under its supervisor: editing tools/*.py auto-
+#     restarts the API in place (syntax-checked first), and asset edits trigger
+#     a browser live-reload -- so the web picks up both halves automatically. ---
+$devArgs = $pyArgs + '--reload'
+Write-Host "Starting API backend (serve.py --reload) on :$ApiPort ..." -ForegroundColor Cyan
+$backend = Start-Process -FilePath $py -ArgumentList $devArgs -PassThru -NoNewWindow
 Start-Sleep -Seconds 2
 if ($backend.HasExited) {
     throw "serve.py exited immediately (exit $($backend.ExitCode)). Check the output above."

@@ -142,7 +142,7 @@ function maybeShowSelChip() {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return hideSelChip();
   const raw = sel.toString().trim();
-  if (!/^[A-Za-z][A-Za-z.\-]{0,6}$/.test(raw)) return hideSelChip();  // ticker-shaped only
+  if (!/^[A-Za-z][A-Za-z.-]{0,6}$/.test(raw)) return hideSelChip();  // ticker-shaped only
   const node = sel.anchorNode;
   const host = node && (node.nodeType === 3 ? node.parentElement : node);
   if (!host || !host.closest(".report-doc-body, .biz-summary, .prose")) return hideSelChip();
@@ -191,6 +191,17 @@ function initShell() {
   });
 
   document.addEventListener("mouseup", () => setTimeout(maybeShowSelChip, 0));
+
+  // Publish the (variable) sticky topbar height as --topbar-h so sticky elements
+  // below it (e.g. the deep-dive back bar) can pin flush without magic numbers.
+  const topbar = document.querySelector("header.topbar");
+  if (topbar) {
+    const syncTopbarH = () =>
+      document.documentElement.style.setProperty("--topbar-h", topbar.offsetHeight + "px");
+    syncTopbarH();
+    window.addEventListener("resize", syncTopbarH);
+    if (window.ResizeObserver) new ResizeObserver(syncTopbarH).observe(topbar);
+  }
   document.addEventListener("keyup", (e) => { if (e.shiftKey || e.key === "Shift") setTimeout(maybeShowSelChip, 0); });
   document.addEventListener("scroll", hideSelChip, true);
   window.addEventListener("resize", hideSelChip);

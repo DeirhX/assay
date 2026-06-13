@@ -15,7 +15,13 @@ Launches both halves of the app together: the stdlib Python API
 pwsh .cursor/skills/run-web/scripts/run-web.ps1
 ```
 
-Then open http://localhost:5173. Edits under `web/src/` hot-reload.
+Then open http://localhost:5173. Both halves pick up changes automatically:
+
+- **Frontend** (`web/src/`, CSS): Vite HMR, instant.
+- **Backend** (`tools/*.py`): the script runs `serve.py --reload`, whose
+  supervisor auto-restarts the API in place on every Python edit. It
+  syntax-checks the file first (a broken edit keeps the last good version
+  serving) and defers the restart while a Deep Research job is in flight.
 
 The script kills any stale `serve.py` / `vite` first (avoids the recurring
 port-6060 zombie), installs npm deps if `node_modules` is missing, then runs
@@ -30,8 +36,10 @@ the backend and frontend together. `Ctrl+C` stops both.
 
 ## Gotchas
 
-- **Python edits do not hot-reload.** After changing `tools/*.py`, re-run the
-  script (or restart `serve.py`); its auto-reload does not rebind the port.
+- Python auto-restart only happens in `dev` mode (it passes `--reload`). In
+  `prod` mode you must re-run the script after `tools/*.py` edits.
+- A reload restart drops in-flight non-deep-research requests; the browser just
+  retries on the next poll. Deep Research jobs are protected (restart deferred).
 - The backend binds `127.0.0.1` only — never expose it.
 - `SEC_USER_AGENT` defaults to a local-dev string if unset; override it with
   your own contact info for polite SEC EDGAR requests.

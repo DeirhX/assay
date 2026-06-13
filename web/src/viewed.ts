@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, el, esc } from "./core";
 import { detectStance } from "./deepdive";
 import { openTicker } from "./rebalance";
@@ -7,6 +6,18 @@ import { cleanSymbol } from "./shell";
 // ---- viewed tickers (browser-local recents) -------------------------------
 const VIEWED_KEY = "rebal.viewedTickers";
 let _viewedSort = "time";  // "time" | "name"
+
+// Merge of the server's /api/ticker-index rows and browser-local recents; every
+// field is optional because a row may come from either source alone.
+interface ViewedRow {
+  symbol: string;
+  name?: string;
+  as_of?: string | null;
+  analyzed_at?: string | null;
+  has_analysis?: boolean;
+  last_viewed?: string;
+  verdict?: string;
+}
 
 function getViewedMap() {
   try { return JSON.parse(localStorage.getItem(VIEWED_KEY) || "{}"); } catch (_e) { return {}; }
@@ -53,7 +64,7 @@ async function renderViewedTickers() {
   let server = [];
   try { server = (await api("/api/ticker-index")).tickers || []; } catch (_e) { /* offline: local only */ }
   const viewed = getViewedMap();
-  const bySym = {};
+  const bySym: Record<string, ViewedRow> = {};
   server.forEach((r) => { bySym[r.symbol] = { ...r }; });
   Object.keys(viewed).forEach((sym) => {
     const row = bySym[sym] || (bySym[sym] = { symbol: sym, name: "", as_of: null, analyzed_at: null, has_analysis: false });

@@ -118,7 +118,7 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 2px 18px; }
 
 .settings-panel {
-  position: sticky; top: 64px; z-index: 9;
+  position: sticky; top: var(--topbar-h, 64px); z-index: 9;
   width: min(420px, calc(100% - 44px));
   margin: 10px 22px 0 auto;
   background: var(--panel); border: 1px solid var(--border);
@@ -153,7 +153,7 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
 .error-indicator:hover { border-color: var(--bad); background: rgba(255, 122, 122, 0.22); }
 .error-indicator[hidden] { display: none; }
 .error-panel {
-  position: sticky; top: 64px; z-index: 9;
+  position: sticky; top: var(--topbar-h, 64px); z-index: 9;
   width: min(460px, calc(100% - 44px));
   margin: 10px 22px 0 auto;
   background: var(--panel); border: 1px solid rgba(255, 122, 122, 0.45);
@@ -330,6 +330,14 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 .setup-advanced > summary::-webkit-details-marker { display: none; }
 .setup-advanced > summary::before { content: "▸ "; font-size: 11px; }
 .setup-advanced[open] > summary::before { content: "▾ "; }
+/* Sticky "back to overview" bar: stays pinned just under the top tabs so the
+   way out of a long dossier is always visible, not just at the top. */
+.dd-backbar {
+  position: sticky; top: var(--topbar-h, 64px); z-index: 9;
+  margin: -8px 0 12px; padding: 8px 0;
+  background: rgba(15, 17, 21, 0.92); backdrop-filter: blur(8px);
+}
+.dd-back { height: 32px; padding: 0 14px; font-size: 13px; }
 .dd-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .dd-head .sym { font-size: 30px; font-weight: 800; }
 .dd-head .name { color: var(--muted); font-size: 16px; }
@@ -955,6 +963,9 @@ a.tlink:hover { border-bottom-style: solid; }
   background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft);
   color: var(--text); padding: 10px 12px; font-size: 14px; line-height: 1.5;
 }
+/* Keep the prompt hint quiet so the input box itself reads as the primary
+   element rather than the attract text competing with it. */
+.qa-input::placeholder { color: var(--muted); opacity: .5; }
 .qa-form button { flex: 0 0 auto; }
 
 /* ---- generic modal (analysis backend config) --------------------------- */

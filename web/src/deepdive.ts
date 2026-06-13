@@ -8,12 +8,26 @@ import { recordView, relTime, renderViewedTickers } from "./viewed";
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
 $("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker($("#ticker-input").value); });
-$("#ticker-recent").addEventListener("click", () => {
+// Return to the viewed-tickers overview (the deep-dive landing list).
+function goToOverview() {
   $("#ticker-input").value = "";
   pushNav({ view: "deepdive", ticker: "" });
   setActiveView("deepdive");
   renderViewedTickers();
-});
+}
+
+// Sticky "back to overview" bar. The single way back to the viewed-tickers list
+// from any dossier state (loaded dossier OR a no-market-data card), so it stays
+// one click away even after scrolling. Replaces the old search-bar button.
+function overviewBackBar() {
+  const backBar = el("div", "dd-backbar");
+  const back = el("button", "ghost dd-back", "\u2190 All tickers");
+  back.type = "button";
+  back.title = "Back to your viewed tickers";
+  back.addEventListener("click", goToOverview);
+  backBar.appendChild(back);
+  return backBar;
+}
 
 const EXCHANGE_SUFFIXES = [".L", ".AS", ".DE", ".PA", ".BR", ".SW", ".HK", ".TO", ".PR"];
 
@@ -43,6 +57,7 @@ function renderNoMarketData(rec) {
   const provider = rec?.provider_symbol || rec?.symbol || sym;
   const out = $("#dd-result");
   out.innerHTML = "";
+  out.appendChild(overviewBackBar());
   const card = el("div", "card empty-ticker");
   const errors = rec?.provider_errors || rec?.errors || rec?.error;
   const detail = Array.isArray(errors)
@@ -145,7 +160,7 @@ async function loadTickerFromCache(raw) {
     } else {
       renderNoMarketData(rec);
     }
-  } catch (e) {
+  } catch {
     status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
     const out = $("#dd-result");
@@ -207,6 +222,8 @@ function renderDeepDive(rec) {
   recordView(rec.symbol, rec.name);
   const out = $("#dd-result");
   out.innerHTML = "";
+  out.appendChild(overviewBackBar());
+
   const price = rec.price ? rec.price.value : null;
   const portfolio = rec.portfolio || {};
   const target = portfolio.target || {};
@@ -403,16 +420,39 @@ function renderAnalysisCard(rec) {
   card.appendChild(status);
   card.appendChild(body);
 
+  function renderRetry(refresh) {
+    // The job died (bad response / timeout / lost). Leave the error in `status`
+    // and give the user a way to run it again instead of a dead-end card.
+    body.innerHTML = "";
+    body.appendChild(el("p", "hint",
+      "The analysis didn't finish. Backends fall back automatically " +
+      "(Cursor, then Claude) \u2014 you can just run it again."));
+    const actions = el("div", "analysis-actions");
+    const retry = el("button", "primary", "\u21bb Try again");
+    retry.type = "button";
+    retry.addEventListener("click", () => run(refresh));
+    actions.appendChild(retry);
+    if (!refresh) {
+      const reFresh = el("button", "ghost", "\u21bb Refresh data + analyse");
+      reFresh.type = "button";
+      reFresh.addEventListener("click", () => run(true));
+      actions.appendChild(reFresh);
+    }
+    body.appendChild(actions);
+  }
+
   async function run(refresh) {
     status.classList.remove("err");
     status.innerHTML = `<span class="spinner"></span> starting&hellip;`;
     body.innerHTML = "";
     try {
       const start = await api("/api/analyze/" + encodeURIComponent(sym), "POST", { refresh: !!refresh });
-      await pollDeepJob(start.id, status, async () => { await show(); }, `Analyzing ${sym}`);
+      await pollDeepJob(start.id, status, async () => { await show(); }, `Analyzing ${sym}`,
+        () => renderRetry(refresh));
     } catch (e) {
       status.classList.add("err");
       status.textContent = "analysis failed: " + e.message;
+      renderRetry(refresh);
     }
   }
 

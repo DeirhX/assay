@@ -266,7 +266,7 @@ function renderRebalance(plan) {
     simBtn.onclick = async () => {
       const trades = [];
       cells.forEach(({ r, input }) => {
-        let d = parseFloat(input.value);
+        const d = parseFloat(input.value);
         if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
         const czk = pctToCzk(d, base);
         if (czk == null || czk === 0) return;

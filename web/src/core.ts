@@ -57,12 +57,18 @@ const state: AppState = {
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document): T | null =>
   root.querySelector<T>(sel);
 
-const el = (tag: string, cls?: string, html?: string): HTMLElement => {
+// Overloaded so a literal tag ("button", "a", ...) yields the precise element
+// type (HTMLButtonElement, HTMLAnchorElement, ...) and call sites can touch
+// tag-specific props without a cast; a dynamic string tag falls back to
+// HTMLElement.
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string): HTMLElementTagNameMap[K];
+function el(tag: string, cls?: string, html?: string): HTMLElement;
+function el(tag: string, cls?: string, html?: string): HTMLElement {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (html != null) n.innerHTML = html;
   return n;
-};
+}
 
 const ESC_MAP: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 const esc = (s: unknown): string => String(s ?? "").replace(/[&<>"]/g, (c) => ESC_MAP[c]);
@@ -130,7 +136,10 @@ function applyPrivacyMode(on: boolean): void {
 // _recorded so the global handler doesn't double-count what api() already logged).
 type AppError = Error & { _recorded?: unknown; status?: number };
 
-async function api(path: string, method: string = "GET", body: unknown = null): Promise<any> {
+// Generic so typed call sites can pin a response shape from ./api-types, e.g.
+// `await api<HoldingsPayload>("/api/holdings")`. Defaults to any, so the many
+// still-untyped (@ts-nocheck) callers are unaffected.
+async function api<T = any>(path: string, method: string = "GET", body: unknown = null): Promise<T> {
   const opt: RequestInit = { method, headers: {} };
   if (body) {
     (opt.headers as Record<string, string>)["Content-Type"] = "application/json";

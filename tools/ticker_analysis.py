@@ -701,15 +701,16 @@ def _finish(pid: str, provider: dict, proc: subprocess.CompletedProcess) -> dict
 
 
 _RUNNERS: dict[str, Callable[..., dict]] = {"claude": _run_claude, "cursor": _run_cursor}
-_PROVIDER_ORDER = {"claude": 0, "cursor": 1}
+_PROVIDER_ORDER = {"cursor": 0, "claude": 1}
 
 
 def _ordered_providers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Canonical backend preference: Claude first, Cursor as fallback.
+    """Canonical backend preference: Cursor first, Claude as fallback.
 
-    The setup UI writes providers in this order, but config files are editable.
-    Keep the runtime policy explicit so Cursor only runs after Claude is
-    unavailable, not because a hand-edited config accidentally swapped entries.
+    The order is enforced here (via _PROVIDER_ORDER) rather than trusting the
+    config file's array order, so the default engine is deterministic and a
+    hand-edited config can't accidentally change which backend leads. Note: this
+    governs the in-depth/Q&A analyses only -- deep research has its own engine.
     """
     providers = [p for p in (cfg.get("providers") or []) if p.get("id") in _RUNNERS]
     return sorted(providers, key=lambda p: _PROVIDER_ORDER.get(p.get("id"), 99))
