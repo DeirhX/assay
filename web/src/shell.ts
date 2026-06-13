@@ -2,7 +2,7 @@
 import { loadAnalyses, startPipeline } from "./analyses";
 import { $, api, applyPrivacyMode, el, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
-import { loadDeepRun } from "./errors";
+import { loadDeepRun, pollDeepJob } from "./errors";
 import { loadHoldings } from "./holdings";
 import { initJournalControls, loadJournal } from "./journal";
 import { loadPipeline, setPipeStep } from "./pipeline";
@@ -212,15 +212,20 @@ function initShell() {
   $("#hold-sync").addEventListener("click", async () => {
     const btn = $("#hold-sync");
     const status = $("#hold-status");
+    if (btn.disabled) return;
     const prev = btn.textContent;
     btn.disabled = true;
     btn.textContent = "Syncing…";
     status.classList.remove("err");
-    status.textContent = "Re-pulling portfolio from IBKR (read-only, can take a minute)…";
+    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
     try {
-      const res = await api("/api/holdings/sync", "POST", {});
-      await loadHoldings();
-      status.textContent = "Synced. " + planMsg(res && res.site);
+      // The sync now runs as a registered background job: start it, then poll the
+      // shared job loop so it survives navigation and shows in the global pill.
+      const job = await api("/api/holdings/sync", "POST", {});
+      await pollDeepJob(job.id, status, async (done) => {
+        await loadHoldings();
+        status.textContent = "Synced. " + planMsg(done.result && done.result.site);
+      }, "IBKR sync");
     } catch (e) {
       status.textContent = "Sync failed: " + e.message;
       status.classList.add("err");

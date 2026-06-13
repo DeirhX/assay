@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { $, api, el, esc } from "./core";
+import { pollDeepJob } from "./errors";
 
 let _wired = false;
 
@@ -561,13 +562,18 @@ async function syncIbkr() {
   const prev = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Syncing…";
-  status.textContent = "Re-pulling portfolio from IBKR (read-only, can take a minute)…";
+  status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
   try {
-    await api("/api/holdings/sync", "POST", {});
-    await loadSetup(); // re-renders with the fresh snapshot badge + position count
+    // Registered background job: start it and poll the shared loop (also surfaces
+    // in the global task pill) instead of blocking the request for a minute.
+    const job = await api("/api/holdings/sync", "POST", {});
+    await pollDeepJob(job.id, status, async () => {
+      await loadSetup(); // re-renders with the fresh snapshot badge + position count
+    }, "IBKR sync");
   } catch (e) {
     status.classList.add("err");
     status.textContent = "Sync failed: " + e.message;
+  } finally {
     btn.disabled = false;
     btn.textContent = prev;
   }
