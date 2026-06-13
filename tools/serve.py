@@ -910,13 +910,20 @@ def _save_ibkr_secrets(body: dict) -> dict:
     return _ibkr_status()
 
 
-def _sync_holdings() -> dict:
+def _sync_holdings(progress=None) -> dict:
     """Re-pull the portfolio via the vendored read-only IBKR Flex reader and
     refresh data/current-holdings.json. Read-only: the Flex query cannot trade.
     Credentials come from IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID in the environment
     or a gitignored tools/secrets.env. Raw output stays in data/cache/ibkr/ (also
-    gitignored). Returns the fresh holdings payload."""
+    gitignored). Returns the fresh holdings payload.
+
+    ``progress`` is an optional ``callable(str)`` used by the background job runner
+    to stream status to the UI; it is a no-op when called synchronously."""
     import subprocess
+
+    def _p(msg: str) -> None:
+        if progress:
+            progress(msg)
 
     if not IBKR_READER.exists():  # vendored next to serve.py; should always be here
         raise ValueError(f"IBKR reader missing at {IBKR_READER}")
@@ -926,6 +933,7 @@ def _sync_holdings() -> dict:
     snap_dir = IBKR_CACHE_DIR / "snapshots"
     cmd = [sys.executable, str(IBKR_READER), "--json",
            "--out", str(out_json), "--snapshot-dir", str(snap_dir)]
+    _p("contacting IBKR Flex (read-only)…")
     try:
         proc = subprocess.run(cmd, cwd=str(IBKR_CACHE_DIR), capture_output=True,
                               text=True, timeout=240)
@@ -947,14 +955,53 @@ def _sync_holdings() -> dict:
     if not isinstance(fresh, dict) or "positions" not in fresh or fresh.get("net_asset_value") is None:
         raise ValueError("IBKR reader produced no usable portfolio.json")
 
+    _p("merging snapshot…")
     current = _load(HOLDINGS_JSON) or {}
     _write_json(HOLDINGS_JSON, _merge_holdings_snapshot(current, fresh))
     # A fresh snapshot makes the rendered plan (next-steps + detail pages) stale,
     # so regenerate the derived artifacts in the same call. Best-effort: a render
     # hiccup must not fail the sync itself.
+    _p("regenerating plan pages…")
     payload = holdings_payload()
     payload["site"] = _regenerate_site()
     return payload
+
+
+# IBKR sync runs as a registered background job (like the deep-research/analysis
+# runners) so it survives navigation, surfaces in the global task pill, and counts
+# as "active" for the reload watcher. One sync at a time -- the Flex pull hits a
+# shared cache dir and there is no point racing two.
+def _sync_running() -> bool:
+    return jobs.find(
+        lambda j: j.get("kind") == "ibkr_sync"
+        and j.get("state") in ("queued", "running")
+        and not j.get("cancelled")
+    )
+
+
+def _run_holdings_sync_job(job_id: str) -> None:
+    _update_job(job_id, state="running", message="pulling portfolio from IBKR (read-only)…")
+    try:
+        payload = _sync_holdings(progress=lambda msg: _update_job(job_id, message=msg))
+    except ValueError as exc:  # expected, user-actionable (bad creds, timeout, …)
+        _update_job(job_id, state="error", error=str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 -- never let the worker thread die silently
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+    # Keep the public result small: the UI re-fetches /api/holdings on done; we
+    # only need the site-regen summary (for the "plan regenerated" line) and the
+    # snapshot stamp.
+    _update_job(job_id, state="done", message="synced",
+                result={"site": payload.get("site"), "generated_at": payload.get("generated_at")})
+
+
+def _start_holdings_sync() -> dict:
+    if _sync_running():
+        raise RuntimeError("an IBKR sync is already running")
+    job = _new_job("ibkr_sync")
+    threading.Thread(target=_run_holdings_sync_job, args=(job["id"],), daemon=True).start()
+    return _job_public(job)
 
 
 def _regenerate_site() -> dict:
@@ -1628,9 +1675,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/holdings/sync":
             try:
-                return self._send_json(_sync_holdings())
-            except ValueError as exc:
-                return self._send_error_json(400, str(exc))
+                return self._send_json(_start_holdings_sync())
+            except RuntimeError as exc:
+                return self._send_error_json(409, str(exc))
 
         if path == "/api/site/regenerate":
             res = _regenerate_site()

@@ -73,8 +73,12 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   review, and target-proposal approval, plus the automated-run endpoints
   `POST /api/deep-research/run`, `POST /api/deep-research/login`,
   `POST /api/deep-research/verify-login`, `GET /api/deep-research/login-status`,
-  and `GET /api/deep-job?id=<id>`). It serves root-level `.html`/`.css`/`.js`
-  assets dynamically instead of maintaining a manual filename allowlist.
+  and `GET /api/deep-job?id=<id>`). `POST /api/holdings/sync` runs the IBKR Flex
+  pull as a registered background job (kind `ibkr_sync`, polled via
+  `/api/deep-job`) so it survives navigation, shows in the global task pill, and
+  counts as active for the `--reload` watcher; one sync runs at a time. It serves
+  root-level `.html`/`.css`/`.js` assets dynamically instead of maintaining a
+  manual filename allowlist.
 - `review_deep_research.py` -- offline review gate for saved Perplexity reports.
   It compares source quality, deterministic ticker data, holdings, and
   `target-model.json`, then writes a review markdown file and draft target-model
