@@ -243,7 +243,7 @@ async function refreshLoginStatus() {
   let st;
   try {
     st = await api("/api/deep-research/login-status");
-  } catch (e) {
+  } catch {
     st = { logged_in: false };
   }
   state.pplxLoggedIn = !!st.logged_in;

@@ -147,7 +147,7 @@ function renderSegment(rec) {
   const tbody = el("tbody");
   const rows = rec.members.slice().sort((a, b) => {
     const k = state.segSort.key, d = state.segSort.dir;
-    let av = a[k], bv = b[k];
+    const av = a[k], bv = b[k];
     if (typeof av === "string" || typeof bv === "string") return d * String(av ?? "").localeCompare(String(bv ?? ""));
     if (av == null) return 1; if (bv == null) return -1;
     return d * (av - bv);
@@ -170,7 +170,7 @@ function renderSegment(rec) {
       `<span class="${pctClass(m.chg_12m_pct)}">${fmtPct(m.chg_12m_pct)}</span>`,
       `<span class="${pctClass(m.pct_below_52w_high)}">${fmtPct(m.pct_below_52w_high)}</span>`,
     ];
-    SEG_COLS.forEach(([key, , num], i) => {
+    SEG_COLS.forEach(([, , num], i) => {
       tr.appendChild(el("td", num ? "num" : "", cells[i]));
     });
     tr.addEventListener("click", () => analyzeFromAnywhere(m.symbol));

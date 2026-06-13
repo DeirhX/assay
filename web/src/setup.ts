@@ -29,7 +29,7 @@ async function ensureModels() {
   try {
     const r = await api("/api/analysis-models");
     _models = r.models || {};
-  } catch (e) {
+  } catch {
     /* leave inputs as free-text */
   }
 }
@@ -90,7 +90,7 @@ function wireModelCombo(id) {
     if (e.key === "Escape") return close();
     const items = [...menu.querySelectorAll(".setup-combo-item")];
     if (menu.hidden || !items.length) return;
-    let idx = items.findIndex((it) => it.classList.contains("active"));
+    const idx = items.findIndex((it) => it.classList.contains("active"));
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActive(items, Math.min(items.length - 1, idx + 1));

@@ -160,7 +160,7 @@ async function loadTickerFromCache(raw) {
     } else {
       renderNoMarketData(rec);
     }
-  } catch (e) {
+  } catch {
     status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
     const out = $("#dd-result");
