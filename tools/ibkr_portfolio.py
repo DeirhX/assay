@@ -99,12 +99,23 @@ def http_get(url: str) -> bytes:
 
 
 def fetch_report(token: str, query_id: str, *, max_tries: int = 12,
-                 delay: float = 3.0, verbose: bool = False) -> ET.Element:
-    """Run the two-step Flex flow and return the parsed report root element."""
+                 delay: float = 3.0, verbose: bool = False,
+                 from_date: str | None = None, to_date: str | None = None) -> ET.Element:
+    """Run the two-step Flex flow and return the parsed report root element.
+
+    ``from_date``/``to_date`` (YYYYMMDD) override the query's configured period
+    via the Flex Web Service ``fd``/``td`` params. IBKR caps a single request at
+    365 days, so multi-year history must be pulled one window at a time (see
+    ``ibkr_history.py``). When both are None the query's own period is used."""
     # Step 1 — SendRequest
-    q = urllib.parse.urlencode({"t": token, "q": query_id, "v": "3"})
+    params = {"t": token, "q": query_id, "v": "3"}
+    if from_date and to_date:
+        params["fd"] = from_date
+        params["td"] = to_date
+    q = urllib.parse.urlencode(params)
     if verbose:
-        print(f"-> SendRequest (queryId={query_id})", file=sys.stderr)
+        window = f" {from_date}-{to_date}" if (from_date and to_date) else ""
+        print(f"-> SendRequest (queryId={query_id}{window})", file=sys.stderr)
     root = ET.fromstring(http_get(f"{BASE}/SendRequest?{q}"))
 
     if root.tag != "FlexStatementResponse" or _text(root, "Status") != "Success":
