@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hygiene import SEV_RANK, rel_diff  # noqa: E402  -- shared severity rank + rel-diff
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
 CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
@@ -42,8 +45,6 @@ SNAPSHOT_PRICE_TOL = 0.03
 # snapshot freshness: warn after a few days, error once badly stale.
 STALE_WARN_DAYS = 5
 STALE_ERROR_DAYS = 30
-
-SEVERITY_ORDER = {"ERROR": 0, "WARN": 1, "INFO": 2}
 
 
 @dataclass
@@ -62,12 +63,6 @@ def representative(node: dict | None) -> float | None:
     if "low" in node and "high" in node:
         return (float(node["low"]) + float(node["high"])) / 2
     return None
-
-
-def rel_diff(a: float, b: float) -> float:
-    if b == 0:
-        return float("inf")
-    return abs(a - b) / abs(b)
 
 
 def check_snapshot_age(holdings: dict) -> list[Finding]:
@@ -180,11 +175,11 @@ def main() -> int:
     for symbol, claim in claims.get("symbols", {}).items():
         findings += check_symbol(symbol, claim, marks.get(symbol))
 
-    findings.sort(key=lambda f: (SEVERITY_ORDER[f.severity], f.symbol))
+    findings.sort(key=lambda f: (SEV_RANK[f.severity], f.symbol))
     for f in findings:
         print(f"[{f.severity}] {f.symbol}: {f.message}")
 
-    counts = {sev: sum(1 for f in findings if f.severity == sev) for sev in SEVERITY_ORDER}
+    counts = {sev: sum(1 for f in findings if f.severity == sev) for sev in SEV_RANK}
     print(
         f"\n{counts['ERROR']} error(s), {counts['WARN']} warning(s), "
         f"{counts['INFO']} info across {len(claims.get('symbols', {}))} symbol(s)."

@@ -36,6 +36,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- single source of truth for position weights
+from hygiene import SEV_RANK  # noqa: E402  -- shared severity rank
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
@@ -46,8 +47,6 @@ COVERAGE_WARN_PCT = 1.0  # an untargeted held name at/above this size is a real 
 
 VALID_RULES = {"accumulate", "trim_only", "do_not_add", "reduce", "hold", "wait", "avoid"}
 NO_BUY_RULES = {"trim_only", "do_not_add", "reduce", "avoid"}
-
-SEV_ORDER = {"ERROR": 0, "WARN": 1, "INFO": 2}
 
 
 class Finding:
@@ -434,7 +433,7 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
 
 
 def report(findings: list[Finding], strict: bool) -> int:
-    findings.sort(key=lambda f: (SEV_ORDER.get(f.severity, 9), f.area))
+    findings.sort(key=lambda f: (SEV_RANK.get(f.severity, 9), f.area))
     for f in findings:
         print(f"[{f.severity}] {f.area}: {f.message}")
     errors = sum(1 for f in findings if f.severity == "ERROR")

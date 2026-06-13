@@ -25,6 +25,7 @@ import sys
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hygiene import worst_severity  # noqa: E402  -- shared severity reducer
 from portfolio import holdings_weights  # noqa: E402  -- single source of truth for weights
 from store import load as load_json, write_json  # noqa: E402  -- shared forgiving JSON IO
 
@@ -72,7 +73,6 @@ SOURCE_BUCKETS = {
     ],
 }
 
-SEV_RANK = {"ERROR": 0, "WARN": 1, "INFO": 2}
 # Review-gate tiers: BLOCK halts an apply, WARN needs a deliberate decision, FYI
 # is hygiene. ERROR-level deterministic data maps to BLOCK.
 LEVEL_RANK = {"BLOCK": 0, "WARN": 1, "FYI": 2}
@@ -138,12 +138,6 @@ def current_weights(holdings: dict[str, Any]) -> dict[str, float]:
     """Single source of truth: see portfolio.holdings_weights (market value over
     invested book). Do not read the broker's notional-poisoned percent_of_nav."""
     return holdings_weights(holdings)
-
-
-def worst_severity(checks: list[dict[str, str]]) -> str:
-    if not checks:
-        return "INFO"
-    return min((c.get("severity", "INFO") for c in checks), key=lambda s: SEV_RANK.get(s, 9))
 
 
 def metric_display(rec: dict[str, Any], key: str) -> str:
