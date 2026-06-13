@@ -344,6 +344,111 @@ def _draft_segment(query: str) -> dict:
     }
 
 
+def _merge_draft_members(baseline: list[dict], extra: list[dict]) -> list[dict]:
+    """Combine keyword-baseline members with LLM-proposed ones, deduped by
+    symbol (baseline wins on a tie) and skipping anything with an invalid or
+    empty symbol. Keeps rationale/confidence when present."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for source in (baseline or [], extra or []):
+        for item in source:
+            if not isinstance(item, dict):
+                continue
+            try:
+                sym = _safe_symbol(str(item.get("symbol") or ""))
+            except ValueError:
+                continue
+            if sym in seen:
+                continue
+            seen.add(sym)
+            member = {
+                "symbol": sym,
+                "sleeve": str(item.get("sleeve") or "other").strip().lower() or "other",
+            }
+            for key in ("rationale", "confidence"):
+                if item.get(key):
+                    member[key] = str(item[key]).strip()
+            out.append(member)
+    return out
+
+
+def _run_segment_draft_job(job_id: str, query: str) -> None:
+    """Draft a research segment for any theme: start from the keyword baseline,
+    then (if an analysis CLI is available) ask the LLM to propose real tickers
+    for subjects we don't already hold, and merge the two."""
+    def progress(msg: str) -> None:
+        _update_job(job_id, message=msg)
+
+    try:
+        baseline = _draft_segment(query)
+        definition = baseline["definition"]
+        members = list(definition.get("members") or [])
+        warnings: list[str] = []
+        backend_label = None
+
+        if any(ticker_analysis.available_backends().values()):
+            _update_job(job_id, state="running",
+                        message="researching candidate tickers…")
+            llm = ticker_analysis.draft_segment_members(
+                query, progress=progress, cancel=lambda: jobs.is_cancelled(job_id))
+            if jobs.is_cancelled(job_id):
+                _update_job(job_id, state="cancelled", message="cancelled")
+                return
+            if llm.get("ok"):
+                members = _merge_draft_members(members, llm.get("members") or [])
+                backend_label = llm.get("backend_label")
+                if llm.get("title"):
+                    definition["title"] = llm["title"]
+                if llm.get("comment"):
+                    definition["comment"] = llm["comment"]
+            else:
+                warnings.append(
+                    "LLM draft failed (" + (llm.get("error") or "unknown")
+                    + "); showing keyword matches only. Use the prompt below to fill members."
+                )
+        else:
+            warnings.append(
+                "No analysis CLI is configured, so tickers weren't auto-researched. "
+                "Use the prompt below with an LLM (or paste members), then approve."
+            )
+    except Exception as exc:  # noqa: BLE001
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+
+    if not members:
+        warnings.append(
+            "No candidate tickers identified. Use the prompt below with an LLM, or "
+            "paste/edit members, then validate before approving."
+        )
+    definition["members"] = members
+    definition["sleeves"] = sorted({m["sleeve"] for m in members}) or ["other"]
+    _update_job(
+        job_id, state="done",
+        message=(f"drafted {len(members)} names via {backend_label}"
+                 if backend_label else f"drafted {len(members)} names"),
+        result={
+            "slug": baseline["slug"],
+            "definition": definition,
+            "llm_prompt": baseline["llm_prompt"],
+            "warnings": warnings,
+            "backend_label": backend_label,
+            "member_count": len(members),
+        },
+    )
+
+
+def _start_segment_draft(query: str) -> dict:
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("query is required")
+    # Like ticker analysis, drafting shells out to a CLI but not the browser, so
+    # it does not take the single browser slot and can run alongside other work.
+    job = _new_job("segment_draft", query=query)
+    threading.Thread(target=_run_segment_draft_job,
+                     args=(job["id"], query), daemon=True).start()
+    return _job_public(job)
+
+
 def _segment_prompt(name: str) -> dict:
     slug = _slugify(name)
     definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
@@ -1661,7 +1766,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_api(self, path: str):
         if path == "/api/segment-draft":
             body = self._read_body()
-            return self._send_json(_draft_segment(str(body.get("query") or "")))
+            try:
+                return self._send_json(_start_segment_draft(str(body.get("query") or "")))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
 
         if path.startswith("/api/segment-def/"):
             name = _slugify(path.rsplit("/", 1)[-1])

@@ -759,6 +759,114 @@ def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
                               cfg, progress, cancel)
 
 
+# --------------------------------------------------------------------------- #
+# Segment drafting: turn a freeform theme ("space exploration") into a list of
+# real, currently-listed public tickers. This is how the research console stops
+# being limited to names you already hold -- the LLM proposes the universe, the
+# deterministic pull + review gate still vet it downstream.
+# --------------------------------------------------------------------------- #
+def _segment_web_rule(allow_web: bool) -> str:
+    if allow_web:
+        return (
+            "- Use your web search / fetch tools to confirm each ticker is real and CURRENTLY "
+            "listed, and to catch recent IPOs, de-listings, or symbol changes. Do not put "
+            "citations or URLs in the JSON."
+        )
+    return (
+        "- Use only tickers you are confident are real and currently listed. Do not guess at "
+        "symbols; omit a name rather than invent a ticker."
+    )
+
+
+def build_segment_draft_prompt(query: str, *, allow_web: bool = False) -> str:
+    """Prompt the backend to return a themed public-equity watchlist as JSON."""
+    return f"""You are assembling a public-equity RESEARCH SEGMENT (a themed watchlist) for this theme:
+
+"{query.strip()}"
+
+Identify the most relevant PUBLICLY TRADED companies and ETFs for the theme and group them into 3-6 sleeves (sub-themes). Aim for 8-20 names: enough to be a real research universe, not so many it's noise. Cover the value chain, not just the obvious mega-caps.
+
+GROUND RULES
+{_segment_web_rule(allow_web)}
+- The `symbol` field must be the real primary-listing ticker (US ticker or ADR where applicable), e.g. RKLB, LMT, BA. Never put a company name in the symbol field.
+- Exclude private companies. If a key player is private, omit it (you may mention a public proxy in another member's rationale).
+- `sleeve` values are short lowercase slugs, e.g. "launch", "satellites", "defense-prime".
+- `confidence` is one of: high, medium, low.
+
+OUTPUT
+Respond with ONLY a single JSON object -- no markdown code fences, no commentary before or after. Exactly this shape:
+{{
+  "title": "<concise human title for the theme>",
+  "comment": "<one sentence describing what this segment covers>",
+  "sleeves": ["<sleeve-slug>", "..."],
+  "members": [
+    {{"symbol": "TICKER", "sleeve": "<sleeve-slug>", "rationale": "<why it belongs, one line>", "confidence": "high|medium|low"}}
+  ]
+}}
+"""
+
+
+def _extract_json_object(text: str) -> dict | None:
+    """Pull a JSON object out of an LLM response. Tolerates ```json fences and
+    leading/trailing prose by trying a fenced block first, then the outermost
+    balanced {...}. Returns None if nothing parses to a dict."""
+    if not text:
+        return None
+    s = text.strip()
+    candidates: list[str] = []
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1))
+    start = s.find("{")
+    if start != -1:
+        depth = 0
+        for i in range(start, len(s)):
+            ch = s[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(s[start:i + 1])
+                    break
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def draft_segment_members(query: str, *, cfg: dict | None = None,
+                          progress: Callable[[str], None] | None = None,
+                          cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Ask the configured backend for a themed list of public tickers. Returns
+    {ok, members, title, comment, sleeves, backend_label, ...} or {ok: False,
+    error}. Members are raw model output; the caller validates symbols."""
+    cfg = cfg or load_config()
+    prompt = build_segment_draft_prompt(query, allow_web=cfg.get("allow_web", False))
+    res = _run_with_fallback(prompt, cfg, progress, cancel)
+    if not res.get("ok"):
+        return {"ok": False, "cancelled": bool(res.get("cancelled")),
+                "error": res.get("error") or "all analysis backends failed"}
+    parsed = _extract_json_object(res.get("report") or "")
+    if not isinstance(parsed, dict):
+        return {"ok": False, "error": "the model did not return parseable segment JSON"}
+    members = parsed.get("members")
+    return {
+        "ok": True,
+        "title": str(parsed.get("title") or "").strip(),
+        "comment": str(parsed.get("comment") or "").strip(),
+        "sleeves": [s for s in (parsed.get("sleeves") or []) if isinstance(s, str)],
+        "members": members if isinstance(members, list) else [],
+        "backend": res.get("backend"),
+        "backend_label": res.get("backend_label"),
+        "model": res.get("model"),
+    }
+
+
 def build_qa_prompt(rec: dict[str, Any], history: list[dict] | None,
                     question: str, note: str | None = None, *, allow_web: bool = False) -> str:
     """A follow-up Q&A prompt: same deterministic DATA as the note, plus the
