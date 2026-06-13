@@ -63,6 +63,7 @@ import whatif  # noqa: E402
 import journal  # noqa: E402
 import generate_site  # noqa: E402
 import jobs  # noqa: E402
+from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
 from store import (  # noqa: E402
@@ -943,23 +944,6 @@ IBKR_SECRETS = IBKR_READER.parent / "secrets.env"
 # Raw pulls + snapshots are personal data -> keep them under data/cache (gitignored
 # and inside the private submodule), never in the public working tree.
 IBKR_CACHE_DIR = DATA_DIR / "cache" / "ibkr"
-
-
-def _read_env_file(path: Path) -> dict:
-    """Minimal KEY=VALUE parser (matches tools/ibkr_portfolio.load_env_file)."""
-    out: dict = {}
-    try:
-        if not path.exists():
-            return out
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            out[key.strip()] = val.strip().strip('"').strip("'")
-    except OSError:
-        pass
-    return out
 
 
 def _ibkr_status() -> dict:
@@ -2091,16 +2075,8 @@ def main() -> int:
 
 def _load_secrets_env():
     """Best-effort load of repo-root secrets.env (gitignored) for FMP_API_KEY."""
-    env_path = REPO_ROOT / "secrets.env"
-    if not env_path.exists():
-        return
-    import os
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    for key, value in _read_env_file(REPO_ROOT / "secrets.env").items():
+        os.environ.setdefault(key, value)
 
 
 if __name__ == "__main__":

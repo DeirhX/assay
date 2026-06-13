@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import re
 from pathlib import Path
 from typing import Any
@@ -27,6 +26,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import holdings_weights  # noqa: E402  -- single source of truth for weights
+from store import load as load_json, write_json  # noqa: E402  -- shared forgiving JSON IO
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -76,17 +76,6 @@ SEV_RANK = {"ERROR": 0, "WARN": 1, "INFO": 2}
 # Review-gate tiers: BLOCK halts an apply, WARN needs a deliberate decision, FYI
 # is hygiene. ERROR-level deterministic data maps to BLOCK.
 LEVEL_RANK = {"BLOCK": 0, "WARN": 1, "FYI": 2}
-
-
-def load_json(path: Path, default: Any = None) -> Any:
-    if not path.exists():
-        return default
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def slugify(value: str) -> str:

@@ -40,11 +40,20 @@ USER_AGENT = "ibkr_portfolio/1.0 (+stdlib)"
 # Config / secrets
 # --------------------------------------------------------------------------- #
 def load_env_file(path: Path) -> dict[str, str]:
-    """Minimal KEY=VALUE parser (no python-dotenv dependency)."""
+    """Minimal KEY=VALUE parser (no python-dotenv dependency).
+
+    Kept self-contained so this reader stays vendorable; the research server
+    imports this single implementation instead of re-deriving it. A missing or
+    unreadable file yields an empty dict rather than raising.
+    """
     out: dict[str, str] = {}
-    if not path.exists():
+    try:
+        if not path.exists():
+            return out
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
         return out
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
