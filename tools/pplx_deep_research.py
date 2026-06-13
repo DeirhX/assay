@@ -542,7 +542,8 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                       profile_dir: Optional[Path] = None, timeout_s: int = 900,
                       poll_interval_s: int = 30, dry_run: bool = False,
                       clarify_answer: Optional[str] = None, max_clarify: int = 2,
-                      progress: Callable[[str], None] = _noop) -> dict:
+                      progress: Callable[[str], None] = _noop,
+                      on_url: Callable[[str], None] = _noop) -> dict:
     """Run one Deep Research query end to end.
 
     If Perplexity pauses on a clarifying question, the worker auto-answers with
@@ -605,6 +606,14 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                 # Some runs land on /search/ after a beat; fall through to polling.
             if "/computer/" in page.url:
                 return {"status": "computer_trap", "url": page.url}
+
+            # The run now has a stable /search/ URL. Surface it immediately so the
+            # UI can link to the ongoing analysis while it churns for minutes.
+            if "/search/" in page.url:
+                try:
+                    on_url(page.url)
+                except Exception:  # noqa: BLE001 -- never let a UI hook kill the run
+                    pass
 
             progress("Researching (this takes minutes)...")
             time.sleep(8)  # let the Stop button appear before we trust "not running"

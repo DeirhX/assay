@@ -52,6 +52,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+import errorlog
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "data" / "analysis-config.json"
 
@@ -718,9 +720,13 @@ def _ordered_providers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _run_with_fallback(prompt: str, cfg: dict,
                        progress: Callable[[str], None] | None = None,
-                       cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
+                       cancel: Callable[[], bool] | None = None,
+                       *, label: str = "") -> dict[str, Any]:
     """Run a prompt through the configured backends in order, falling back on
-    quota/auth failure. Returns the first success, or an aggregate error."""
+    quota/auth failure. Returns the first success, or an aggregate error.
+
+    ``label`` is a short tag for the operational error log (e.g. "analysis",
+    "qa") so a logged backend failure says what kind of request it choked on."""
     attempts: list[str] = []
     for provider in _ordered_providers(cfg):
         if not provider.get("enabled"):
@@ -739,13 +745,25 @@ def _run_with_fallback(prompt: str, cfg: dict,
             # User pulled the plug: don't fall through to the next backend and
             # spend more quota on a request they no longer want.
             return {"ok": False, "cancelled": True, "error": "cancelled", "attempts": attempts}
-        attempts.append(res.get("error", f"{pid} failed"))
+        blob = res.get("error", "") or f"{pid} failed"
+        attempts.append(blob)
+        # A real failure worth a durable record -- crucially, this fires even when
+        # the *next* backend goes on to succeed, so a Cursor login silently
+        # expiring (and us quietly serving from Claude) stops being invisible.
+        reason = ("auth" if _looks_like_auth(blob)
+                  else "quota" if _looks_like_quota(blob)
+                  else "error")
+        errorlog.warn("llm_backend", blob, backend=pid, reason=reason,
+                      fatal=bool(res.get("fatal")), op=label or None)
         if res.get("fatal"):
             # A real failure (timeout / bad output), not a quota miss: stop here
             # rather than burning the fallback on the same broken input.
             break
         if progress:
             progress(f"{PROVIDER_LABELS.get(pid, pid)} unavailable, trying next…")
+    errorlog.error("llm_backend",
+                   "all analysis backends failed: " + ("; ".join(attempts) or "none enabled"),
+                   op=label or None)
     return {"ok": False, "error": "; ".join(attempts) or "no enabled backends available",
             "attempts": attempts}
 
@@ -756,7 +774,7 @@ def analyze(rec: dict[str, Any], *, cfg: dict | None = None,
     """Generate the structured in-depth note over the deterministic dossier."""
     cfg = cfg or load_config()
     return _run_with_fallback(build_prompt(rec, allow_web=cfg.get("allow_web", False)),
-                              cfg, progress, cancel)
+                              cfg, progress, cancel, label="analysis")
 
 
 # --------------------------------------------------------------------------- #
@@ -847,7 +865,7 @@ def draft_segment_members(query: str, *, cfg: dict | None = None,
     error}. Members are raw model output; the caller validates symbols."""
     cfg = cfg or load_config()
     prompt = build_segment_draft_prompt(query, allow_web=cfg.get("allow_web", False))
-    res = _run_with_fallback(prompt, cfg, progress, cancel)
+    res = _run_with_fallback(prompt, cfg, progress, cancel, label="segment-draft")
     if not res.get("ok"):
         return {"ok": False, "cancelled": bool(res.get("cancelled")),
                 "error": res.get("error") or "all analysis backends failed"}
@@ -1048,6 +1066,64 @@ def ask(rec: dict[str, Any], history: list[dict] | None, question: str, *,
             progress(f"{PROVIDER_LABELS.get(pid, pid)} unavailable, trying next…")
     return {"ok": False, "error": "; ".join(attempts) or "no enabled backends available",
             "attempts": attempts}
+
+
+def build_doc_qa_prompt(title: str, document: str, citations: list[dict] | None,
+                        history: list[dict] | None, question: str, *,
+                        allow_web: bool = False) -> str:
+    """A follow-up Q&A prompt grounded in a Deep Research report (not a ticker
+    DATA block). The report is the evidence base; the prior conversation keeps
+    the thread coherent. The report and history are bounded so the prompt stays
+    a sane size as both grow."""
+    doc = (document or "").strip()
+    if len(doc) > 16000:
+        doc = doc[:16000] + "\n…[report truncated]"
+    src_lines = []
+    for c in (citations or [])[:40]:
+        href = str(c.get("href") or "").strip()
+        if not href:
+            continue
+        label = str(c.get("label") or "").split("\n")[0].strip()
+        src_lines.append(f"- {label} {href}".strip())
+    src_block = ("\nSOURCES (citations from the run):\n" + "\n".join(src_lines) + "\n") if src_lines else ""
+    convo = ""
+    for t in [t for t in (history or []) if t.get("text")][-12:]:
+        who = "Q" if t.get("role") == "user" else "A"
+        txt = t["text"].strip()
+        if who == "A" and len(txt) > 1500:
+            txt = txt[:1500] + " …[truncated]"
+        convo += f"{who}: {txt}\n\n"
+    convo_block = ("CONVERSATION SO FAR:\n" + convo) if convo else ""
+    web_rule = _qa_data_rule(allow_web).replace("DATA block", "REPORT").replace("the data", "the report")
+    return f"""You are a skeptical, evidence-driven equity analyst answering a follow-up question about a Deep Research report titled "{title or 'this segment'}" for a self-directed investor. Improve their decision; do not cheerlead.
+
+GROUND RULES
+{web_rule}
+- Be concise and direct. Answer the specific question asked; don't restate the whole report.
+- Tag every company ticker with a leading $ on first mention (e.g. $AMD).
+- The report is narrative synthesis: treat its numbers as claims, and say so when a figure should be verified against a primary source.
+
+REPORT
+{doc}
+{src_block}
+{convo_block}NEW QUESTION:
+{question.strip()}
+
+Answer in Markdown.{' End with a "Sources" line listing any URLs you used.' if allow_web else ''}"""
+
+
+def ask_about_doc(title: str, document: str, citations: list[dict] | None,
+                  history: list[dict] | None, question: str, *, cfg: dict | None = None,
+                  progress: Callable[[str], None] | None = None,
+                  cancel: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Answer a follow-up question grounded in a Deep Research report. Unlike
+    ``ask`` (which is tied to a ticker DATA record and can resume a Claude
+    session), this runs the generic backend fallback with the report as context.
+    Returns the usual {ok, report, backend, backend_label, model, ...} result."""
+    cfg = cfg or load_config()
+    prompt = build_doc_qa_prompt(title, document, citations, history, question,
+                                 allow_web=cfg.get("allow_web", False))
+    return _run_with_fallback(prompt, cfg, progress, cancel, label="doc-qa")
 
 
 if __name__ == "__main__":

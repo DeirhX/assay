@@ -317,7 +317,97 @@ function renderSetup(st) {
     out.appendChild(d);
   });
 
+  const errlog = el("details", "setup-step errlog");
+  errlog.id = "setup-errlog";
+  out.appendChild(errlog);
+  renderErrorLog();
+
   fillModelLists();
+}
+
+function fmtTs(ts) {
+  try {
+    return new Date(ts).toLocaleString();
+  } catch {
+    return ts || "";
+  }
+}
+
+function errLogEntryHtml(e) {
+  const lvl = e.level === "warning" ? "warn" : "err";
+  const ctx = e.context && Object.keys(e.context).length
+    ? `<div class="errlog-ctx">${Object.entries(e.context)
+        .map(([k, v]) => `${esc(k)}=${esc(String(v))}`)
+        .join(" \u00b7 ")}</div>`
+    : "";
+  return (
+    `<li class="errlog-entry ${lvl}">` +
+      `<div class="errlog-entry-head">` +
+        `<span class="errlog-badge ${lvl}">${esc(e.level || "error")}</span>` +
+        `<span class="errlog-cat">${esc(e.category || "")}</span>` +
+        `<span class="errlog-ts">${esc(fmtTs(e.ts))}</span>` +
+      `</div>` +
+      `<div class="errlog-msg">${esc(e.message || "")}</div>` +
+      ctx +
+    `</li>`
+  );
+}
+
+// Operational error log: real incidents only (backend fallbacks, unhandled
+// server errors). Lives at the foot of Setup, collapsed unless it has content.
+async function renderErrorLog(open = false) {
+  const card = document.getElementById("setup-errlog");
+  if (!card) return;
+  let entries = [];
+  try {
+    const r = await api("/api/error-log?limit=100");
+    entries = r.entries || [];
+  } catch {
+    card.innerHTML =
+      `<summary class="setup-step-head"><span class="setup-step-title">Error log</span></summary>` +
+      `<div class="setup-step-body"><p class="hint">Could not load the error log.</p></div>`;
+    return;
+  }
+  const count = entries.length;
+  const hasError = entries.some((e) => e.level !== "warning");
+  card.open = open && count > 0;
+  const stateBadge = count
+    ? `<span class="setup-badge ${hasError ? "bad" : "warn"}">${count}</span>`
+    : badge(true, "CLEAN");
+  card.innerHTML =
+    `<summary class="setup-step-head">` +
+      `<span class="setup-step-title">Error log</span>` +
+      `<span class="setup-step-state"><span class="setup-step-note">${count ? `${count} recent` : "nothing logged"}</span>${stateBadge}</span>` +
+    `</summary>` +
+    `<div class="setup-step-body">` +
+      `<p class="hint">Real failures worth a record — analysis backend (Cursor/Claude) fallbacks, unhandled server errors. ` +
+        `Expected misses like an unknown ticker or "not logged into Perplexity yet" are <em>not</em> logged here.</p>` +
+      (count
+        ? `<ul class="errlog-list">${entries.map(errLogEntryHtml).join("")}</ul>`
+        : `<p class="setup-small ok">Quiet is good — nothing has failed since the last clear.</p>`) +
+      `<div class="setup-actions">` +
+        `<button class="ghost" id="setup-errlog-refresh" type="button">Refresh</button>` +
+        (count ? `<button class="ghost" id="setup-errlog-clear" type="button">Clear log</button>` : "") +
+        `<span class="status" id="setup-errlog-status"></span>` +
+      `</div>` +
+    `</div>`;
+}
+
+async function clearErrorLog() {
+  const status = $("#setup-errlog-status");
+  if (status) {
+    status.classList.remove("err");
+    status.textContent = "clearing…";
+  }
+  try {
+    await api("/api/error-log", "POST", { clear: true });
+    await renderErrorLog(true);
+  } catch (e) {
+    if (status) {
+      status.classList.add("err");
+      status.textContent = "clear failed: " + e.message;
+    }
+  }
 }
 
 function renderIbkr(st) {
@@ -586,6 +676,8 @@ const SETUP_ACTIONS = {
   "setup-pplx-check": verifyPerplexity,
   "setup-save-ibkr": saveIbkr,
   "setup-sync-ibkr": syncIbkr,
+  "setup-errlog-clear": clearErrorLog,
+  "setup-errlog-refresh": () => renderErrorLog(true),
 };
 
 function wireSetup() {

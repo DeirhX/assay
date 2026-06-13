@@ -258,10 +258,7 @@
             <p>Run the review gate to cross-check the narrative against deterministic data, then apply the target-model proposal if it holds up.</p>
           </div>
           <div class="step-body">
-            <details class="pipe-report-view" id="pipe-report-view" open hidden>
-              <summary>Final research report</summary>
-              <div class="prose" id="pipe-report-rendered"></div>
-            </details>
+            <div class="pipe-report-link" id="pipe-report-view" hidden></div>
             <div class="hint">The review gate reads the saved report for this segment + date, cross-checks every claim against the deterministic per-ticker data, and emits a target-model proposal. Run it first; applying only becomes available if it produces concrete changes.</div>
             <div class="thesis-actions">
               <button class="primary" id="pipe-run-review">Run review gate</button>
