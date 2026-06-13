@@ -1230,8 +1230,115 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-head-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .whatif-card { background: var(--panel-2); border: 1px solid var(--accent); border-radius: var(--radius-card); padding: 14px 16px; margin-bottom: 16px; }
 .whatif-title { font-weight: 800; font-size: 15px; margin-bottom: 10px; }
+/* Step 4 final-report block: collapsible so the long narrative doesn't bury the
+   review gate, but present so you can read what's being cross-checked. */
+.pipe-report-view {
+  margin-bottom: 14px; border: 1px solid var(--border); border-radius: var(--radius-card);
+  background: var(--panel-2); overflow: hidden;
+}
+.pipe-report-view > summary {
+  cursor: pointer; list-style: none; padding: 11px 14px; font-weight: 700; font-size: 13px;
+  display: flex; align-items: center; gap: 8px; user-select: none;
+}
+.pipe-report-view > summary::-webkit-details-marker { display: none; }
+.pipe-report-view > summary::before {
+  content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s;
+}
+.pipe-report-view[open] > summary::before { transform: rotate(90deg); }
+.pipe-report-view > summary:hover { color: var(--accent); }
+.pipe-report-view #pipe-report-rendered {
+  padding: 8px 18px 16px; max-height: 72vh; overflow-y: auto; border-top: 1px solid var(--border);
+}
+
+/* Collapsible "Full review notes" — the gate's own markdown, rendered as prose
+   instead of raw monospace source. */
+.review-notes {
+  margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-card);
+  background: var(--panel-2); overflow: hidden;
+}
+.review-notes > summary {
+  cursor: pointer; list-style: none; padding: 10px 14px; font-weight: 700; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  display: flex; align-items: center; gap: 8px; user-select: none;
+}
+.review-notes > summary::-webkit-details-marker { display: none; }
+.review-notes > summary::before { content: "▸"; font-size: 11px; transition: transform .15s; }
+.review-notes[open] > summary::before { transform: rotate(90deg); }
+.review-notes > summary:hover { color: var(--accent); }
+.review-notes > .prose { padding: 4px 16px 14px; border-top: 1px solid var(--border); max-height: 60vh; overflow-y: auto; }
+
+/* Structured (JSON) segment report rendered as a readable dossier. */
+.rep-title { margin: 2px 0 6px; font-size: 18px; font-weight: 800; }
+.rep-lead { margin: 0 0 16px; color: var(--text); font-size: 13.5px; line-height: 1.6; max-width: 70ch; }
+.rep-section-h {
+  display: flex; align-items: center; gap: 8px; margin: 18px 0 8px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+.rep-count {
+  font-size: 11px; font-weight: 700; color: var(--accent); background: rgba(130, 170, 255, .12);
+  border-radius: 999px; padding: 0 8px;
+}
+.rep-sleeves { display: flex; flex-direction: column; gap: 8px; }
+.rep-sleeve {
+  display: flex; flex-direction: column; gap: 2px; padding: 9px 12px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 8px; background: var(--panel-2);
+}
+.rep-sleeve-name { font-weight: 700; font-size: 13px; }
+.rep-sleeve-desc { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.rep-members { width: 100%; border-collapse: collapse; margin-top: 4px; table-layout: fixed; }
+.rep-members th {
+  position: static; text-align: left; color: var(--muted); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); cursor: default;
+}
+.rep-members td { padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: top; white-space: normal; }
+.rep-members th.num, .rep-members td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rep-members tbody tr { cursor: default; }
+.rep-members tbody tr:last-child td { border-bottom: 0; }
+.rep-members tbody tr:hover { background: rgba(130, 170, 255, .05); }
+.rep-members .rep-sym { font-weight: 700; white-space: nowrap; }
+.rep-members .rep-sleeve-cell { color: var(--muted); font-size: 12px; }
+.rep-members .rep-rat { color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+.rep-members th:nth-child(1), .rep-members td:nth-child(1) { width: 72px; }
+.rep-members th:nth-child(2), .rep-members td:nth-child(2) { width: 168px; }
+.rep-members th:nth-child(3), .rep-members td:nth-child(3) { width: 52px; }
+
+/* Review-gate output table: opt out of the global sticky <th>, cap width, and
+   present the repetitive Action/Data/Conflict cells as readable tags. */
+.review-table { width: 100%; max-width: 620px; border-collapse: collapse; margin-top: 10px; table-layout: fixed; }
+.review-table th {
+  position: static; text-align: left; color: var(--muted); font-size: 11px;
+  font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  padding: 9px 14px; border-bottom: 1px solid var(--border); cursor: default;
+}
+.review-table td {
+  padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 13px;
+  vertical-align: middle; line-height: 1.5; overflow: hidden; text-overflow: ellipsis;
+}
+.review-table tbody tr { cursor: default; }
+.review-table tbody tr:last-child td { border-bottom: 0; }
+.review-table tbody tr:hover { background: rgba(130, 170, 255, .06); }
+/* Fixed columns so pills line up in neat lanes instead of sprawling. */
+.review-table th:nth-child(1), .review-table td:nth-child(1) { width: 88px; }
+.review-table th:nth-child(2), .review-table td:nth-child(2) { width: 124px; }
+.review-table th:nth-child(4), .review-table td:nth-child(4) { width: 92px; }
+.review-table th:nth-child(5), .review-table td:nth-child(5) { width: 112px; }
+.rev-sym { font-weight: 700; }
+/* Center the placeholder under the pill's text, not the cell edge, so empty and
+   filled cells share a visual lane. */
+.rev-dash { display: inline-block; padding-left: 10px; color: var(--muted); opacity: .45; }
+.rev-tag {
+  display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px;
+  font-weight: 600; line-height: 1.4; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.rev-tag.good { color: var(--good); border-color: rgba(107, 211, 138, .4); background: rgba(107, 211, 138, .08); }
+.rev-tag.warn { color: var(--warn); border-color: rgba(245, 199, 107, .4); background: rgba(245, 199, 107, .08); }
+.rev-tag.bad { color: var(--bad); border-color: rgba(255, 122, 122, .45); background: rgba(255, 122, 122, .1); }
+
 .whatif-table { width: 100%; border-collapse: collapse; margin: 6px 0 4px; }
-.whatif-table th { text-align: left; color: var(--muted); font-size: 12px; font-weight: 700; padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.whatif-table th { position: static; text-align: left; color: var(--muted); font-size: 12px; font-weight: 700; padding: 5px 8px; border-bottom: 1px solid var(--border); cursor: default; }
 .whatif-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .whatif-table tbody tr { cursor: default; }
 .whatif-card .hint { margin: 8px 0 0; }

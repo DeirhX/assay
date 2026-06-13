@@ -309,6 +309,7 @@ def review(segment: str, date: str, *, write: bool = True) -> dict[str, Any]:
         "blocked_symbols": blocked_symbols,
         "proposal": proposal,
         "markdown": review_md,
+        "report": report_text,
     }
     if write:
         paths["review"].write_text(review_md, encoding="utf-8")

@@ -2,6 +2,7 @@
 import { $, api, el, esc, relAge, setErrorSink, state } from "./core";
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
 import { pushNav } from "./shell";
+import { mdToHtml } from "./analyses";
 import { taskEnd, taskStart, taskUpdate } from "./tasks";
 
 // ---- Centralized error center ----------------------------------------------
@@ -385,6 +386,72 @@ async function loadDeepRun(stem, { push = true } = {}) {
   refreshPipeLocks();
 }
 
+// Data-quality / source-strength -> tag color. Most rows are "INFO" (neutral);
+// only escalate color when the gate flags something worth a second look.
+function reviewTagClass(v) {
+  const s = String(v).toLowerCase();
+  if (s.includes("block") || s.includes("bad") || s.includes("conflict")) return "bad";
+  if (s.includes("warn") || s.includes("weak")) return "warn";
+  if (s.includes("ok") || s.includes("good") || s.includes("primary") || s.includes("strong")) return "good";
+  return "";
+}
+
+// Surface the actual report on Step 4 so the review gate isn't reviewing an
+// invisible document. Reads whatever is in the Step 3 report field (this run's
+// output, an import, or a manual paste) and renders it as prose.
+function renderPipeReport() {
+  const box = document.getElementById("pipe-report-view");
+  const body = document.getElementById("pipe-report-rendered");
+  if (!box || !body) return;
+  const raw = ($("#pipe-report")?.value || "").trim();
+  if (!raw) { box.hidden = true; body.innerHTML = ""; return; }
+  box.hidden = false;
+  // Reports come in two shapes: a narrative markdown deep-dive, or a structured
+  // segment document (title/thesis/sleeves/members) saved as JSON. Rendering the
+  // latter through the markdown path produces an unreadable wall of JSON, so
+  // detect and lay it out properly.
+  body.innerHTML = renderStructuredReport(raw) || mdToHtml(raw);
+}
+
+function fmtConfidence(c) {
+  if (c == null || c === "") return "";
+  if (typeof c === "number") return c <= 1 ? Math.round(c * 100) + "%" : String(c);
+  return String(c);
+}
+
+function renderStructuredReport(raw) {
+  let data;
+  try { data = JSON.parse(raw); } catch { return null; }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  if (!data.members && !data.sleeves && !data.comment) return null;
+  let html = "";
+  if (data.title) html += `<h3 class="rep-title">${esc(data.title)}</h3>`;
+  if (data.comment) html += `<p class="rep-lead">${esc(data.comment)}</p>`;
+  if (Array.isArray(data.sleeves) && data.sleeves.length) {
+    html += `<div class="rep-section-h">Sleeves</div><div class="rep-sleeves">`;
+    data.sleeves.forEach((s) => {
+      html += `<div class="rep-sleeve"><span class="rep-sleeve-name">${esc(s.name || "")}</span>` +
+        (s.description ? `<span class="rep-sleeve-desc">${esc(s.description)}</span>` : "") + `</div>`;
+    });
+    html += `</div>`;
+  }
+  if (Array.isArray(data.members) && data.members.length) {
+    html += `<div class="rep-section-h">Members <span class="rep-count">${data.members.length}</span></div>`;
+    html += `<table class="rep-members"><thead><tr>` +
+      `<th>Symbol</th><th>Sleeve</th><th class="num">Conf.</th><th>Rationale</th></tr></thead><tbody>`;
+    data.members.forEach((m) => {
+      html += `<tr>` +
+        `<td class="rep-sym">${esc(m.symbol || "")}</td>` +
+        `<td class="rep-sleeve-cell">${esc(m.sleeve || "")}</td>` +
+        `<td class="num">${esc(fmtConfidence(m.confidence))}</td>` +
+        `<td class="rep-rat">${esc(m.rationale || "")}</td>` +
+        `</tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+  return html || null;
+}
+
 function renderReviewGate(rec) {
   const out = $("#pipe-review-output");
   out.innerHTML = "";
@@ -408,12 +475,22 @@ function renderReviewGate(rec) {
     card.appendChild(checks);
   }
   if (rec.rows && rec.rows.length) {
-    const table = el("table");
+    const table = el("table", "review-table");
     table.innerHTML =
       "<thead><tr><th>Symbol</th><th>Action</th><th>Target</th><th>Data</th><th>Conflict</th></tr></thead>" +
-      "<tbody>" + rec.rows.map((r) =>
-        `<tr><td><strong>${esc(r.symbol)}</strong></td><td>${esc(r.report_action)}</td><td>${esc(r.target_rule || "")}</td><td>${esc(r.data_quality)}</td><td>${esc(r.conflict || "")}</td></tr>`
-      ).join("") + "</tbody>";
+      "<tbody>" + rec.rows.map((r) => {
+        const action = (r.report_action || "").trim();
+        const target = (r.target_rule || "").trim();
+        const dq = (r.data_quality || "").trim();
+        const conflict = (r.conflict || "").trim();
+        return "<tr>" +
+          `<td class="rev-sym">${esc(r.symbol)}</td>` +
+          `<td>${action ? `<span class="rev-tag">${esc(action)}</span>` : `<span class="rev-dash">—</span>`}</td>` +
+          `<td>${target ? esc(target) : `<span class="rev-dash">—</span>`}</td>` +
+          `<td>${dq ? `<span class="rev-tag ${reviewTagClass(dq)}">${esc(dq)}</span>` : `<span class="rev-dash">—</span>`}</td>` +
+          `<td>${conflict ? `<span class="rev-tag bad">${esc(conflict)}</span>` : `<span class="rev-dash">—</span>`}</td>` +
+          "</tr>";
+      }).join("") + "</tbody>";
     card.appendChild(table);
   }
   const proposal = rec.proposal || {};
@@ -436,10 +513,17 @@ function renderReviewGate(rec) {
     card.appendChild(el("div", "hint", "No target-model changes proposed."));
   }
   if (rec.markdown) {
-    card.appendChild(el("h2", "section", "Review markdown"));
-    card.appendChild(el("pre", "markdown-preview", esc(rec.markdown.slice(0, 8000))));
+    const det = el("details", "review-notes");
+    det.appendChild(el("summary", null, "Full review notes"));
+    det.appendChild(el("div", "prose", mdToHtml(rec.markdown)));
+    card.appendChild(det);
   }
   out.appendChild(card);
+  // Surface the actual report on this step: running the review gate alone doesn't
+  // fill the Step 3 field, so without this the analyst lands here with nothing to
+  // read but the gate's verdict. The review payload carries the report text.
+  if (rec.report && $("#pipe-report")) $("#pipe-report").value = rec.report;
+  renderPipeReport();
   // Apply only becomes available once the review produced a change we're allowed
   // to apply -- i.e. at least one proposed symbol that isn't data-blocked.
   const applyBtn = $("#pipe-apply-proposal");
@@ -485,4 +569,5 @@ export {
   refreshDeepRuns,
   loadDeepRun,
   renderReviewGate,
+  renderPipeReport,
 };

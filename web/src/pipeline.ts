@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { $, api, esc, state } from "./core";
-import { loadDeepRun, refreshDeepRuns, refreshLoginStatus, pollDeepJob } from "./errors";
+import { loadDeepRun, refreshDeepRuns, refreshLoginStatus, pollDeepJob, renderPipeReport } from "./errors";
 import { loadSegmentList, renderSegment } from "./segment";
 import { pushNav, setActiveView, setSegmentControls } from "./shell";
 
@@ -71,6 +71,7 @@ function setPipeStep(n, { silent = false } = {}) {
   });
   if (n === 2) { updateStep2LoginGate(); refreshLoginStatus(); updateExistingReportNotice(); }
   if (n === 3) updateRepSubstate();
+  if (n === 4) renderPipeReport();
   const w = $("#pipe-wizard");
   if (w && !silent) w.scrollIntoView({ behavior: "smooth", block: "start" });
 }
