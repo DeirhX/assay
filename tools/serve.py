@@ -57,6 +57,10 @@ import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
+import risk  # noqa: E402
+import tax_lots  # noqa: E402
+import whatif  # noqa: E402
+import journal  # noqa: E402
 import generate_site  # noqa: E402
 import jobs  # noqa: E402
 # Disk + identifier helpers and the job registry now live in their own modules;
@@ -1479,7 +1483,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_error_json(404, "no target model — data/target-model.json missing")
             if not holdings:
                 return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
-            return self._send_json(rebalance.plan(model, holdings))
+            return self._send_json(tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings))
+        if path == "/api/risk":
+            holdings = _load(HOLDINGS_JSON)
+            if not holdings:
+                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+            rng_key = (query.get("range") or ["1y"])[0].lower()
+            rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
+            with _PULL_LOCK:
+                return self._send_json(risk.risk_report(holdings, rng=rng))
+        if path == "/api/journal":
+            entries = journal.load_entries()
+            price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
+            return self._send_json({
+                "entries": list(reversed(entries)),  # newest first for the UI
+                "calibration": journal.calibrate(entries, price_map),
+                "actions": sorted(journal.ACTIONS),
+            })
         if path == "/api/segments":
             return self._send_json({"segments": _segments_list()})
         if path.startswith("/api/segment-def/"):
@@ -1742,6 +1762,60 @@ class Handler(BaseHTTPRequestHandler):
                 "symbol": sym,
                 "removed": removed,
                 "history": research_pull.history_for(provider_sym),
+            })
+
+        if path == "/api/tax-plan":
+            body = self._read_body()
+            holdings = _load(HOLDINGS_JSON)
+            if not holdings:
+                return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+            try:
+                sym = _safe_symbol(str(body.get("symbol") or ""))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            try:
+                amount = float(body.get("amount_czk"))
+            except (TypeError, ValueError):
+                return self._send_error_json(400, "amount_czk must be a number")
+            return self._send_json(tax_lots.breakdown_for_symbol(holdings, sym, amount))
+
+        if path == "/api/whatif":
+            body = self._read_body()
+            holdings = _load(HOLDINGS_JSON)
+            model = _load(TARGET_MODEL_JSON)
+            if not holdings or not model:
+                return self._send_error_json(404, "need both a holdings snapshot and a target model")
+            try:
+                return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+
+        if path == "/api/journal":
+            body = self._read_body()
+            try:
+                journal.add_entry(body)
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            entries = journal.load_entries()
+            price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
+            return self._send_json({
+                "entries": list(reversed(entries)),
+                "calibration": journal.calibrate(entries, price_map),
+                "actions": sorted(journal.ACTIONS),
+            })
+
+        if path == "/api/journal/outcome":
+            body = self._read_body()
+            try:
+                journal.record_outcome(str(body.get("id") or ""), body.get("price"), str(body.get("note") or ""))
+            except ValueError as exc:
+                return self._send_error_json(400, str(exc))
+            entries = journal.load_entries()
+            price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
+            return self._send_json({
+                "entries": list(reversed(entries)),
+                "calibration": journal.calibrate(entries, price_map),
+                "actions": sorted(journal.ACTIONS),
             })
 
         if path == "/api/symbol-alias":

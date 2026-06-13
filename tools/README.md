@@ -11,9 +11,12 @@ decision logic (`portfolio`, `rebalance` model validation), the claim verifier
 gate (`review_deep_research` conflicts, proposals, blocks), the IBKR Flex XML
 parser (`ibkr_portfolio`), the server's request guards (`serve` malformed-JSON
 400s, body-size cap, loopback-only host refusal), the identifier guards
-(`store`), the job registry incl. cooperative cancel (`jobs`), and the
+(`store`), the job registry incl. cooperative cancel (`jobs`), the
 analysis layer's web-tool wiring, timeouts, grounding-rule switch, config
-validation, and cancellable subprocess (`ticker_analysis`).
+validation, and cancellable subprocess (`ticker_analysis`), and the confidence
+layer -- the portfolio risk math (`risk` correlation/vol/effective-bets/stress),
+the Czech tax-lot selection (`tax_lots`), the what-if recompute (`whatif`), and
+the decision-journal calibration (`journal`).
 
 ```powershell
 py -3 -m unittest discover -s tools/tests -p "test_*.py" -t tools/tests
@@ -58,10 +61,14 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   count, TTM revenue agreement, price freshness, single-source warnings). Writes
   `data/research/<SYMBOL>.json`, ignored history snapshots under
   `data/cache/research-history/<SYMBOL>/`, and `data/research/segments/<name>.json`.
-  It preserves any human-authored `thesis` block across re-pulls.
+  It preserves any human-authored `thesis` block across re-pulls. A pull that
+  retrieved no usable data (no price and no metrics) is **not** appended to
+  history; `delete_history` removes a single snapshot (wired to the Deep Dive
+  history table's delete button via `POST /api/history/delete`).
 - `serve.py` -- stdlib `http.server` app serving `web/` and a small JSON API
   (`/api/holdings`, `/api/segments`, `/api/research/<sym>`, `POST /api/pull/<sym>`,
-  `/api/history/<sym>`, `POST /api/pull-segment/<name>`, `POST /api/thesis/<sym>`,
+  `/api/history/<sym>`, `POST /api/history/delete`, `POST /api/pull-segment/<name>`,
+  `POST /api/thesis/<sym>`,
   the Deep Research pipeline endpoints for segment drafting, artifact saving,
   review, and target-proposal approval, plus the automated-run endpoints
   `POST /api/deep-research/run`, `POST /api/deep-research/login`,
@@ -240,6 +247,39 @@ no share counts, no netting, no execution. The user decides and trades.
 The goal is to **advise**, not automate: surface drift and suggest trims/adds so
 a human can decide. We are intentionally *not* building an order generator,
 share-level netting, or execution. Targets are edited HERE, never in prose.
+
+## risk.py / tax_lots.py / whatif.py / journal.py (confidence layer)
+
+These four sit on top of the rebalance spine to make a trade plan something you
+can act on with more than vibes. All are stdlib-only and split pure math/logic
+from IO so the tests run offline.
+
+- `risk.py` -- **portfolio-level risk lens**. Single-name bands are blind to the
+  real risk in a concentrated book: the names move together. It pulls aligned
+  daily closes (Yahoo, cached under `data/cache/risk/`), then computes a
+  correlation matrix, per-name and portfolio volatility, an effective-number-of-
+  bets metric (correlation-aware), the share of variance that is pure co-movement,
+  and a factor-shock stress test (e.g. `SOXX -25%`) via each holding's beta.
+  `analyze(...)` is pure; `risk_report(holdings, ...)` does the fetching. Loud
+  caveats: correlation from free daily closes is regime-dependent and converges
+  to 1.0 in a crash -- a decision aid, not a risk oracle. API: `GET /api/risk`.
+- `tax_lots.py` -- **Czech tax-lot-aware sell planner**. Given a symbol and an
+  amount to raise, it picks specific lots to minimize tax: realize 3y-exempt gains
+  first, then harvestable losses, then taxable gains. Uses `open_datetime` for the
+  3-year test (never IBKR's ST/LT). `enrich_plan(...)` attaches a lot breakdown to
+  each single-name trim in a rebalance plan. API: `POST /api/tax-plan`; also folded
+  into `GET /api/rebalance`.
+- `whatif.py` -- **staged-trade simulator**. Recomputes the resulting portfolio for
+  a basket of trades: post-trade weights/band status (reusing `rebalance`), cash,
+  and realized tax (via `tax_lots`). Pure recompute; never writes holdings or
+  trades. API: `POST /api/whatif`.
+- `journal.py` -- **decision journal + calibration**. Append-only decision log in
+  `data/journal.json` (judgement/context, committable). `calibrate(...)` scores
+  directional calls against later prices (recorded outcome or live snapshot mark):
+  a buy is "right" if it rose, a trim if it fell. API: `GET/POST /api/journal`,
+  `POST /api/journal/outcome`.
+
+All recommendations are analysis, not financial or tax advice.
 
 ## generate_site.py
 

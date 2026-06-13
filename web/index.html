@@ -15,6 +15,8 @@
       <button class="tab" data-view="segment">Segment</button>
       <button class="tab" data-view="pipeline">Pipeline</button>
       <button class="tab" data-view="rebalance">Rebalance</button>
+      <button class="tab" data-view="risk">Risk</button>
+      <button class="tab" data-view="journal">Journal</button>
       <button class="tab" data-view="holdings">Holdings</button>
     </div>
     <div class="spacer"></div>
@@ -298,11 +300,75 @@
           <h2>Rebalance planner</h2>
           <p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders.</p>
         </div>
-        <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset to suggested</button>
+        <div class="reb-head-actions">
+          <button class="primary" id="reb-simulate" type="button" title="Recompute the resulting portfolio, cash, and realized Czech tax for the planned trades">Simulate basket</button>
+          <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset to suggested</button>
+        </div>
       </div>
       <div class="status" id="reb-status"></div>
       <div id="reb-summary"></div>
+      <div id="reb-whatif"></div>
       <div id="reb-result"></div>
+    </section>
+
+    <!-- RISK -->
+    <section class="view" id="view-risk">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Portfolio risk lens</h2>
+          <p class="hint">Single-name bands are blind to the real risk in a concentrated semis/AI book: the names move together. This shows correlation, effective number of independent bets, the share of variance that is pure co-movement, and a factor-shock stress test. It is a decision aid, not a risk oracle — read the caveats.</p>
+        </div>
+        <label class="risk-range-label">Window
+          <select id="risk-range">
+            <option value="3mo">3m</option>
+            <option value="6mo">6m</option>
+            <option value="1y" selected>1y</option>
+            <option value="2y">2y</option>
+            <option value="5y">5y</option>
+          </select>
+        </label>
+      </div>
+      <div class="status" id="risk-status"></div>
+      <div id="risk-result"></div>
+    </section>
+
+    <!-- JOURNAL -->
+    <section class="view" id="view-journal">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Decision journal</h2>
+          <p class="hint">Log every decision with its thesis and price. Outcomes (your recorded price, or the live snapshot mark) calibrate whether your judgement actually works — a buy is "right" if it rose, a trim if it fell. Append-only; stored in your private data. Not advice.</p>
+        </div>
+      </div>
+      <div class="jrnl-form">
+        <div class="jrnl-form-grid">
+          <label>Symbol<input id="jrnl-symbol" placeholder="AMD" autocomplete="off" spellcheck="false"></label>
+          <label>Action
+            <select id="jrnl-action">
+              <option value="buy">buy</option>
+              <option value="add">add</option>
+              <option value="accumulate">accumulate</option>
+              <option value="trim">trim</option>
+              <option value="sell">sell</option>
+              <option value="reduce">reduce</option>
+              <option value="hold">hold</option>
+              <option value="watch">watch</option>
+              <option value="note">note</option>
+            </select>
+          </label>
+          <label>Size (CZK)<input id="jrnl-size" type="number" step="any" placeholder="optional"></label>
+          <label>Decision price<input id="jrnl-price" type="number" step="any" placeholder="optional"></label>
+          <label>Review after<input id="jrnl-review" type="date"></label>
+        </div>
+        <label>Thesis (why)<textarea id="jrnl-thesis" rows="2" spellcheck="false"></textarea></label>
+        <label>What you expect<textarea id="jrnl-expected" rows="2" spellcheck="false"></textarea></label>
+        <div class="thesis-actions">
+          <button class="primary" id="jrnl-add" type="button">Log decision</button>
+          <span class="status" id="jrnl-status"></span>
+        </div>
+      </div>
+      <div class="status" id="journal-status"></div>
+      <div id="journal-result"></div>
     </section>
 
     <!-- HOLDINGS -->

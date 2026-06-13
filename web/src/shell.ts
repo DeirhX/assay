@@ -4,14 +4,16 @@ import { $, api, applyPrivacyMode, el, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun } from "./errors";
 import { loadHoldings } from "./holdings";
+import { initJournalControls, loadJournal } from "./journal";
 import { loadPipeline, setPipeStep } from "./pipeline";
 import { loadRebalance, openTicker } from "./rebalance";
+import { initRiskControls, loadRisk } from "./risk";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
 import { renderViewedTickers } from "./viewed";
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "holdings", "setup"]);
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "setup"]);
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -92,6 +94,8 @@ function setActiveView(view) {
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
   if (active === "rebalance") loadRebalance();
+  if (active === "risk") { initRiskControls(); loadRisk(); }
+  if (active === "journal") { initJournalControls(); loadJournal(); }
   if (active === "setup") loadSetup();
   return active;
 }
