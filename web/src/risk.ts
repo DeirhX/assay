@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, el, esc, fmtStamp } from "./core";
+import { $, apiLoad, el, esc, fmtStamp } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
@@ -19,20 +19,14 @@ function corrColor(c) {
 let _riskRange = "1y";
 
 async function loadRisk() {
-  const status = $("#risk-status");
-  const out = $("#risk-result");
-  status.classList.remove("err");
-  status.textContent = "Computing portfolio risk (pulling price history)…";
-  out.innerHTML = "";
-  try {
-    const r = await api("/api/risk?range=" + encodeURIComponent(_riskRange));
-    status.textContent = "";
-    renderRisk(r);
-  } catch (e) {
-    out.innerHTML = "";
-    status.textContent = "Could not compute risk: " + e.message;
-    status.classList.add("err");
-  }
+  await apiLoad({
+    path: "/api/risk?range=" + encodeURIComponent(_riskRange),
+    status: $("#risk-status"),
+    clear: [$("#risk-result")],
+    loading: "Computing portfolio risk (pulling price history)…",
+    errorLabel: "Could not compute risk",
+    render: renderRisk,
+  });
 }
 
 function renderRisk(r) {

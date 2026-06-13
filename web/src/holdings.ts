@@ -1,5 +1,5 @@
 import type { HoldingPosition, HoldingsPayload } from "./api-types";
-import { $, api, el, esc, fmtStamp, sensitive, state } from "./core";
+import { $, api, el, esc, fmtStamp, loadError, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./rebalance";
 
 // ---- holdings -------------------------------------------------------------
@@ -39,6 +39,12 @@ async function loadHoldings() {
       `<span>Top 10 <strong>${cum(10).toFixed(1)}%</strong></span>` +
       `<span class="muted">${rows.length} positions · weights = % of invested</span>`;
     out.appendChild(banner);
+    // Legend goes above the list: with 40+ positions it was below the fold, so
+    // the colour coding (its whole point) was invisible until you scrolled past
+    // everything it explains.
+    out.appendChild(el("div", "hint pos-legend",
+      "Bar length \u221d weight. Colour = concentration: red >10% (single-name risk), amber 5\u201310%, blue 1\u20135%, grey <1%. " +
+      "Striped bar = option notional if exercised (\u2193 downside/short, \u2191 upside/long), not capital at risk. Click a row to deep-dive."));
 
     const list = el("div", "pos-list");
     rows.forEach((p) => {
@@ -91,12 +97,8 @@ async function loadHoldings() {
       list.appendChild(row);
     });
     out.appendChild(list);
-    out.appendChild(el("div", "hint",
-      "Bar length \u221d weight. Colour = concentration: red >10% (single-name risk), amber 5\u201310%, blue 1\u20135%, grey <1%. " +
-      "Striped bar = option notional if exercised (\u2193 downside/short, \u2191 upside/long), not capital at risk. Click a row to deep-dive."));
   } catch (e) {
-    status.textContent = "Could not load holdings: " + e.message;
-    status.classList.add("err");
+    loadError(status, "Could not load holdings", e);
   }
 }
 

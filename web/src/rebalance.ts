@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -20,23 +20,14 @@ const pctToCzk = (pct, base) => (typeof base === "number" && pct != null ? Math.
 const rebDefaultDelta = (r) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
 
 async function loadRebalance() {
-  const status = $("#reb-status");
-  const summary = $("#reb-summary");
-  const out = $("#reb-result");
-  status.classList.remove("err");
-  status.textContent = "Loading rebalance plan…";
-  summary.innerHTML = "";
-  out.innerHTML = "";
-  try {
-    const plan = await api("/api/rebalance");
-    status.textContent = "";
-    renderRebalance(plan);
-  } catch (e) {
-    summary.innerHTML = "";
-    out.innerHTML = "";
-    status.textContent = "Could not load rebalance plan: " + e.message;
-    status.classList.add("err");
-  }
+  await apiLoad({
+    path: "/api/rebalance",
+    status: $("#reb-status"),
+    clear: [$("#reb-summary"), $("#reb-result")],
+    loading: "Loading rebalance plan…",
+    errorLabel: "Could not load rebalance plan",
+    render: renderRebalance,
+  });
 }
 
 function renderRebalance(plan) {

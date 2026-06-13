@@ -527,6 +527,15 @@ tr:last-child td { border-bottom: 0; }
 .status { color: var(--muted); font-size: 13px; margin: 10px 2px; min-height: 18px; }
 .status.err { color: var(--bad); }
 
+/* Shared "nothing loaded yet" placeholder so empty views stop being a void. */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 6px; color: var(--muted); font-size: 14px;
+  min-height: 220px; padding: 32px 24px; margin: 16px 2px;
+  border: 1px dashed var(--border); border-radius: 12px;
+}
+.empty-state strong { color: var(--text); font-size: 15px; font-weight: 600; }
+
 .conc-summary { display: flex; gap: 20px; flex-wrap: wrap; align-items: baseline; margin: 14px 2px 4px; font-size: 14px; color: var(--muted); }
 .conc-summary strong { color: var(--text); font-size: 16px; }
 
