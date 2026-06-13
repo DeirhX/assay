@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
+import { createQaCard, ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
 import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, state } from "./core";
 import { pollDeepJob } from "./errors";
 import { cleanSymbol, downloadText, modelLabel, pushNav, setActiveView } from "./shell";
@@ -630,155 +630,22 @@ function qaUsageHtml(u) {
 // across sessions. Renders the archive, then an input to ask the next question.
 function renderQaCard(rec) {
   const sym = rec.symbol;
-  const card = el("div", "card qa-card");
-  const head = el("div", "analysis-head");
-  head.appendChild(el("h2", "section", "Ask about " + esc(sym)));
-  const clearBtn = el("button", "ghost", "Clear thread");
-  clearBtn.type = "button";
-  clearBtn.title = "Discard the archived Q&A and start fresh";
-  head.appendChild(clearBtn);
-  card.appendChild(head);
-
-  const emptyHint = el("p", "hint",
-    "No questions yet. Ask anything about the numbers, momentum, valuation, or how it sits " +
-    "in your portfolio. The thread is archived so you can pick it up later.");
-  const threadWrap = el("details", "qa-collapse");
-  threadWrap.open = true;
-  const threadSummary = el("summary", "qa-collapse-head collapse-head");
-  const thread = el("div", "qa-thread");
-  threadWrap.appendChild(threadSummary);
-  threadWrap.appendChild(thread);
-  const status = el("div", "dd-status analysis-status");
-  const form = el("div", "qa-form");
-  const input = el("textarea", "qa-input");
-  input.rows = 2;
-  input.placeholder = `Ask a follow-up about ${sym} \u2014 grounded in the data above. Ctrl/\u2318+Enter to send.`;
-  const askBtn = el("button", "primary", "Ask");
-  askBtn.type = "button";
-  form.appendChild(input);
-  form.appendChild(askBtn);
-  card.appendChild(emptyHint);
-  card.appendChild(threadWrap);
-  card.appendChild(form);
-  card.appendChild(status);
-
-  function renderThread(turns) {
-    thread.innerHTML = "";
-    if (!turns.length) {
-      clearBtn.hidden = true;
-      emptyHint.hidden = false;
-      threadWrap.hidden = true;
-      return;
-    }
-    clearBtn.hidden = false;
-    emptyHint.hidden = true;
-    threadWrap.hidden = false;
-    const exchanges = turns.filter((t) => t.role === "user").length;
-    threadSummary.innerHTML =
-      `<span class="collapse-title">Conversation history</span>` +
-      `<span class="collapse-meta">${exchanges} question${exchanges === 1 ? "" : "s"}</span>` +
-      `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
-    turns.forEach((t) => {
-      if (t.role === "user") {
-        const q = el("div", "qa-turn qa-q");
-        q.appendChild(el("div", "qa-role", "You"));
-        q.appendChild(el("div", "qa-text", esc(t.text)));
-        thread.appendChild(q);
-      } else {
-        const a = el("div", "qa-turn qa-a");
-        const meta = [t.backend_label, modelLabel(t.model),
-                      t.ts ? relTime(t.ts) : null].filter(Boolean).map(esc).join(" \u00b7 ");
-        a.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
-        const prose = el("div", "prose qa-prose");
-        prose.innerHTML = mdToHtml(t.text || "");
-        linkifyTickers(prose);
-        a.appendChild(prose);
-        const usage = qaUsageHtml(t.usage);
-        if (usage) a.insertAdjacentHTML("beforeend", usage);
-        thread.appendChild(a);
-      }
-    });
-  }
-
-  async function load() {
-    let data;
-    try { data = await api("/api/qa/" + encodeURIComponent(sym)); }
-    catch (_e) { data = { turns: [] }; }
-    await ensureTickerSet();
-    renderThread(data.turns || []);
-  }
-
-  let currentJobId = null;
-  let busy = false;
-
-  function setBusy(on) {
-    busy = on;
-    if (on) {
-      askBtn.textContent = "Cancel";
-      askBtn.classList.remove("primary");
-      askBtn.classList.add("ghost");
-      askBtn.title = "Stop this question and ask something else";
-    } else {
-      askBtn.textContent = "Ask";
-      askBtn.classList.add("primary");
-      askBtn.classList.remove("ghost");
-      askBtn.title = "";
-      currentJobId = null;
-    }
-  }
-
-  async function ask() {
-    if (busy) return;
-    const q = input.value.trim();
-    if (!q) return;
-    setBusy(true);
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> thinking&hellip;`;
-    try {
-      const start = await api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q });
-      currentJobId = start.id;
-      await pollDeepJob(start.id, status, async () => {
-        status.textContent = "";
-        input.value = "";
-        await load();
-      }, `Q&A \u00b7 ${sym}`);
-    } catch (e) {
-      status.classList.add("err");
-      status.textContent = "question failed: " + e.message;
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Cancel the in-flight question (kills the CLI subprocess server-side). The
-  // poll loop observes the cancelled state on its next tick and winds down,
-  // re-enabling the Ask button so a different question can be asked.
-  async function cancelAsk() {
-    if (!currentJobId) return;
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> cancelling&hellip;`;
-    try {
-      await api("/api/deep-job/cancel", "POST", { id: currentJobId });
-    } catch (_e) { /* poll loop still winds the job down */ }
-  }
-
-  askBtn.addEventListener("click", () => (busy ? cancelAsk() : ask()));
-  input.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); if (!busy) ask(); }
+  return createQaCard({
+    title: "Ask about " + sym,
+    emptyHint:
+      "No questions yet. Ask anything about the numbers, momentum, valuation, or how it sits " +
+      "in your portfolio. The thread is archived so you can pick it up later.",
+    placeholder: `Ask a follow-up about ${sym} \u2014 grounded in the data above. Ctrl/\u2318+Enter to send.`,
+    pollLabel: `Q&A \u00b7 ${sym}`,
+    confirmMsg: `Clear the archived Q&A thread for ${sym}?`,
+    // The ticker set must be loaded before linkifyTickers runs in the thread.
+    prepare: ensureTickerSet,
+    loadThread: () => api("/api/qa/" + encodeURIComponent(sym)),
+    postQuestion: (q) => api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q }),
+    clearThread: () => api("/api/qa/" + encodeURIComponent(sym), "POST", { clear: true }),
+    turnMeta: (t) => [t.backend_label, modelLabel(t.model), t.ts ? relTime(t.ts) : null],
+    usageHtml: (t) => qaUsageHtml(t.usage),
   });
-  clearBtn.addEventListener("click", async () => {
-    if (!confirm(`Clear the archived Q&A thread for ${sym}?`)) return;
-    try {
-      const data = await api("/api/qa/" + encodeURIComponent(sym), "POST", { clear: true });
-      renderThread(data.turns || []);
-    } catch (e) {
-      status.classList.add("err");
-      status.textContent = "clear failed: " + e.message;
-    }
-  });
-
-  load();
-  return card;
 }
 
 // Lightweight modal to edit the CLI backend policy: which agents run, in what
