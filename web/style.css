@@ -1186,7 +1186,8 @@ a.tlink:hover { border-bottom-style: solid; }
 .risk-heatmap.compact .risk-hm-cell { font-size: 0; }
 .risk-heatmap.compact .risk-hm-col { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; padding: 4px 0; }
 
-.risk-pos-table { width: 100%; border-collapse: collapse; }
+/* Cap the width so the name column stops absorbing the whole panel as slack. */
+.risk-pos-table { width: 100%; max-width: 680px; border-collapse: collapse; }
 /* Opt out of the global sticky <th> (top:57px) — for a short section table it
    just paints the header under the first row. */
 .risk-pos-table th {
