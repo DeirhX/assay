@@ -97,7 +97,7 @@ function renderRisk(r) {
   if (syms.length) {
     const sec = el("div", "risk-section");
     sec.appendChild(el("h3", null, "Correlation matrix"));
-    sec.appendChild(el("p", "hint", "Daily-return correlation. Red = move together (concentration), green = a genuine hedge."));
+    sec.appendChild(el("p", "hint", "Daily-return correlation. Red = move together (concentration), green = a genuine hedge. Hover any cell for the exact value."));
     sec.appendChild(heatmap(syms, r.correlation.matrix));
     out.appendChild(sec);
   }
@@ -152,7 +152,11 @@ function stressCard(s) {
 function heatmap(syms, matrix) {
   const wrap = el("div", "risk-heatmap-wrap");
   const grid = el("div", "risk-heatmap");
-  grid.style.gridTemplateColumns = `minmax(48px, auto) repeat(${syms.length}, minmax(34px, 1fr))`;
+  // Cap cell width (so a small book doesn't get absurd squares) but let columns
+  // shrink to fit the panel as names grow -- no horizontal scroll either way.
+  // Past the threshold, drop numbers and rely on colour + hover for the value.
+  if (syms.length > 12) grid.classList.add("compact");
+  grid.style.gridTemplateColumns = `minmax(44px, max-content) repeat(${syms.length}, minmax(0, 60px))`;
   grid.appendChild(el("div", "risk-hm-corner"));
   syms.forEach((s) => grid.appendChild(el("div", "risk-hm-col", esc(s))));
   syms.forEach((rowSym) => {
@@ -169,18 +173,36 @@ function heatmap(syms, matrix) {
   return wrap;
 }
 
+// Annualized single-name vol -> severity. Lower is calmer (green); the loud end
+// is what concentration risk looks like name-by-name.
+function volClass(v) {
+  if (v == null) return "muted";
+  if (v >= 60) return "bad";
+  if (v >= 40) return "warn";
+  if (v >= 25) return "";
+  return "good";
+}
+
 function posTable(positions) {
+  const vols = positions.map((p) => p.ann_vol_pct).filter((v) => v != null);
+  const maxVol = vols.length ? Math.max(...vols) : 0;
   const tbl = el("table", "risk-pos-table");
   tbl.innerHTML =
-    `<thead><tr><th>Name</th><th class="num">Weight</th><th class="num">Norm. weight</th><th class="num">Ann. vol</th></tr></thead>`;
+    `<thead><tr><th>Name</th><th class="num">Weight</th><th class="num">Norm. weight</th><th>Ann. vol</th></tr></thead>`;
   const body = el("tbody");
   positions.forEach((p) => {
     const tr = el("tr");
+    const v = p.ann_vol_pct;
+    const cls = volClass(v);
+    const fill = maxVol > 0 && v != null ? Math.max(3, Math.round((v / maxVol) * 100)) : 0;
     tr.innerHTML =
-      `<td>${esc(p.symbol)}</td>` +
+      `<td class="risk-pos-sym">${esc(p.symbol)}</td>` +
       `<td class="num">${fmtPct1(p.weight_pct)}</td>` +
-      `<td class="num">${fmtPct1(p.norm_weight_pct)}</td>` +
-      `<td class="num">${fmtPct1(p.ann_vol_pct)}</td>`;
+      `<td class="num muted">${fmtPct1(p.norm_weight_pct)}</td>` +
+      `<td class="risk-vol-cell">` +
+        `<span class="risk-vol-track"><span class="risk-vol-bar ${cls}" style="width:${fill}%"></span></span>` +
+        `<span class="risk-vol-val ${cls}">${fmtPct1(v)}</span>` +
+      `</td>`;
     body.appendChild(tr);
   });
   tbl.appendChild(body);
