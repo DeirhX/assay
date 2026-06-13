@@ -1393,6 +1393,33 @@ a.tlink:hover { border-bottom-style: solid; }
   color: var(--text); padding: 0 11px;
 }
 
+/* ---- Portfolio history (NAV chart + trade ledger) ------------------------ */
+.hist-empty { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 18px 20px; }
+.hist-empty p { margin: 0 0 6px; }
+
+.hist-chart-wrap {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft);
+  padding: 10px 12px; margin-top: 6px;
+}
+.hist-chart { width: 100%; height: auto; display: block; }
+.hist-grid { stroke: var(--border); stroke-width: 1; opacity: .6; }
+.hist-ylabel, .hist-xlabel { fill: var(--muted); font-size: 12px; font-family: inherit; }
+.hist-area { fill: rgba(130, 170, 255, .12); stroke: none; }
+.hist-line { fill: none; stroke: var(--accent, #82aaff); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.hist-dot { stroke: rgba(0, 0, 0, .35); stroke-width: .5; cursor: help; }
+.hist-dot.buy { fill: rgba(70, 190, 120, .9); }
+.hist-dot.sell { fill: rgba(225, 90, 80, .9); }
+.hist-dot:hover { stroke: var(--text); stroke-width: 1.5; }
+
+.hist-legend { display: flex; gap: 16px; margin-top: 8px; color: var(--muted); font-size: 13px; }
+.hist-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.hist-key { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+.hist-key.line { border-radius: 2px; height: 3px; width: 16px; background: var(--accent, #82aaff); }
+.hist-key.buy { background: rgba(70, 190, 120, .9); }
+.hist-key.sell { background: rgba(225, 90, 80, .9); }
+
+.hist-trades td, .hist-trades th { font-size: 13px; }
+
 /* The calibration metrics read as a scoreboard at the bottom of the journal. */
 #view-journal .reb-stats { gap: 12px; margin-bottom: 14px; }
 #view-journal .reb-stat {

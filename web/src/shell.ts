@@ -3,6 +3,7 @@ import { loadAnalyses, startPipeline } from "./analyses";
 import { $, api, applyPrivacyMode, el, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
+import { initHistoryControls, loadHistory } from "./history";
 import { loadHoldings } from "./holdings";
 import { initJournalControls, loadJournal } from "./journal";
 import { loadPipeline, setPipeStep } from "./pipeline";
@@ -13,7 +14,7 @@ import { loadSetup } from "./setup";
 import { renderViewedTickers } from "./viewed";
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "setup"]);
+const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "history", "setup"]);
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -91,6 +92,7 @@ function setActiveView(view) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $("#view-" + active).classList.add("active");
   if (active === "holdings") loadHoldings();
+  if (active === "history") { initHistoryControls(); loadHistory(); }
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
   if (active === "rebalance") loadRebalance();

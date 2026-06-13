@@ -20,6 +20,7 @@ private data repo).
 | Tax-lot planner | `tools/tax_lots.py` | Czech 3-year-aware lot selection for a trim; enriches the rebalance plan (`POST /api/tax-plan`). |
 | What-if simulator | `tools/whatif.py` | Recomputes post-trade weights/cash/realized-tax for a staged basket (`POST /api/whatif`). |
 | Decision journal | `tools/journal.py`, `data/journal.json` (submodule) | Append-only decisions + outcome calibration (`GET/POST /api/journal`). |
+| Portfolio history | `tools/ibkr_history.py`, `data/cache/ibkr/portfolio-history.json` (gitignored) | Full trade ledger + day-by-day NAV via windowed read-only Flex; persists once then tops up only new days (incremental by default, `--full`/`{"full":true}` to rebuild). NAV-over-time chart with trade markers in the History tab (`GET /api/portfolio-history`, `POST /api/portfolio-history/sync`). |
 | Claim validator | `tools/verify_claims.py`, `data/research-claims.json` (submodule) | Checks valuation claims for arithmetic consistency and snapshot drift. |
 | Research Console | `tools/serve.py`, `tools/research_pull.py`, `web/` | Local live research UI/API using Yahoo, SEC EDGAR, optional FMP. |
 | Research segments | `data/segments/*.json` (submodule) | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
