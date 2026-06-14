@@ -10,6 +10,7 @@
   <header class="topbar">
     <h1>Research Console</h1>
     <div class="groups" role="tablist" aria-label="Sections">
+      <button class="group" data-group="strategy" type="button" role="tab">Strategy</button>
       <button class="group active" data-group="deepdive" type="button" role="tab">Ticker</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
@@ -50,6 +51,33 @@
   </div>
 
   <main>
+    <!-- STRATEGY (guided Direction -> Rebalance) -->
+    <section class="view" id="view-strategy">
+      <div class="strat-head">
+        <h2>Direction → Rebalance</h2>
+        <p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. This is the guided path; the Research and Portfolio tabs hold the same steps as standalone tools.</p>
+      </div>
+      <ol class="strat-stages" id="strat-stages" hidden>
+        <li data-stage="draft">Draft</li>
+        <li data-stage="segment">Segment</li>
+        <li data-stage="research">Research</li>
+        <li data-stage="synthesize">Synthesize</li>
+        <li data-stage="review">Review</li>
+        <li data-stage="done">Recommendation</li>
+      </ol>
+      <div class="strat-start card" id="strat-start">
+        <label>What direction do you want to explore?</label>
+        <div class="inline-form">
+          <input id="strat-direction" placeholder="e.g. rotate toward credit-sensitive fintech; add nuclear supply chain" autocomplete="off" spellcheck="false">
+          <button class="primary" id="strat-go" type="button">Start guided run</button>
+        </div>
+        <div class="hint">Plain words are fine — the run drafts the tickers, researches them, and proposes sized bands for you to approve.</div>
+        <div class="status" id="strat-status"></div>
+        <div class="strat-recent" id="strat-recent"></div>
+      </div>
+      <div id="strat-panel"></div>
+    </section>
+
     <!-- DEEP DIVE -->
     <section class="view active" id="view-deepdive">
       <div class="searchbar">
