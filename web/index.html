@@ -3,32 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rebalancing Research Console</title>
+  <title>Research Console</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <h1>Research Console</h1>
-    <div class="tabs">
-      <button class="tab" data-view="analyses">Analyses</button>
-      <button class="tab active" data-view="deepdive">Deep dive</button>
-      <button class="tab" data-view="segment">Segment</button>
-      <button class="tab" data-view="pipeline">Pipeline</button>
-      <button class="tab" data-view="rebalance">Rebalance</button>
-      <button class="tab" data-view="risk">Risk</button>
-      <button class="tab" data-view="journal">Journal</button>
-      <button class="tab" data-view="holdings">Holdings</button>
-      <button class="tab" data-view="history">History</button>
+    <div class="groups" role="tablist" aria-label="Sections">
+      <button class="group active" data-group="deepdive" type="button" role="tab">Ticker</button>
+      <button class="group" data-group="research" type="button" role="tab">Research</button>
+      <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
+    </div>
+    <div class="topsearch">
+      <input id="top-ticker" placeholder="Search ticker…" autocomplete="off" spellcheck="false" aria-label="Search any ticker" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="top-ticker-menu">
+      <div class="topsearch-menu" id="top-ticker-menu" role="listbox" hidden></div>
     </div>
     <div class="spacer"></div>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
-    <nav>
-      <a href="/next-steps.html" target="_blank" rel="noopener">Plan</a>
-    </nav>
     <button class="tab settings-cog" data-view="setup" type="button" title="Settings" aria-label="Settings">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
+    <div class="subbar" id="subbar" hidden>
+      <div class="subtabs" data-group="research" hidden>
+        <button class="subtab" data-view="analyses" type="button">Reports</button>
+        <button class="subtab" data-view="pipeline" type="button">New run</button>
+      </div>
+      <div class="subtabs" data-group="portfolio" hidden>
+        <button class="subtab" data-view="holdings" type="button">Positions</button>
+        <button class="subtab" data-view="rebalance" type="button">Rebalance</button>
+        <button class="subtab" data-view="risk" type="button">Risk</button>
+        <button class="subtab" data-view="journal" type="button">Journal</button>
+      </div>
+    </div>
   </header>
 
   <div class="error-panel" id="error-panel" hidden>
@@ -189,7 +196,7 @@
           <div class="step-head">
             <span class="step-index">Step 3 of 4</span>
             <h2>Get the report in</h2>
-            <p>Bring one report into the pipeline: review the one this run produced, or import an existing run you finished elsewhere.</p>
+            <p>Bring one report in: review the one this run produced, or import an existing run you finished elsewhere.</p>
           </div>
           <div class="step-body">
             <div class="seg-mode" role="tablist">
@@ -282,10 +289,10 @@
     <section class="view" id="view-analyses">
       <div class="analyses-head">
         <div class="analyses-head-text">
-          <h2>Deep Research analyses</h2>
-          <p class="hint">Every saved Perplexity Deep Research run, newest first. Pick one to read its report, sources, and review gate. Use a segment below — or the button — to start a new run in the Pipeline.</p>
+          <h2>Deep Research reports</h2>
+          <p class="hint">Every saved Perplexity Deep Research run, newest first. Pick one to read its report, sources, and review gate. Use a segment below — or the button — to start a new run.</p>
         </div>
-        <button class="primary" id="analyses-new" type="button">+ New analysis</button>
+        <button class="primary" id="analyses-new" type="button">+ New run</button>
       </div>
       <div class="analyses-layout">
         <aside class="analyses-list" id="analyses-list"></aside>
@@ -305,6 +312,7 @@
         <div class="reb-head-actions">
           <button class="primary" id="reb-simulate" type="button" title="Recompute the resulting portfolio, cash, and realized Czech tax for the planned trades">Simulate basket</button>
           <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset to suggested</button>
+          <a class="ghost" href="/next-steps.html" target="_blank" rel="noopener" role="button" title="Open the generated standing rebalance plan in a new tab">Open plan ↗</a>
         </div>
       </div>
       <div class="status" id="reb-status"></div>
@@ -375,6 +383,10 @@
 
     <!-- HOLDINGS -->
     <section class="view" id="view-holdings">
+      <div class="pos-toggle" role="tablist" aria-label="Positions view">
+        <button type="button" class="active" data-pos="now" role="tab">Now</button>
+        <button type="button" data-pos="over" role="tab">Over time</button>
+      </div>
       <div class="hold-controls">
         <button class="primary" id="hold-sync" type="button">Resync from IBKR</button>
         <button class="ghost" id="plan-regen" type="button" title="Re-render next-steps.html and the detail pages from the current snapshot + target model">Regenerate plan</button>
@@ -388,6 +400,10 @@
 
     <!-- HISTORY -->
     <section class="view" id="view-history">
+      <div class="pos-toggle" role="tablist" aria-label="Positions view">
+        <button type="button" data-pos="now" role="tab">Now</button>
+        <button type="button" class="active" data-pos="over" role="tab">Over time</button>
+      </div>
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio history</h2>

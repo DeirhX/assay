@@ -157,6 +157,45 @@ class DeepArtifactJsonGuard(unittest.TestCase):
         self.assertIn("JSON document", str(ctx.exception))
 
 
+class RouteRegistry(unittest.TestCase):
+    """The declarative GET/POST route tables drive dispatch via getattr, so the
+    safety net for that refactor is: every table entry maps to a real Handler
+    method, and prefix tables stay sorted longest-first (the invariant the
+    longest-match-wins dispatcher relies on)."""
+
+    def _all_handler_names(self):
+        return (
+            list(serve._GET_EXACT.values())
+            + [name for _, name in serve._GET_PREFIX]
+            + list(serve._POST_EXACT.values())
+            + [name for _, name in serve._POST_PREFIX]
+        )
+
+    def test_every_route_resolves_to_a_real_handler(self):
+        for name in self._all_handler_names():
+            handler = getattr(serve.Handler, name, None)
+            self.assertTrue(callable(handler), f"missing/uncallable handler {name}")
+
+    def test_no_duplicate_handler_names(self):
+        names = self._all_handler_names()
+        dupes = {n for n in names if names.count(n) > 1}
+        self.assertEqual(dupes, set(), f"a handler is wired to more than one route: {dupes}")
+
+    def test_prefix_tables_are_longest_first(self):
+        for table in (serve._GET_PREFIX, serve._POST_PREFIX):
+            lengths = [len(prefix) for prefix, _ in table]
+            self.assertEqual(lengths, sorted(lengths, reverse=True))
+
+    def test_overlapping_prefix_resolves_to_most_specific(self):
+        # /api/pull-segment/x must not be swallowed by /api/pull/.
+        resolved = None
+        for prefix, name in serve._POST_PREFIX:
+            if "/api/pull-segment/foo".startswith(prefix):
+                resolved = name
+                break
+        self.assertEqual(resolved, "_post_pull_segment")
+
+
 class DeepQa(unittest.TestCase):
     """Follow-up Q&A about a saved Deep Research run: GET returns an (empty)
     thread for an unknown stem, and starting a question for a run with no saved
@@ -197,6 +236,55 @@ class DeepQa(unittest.TestCase):
             body={"stem": "no-such-run-2026-01-01", "question": "why?"})
         self.assertEqual(status, 400)
         self.assertIn("no saved report", payload["error"])
+
+
+class RouteDispatch(unittest.TestCase):
+    """End-to-end proof the table-driven dispatcher is wired correctly over the
+    wire: a filesystem-only GET route returns 200, and an unknown route 404s."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def _get(self, path: str):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read().decode("utf-8"))
+
+    def test_known_get_route_dispatches(self):
+        status, payload = self._get("/api/segments")
+        self.assertEqual(status, 200)
+        self.assertIn("segments", payload)
+
+    def test_unknown_get_route_is_404(self):
+        status, payload = self._get("/api/does-not-exist")
+        self.assertEqual(status, 404)
+        self.assertIn("unknown endpoint", payload["error"])
+
+    def test_unknown_post_route_is_404(self):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/nope", data=b"{}",
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status, payload = resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            status, payload = err.code, json.loads(err.read().decode("utf-8"))
+        self.assertEqual(status, 404)
+        self.assertIn("unknown endpoint", payload["error"])
 
 
 class ErrorLogEndpoint(unittest.TestCase):

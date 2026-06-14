@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { loadAnalyses, startPipeline } from "./analyses";
-import { $, api, applyPrivacyMode, el, state } from "./core";
+import { $, api, applyPrivacyMode, el, esc, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
 import { initHistoryControls, loadHistory } from "./history";
@@ -11,10 +11,151 @@ import { loadRebalance, openTicker } from "./rebalance";
 import { initRiskControls, loadRisk } from "./risk";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
-import { renderViewedTickers } from "./viewed";
+import { getViewedMap, renderViewedTickers } from "./viewed";
+
+// ---- header ticker autocomplete --------------------------------------------
+// Suggestions are drawn ONLY from data we already have locally: the server's
+// cached ticker index (/api/ticker-index -- symbols we've pulled/analysed) plus
+// browser-local recents. The index is fetched once with a short TTL and filtered
+// in-memory, so typing never hits the network. We intentionally do NOT call the
+// live /api/symbol-search here -- that's for discovering symbols we DON'T have.
+let _tkIndex: any[] | null = null;
+let _tkIndexAt = 0;
+
+async function tickerSuggestRows() {
+  if (!_tkIndex || Date.now() - _tkIndexAt > 60000) {
+    try { _tkIndex = (await api("/api/ticker-index")).tickers || []; }
+    catch (_e) { _tkIndex = _tkIndex || []; }
+    _tkIndexAt = Date.now();
+  }
+  const map: Record<string, any> = {};
+  (_tkIndex || []).forEach((r) => {
+    map[r.symbol] = {
+      symbol: r.symbol, name: r.name || "",
+      has_analysis: !!r.has_analysis, viewed: "",
+    };
+  });
+  // Local recents fold in (and win on freshness ordering) so a ticker you just
+  // looked at is offered immediately, even before the server index refreshes.
+  const recents = getViewedMap();
+  Object.keys(recents).forEach((sym) => {
+    const m = map[sym] || (map[sym] = { symbol: sym, name: "", has_analysis: false });
+    if (!m.name && recents[sym].name) m.name = recents[sym].name;
+    m.viewed = recents[sym].ts || "";
+  });
+  return Object.values(map);
+}
+
+// Prefix-on-symbol beats prefix-on-name beats substring; empty query shows the
+// most recently viewed. Capped so the dropdown never becomes a wall.
+function rankTickerRows(rows: any[], q: string) {
+  q = (q || "").trim().toUpperCase();
+  if (!q) {
+    return rows.filter((r) => r.viewed)
+      .sort((a, b) => (b.viewed || "").localeCompare(a.viewed || ""))
+      .slice(0, 8);
+  }
+  const scored: [number, any][] = [];
+  rows.forEach((r) => {
+    const sym = r.symbol.toUpperCase();
+    const name = (r.name || "").toUpperCase();
+    let s = -1;
+    if (sym === q) s = 100;
+    else if (sym.startsWith(q)) s = 80;
+    else if (name.startsWith(q)) s = 55;
+    else if (sym.includes(q)) s = 40;
+    else if (name.includes(q)) s = 20;
+    if (s >= 0) scored.push([s, r]);
+  });
+  scored.sort((a, b) => b[0] - a[0] || a[1].symbol.localeCompare(b[1].symbol));
+  return scored.slice(0, 8).map((x) => x[1]);
+}
+
+function tickerMenuHtml(rows: any[]) {
+  return rows.map((r) =>
+    `<div class="topsearch-item" role="option" data-sym="${esc(r.symbol)}">` +
+      `<span class="ts-sym">${esc(r.symbol)}</span>` +
+      `<span class="ts-name">${esc(r.name || "")}</span>` +
+      (r.has_analysis ? `<span class="ts-badge">analysis</span>` : "") +
+    `</div>`).join("");
+}
+
+function wireTickerSearch(input) {
+  const menu = $("#top-ticker-menu");
+  if (!menu) return;
+
+  const render = async (showRecents: boolean) => {
+    const list = rankTickerRows(await tickerSuggestRows(), showRecents ? "" : input.value);
+    menu.innerHTML = tickerMenuHtml(list);
+    menu.hidden = !list.length;
+    input.setAttribute("aria-expanded", list.length ? "true" : "false");
+  };
+  const close = () => { menu.hidden = true; input.setAttribute("aria-expanded", "false"); };
+  const items = () => [...menu.querySelectorAll(".topsearch-item")];
+  const setActive = (its, idx) => {
+    its.forEach((it) => it.classList.remove("active"));
+    if (idx >= 0 && its[idx]) { its[idx].classList.add("active"); its[idx].scrollIntoView({ block: "nearest" }); }
+  };
+  const choose = (raw: string) => {
+    const sym = cleanSymbol(raw);
+    if (!sym) return;
+    close();
+    input.value = "";
+    input.blur();
+    openTicker(sym);
+  };
+  const submit = () => {
+    const active = menu.hidden ? null : menu.querySelector(".topsearch-item.active");
+    choose(active ? active.dataset.sym : input.value);
+  };
+
+  input.addEventListener("focus", () => render(true));
+  input.addEventListener("input", () => render(false));
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); return submit(); }
+    if (e.key === "Escape") return close();
+    const its = items();
+    if (menu.hidden || !its.length) return;
+    const idx = its.findIndex((it) => it.classList.contains("active"));
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive(its, Math.min(its.length - 1, idx + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(its, Math.max(-1, idx - 1)); }
+  });
+  // mousedown (not click) so the pick lands before the input's blur closes us.
+  menu.addEventListener("mousedown", (e) => {
+    const it = e.target.closest(".topsearch-item");
+    if (!it) return;
+    e.preventDefault();
+    choose(it.dataset.sym);
+  });
+}
 
 // ---- location state --------------------------------------------------------
 const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "history", "setup"]);
+
+// Two-level navigation: the header exposes three top-level GROUPS, each of which
+// fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
+// the flat `view` (so deep links + history stay stable); the group is derived.
+// `segment` is intentionally absent from any sub-tab bar -- it's folded into the
+// research flow (reached via the pipeline's deterministic pull or a segment row)
+// rather than being a destination of its own. `setup` (the gear) sits outside
+// the group bar entirely.
+const VIEW_GROUP = {
+  deepdive: "deepdive",
+  analyses: "research", pipeline: "research", segment: "research",
+  holdings: "portfolio", history: "portfolio", rebalance: "portfolio", risk: "portfolio", journal: "portfolio",
+  setup: "setup",
+};
+// Which sub-tab lights up for a given view. Holdings + History are merged behind
+// one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
+const VIEW_SUBTAB = {
+  analyses: "analyses", pipeline: "pipeline",
+  holdings: "positions", history: "positions", rebalance: "rebalance", risk: "risk", journal: "journal",
+};
+const GROUP_DEFAULT = { deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+// Remember the last view visited within each group so re-clicking a group header
+// returns you where you were, not always to the group's default.
+const lastViewByGroup = { deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -86,9 +227,33 @@ function navForView(view) {
   return nav;
 }
 
+// Sync the header chrome (group buttons, sub-tab bar, positions toggle) to the
+// active view. Kept separate from data loading so navigation logic stays legible.
+function updateChrome(active) {
+  const group = VIEW_GROUP[active] || "deepdive";
+  if (lastViewByGroup[group]) lastViewByGroup[group] = active;
+
+  document.querySelectorAll(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
+  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+
+  // The sub-tab bar only exists for groups that fan out (research, portfolio).
+  const subbar = $("#subbar");
+  const groupHasSubtabs = group === "research" || group === "portfolio";
+  if (subbar) subbar.hidden = !groupHasSubtabs;
+  document.querySelectorAll(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
+  const wantSub = VIEW_SUBTAB[active];
+  document.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
+
+  // Positions (holdings + history) share a Now / Over-time toggle in-content.
+  document.querySelectorAll(".pos-toggle button").forEach((b) => {
+    const isNow = b.dataset.pos === "now";
+    b.classList.toggle("active", (isNow && active === "holdings") || (!isNow && active === "history"));
+  });
+}
+
 function setActiveView(view) {
   const active = VIEWS.has(view) ? view : "deepdive";
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $("#view-" + active).classList.add("active");
   if (active === "holdings") loadHoldings();
@@ -168,11 +333,35 @@ function maybeShowSelChip() {
 // run at import time: the core<->errors<->shell import cycle can evaluate shell
 // before core's `$`/`el`/`api` consts are initialized, throwing a TDZ error.
 function initShell() {
-  document.querySelectorAll(".tab").forEach((btn) => {
+  const goToView = (view) => {
+    pushNav(navForView(view));
+    restoreNav(navFromUrl());
+  };
+
+  // Direct view targets: the settings gear (.tab) and the secondary sub-tabs.
+  document.querySelectorAll(".tab, .subtab").forEach((btn) => {
+    btn.addEventListener("click", () => goToView(btn.dataset.view));
+  });
+
+  // Top-level group headers jump to wherever you last were in that group (or its
+  // default on first visit), giving the three-item nav some memory.
+  document.querySelectorAll(".group").forEach((btn) => {
     btn.addEventListener("click", () => {
-      pushNav(navForView(btn.dataset.view));
-      restoreNav(navFromUrl());
+      const group = btn.dataset.group;
+      goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || "deepdive");
     });
+  });
+
+  // Persistent header search with autocomplete over tickers we already have.
+  const topTicker = $("#top-ticker");
+  if (topTicker) wireTickerSearch(topTicker);
+
+  // Positions Now / Over-time toggle: two views (holdings, history) behind one
+  // sub-tab. Delegated so it works for the toggle in either section.
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest ? e.target.closest(".pos-toggle button") : null;
+    if (!b) return;
+    goToView(b.dataset.pos === "over" ? "history" : "holdings");
   });
 
   window.addEventListener("popstate", (event) => {

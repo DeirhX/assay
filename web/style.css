@@ -42,13 +42,73 @@ header.topbar {
   border-bottom: 1px solid var(--border);
 }
 header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
-.tabs { display: flex; gap: 6px; }
 .tab {
   background: transparent; color: var(--muted); border: 1px solid transparent;
   padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 14px; font-weight: 600;
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+
+/* Primary nav: three top-level groups. */
+.groups { display: flex; gap: 6px; }
+.group {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  padding: 7px 16px; border-radius: 999px; cursor: pointer; font-size: 15px; font-weight: 700;
+}
+.group:hover { color: var(--text); }
+.group.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+
+/* Persistent ticker search in the header. */
+.topsearch { display: flex; position: relative; }
+.topsearch input {
+  background: rgba(29, 33, 43, 0.72); color: var(--text);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 6px 14px; font-size: 13px; width: 170px; transition: width .18s ease, border-color .18s ease;
+}
+.topsearch input::placeholder { color: var(--muted); }
+.topsearch input:focus { outline: none; width: 230px; border-color: rgba(130,170,255,.55); }
+
+/* Autocomplete dropdown over locally-known tickers. */
+.topsearch-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+  min-width: 230px; max-height: 320px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 5px; box-shadow: 0 14px 34px rgba(0,0,0,.45);
+}
+.topsearch-item {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 7px 10px; border-radius: 8px; font-size: 13px;
+}
+.topsearch-item:hover, .topsearch-item.active { background: rgba(130,170,255,.12); }
+.topsearch-item .ts-sym { font-weight: 800; letter-spacing: .02em; flex: none; min-width: 52px; }
+.topsearch-item .ts-name {
+  color: var(--muted); flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topsearch-item .ts-badge {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--accent); background: rgba(130,170,255,.12);
+  border: 1px solid rgba(130,170,255,.30); border-radius: 999px; padding: 1px 7px;
+}
+
+/* Secondary nav: sub-tabs for the active group, wrapped onto its own row. */
+.subbar { flex-basis: 100%; display: flex; }
+.subtabs { display: flex; gap: 6px; padding-top: 10px; }
+.subtab {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  padding: 4px 13px; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.subtab:hover { color: var(--text); }
+.subtab.active { color: var(--accent); background: rgba(130,170,255,.12); border-color: var(--border); }
+
+/* Now / Over-time toggle shared by the merged Positions views. */
+.pos-toggle { display: inline-flex; gap: 0; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.pos-toggle button {
+  background: transparent; color: var(--muted); border: 0;
+  padding: 5px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.pos-toggle button:hover { color: var(--text); }
+.pos-toggle button.active { color: var(--text); background: var(--panel-2); }
 .tab.settings-cog {
   width: var(--control-h); height: var(--control-h); padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
@@ -59,15 +119,6 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .tab.settings-cog:hover svg { transform: rotate(45deg); }
 .tab.settings-cog.active { color: var(--accent); border-color: var(--accent); background: rgba(130,170,255,.12); }
 .topbar .spacer { flex: 1; }
-.topbar nav { display: flex; gap: 8px; font-size: 13px; flex-wrap: wrap; }
-.topbar nav a {
-  color: var(--muted);
-  border: 1px solid var(--border);
-  background: rgba(29, 33, 43, 0.72);
-  border-radius: 999px;
-  padding: 5px 10px;
-}
-.topbar nav a:hover { color: var(--text); border-color: rgba(130,170,255,.55); text-decoration: none; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 24px 22px 64px; }
 .view { display: none; }
@@ -389,6 +440,9 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 /* "No market data" card: a calm header with an icon, prominent clickable
    symbol suggestions, and the raw provider error tucked into a collapsible so
    it stops shouting. */
+/* Icon column width (40px) + row gap (14px): the body blocks below are indented
+   by this so "Matching symbols" et al. line up under the heading, not the icon. */
+.nodata-card { --nodata-indent: 54px; }
 .nodata-head { display: flex; gap: 14px; align-items: flex-start; }
 .nodata-icon {
   flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
@@ -398,7 +452,7 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 .nodata-head-text h2 { margin: 3px 0 0; }
 .nodata-lead { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
 
-.nodata-suggest { margin-top: 16px; }
+.nodata-suggest { margin-top: 16px; margin-left: var(--nodata-indent); }
 .nodata-suggest-label {
   color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .02em;
   margin-bottom: 8px; display: flex; align-items: center; gap: 7px;
@@ -423,7 +477,7 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 .symbol-suggest .sx-go { color: var(--accent); font-weight: 700; flex: none; opacity: .55; transition: opacity .15s; }
 .symbol-suggest:hover .sx-go { opacity: 1; }
 
-.nodata-detail { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.nodata-detail { margin-top: 16px; margin-left: var(--nodata-indent); border-top: 1px solid var(--border); padding-top: 12px; }
 .nodata-detail > summary {
   cursor: pointer; list-style: none; color: var(--muted); font-size: 12px;
   user-select: none; display: inline-flex; align-items: center; gap: 6px;
@@ -647,6 +701,7 @@ tr:last-child td { border-bottom: 0; }
 }
 
 @media (max-width: 620px) { .pos-row { grid-template-columns: 110px 1fr 70px; gap: 8px; } }
+@media (max-width: 620px) { .nodata-card { --nodata-indent: 0px; } }
 
 .holdings-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px,1fr)); gap: 10px; margin-top: 14px; }
 .hold {
