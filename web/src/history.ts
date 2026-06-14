@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, el, esc, fmtStamp, sensitive } from "./core";
+import { $, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
 import { pollDeepJob } from "./errors";
 
 // ---- portfolio history -----------------------------------------------------
@@ -71,7 +71,7 @@ function renderHistory(h) {
     `<span>${esc(h.from_date || "?")} → ${esc(h.to_date || "?")}</span>` +
     `<span>${esc(s.n_trades ?? 0)} trades · ${esc(s.n_nav_points ?? 0)} NAV points</span>` +
     `<span>${esc(s.windows ?? 0)} Flex window(s)</span>` +
-    `<span>pulled ${esc(fmtStamp(h.generated_at))}</span>`;
+    `<span>pulled ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}</span>`;
   out.appendChild(meta);
 
   out.appendChild(statCards(h));

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, apiLoad, el, esc, fmtStamp, simpleTable, statTile } from "./core";
+import { $, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
@@ -47,7 +47,7 @@ function renderRisk(r) {
     `<span>names ${esc(m.n_names ?? 0)}</span>` +
     `<span>window ${esc(r.range || "?")} · ${esc(r.n_obs ?? 0)} obs</span>` +
     `<span>as of ${esc(r.as_of || "n/a")}</span>` +
-    `<span>snapshot ${esc(fmtStamp(r.snapshot))}</span>` +
+    `<span>snapshot ${freshnessNote(r.snapshot) || esc(fmtStamp(r.snapshot))}</span>` +
     `<span>source ${esc(r.source || "?")}</span>`;
   out.appendChild(meta);
 

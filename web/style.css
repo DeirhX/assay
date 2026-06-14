@@ -521,6 +521,22 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 .metric-cell .val { font-size: 22px; font-weight: 700; margin-top: 3px; }
 .metric-cell .src { font-size: 11px; color: var(--muted); margin-top: 3px; }
 .metric-cell .src .disagree { color: var(--warn); }
+
+/* Peer-comparison bar: where this value sits within its segment(s). The track
+   reads low (left) -> high (right); the dot is the rank-percentile, the centre
+   tick is the peer median. Per-segment detail is in the title tooltip. */
+.metric-peer { margin-top: 10px; cursor: help; }
+.mp-track {
+  position: relative; height: 6px; border-radius: 999px;
+  background: linear-gradient(90deg, rgba(130,170,255,.16), rgba(130,170,255,.55));
+}
+.mp-median { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); opacity: .5; }
+.mp-marker {
+  position: absolute; top: 50%; width: 11px; height: 11px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--panel-2);
+  transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(0,0,0,.25);
+}
+.mp-cap { margin-top: 6px; font-size: 10px; color: var(--muted); letter-spacing: .02em; line-height: 1.3; }
 .decision-pill, .score-pill {
   display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px;
@@ -530,6 +546,23 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 .decision-pill.warn, .score-pill.warn { color: var(--warn); border-color: rgba(245,199,107,.45); background: rgba(245,199,107,.08); }
 .decision-pill.bad, .score-pill.bad { color: var(--bad); border-color: rgba(255,122,122,.45); background: rgba(255,122,122,.08); }
 .decision-pill.muted, .score-pill.muted { color: var(--muted); }
+
+/* Instrument-type pill: a clear, color-coded distinction between a single
+   stock, an ETF, a future, an index, etc. Distinct hue per kind so the type is
+   readable at a glance wherever a symbol shows up (dossier header, search). */
+.inst-pill {
+  display: inline-flex; align-items: center; vertical-align: middle;
+  border: 1px solid transparent; border-radius: 999px; padding: 1px 8px;
+  font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em;
+}
+.inst-stock   { color: var(--accent);    background: rgba(130,170,255,.12); border-color: rgba(130,170,255,.34); }
+.inst-etf     { color: #5fd0c5;          background: rgba(95,208,197,.12);  border-color: rgba(95,208,197,.36); }
+.inst-fund    { color: #5fd0c5;          background: rgba(95,208,197,.10);  border-color: rgba(95,208,197,.30); }
+.inst-futures { color: var(--warn);      background: rgba(245,199,107,.12); border-color: rgba(245,199,107,.36); }
+.inst-index   { color: #c39bf5;          background: rgba(195,155,245,.13); border-color: rgba(195,155,245,.36); }
+.inst-crypto  { color: #f0b04a;          background: rgba(240,176,74,.12);  border-color: rgba(240,176,74,.36); }
+.inst-fx      { color: var(--good);      background: rgba(107,211,138,.12); border-color: rgba(107,211,138,.34); }
+.inst-other   { color: var(--muted);     background: rgba(150,160,180,.10); border-color: var(--border); }
 
 h2.section { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 26px 0 4px; }
 
@@ -934,6 +967,18 @@ a.analysis-row:hover { text-decoration: none; }
 .abadge.ok { color: var(--good); border-color: rgba(107,211,138,.4); }
 .abadge.bad { color: var(--bad); border-color: rgba(255,122,122,.4); }
 .abadge.muted { color: var(--muted); }
+
+/* Color-coded freshness chip next to sync/snapshot timestamps. A dot + "x ago",
+   green when fresh, amber when aging, red when stale. */
+.fresh-note {
+  display: inline-flex; align-items: center; gap: 5px; vertical-align: middle;
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  letter-spacing: .02em; white-space: nowrap; border: 1px solid transparent;
+}
+.fresh-note::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.fresh-note.fresh { color: var(--good); background: rgba(107,211,138,.12); border-color: rgba(107,211,138,.30); }
+.fresh-note.aging { color: var(--warn); background: rgba(245,199,107,.12); border-color: rgba(245,199,107,.30); }
+.fresh-note.stale { color: var(--bad); background: rgba(255,122,122,.12); border-color: rgba(255,122,122,.30); }
 
 /* segment launchpad rows in the Analyses pane */
 .seg-row .analysis-row-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

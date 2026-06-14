@@ -295,6 +295,7 @@ def fundamentals(symbol: str) -> dict[str, Any]:
     return {
         "name": price.get("longName") or price.get("shortName"),
         "currency": price.get("currency"),
+        "quote_type": price.get("quoteType"),
         "profile": _profile(ap),
         "price": metric(_raw(price.get("regularMarketPrice")), src),
         "market_cap_usd_b": metric(usd_b(_raw(sd.get("marketCap"))), src),

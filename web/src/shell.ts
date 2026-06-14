@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { loadAnalyses, startPipeline } from "./analyses";
-import { $, api, applyPrivacyMode, el, esc, state } from "./core";
+import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
 import { initHistoryControls, loadHistory } from "./history";
@@ -31,7 +31,7 @@ async function tickerSuggestRows() {
   const map: Record<string, any> = {};
   (_tkIndex || []).forEach((r) => {
     map[r.symbol] = {
-      symbol: r.symbol, name: r.name || "",
+      symbol: r.symbol, name: r.name || "", type: r.type || "",
       has_analysis: !!r.has_analysis, viewed: "",
     };
   });
@@ -76,6 +76,7 @@ function tickerMenuHtml(rows: any[]) {
     `<div class="topsearch-item" role="option" data-sym="${esc(r.symbol)}">` +
       `<span class="ts-sym">${esc(r.symbol)}</span>` +
       `<span class="ts-name">${esc(r.name || "")}</span>` +
+      instrumentBadge(r.type) +
       (r.has_analysis ? `<span class="ts-badge">analysis</span>` : "") +
     `</div>`).join("");
 }
