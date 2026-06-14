@@ -1522,7 +1522,7 @@ def _trade_preview(body: dict) -> dict:
     account_id = _resolve_trade_account(body.get("account"))
     orders, warnings = _prepare_trade_orders(account_id, basket)
 
-    ibkr_preview: Any = {}
+    ibkr_preview = {}
     if orders:
         try:
             ibkr_preview = ibkr_trade.preview_orders(account_id, orders)
