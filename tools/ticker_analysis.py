@@ -26,11 +26,14 @@ Design choices / honest caveats:
     via ``--allowedTools`` so the headless ``-p`` run can't be silently denied on
     a permission prompt it can't answer.
   - cursor-agent has no per-tool flag, so it stays in read-only ``--mode ask``
-    and uses its built-in web search when available; web *intent* is carried by
-    the prompt. If ask mode exposes no web tool, the note just stays grounded in
-    the DATA.
+    (which DOES include a web-access tool) and additionally gets ``--force`` --
+    headless ``-p`` auto-REJECTS any tool call needing approval, so without
+    ``--force`` the web tool is denied and the model apologises. Verified that
+    ``--mode ask --force`` enables web while keeping file-write/shell DENIED, so
+    --force can't escalate past read-only.
   We still never enable Bash/Edit/Write on either -- an analyst note has no
-  business shelling out or touching the filesystem.
+  business shelling out or touching the filesystem (``--mode ask`` enforces this
+  even under ``--force``).
 * Backends consume YOUR interactive coding quota. Cheap != free; that's why this
   is gated behind an explicit button, not run on every page view.
 * Windows is a first-class target. ``cursor-agent`` ships as a PowerShell/.cmd
@@ -61,8 +64,8 @@ CONFIG_PATH = REPO_ROOT / "data" / "analysis-config.json"
 # CONFIG_PATH is shallow-merged over this (see load_config).
 DEFAULT_CONFIG: dict[str, Any] = {
     "providers": [
-        {"id": "cursor", "enabled": True, "model": "", "extra_args": []},
         {"id": "claude", "enabled": True, "model": "", "extra_args": []},
+        {"id": "cursor", "enabled": True, "model": "", "extra_args": []},
     ],
     "timeout_sec": 300,
     # When true, backends may use their web tools for fresher context. Off by
@@ -167,6 +170,15 @@ def _claude_exe() -> str | None:
     return os.environ.get("REBAL_CLAUDE_CLI") or shutil.which("claude")
 
 
+# Mirror the official cursor-agent.ps1 launcher: it only treats a versions/
+# subdir as runnable if its name is exactly ``YYYY.MM.DD-<commit-hex>``. Folders
+# with extra segments (e.g. ``2026.06.12-19-59-36-f6aba9a``) are a different/
+# orphaned naming scheme the launcher silently ignores -- so we must too, or the
+# app ends up running a version the user's CLI/IDE never touches (see the
+# "multiple cursors" mismatch we debugged).
+_CURSOR_VERSION_RE = re.compile(r"^\d{4}\.\d{1,2}\.\d{1,2}-[a-f0-9]+$")
+
+
 def _cursor_argv_base() -> list[str] | None:
     """Resolve a directly-executable launcher for cursor-agent.
 
@@ -174,6 +186,12 @@ def _cursor_argv_base() -> list[str] | None:
     dig out node + index.js so subprocess can pass the (large, quote-heavy)
     prompt as a real argv element without cmd.exe quoting hell. Elsewhere the
     PATH entry is a normal binary and we use it directly.
+
+    The version we pick MUST match what the official launcher runs, otherwise the
+    app silently executes a different (possibly orphaned) build than the user's
+    interactive ``cursor-agent``. We therefore replicate the launcher's choice:
+    prefer the newest ``versions/<DATE-commit>`` dir matching the official name
+    pattern, and only fall back to ``versions/dist-package`` when none exist.
     """
     override = os.environ.get("REBAL_CURSOR_CLI")
     if override:
@@ -188,14 +206,22 @@ def _cursor_argv_base() -> list[str] | None:
         return [str(root / "node.exe"), str(root / "index.js")]
     versions = root / "versions"
     if versions.exists():
-        cands = [d for d in versions.iterdir() if d.is_dir() and (d / "index.js").exists()]
-        if cands:
-            latest = max(cands, key=_version_key)
-            node = latest / "node.exe"
+        official = [
+            d
+            for d in versions.iterdir()
+            if d.is_dir() and (d / "index.js").exists() and _CURSOR_VERSION_RE.match(d.name)
+        ]
+        chosen = max(official, key=_version_key) if official else None
+        if chosen is None:
+            dist = versions / "dist-package"
+            if (dist / "index.js").exists():
+                chosen = dist
+        if chosen is not None:
+            node = chosen / "node.exe"
             if not node.exists():
                 node = root / "node.exe"
             if node.exists():
-                return [str(node), str(latest / "index.js")]
+                return [str(node), str(chosen / "index.js")]
     return None  # couldn't resolve a clean binary; caller reports it
 
 
@@ -489,7 +515,7 @@ def _sources_section(allow_web: bool) -> str:
     if not allow_web:
         return ""
     return ("\n\n## Sources\nBullet every web source you used as `[title](url) — what it backed up`. "
-            'Write "None — analysis is from the provided data only." if you did not search.')
+            'If you did not search, write exactly: "None — built only from the structured data snapshot below."')
 
 
 def build_prompt(rec: dict[str, Any], *, allow_web: bool = False) -> str:
@@ -666,15 +692,22 @@ def _run_cursor(prompt: str, provider: dict, cfg: dict,
     # cursor-agent does NOT read the prompt from stdin in -p mode; it must be a
     # positional arg. We pass it as a real argv element (no shell) so quotes and
     # newlines survive intact.
-    # Always read-only. cursor-agent has no per-tool web flag: its only modes are
-    # the read-only "ask"/"plan", while bare -p grants ALL tools (incl. shell +
-    # write). An analyst note must never shell out or edit, so we pin "ask"
-    # unconditionally and let web research be steered by the prompt's ground rules
-    # (same as Claude). Cursor's ask mode uses its built-in web search when the
-    # agent exposes it; if it doesn't, the run simply stays grounded in the
-    # deterministic DATA -- safe either way, and never at the cost of full agent
-    # powers like the old allow_web path did.
+    #
+    # Tool policy is governed by --mode, NOT by bare -p: we pin read-only "ask"
+    # unconditionally so an analyst note can never edit files or shell out. Bare
+    # -p would grant ALL tools (write + shell); --mode ask overrides that.
+    #
+    # Web research: ask mode DOES include a read-only web-access tool, but in
+    # headless -p mode a tool call that needs approval is auto-REJECTED (there's
+    # no human to press "y") -- which is why a web-enabled prompt without --force
+    # gets the model's "web search was rejected in this session" apology. --force
+    # ("allow commands unless explicitly denied") pre-approves the read-only web
+    # tool. Verified empirically: with `--mode ask --force`, web search works
+    # while file-write and shell stay DENIED by ask-mode policy. So we only add
+    # --force when the user actually asked for web, keeping the surface minimal.
     argv = base + ["-p", prompt, "--output-format", "text", "--trust", "--mode", "ask"]
+    if cfg.get("allow_web"):
+        argv.append("--force")
     if provider.get("model"):
         argv += ["--model", provider["model"]]
     argv += list(provider.get("extra_args") or [])
@@ -703,16 +736,18 @@ def _finish(pid: str, provider: dict, proc: subprocess.CompletedProcess) -> dict
 
 
 _RUNNERS: dict[str, Callable[..., dict]] = {"claude": _run_claude, "cursor": _run_cursor}
-_PROVIDER_ORDER = {"cursor": 0, "claude": 1}
+_PROVIDER_ORDER = {"claude": 0, "cursor": 1}
 
 
 def _ordered_providers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Canonical backend preference: Cursor first, Claude as fallback.
+    """Canonical backend preference: Claude first, Cursor as fallback.
 
     The order is enforced here (via _PROVIDER_ORDER) rather than trusting the
     config file's array order, so the default engine is deterministic and a
-    hand-edited config can't accidentally change which backend leads. Note: this
-    governs the in-depth/Q&A analyses only -- deep research has its own engine.
+    hand-edited config can't accidentally change which backend leads. When
+    Claude is out of quota (or its credentials lapse) _run_with_fallback treats
+    that as a transient failure and defers to Cursor. Note: this governs the
+    in-depth/Q&A analyses only -- deep research has its own engine.
     """
     providers = [p for p in (cfg.get("providers") or []) if p.get("id") in _RUNNERS]
     return sorted(providers, key=lambda p: _PROVIDER_ORDER.get(p.get("id"), 99))
@@ -748,8 +783,9 @@ def _run_with_fallback(prompt: str, cfg: dict,
         blob = res.get("error", "") or f"{pid} failed"
         attempts.append(blob)
         # A real failure worth a durable record -- crucially, this fires even when
-        # the *next* backend goes on to succeed, so a Cursor login silently
-        # expiring (and us quietly serving from Claude) stops being invisible.
+        # the *next* backend goes on to succeed, so the lead backend (Claude)
+        # silently hitting its quota and us quietly deferring to Cursor stops
+        # being invisible.
         reason = ("auth" if _looks_like_auth(blob)
                   else "quota" if _looks_like_quota(blob)
                   else "error")

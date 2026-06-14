@@ -1167,6 +1167,33 @@ a.tlink:hover { border-bottom-style: solid; }
 .verdict-pill.v-warn, .verdict-stance.v-warn { color: var(--warn); border-color: rgba(245,199,107,.5); background: rgba(245,199,107,.12); }
 .verdict-pill.v-bad, .verdict-stance.v-bad { color: var(--bad); border-color: rgba(255,122,122,.5); background: rgba(255,122,122,.12); }
 .verdict-pill.v-hold, .verdict-stance.v-hold { color: var(--info); border-color: rgba(130,170,255,.5); background: rgba(130,170,255,.12); }
+/* Bull/bear/trigger rails: a coloured left border + faint wash + heading glyph
+   so the upside, the downside, and the trip-wires pop out when skimming. */
+.case-section {
+  border-left: 3px solid transparent; padding: 2px 0 2px 14px; margin: 16px 0;
+  border-radius: 0 6px 6px 0;
+}
+.case-section > .case-head { margin-top: 6px; }
+.case-section.case-bull { border-left-color: var(--good); background: linear-gradient(90deg, rgba(107,211,138,.07), transparent 55%); }
+.case-section.case-bear { border-left-color: var(--bad);  background: linear-gradient(90deg, rgba(255,122,122,.07), transparent 55%); }
+.case-section.case-flip { border-left-color: var(--warn); background: linear-gradient(90deg, rgba(245,199,107,.06), transparent 55%); }
+.case-head { display: flex; align-items: center; gap: 8px; }
+.case-head::before { font-size: .85em; line-height: 1; opacity: .9; }
+.case-head.case-bull { color: var(--good); }
+.case-head.case-bull::before { content: "\25B2"; }
+.case-head.case-bear { color: var(--bad); }
+.case-head.case-bear::before { content: "\25BC"; }
+.case-head.case-flip { color: var(--warn); }
+.case-head.case-flip::before { content: "\26A1"; }
+
+/* Provenance line that replaces a bare "Sources: None": which deterministic
+   providers + how fresh, rather than an apologetic shrug. */
+.sources-provenance {
+  color: var(--muted); font-size: 13px; line-height: 1.5;
+  border-left: 3px solid rgba(130,170,255,.4); padding-left: 12px; margin: 4px 0 12px;
+}
+.sources-provenance strong { color: var(--text); font-weight: 600; }
+
 .analysis-prose hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .analysis-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 

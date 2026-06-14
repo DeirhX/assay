@@ -214,7 +214,7 @@ tab checks the local pieces that cannot be safely committed to the repo:
 - **Environment**: set `SEC_USER_AGENT` before starting the server. `FMP_API_KEY`
   is optional and adds a third market-data opinion when available.
 - **LLM CLIs**: install and authorize at least one local analysis CLI. Assay uses
-  `cursor-agent` first and `claude` as fallback for single-ticker analyst notes.
+  `claude` first and `cursor-agent` as fallback for single-ticker analyst notes.
   Run each CLI once in a terminal and complete its login flow, then use the Setup
   tab's smoke check. A binary being on `PATH` is not enough; the check verifies
   that authorization actually works.
