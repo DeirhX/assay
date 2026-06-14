@@ -1340,6 +1340,19 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-sym.reb-link { color: var(--accent); cursor: pointer; }
 .reb-sym.reb-link:hover { text-decoration: underline; }
 .reb-rule { font-size: 11px; color: var(--muted); }
+/* Research overlay: a terse line of independent context under a target's name.
+   Decision support only — it never alters the suggested trade. */
+.reb-research { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 1px; }
+.reb-research .dot { margin-right: 0; }
+.reb-research .chip { font-size: 10px; padding: 1px 7px; text-transform: capitalize; }
+.reb-research .fresh-note { font-size: 10px; padding: 0 6px; }
+.reb-mom { font-size: 10.5px; font-weight: 700; }
+/* A row whose suggested trade contradicts the saved thesis gets a left flag so
+   it stands out in a long plan without shouting. */
+.reb-data-row.reb-conflict { box-shadow: inset 3px 0 0 var(--bad); }
+/* The conflict flag doubles as a button that escalates into the strategy flow. */
+.reb-conflict-chip { cursor: pointer; font-family: inherit; line-height: 1.4; }
+.reb-conflict-chip:hover { background: rgba(255,122,122,.18); }
 .reb-cur { display: flex; flex-direction: column; gap: 1px; }
 .reb-cur small, .reb-member small, .reb-untargeted-row small { color: var(--muted); font-size: 11.5px; }
 .reb-band { color: var(--muted); white-space: nowrap; }

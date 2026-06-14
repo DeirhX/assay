@@ -19,6 +19,70 @@ const pctToCzk = (pct, base) => (typeof base === "number" && pct != null ? Math.
 // judgement calls, so they start at zero — the human decides.
 const rebDefaultDelta = (r) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
 
+// Thesis verdict (free text from the dossier form) -> visual lean. Mirrors the
+// backend's _research_conflict buckets so the chip color and the conflict flag
+// never tell different stories.
+const THESIS_ADD_LIKE = new Set(["add", "accumulate", "buy", "build", "increase", "overweight"]);
+const THESIS_TRIM_LIKE = new Set(["trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"]);
+const thesisLean = (a) => {
+  const k = String(a || "").toLowerCase().trim();
+  return THESIS_ADD_LIKE.has(k) ? "good" : THESIS_TRIM_LIKE.has(k) ? "bad" : "muted";
+};
+
+// One compact line of independent research context under a target's name: a
+// data-trust dot, the thesis verdict, 3-month momentum, and report freshness.
+// Pure decision support — it never changes the trade math. Returns null when the
+// row carries no dossier so the name reads as "no signal".
+function researchLine(r) {
+  const res = r.research;
+  if (!res) return null;
+  const bits = [];
+  const dq = res.data_quality || "INFO";
+  const dqTitle = { ERROR: "data conflicts", WARN: "minor data disagreement", INFO: "data looks clean" }[dq] || dq;
+  bits.push(`<span class="dot ${esc(dq)}" title="Data trust: ${esc(dqTitle)}"></span>`);
+  if (res.thesis_action) {
+    bits.push(`<span class="chip ${thesisLean(res.thesis_action)} reb-thesis-chip" title="Your saved thesis verdict">${esc(res.thesis_action)}</span>`);
+  }
+  if (typeof res.momentum_3m_pct === "number") {
+    const m = res.momentum_3m_pct;
+    bits.push(`<span class="reb-mom ${m >= 0 ? "good" : "bad"}" title="3-month price change">${m >= 0 ? "+" : "\u2212"}${Math.abs(m).toFixed(1)}%</span>`);
+  }
+  const fresh = freshnessNote(res.as_of);
+  if (fresh) bits.push(fresh);
+  const line = el("div", "reb-research", bits.join(" "));
+  // Thesis summary as the hover tooltip; the line itself stays terse.
+  if (res.thesis_summary) line.title = res.thesis_summary;
+  // A conflict isn't something the planner can resolve (bands are human-set), so
+  // the flag doubles as a one-click escalation into the guided strategy flow,
+  // which owns the human-gated path to actually change the target model.
+  if (r.research_conflict) {
+    const chip = el("button", "chip bad reb-conflict-chip",
+      "conflict \u2192 strategy");
+    chip.type = "button";
+    chip.title = "The suggested trade and your saved thesis disagree — open the strategy flow to reassess this name";
+    chip.addEventListener("click", (e) => { e.stopPropagation(); escalateToStrategy(r); });
+    line.appendChild(chip);
+  }
+  return line;
+}
+
+// Take an unresolved planner conflict into the guided "Direction -> Rebalance"
+// flow, pre-filling a direction that names the disagreement. Phase 1 stays
+// read-only: this only navigates + seeds the input; the human still drives every
+// gate of the strategy run that follows.
+function escalateToStrategy(r) {
+  const res = r.research || {};
+  const sym = cleanSymbol(r.name) || r.name;
+  const verb = r.action === "trim" ? "trimming" : r.action === "buy" ? "adding to" : "rebalancing";
+  const hint = `Reassess ${sym}: the rebalance plan suggests ${verb} it, ` +
+    `but my thesis says "${res.thesis_action || "the opposite"}".` +
+    (res.thesis_summary ? ` ${res.thesis_summary}` : "");
+  pushNav({ view: "strategy" });
+  setActiveView("strategy");
+  const input = $("#strat-direction");
+  if (input) { input.value = hint; input.focus(); }
+}
+
 async function loadRebalance() {
   await apiLoad({
     path: "/api/rebalance",
@@ -81,6 +145,11 @@ function renderRebalance(plan) {
     nameCell.appendChild(sym);
     nameCell.appendChild(el("span", "reb-rule", esc(REB_RULE_LABEL[r.rule] || r.rule)));
     if (r.note) nameCell.title = r.note;
+    const research = researchLine(r);
+    if (research) {
+      nameCell.appendChild(research);
+      if (r.research_conflict) row.classList.add("reb-conflict");
+    }
 
     const curCell = el("div", "reb-c reb-cur",
       `<span>${r.current_pct.toFixed(2)}%</span>` +

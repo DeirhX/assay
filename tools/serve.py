@@ -68,6 +68,7 @@ import jobs  # noqa: E402
 import orchestrate  # noqa: E402  -- durable state machine for the guided strategy run
 import target_construct  # noqa: E402  -- LLM + deterministic target-model synthesis
 import ibkr_history  # noqa: E402  -- full trade + NAV history via windowed Flex
+import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 # Disk + identifier helpers and the job registry now live in their own modules;
@@ -1046,6 +1047,68 @@ def _preview_plan_for_proposal(proposal: dict, *, allow_blocked: bool = False) -
     except Exception as exc:  # noqa: BLE001 - a bad band shouldn't kill the gate
         return {"available": False, "reason": f"could not compute plan: {exc}"}
     return {"available": True, "applied": applied, "skipped": skipped, "plan": plan}
+
+
+# Research-overlay classification: how a thesis verdict leans. Used only to flag
+# when the deterministic band action and the human thesis disagree -- never to
+# size a trade. Thesis actions are free text from the dossier form, so the match
+# is loose and lowercased.
+_THESIS_ADD_LIKE = {"add", "accumulate", "buy", "build", "increase", "overweight"}
+_THESIS_TRIM_LIKE = {"trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"}
+
+
+def _research_conflict(row_action: str | None, thesis_action: str | None) -> bool:
+    """True when the band's suggested action and the thesis verdict point opposite
+    ways: trimming a name the thesis wants more of, or buying one it wants less
+    of. Anything else (no thesis, agreement, a neutral hold/wait) is not a
+    conflict."""
+    ta = (thesis_action or "").lower().strip()
+    if not ta:
+        return False
+    if row_action == "trim" and ta in _THESIS_ADD_LIKE:
+        return True
+    if row_action == "buy" and ta in _THESIS_TRIM_LIKE:
+        return True
+    return False
+
+
+def _research_overlay(provider_sym: str) -> dict | None:
+    """Compact, independent research context for one rebalance row, read from the
+    per-ticker dossier. Returns None when there's no dossier so the row reads as
+    'no signal'. Nothing here feeds the trade math -- it is decision support
+    only. ``research_score`` is deliberately omitted (it is segment-only, not on
+    per-ticker files)."""
+    rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
+    if not isinstance(rec, dict):
+        return None
+    thesis = rec.get("thesis") if isinstance(rec.get("thesis"), dict) else {}
+    momentum = rec.get("momentum") if isinstance(rec.get("momentum"), dict) else {}
+    return {
+        "as_of": rec.get("as_of"),
+        "data_quality": hygiene.worst_severity(rec.get("cross_checks") or []),
+        "decision": rec.get("decision"),
+        "momentum_3m_pct": momentum.get("chg_3m_pct"),
+        "thesis_action": (thesis.get("action") or "").strip() or None,
+        "thesis_summary": (thesis.get("summary") or "").strip() or None,
+        "thesis_as_of": thesis.get("as_of"),
+    }
+
+
+def _attach_research_overlay(plan: dict) -> None:
+    """Enrich each held target row of a rebalance plan, in place, with a compact
+    ``research`` object + a ``research_conflict`` flag. Best-effort: a missing or
+    malformed dossier is skipped silently so the planner always renders."""
+    for row in plan.get("rows") or []:
+        if row.get("kind") != "target" or not row.get("held"):
+            continue
+        try:
+            overlay = _research_overlay(_resolve_symbol(row.get("name") or ""))
+        except Exception:  # noqa: BLE001 - the overlay is optional; never break the plan
+            overlay = None
+        if not overlay:
+            continue
+        row["research"] = overlay
+        row["research_conflict"] = _research_conflict(row.get("action"), overlay["thesis_action"])
 
 
 # Root-level static pages that are the SPA shell or the topbar landing, not
@@ -2350,7 +2413,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, "no target model — data/target-model.json missing")
         if not holdings:
             return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
-        return self._send_json(tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings))
+        plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
+        _attach_research_overlay(plan)
+        return self._send_json(plan)
 
     def _get_risk(self, path, query):
         holdings = _load(HOLDINGS_JSON)
