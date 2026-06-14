@@ -237,6 +237,53 @@ class DeepQa(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("no saved report", payload["error"])
 
+    def test_delete_on_unknown_stem_is_noop_200(self):
+        status, payload = self._req(
+            "/api/deep-qa", method="POST",
+            body={"stem": "does-not-exist-2026-01-01", "delete": 0})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["turns"], [])
+
+
+class DropQaExchange(unittest.TestCase):
+    """The pure exchange-trimming helper: removes a question + its answer by the
+    question's array index, ignores bad targets, and drops the resumable session
+    so the next turn reseeds from the trimmed history."""
+
+    def _thread(self):
+        return {
+            "session": "abc",
+            "turns": [
+                {"role": "user", "text": "q1"},
+                {"role": "assistant", "text": "a1"},
+                {"role": "user", "text": "q2"},
+                {"role": "assistant", "text": "a2"},
+            ],
+        }
+
+    def test_deletes_pair_and_resets_session(self):
+        t = self._thread()
+        self.assertTrue(serve._drop_qa_exchange(t, 0))
+        self.assertEqual([x["text"] for x in t["turns"]], ["q2", "a2"])
+        self.assertNotIn("session", t)
+
+    def test_deletes_trailing_question_without_answer(self):
+        t = {"turns": [{"role": "user", "text": "q1"}]}
+        self.assertTrue(serve._drop_qa_exchange(t, 0))
+        self.assertEqual(t["turns"], [])
+
+    def test_rejects_non_user_index(self):
+        t = self._thread()
+        self.assertFalse(serve._drop_qa_exchange(t, 1))  # points at an assistant turn
+        self.assertEqual(len(t["turns"]), 4)
+
+    def test_rejects_out_of_range_and_garbage(self):
+        t = self._thread()
+        self.assertFalse(serve._drop_qa_exchange(t, 99))
+        self.assertFalse(serve._drop_qa_exchange(t, "nope"))
+        self.assertFalse(serve._drop_qa_exchange(t, None))
+        self.assertEqual(len(t["turns"]), 4)
+
 
 class RouteDispatch(unittest.TestCase):
     """End-to-end proof the table-driven dispatcher is wired correctly over the

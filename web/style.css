@@ -443,14 +443,23 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
 /* Icon column width (40px) + row gap (14px): the body blocks below are indented
    by this so "Matching symbols" et al. line up under the heading, not the icon. */
 .nodata-card { --nodata-indent: 54px; }
-.nodata-head { display: flex; gap: 14px; align-items: flex-start; }
+/* Icon shares the title's row and is vertically centered against it; the lead
+   flows into a second row under the title (col 2), so the badge pairs with the
+   heading instead of floating between the two text lines. */
+.nodata-head {
+  display: grid; grid-template-columns: auto 1fr;
+  column-gap: 14px; align-items: center;
+}
 .nodata-icon {
-  flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
+  grid-column: 1; grid-row: 1;
+  width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
   background: rgba(245, 199, 107, .10); border: 1px solid rgba(245, 199, 107, .30); color: var(--warn);
 }
-.nodata-head-text { min-width: 0; }
-.nodata-head-text h2 { margin: 3px 0 0; }
-.nodata-lead { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+.nodata-head h2.section { grid-column: 2; grid-row: 1; margin: 0; min-width: 0; }
+.nodata-lead {
+  grid-column: 2; grid-row: 2; margin: 6px 0 0;
+  color: var(--muted); font-size: 13px; min-width: 0;
+}
 
 .nodata-suggest { margin-top: 16px; margin-left: var(--nodata-indent); }
 .nodata-suggest-label {
@@ -957,6 +966,13 @@ a.analysis-row:hover { text-decoration: none; }
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   padding: 11px 18px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.02);
 }
+/* The report is a collapsible <details>; fold the body away to focus on Q&A. */
+details.report-doc > summary.report-doc-head { cursor: pointer; list-style: none; }
+details.report-doc > summary.report-doc-head::-webkit-details-marker { display: none; }
+.report-doc-caret { color: var(--muted); transition: transform .15s ease; align-self: center; }
+details.report-doc[open] > .report-doc-head .report-doc-caret { transform: rotate(90deg); }
+details.report-doc:not([open]) > .report-doc-head { border-bottom: 0; }
+.report-doc-head:hover .report-doc-title { color: var(--accent); }
 .report-doc-title { font-weight: 700; font-size: 14px; }
 .report-doc-note { color: var(--muted); font-size: 12px; }
 .report-doc-body { padding: 20px 24px; }
@@ -1097,6 +1113,31 @@ a.tlink:hover { border-bottom-style: solid; }
 .qa-prose > :last-child { margin-bottom: 0; }
 .qa-usage { margin-top: 9px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .qa-usage .qa-cache-hit { color: var(--good); }
+/* Each exchange = a collapsible (question summary + expandable answer) that can
+   be deleted on its own. */
+.qa-exchange {
+  border: 1px solid var(--border); border-radius: var(--radius-soft);
+  background: var(--panel-2); border-left: 3px solid var(--accent); overflow: hidden;
+}
+.qa-exchange > .qa-exchange-head {
+  display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
+  list-style: none; padding: 10px 13px; font-size: 14px;
+}
+.qa-exchange > .qa-exchange-head::-webkit-details-marker { display: none; }
+.qa-exchange-head .qa-caret { color: var(--muted); transition: transform .15s ease; flex: none; line-height: 1.45; }
+.qa-exchange[open] > .qa-exchange-head .qa-caret { transform: rotate(90deg); }
+.qa-exchange-head .qa-q-text {
+  flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; font-weight: 600;
+}
+.qa-exchange-head:hover .qa-q-text { color: var(--accent); }
+.qa-del {
+  flex: none; border: 0; background: transparent; color: var(--muted);
+  font-size: 17px; line-height: 1; cursor: pointer; padding: 1px 6px; border-radius: 6px;
+}
+.qa-del:hover { color: var(--bad); background: rgba(255,122,122,.14); }
+.qa-exchange-body {
+  padding: 11px 13px 12px; border-top: 1px solid var(--border); background: rgba(107,211,138,.05);
+}
 .qa-form { display: flex; gap: 10px; align-items: flex-end; }
 .qa-input {
   flex: 1 1 auto; min-width: 0; resize: vertical; min-height: 46px;

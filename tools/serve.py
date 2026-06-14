@@ -819,6 +819,30 @@ def _load_deep_qa(stem: str) -> dict:
     return data
 
 
+def _drop_qa_exchange(thread: dict, index) -> bool:
+    """Remove the user turn at *index* plus the assistant reply that follows it.
+
+    Returns True if anything was removed. Any resumable provider session is
+    dropped so the next turn reseeds from the trimmed history -- otherwise the
+    session would still carry the deleted exchange and contradict what we show.
+    """
+    turns = thread.get("turns")
+    if not isinstance(turns, list):
+        return False
+    try:
+        i = int(index)
+    except (TypeError, ValueError):
+        return False
+    if i < 0 or i >= len(turns) or turns[i].get("role") != "user":
+        return False
+    end = i + 1
+    if end < len(turns) and turns[end].get("role") == "assistant":
+        end += 1
+    del turns[i:end]
+    thread.pop("session", None)
+    return True
+
+
 def _run_deep_qa_job(job_id: str, stem: str, question: str) -> None:
     def progress(msg: str) -> None:
         _update_job(job_id, message=msg)
@@ -2125,6 +2149,11 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("clear"):
             _write_json(_deep_qa_path(stem), {"stem": stem, "turns": []})
             return self._send_json(_load_deep_qa(stem))
+        if "delete" in body:
+            thread = _load_deep_qa(stem)
+            if _drop_qa_exchange(thread, body.get("delete")):
+                _write_json(_deep_qa_path(stem), thread)
+            return self._send_json(_load_deep_qa(stem))
         try:
             return self._send_json(_start_deep_qa(stem, str(body.get("question") or "")))
         except ValueError as exc:
@@ -2164,6 +2193,11 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body.get("clear"):
             _write_json(_qa_path(provider_sym), {"symbol": provider_sym, "turns": []})
+            return self._send_json(_load_qa(provider_sym))
+        if "delete" in body:
+            thread = _load_qa(provider_sym)
+            if _drop_qa_exchange(thread, body.get("delete")):
+                _write_json(_qa_path(provider_sym), thread)
             return self._send_json(_load_qa(provider_sym))
         try:
             return self._send_json(_start_qa(provider_sym, str(body.get("question") or "")))

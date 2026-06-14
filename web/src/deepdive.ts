@@ -92,11 +92,9 @@ function renderNoMarketData(rec) {
   const head = el("div", "nodata-head");
   head.innerHTML =
     `<span class="nodata-icon">${NODATA_ICON_SVG}</span>` +
-    `<div class="nodata-head-text">` +
-      `<h2 class="section">No market data for ${esc(provider)}</h2>` +
-      `<p class="nodata-lead">No usable quote or fundamentals came back for <strong>${esc(sym || provider)}</strong>. ` +
-      `Broker symbols often need an exchange suffix — pick a real match below.</p>` +
-    `</div>`;
+    `<h2 class="section">No market data for ${esc(provider)}</h2>` +
+    `<p class="nodata-lead">No usable quote or fundamentals came back for <strong>${esc(sym || provider)}</strong>. ` +
+    `Broker symbols often need an exchange suffix — pick a real match below.</p>`;
   card.appendChild(head);
 
   // Lead with the useful action: company-name / near-miss search. Maybe they
@@ -640,6 +638,7 @@ function renderQaCard(rec) {
     loadThread: () => api("/api/qa/" + encodeURIComponent(sym)),
     postQuestion: (q) => api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q }),
     clearThread: () => api("/api/qa/" + encodeURIComponent(sym), "POST", { clear: true }),
+    deleteTurn: (idx) => api("/api/qa/" + encodeURIComponent(sym), "POST", { delete: idx }),
     turnMeta: (t) => [t.backend_label, modelLabel(t.model), t.ts ? relTime(t.ts) : null],
     usageHtml: (t) => qaUsageHtml(t.usage),
   });
