@@ -433,6 +433,10 @@ function renderIbkr(st) {
     `<label class="setup-field">Flex Query ID` +
       `<input id="setup-ibkr-query" placeholder="e.g. 1234567" value="${esc(k.query_id || "")}" autocomplete="off" inputmode="numeric">` +
     `</label>` +
+    `<label class="setup-field">History Flex Query ID <span class="setup-optional">(for the History tab)</span>` +
+      `<input id="setup-ibkr-history-query" placeholder="optional — separate Activity query" value="${esc(k.history_query_id || "")}" autocomplete="off" inputmode="numeric">` +
+    `</label>` +
+    `<p class="setup-small">The full trade &amp; NAV history needs its own <strong>Activity</strong> Flex query that includes the <strong>Trades</strong> and <strong>Net Asset Value (NAV) in Base</strong> sections. The positions query above lacks those, so leave this set to a dedicated query if you want the History tab.${k.history_from_env ? " A value is currently set via environment variable; that wins over what you save here." : ""}</p>` +
     `<label class="setup-field">Flex token` +
       `<input id="setup-ibkr-token" type="password" placeholder="${esc(tokenPlaceholder)}" autocomplete="off">` +
     `</label>` +
@@ -440,6 +444,7 @@ function renderIbkr(st) {
       `<button class="${k.configured ? "ghost" : "primary"}" id="setup-save-ibkr" type="button">Save credentials</button>` +
       `<span class="status" id="setup-ibkr-status"></span>` +
     `</div>` +
+    `<div class="setup-row" style="margin-top:10px"><strong>History query</strong>${badge(k.history_configured, k.history_configured ? "ready" : "not set")}</div>` +
     `<div class="setup-row" style="margin-top:14px"><strong>2. Holdings snapshot</strong>${badge(hasSnapshot, hasSnapshot ? `${positions} positions` : "not pulled yet")}</div>` +
     `<p class="hint">Pulls the latest positions, cash, and tax lots directly from IBKR (read-only — the Flex query cannot trade). Same action as <strong>Resync from IBKR</strong> on the Holdings tab.</p>` +
     `<div class="setup-actions">` +
@@ -627,7 +632,8 @@ async function saveIbkr() {
   const status = $("#setup-ibkr-status");
   const token = $("#setup-ibkr-token").value.trim();
   const query_id = $("#setup-ibkr-query").value.trim();
-  if (!token && !query_id) {
+  const history_query_id = $("#setup-ibkr-history-query").value.trim();
+  if (!token && !query_id && !history_query_id) {
     status.classList.add("err");
     status.textContent = "Enter a Query ID and/or token.";
     return;
@@ -635,7 +641,7 @@ async function saveIbkr() {
   status.classList.remove("err");
   status.textContent = "saving…";
   try {
-    await api("/api/setup/ibkr", "POST", { token, query_id });
+    await api("/api/setup/ibkr", "POST", { token, query_id, history_query_id });
     status.textContent = "saved";
     await loadSetup();
   } catch (e) {

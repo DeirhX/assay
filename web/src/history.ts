@@ -27,22 +27,56 @@ function svg(tag, attrs = {}) {
 
 let _wired = false;
 
+// Cheap, token-free credential check so we can guide setup *before* a pull fails.
+async function fetchIbkrStatus() {
+  try {
+    return await api("/api/ibkr/status");
+  } catch {
+    return null; // a missing status endpoint must never block showing the cache
+  }
+}
+
+// A banner shown when the dedicated history Flex query isn't configured yet.
+// History needs its own Activity query (Trades + NAV in Base); the positions
+// query the Holdings tab uses lacks those sections, so a pull would just error.
+function setupNote(st) {
+  if (!st || st.history_configured) return null;
+  const box = el("div", "hist-note");
+  const link =
+    `<button type="button" class="linklike" data-go-setup>Settings</button>`;
+  box.innerHTML = !st.token_set
+    ? `<strong>IBKR not connected.</strong> Save your read-only Flex token and a ` +
+      `history query in ${link} before pulling history.`
+    : `<strong>No history Flex query set.</strong> The full trade &amp; NAV history needs a ` +
+      `dedicated <em>Activity</em> Flex query with the <strong>Trades</strong> and ` +
+      `<strong>Net Asset Value (NAV) in Base</strong> sections — the positions query won't work. ` +
+      `Add a <strong>History Flex Query ID</strong> in ${link}, then pull.`;
+  const go = box.querySelector("[data-go-setup]");
+  if (go) go.addEventListener("click", () => {
+    document.querySelector('.tab[data-view="setup"]')?.click();
+  });
+  return box;
+}
+
 async function loadHistory() {
   const status = $("#hist-status");
   const out = $("#hist-result");
   status.classList.remove("err");
   status.textContent = "Loading cached history…";
   out.innerHTML = "";
+  const readyP = fetchIbkrStatus(); // in parallel; tolerant of failure
   try {
     const h = await api("/api/portfolio-history");
     status.textContent = "";
     renderHistory(h);
+    const note = setupNote(await readyP);
+    if (note) out.insertBefore(note, out.firstChild);
   } catch (e) {
     out.innerHTML = "";
     if (e.status === 404) {
       // Expected on a fresh setup: nothing pulled yet. Nudge, don't alarm.
       status.textContent = "";
-      out.appendChild(emptyState());
+      out.appendChild(emptyState(await readyP));
       return;
     }
     status.textContent = "Could not load history: " + e.message;
@@ -50,13 +84,17 @@ async function loadHistory() {
   }
 }
 
-function emptyState() {
+function emptyState(st) {
   const box = el("div", "hist-empty");
-  box.innerHTML =
+  const note = setupNote(st);
+  if (note) box.appendChild(note);
+  const body = el("div");
+  body.innerHTML =
     `<p>No portfolio history cached yet.</p>` +
     `<p class="hint">Click <strong>Update from IBKR</strong> above. The first run walks your account ` +
     `back to inception via read-only Flex (one ≤365-day window at a time), so it can take a minute. ` +
     `After that, <strong>Update</strong> only fetches the days since the last pull.</p>`;
+  box.appendChild(body);
   return box;
 }
 

@@ -1203,11 +1203,21 @@ def _ibkr_status() -> dict:
 
     token = resolve("IBKR_FLEX_TOKEN")
     query_id = resolve("IBKR_FLEX_QUERY_ID")
+    # The full trade + NAV history needs its own Activity Flex query (Trades +
+    # "Net Asset Value (NAV) in Base"); the reader falls back to the snapshot
+    # query id, but that one lacks those sections, so report it separately.
+    history_query_id = resolve("IBKR_FLEX_HISTORY_QUERY_ID")
     return {
         "token_set": bool(token),
         "query_id": query_id,
+        "history_query_id": history_query_id,
+        "history_query_set": bool(history_query_id),
         "configured": bool(token and query_id),
+        # History needs a dedicated query; the snapshot-query fallback won't carry
+        # the Trades / NAV sections, so true readiness means an explicit one.
+        "history_configured": bool(token and history_query_id),
         "from_env": bool((os.environ.get("IBKR_FLEX_TOKEN") or "").strip()),
+        "history_from_env": bool((os.environ.get("IBKR_FLEX_HISTORY_QUERY_ID") or "").strip()),
         "secrets_path": str(IBKR_SECRETS.relative_to(REPO_ROOT)).replace("\\", "/"),
     }
 
@@ -1218,7 +1228,8 @@ def _save_ibkr_secrets(body: dict) -> dict:
     updated without re-pasting the token. Returns the (token-free) status."""
     token = str(body.get("token") or "").strip()
     query_id = str(body.get("query_id") or "").strip()
-    if not token and not query_id:
+    history_query_id = str(body.get("history_query_id") or "").strip()
+    if not token and not query_id and not history_query_id:
         raise ValueError("nothing to save: provide a Flex token and/or query id")
 
     existing = _read_env_file(IBKR_SECRETS)
@@ -1228,17 +1239,21 @@ def _save_ibkr_secrets(body: dict) -> dict:
     if query_id:
         existing["IBKR_FLEX_QUERY_ID"] = query_id
         os.environ["IBKR_FLEX_QUERY_ID"] = query_id
+    if history_query_id:
+        existing["IBKR_FLEX_HISTORY_QUERY_ID"] = history_query_id
+        os.environ["IBKR_FLEX_HISTORY_QUERY_ID"] = history_query_id
 
     lines = [
         "# IBKR Flex Web Service credentials -- gitignored, never commit.",
         "# Written by the Settings tab; read by tools/ibkr_portfolio.py.",
     ]
-    # Keep the two known keys first, then preserve any other keys already present.
-    for key in ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID"):
+    known = ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID", "IBKR_FLEX_HISTORY_QUERY_ID")
+    # Keep the known keys first, then preserve any other keys already present.
+    for key in known:
         if existing.get(key):
             lines.append(f"{key}={existing[key]}")
     for key, val in existing.items():
-        if key not in ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID") and val:
+        if key not in known and val:
             lines.append(f"{key}={val}")
     IBKR_SECRETS.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return _ibkr_status()
@@ -2115,6 +2130,7 @@ _GET_EXACT = {
     "/api/dev/livereload": "_get_livereload",
     "/api/holdings": "_get_holdings",
     "/api/portfolio-history": "_get_portfolio_history",
+    "/api/ibkr/status": "_get_ibkr_status",
     "/api/rebalance": "_get_rebalance",
     "/api/risk": "_get_risk",
     "/api/journal": "_get_journal",
@@ -2310,6 +2326,11 @@ class Handler(BaseHTTPRequestHandler):
         if not payload:
             return self._send_error_json(404, "no portfolio history yet — pull it from IBKR (History tab)")
         return self._send_json(payload)
+
+    def _get_ibkr_status(self, path, query):
+        # Token-free credential status (see _ibkr_status); the History tab reads
+        # history_configured to guide setup before a pull is attempted.
+        return self._send_json(_ibkr_status())
 
     def _get_error_log(self, path, query):
         try:

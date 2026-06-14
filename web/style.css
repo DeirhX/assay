@@ -263,6 +263,7 @@ body.privacy-mode [data-sensitive]::selection { background: transparent; }
 .setup-provider-head strong { font-size: 14px; }
 .setup-provider-head-right { display: inline-flex; align-items: center; gap: 12px; }
 .setup-small { color: var(--muted); font-size: 12px; min-height: 18px; }
+.setup-optional { color: var(--muted); font-weight: 400; font-size: 12px; }
 .setup-small.ok { color: var(--good); }
 .setup-small.bad { color: var(--bad); }
 .setup-small.muted { color: var(--muted); }
@@ -1637,6 +1638,17 @@ a.tlink:hover { border-bottom-style: solid; }
 /* ---- Portfolio history (NAV chart + trade ledger) ------------------------ */
 .hist-empty { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 18px 20px; }
 .hist-empty p { margin: 0 0 6px; }
+
+.hist-note {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn, var(--accent));
+  border-radius: var(--radius-soft);
+  padding: 10px 14px; margin: 0 0 12px;
+  font-size: 13px; line-height: 1.45; color: var(--text);
+}
+.hist-note .linklike { font-size: inherit; }
+.hist-empty .hist-note { margin-bottom: 14px; }
 
 .hist-chart-wrap {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft);
