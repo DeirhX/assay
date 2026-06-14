@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createQaCard, ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
-import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, sectionCard, simpleTable, state } from "./core";
+import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, freshnessNote, instrumentBadge, pctClass, sectionCard, simpleTable, state } from "./core";
 import { pollDeepJob } from "./errors";
 import { cleanSymbol, downloadText, modelLabel, pushNav, setActiveView } from "./shell";
 import { recordView, relTime, renderViewedTickers } from "./viewed";
@@ -248,6 +248,50 @@ const METRIC_ROWS = [
   ["shares_out_b", "Shares out", fmtShares],
 ];
 
+const METRIC_FMT = Object.fromEntries(METRIC_ROWS.map(([k, , f]) => [k, f]));
+
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// A slim track (low -> high across the segment peers) with the subject's marker
+// at its rank-percentile and a centre tick marking the peer median. With one
+// segment the caption names it; with several it shows the aggregate and the
+// per-segment breakdown lives in the tooltip.
+function peerBar(key, m) {
+  const fmt = METRIC_FMT[key] || ((v) => String(v));
+  const pct = Math.max(0, Math.min(1, m.aggregate.pct));
+  const segs = m.per_segment || [];
+  const multi = segs.length > 1;
+  const cap = multi
+    ? `vs ${segs.length} sectors \u00b7 ${ordinal(Math.round(pct * 100))} pctile`
+    : `vs ${segs[0].title} \u00b7 ${ordinal(Math.round(pct * 100))} pctile`;
+  const tip = segs
+    .map((s) => `${s.title}: ${ordinal(Math.round(s.pct * 100))} pctile of ${s.n}` +
+      ` (median ${fmt(s.median)}, range ${fmt(s.min)}\u2013${fmt(s.max)})`)
+    .join("\n");
+  const wrap = el("div", "metric-peer");
+  wrap.title = tip;
+  wrap.innerHTML =
+    `<div class="mp-track"><span class="mp-median"></span>` +
+    `<span class="mp-marker" style="left:${(pct * 100).toFixed(1)}%"></span></div>` +
+    `<div class="mp-cap">${esc(cap)}</div>`;
+  return wrap;
+}
+
+async function loadPeerStats(symbol, grid) {
+  let data;
+  try { data = await api("/api/peer-stats?symbol=" + encodeURIComponent(symbol)); }
+  catch (_e) { return; }  // best-effort enrichment; tiles already rendered
+  const metrics = (data && data.metrics) || {};
+  if (!Object.keys(metrics).length) return;
+  grid.querySelectorAll(".metric-cell").forEach((cell) => {
+    const m = metrics[cell.dataset.metric];
+    if (m) cell.appendChild(peerBar(cell.dataset.metric, m));
+  });
+}
+
 function renderDeepDive(rec) {
   recordView(rec.symbol, rec.name);
   const out = $("#dd-result");
@@ -271,13 +315,14 @@ function renderDeepDive(rec) {
   head.innerHTML =
     `<span class="sym">${esc(rec.symbol)}</span>` +
     `<span class="name">${esc(rec.name || "")}</span>` +
+    instrumentBadge(rec.instrument_type) +
     `<span class="decision-pill ${decisionClass(decision)}">${esc(decision.replace("_", " "))}</span>` +
     `<span class="price">${fmtPrice(price)} <small class="muted">${esc(rec.currency || "")}</small></span>`;
   card.appendChild(head);
 
   const sub = el("div", "dd-sub");
   sub.innerHTML =
-    `<span>as of ${new Date(rec.as_of).toLocaleString()}</span>` +
+    `<span>as of ${freshnessNote(rec.as_of) || esc(new Date(rec.as_of).toLocaleString())}</span>` +
     (owned != null ? `<span class="owned-pill">held: ${fmtWeight(owned)} NAV</span>` : `<span class="muted">not held</span>`) +
     (target.rule ? `<span>rule: <strong>${esc(target.rule)}</strong></span>` : `<span class="muted">no target rule</span>`);
   const refreshBtn = el("button", "ghost dd-refresh", "\u21bb Refresh");
@@ -374,6 +419,7 @@ function renderDeepDive(rec) {
   METRIC_ROWS.forEach(([key, label, fmt]) => {
     const node = rec.metrics ? rec.metrics[key] : null;
     const cell = el("div", "metric-cell");
+    cell.dataset.metric = key;
     const srcLine = node ? sourceLine(node) : `<span class="muted">no data</span>`;
     cell.innerHTML =
       `<div class="label">${label}</div>` +
@@ -383,6 +429,9 @@ function renderDeepDive(rec) {
   });
   mcard.appendChild(grid);
   out.appendChild(mcard);
+  // Peer-comparison bars load off the critical path (they read every segment
+  // member's cached metrics server-side) and slot into the tiles when ready.
+  loadPeerStats(rec.symbol, grid);
 
   // momentum
   const mo = rec.momentum || {};

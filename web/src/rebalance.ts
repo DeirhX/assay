@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, sensitive, simpleTable, statTile } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, sensitive, simpleTable, statTile } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -42,7 +42,7 @@ function renderRebalance(plan) {
     `<div class="reb-meta">` +
     `<span>NAV ${sensitive(`${fmtCZK(nav)} ${esc(plan.currency)}`, "total NAV")}</span>` +
     `<span>invested ${sensitive(`${fmtCZK(plan.invested)} ${esc(plan.currency)}`, "invested book")}</span>` +
-    `<span>snapshot ${esc(fmtStamp(plan.snapshot))}</span>` +
+    `<span>snapshot ${freshnessNote(plan.snapshot) || esc(fmtStamp(plan.snapshot))}</span>` +
     `<span>target as of ${esc(plan.as_of || "n/a")}</span>` +
     `<span>cash target ${plan.cash_target_pct}%</span>` +
     (plan.funding_order && plan.funding_order.length

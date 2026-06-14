@@ -385,6 +385,61 @@ class ErrorLogEndpoint(unittest.TestCase):
         self.assertEqual(payload["entries"], [])
 
 
+class PeerStats(unittest.TestCase):
+    """Rank-percentile of a metric within each segment's peers, plus the mean
+    across segments. Helpers are stubbed so the math is checked without touching
+    the data submodule."""
+
+    def test_metric_value_coercion(self):
+        self.assertEqual(serve._metric_value({"metrics": {"ps": {"value": 4.5}}}, "ps"), 4.5)
+        self.assertEqual(serve._metric_value({"metrics": {"ps": 7}}, "ps"), 7.0)
+        self.assertIsNone(serve._metric_value({"metrics": {"ps": {"value": None}}}, "ps"))
+        self.assertIsNone(serve._metric_value({"metrics": {}}, "ps"))
+        self.assertIsNone(serve._metric_value({"metrics": {"ps": {"value": "x"}}}, "ps"))
+
+    def test_no_segments_yields_empty_metrics(self):
+        with mock.patch.object(serve, "_segments_for_symbol", return_value=[]):
+            res = serve._peer_stats("ZZZ")
+        self.assertEqual(res["segments"], [])
+        self.assertEqual(res["metrics"], {})
+
+    def test_percentile_median_and_aggregate(self):
+        vals = {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0, "DDD": 40.0, "SUB": 25.0}
+
+        def fake_load(path):
+            v = vals.get(Path(path).stem)
+            return {"metrics": {"pe_ttm": {"value": v}}} if v is not None else {}
+
+        seg = [("seg1", "Segment One", ["AAA", "BBB", "CCC", "DDD", "SUB"]),
+               ("seg2", "Segment Two", ["AAA", "SUB"])]  # 2 members -> pct 0/1 boundary
+        with mock.patch.object(serve, "_load", side_effect=fake_load), \
+             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
+            res = serve._peer_stats("SUB")
+        m = res["metrics"]["pe_ttm"]
+        self.assertEqual(m["value"], 25.0)
+        # seg1 sorted 10,20,25,30,40 -> 25 is the median -> 0.5 pctile, median 25
+        s1 = next(s for s in m["per_segment"] if s["segment"] == "seg1")
+        self.assertAlmostEqual(s1["pct"], 0.5, places=3)
+        self.assertEqual(s1["n"], 5)
+        self.assertEqual(s1["median"], 25.0)
+        # seg2 sorted 10,25 -> 25 is the top -> 1.0 pctile
+        s2 = next(s for s in m["per_segment"] if s["segment"] == "seg2")
+        self.assertAlmostEqual(s2["pct"], 1.0, places=3)
+        # aggregate = mean(0.5, 1.0) = 0.75
+        self.assertAlmostEqual(m["aggregate"]["pct"], 0.75, places=3)
+        self.assertEqual(m["aggregate"]["n_segments"], 2)
+
+    def test_single_peer_segment_is_skipped(self):
+        def fake_load(path):
+            return {"metrics": {"ps": {"value": 5.0}}}
+
+        seg = [("solo", "Solo", ["SUB"])]  # only the subject -> not comparable
+        with mock.patch.object(serve, "_load", side_effect=fake_load), \
+             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
+            res = serve._peer_stats("SUB")
+        self.assertNotIn("ps", res["metrics"])
+
+
 class HostGuard(unittest.TestCase):
     def test_non_loopback_host_is_refused(self):
         # The guard fires before any socket is bound, so this never serves.
