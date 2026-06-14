@@ -76,12 +76,12 @@ class Usage(unittest.TestCase):
 
 
 class ProviderOrder(unittest.TestCase):
-    def test_cursor_is_preferred_even_if_config_is_reversed(self):
+    def test_claude_is_preferred_even_if_config_is_reversed(self):
         cfg = {"providers": [
-            {"id": "claude", "enabled": True},
             {"id": "cursor", "enabled": True},
+            {"id": "claude", "enabled": True},
         ]}
-        self.assertEqual([p["id"] for p in ta._ordered_providers(cfg)], ["cursor", "claude"])
+        self.assertEqual([p["id"] for p in ta._ordered_providers(cfg)], ["claude", "cursor"])
 
     def test_unknown_providers_are_ignored_for_runtime_order(self):
         cfg = {"providers": [{"id": "bogus"}, {"id": "cursor"}]}
@@ -114,6 +114,93 @@ class ClaudeQaArgs(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertNotIn("--exclude-dynamic-system-prompt-sections", seen["argv"])
         self.assertIn("--session-id", seen["argv"])
+
+
+class CursorWebArgs(unittest.TestCase):
+    """Cursor's read-only ask mode includes a web tool, but headless -p rejects
+    tool calls that need approval -- so we add --force ONLY when web is requested.
+    Verified separately that --mode ask keeps write/shell denied even under
+    --force, so this can't escalate past read-only."""
+
+    def _argv_for(self, allow_web: bool) -> list:
+        seen = {}
+
+        def fake_run(argv, *, input_text, timeout, cancel):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout="## Verdict\nHold.", stderr="")
+
+        with mock.patch.object(ta, "_cursor_argv_base", return_value=["cursor-agent"]), \
+             mock.patch.object(ta, "_run_proc", side_effect=fake_run):
+            ta._run_cursor("PROMPT", {"id": "cursor", "enabled": True, "model": "", "extra_args": []},
+                           {"allow_web": allow_web, "timeout_sec": 300}, None)
+        return seen["argv"]
+
+    def test_force_added_only_when_web_enabled(self):
+        web_on = self._argv_for(True)
+        web_off = self._argv_for(False)
+        self.assertIn("--force", web_on)
+        self.assertNotIn("--force", web_off)
+        # Read-only mode is pinned in BOTH cases -- --force never replaces it.
+        for argv in (web_on, web_off):
+            self.assertEqual(argv[argv.index("--mode") + 1], "ask")
+
+
+class CursorVersionResolution(unittest.TestCase):
+    """The app must run the SAME version the official launcher runs. The launcher
+    only accepts versions/<YYYY.MM.DD-commithex>; folders with extra segments
+    (e.g. an orphaned 2026.06.12-19-59-36-f6aba9a) are ignored, and dist-package
+    is the fallback when no version-named dir exists."""
+
+    def _resolve(self, names: list[str], *, root_has_node=False, dist_has_index=True):
+        # Build a fake install tree; only listed dirs (plus dist-package) exist.
+        made = {n: True for n in names}
+
+        def fake_which(_):
+            return r"C:\fake\cursor-agent\cursor-agent.cmd"
+
+        real_exists = Path.exists
+
+        def fake_exists(self):
+            s = str(self)
+            if s.endswith(r"cursor-agent\node.exe") or s.endswith(r"cursor-agent\index.js"):
+                return root_has_node
+            if s.endswith("versions"):
+                return True
+            if s.endswith(r"dist-package\index.js"):
+                return dist_has_index
+            if s.endswith("index.js") or s.endswith("node.exe"):
+                parent = Path(s).parent.name
+                return parent in made or parent == "dist-package"
+            return real_exists(self)
+
+        def fake_iterdir(self):
+            base = Path(str(self))
+            dirs = list(made.keys())
+            if dist_has_index:
+                dirs.append("dist-package")
+            return [base / d for d in dirs]
+
+        with mock.patch.object(ta.sys, "platform", "win32"), \
+             mock.patch.object(ta.shutil, "which", side_effect=fake_which), \
+             mock.patch.object(Path, "exists", fake_exists), \
+             mock.patch.object(Path, "is_dir", lambda self: True), \
+             mock.patch.object(Path, "iterdir", fake_iterdir):
+            return ta._cursor_argv_base()
+
+    def test_picks_newest_official_version_ignoring_orphan(self):
+        argv = self._resolve(["2026.04.17-787b533", "2026.06.12-19-59-36-f6aba9a"])
+        self.assertIsNotNone(argv)
+        self.assertIn("2026.04.17-787b533", argv[1])
+        self.assertNotIn("19-59-36", argv[1])
+
+    def test_falls_back_to_dist_package_when_no_official_dir(self):
+        argv = self._resolve(["2026.06.12-19-59-36-f6aba9a"])
+        self.assertIsNotNone(argv)
+        self.assertIn("dist-package", argv[1])
+
+    def test_orphan_only_and_no_dist_is_unresolved(self):
+        argv = self._resolve(["2026.06.12-19-59-36-f6aba9a"], dist_has_index=False)
+        self.assertIsNone(argv)
 
 
 class Config(unittest.TestCase):
@@ -214,7 +301,8 @@ class DocQaPrompt(unittest.TestCase):
 
 class FallbackErrorLogging(unittest.TestCase):
     """A backend failing -- even when the next one succeeds -- must leave a
-    durable record, so a silently-expired Cursor login stops being invisible."""
+    durable record, so the lead backend silently hitting its quota (and us
+    quietly deferring to the fallback) stops being invisible."""
 
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -229,21 +317,23 @@ class FallbackErrorLogging(unittest.TestCase):
         ta.errorlog.LOG_PATH = self._orig_path
         self._dir.cleanup()
 
-    def test_silent_cursor_fallback_is_logged_as_warning(self):
+    def test_silent_lead_fallback_is_logged_as_warning(self):
+        # Claude leads now; when it's out of quota we defer to Cursor, but the
+        # lead failure must still leave a durable warning.
         runners = {
-            "cursor": lambda *a, **k: {"ok": False, "fatal": False,
-                                       "error": "Cursor: Authentication required"},
-            "claude": lambda *a, **k: {"ok": True, "report": "ok", "backend": "claude",
-                                       "backend_label": "Claude", "model": "(default)"},
+            "claude": lambda *a, **k: {"ok": False, "fatal": False,
+                                       "error": "Claude: usage limit reached"},
+            "cursor": lambda *a, **k: {"ok": True, "report": "ok", "backend": "cursor",
+                                       "backend_label": "Cursor", "model": "(default)"},
         }
         with mock.patch.dict(ta._RUNNERS, runners, clear=False):
             res = ta._run_with_fallback("p", self._cfg, label="analysis")
-        self.assertTrue(res["ok"])  # claude served it
+        self.assertTrue(res["ok"])  # cursor served it
         entries = ta.errorlog.recent()
-        self.assertEqual(len(entries), 1)  # the cursor failure, not a total-fail error
+        self.assertEqual(len(entries), 1)  # the claude failure, not a total-fail error
         self.assertEqual(entries[0]["level"], "warning")
-        self.assertEqual(entries[0]["context"]["backend"], "cursor")
-        self.assertEqual(entries[0]["context"]["reason"], "auth")
+        self.assertEqual(entries[0]["context"]["backend"], "claude")
+        self.assertEqual(entries[0]["context"]["reason"], "quota")
         self.assertEqual(entries[0]["context"]["op"], "analysis")
 
     def test_all_backends_failing_logs_an_error(self):

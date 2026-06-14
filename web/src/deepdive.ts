@@ -564,7 +564,8 @@ function renderAnalysisCard(rec) {
     const prose = body.querySelector(".analysis-prose");
     prose.innerHTML = mdToHtml(a.report || "");
     linkifyTickers(prose);
-    decorateVerdict(prose);
+    decorateAnalysis(prose);
+    decorateSources(prose, rec);
     const actions = el("div", "analysis-actions");
     const re = el("button", "ghost", "&#8635; Regenerate");
     re.type = "button";
@@ -620,7 +621,7 @@ function detectStance(text) {
 function decorateVerdict(root) {
   const heads = [...root.querySelectorAll("h1,h2,h3,h4,h5,h6")];
   const vh = heads.find((h) => /^\s*verdict\b/i.test(h.textContent || ""));
-  if (!vh) return;
+  if (!vh || vh.querySelector(".verdict-pill")) return; // idempotent
   const block = [];
   for (let n = vh.nextElementSibling; n && !/^H[1-6]$/.test(n.tagName); n = n.nextElementSibling) block.push(n);
   const text = block.map((n) => n.textContent).join(" ");
@@ -632,6 +633,110 @@ function decorateVerdict(root) {
   for (const elBlock of block) {
     if (highlightFirstMatch(elBlock, best.re, "verdict-stance " + best.cls)) break;
   }
+}
+
+// The analysis template emits fixed sections (Bull case / Bear case / What would
+// change the thesis). Tint each one so a reader scanning the report can land on
+// the upside, the downside, and the trip-wires without reading every heading.
+// Matched on the heading text only, so unrelated prose never gets painted.
+const CASE_RULES = [
+  { re: /\b(bull case|bull thesis|bull|upside|reasons to (buy|own|accumulate))\b/i, cls: "case-bull" },
+  { re: /\b(bear case|bear thesis|bear|downside|risk|red flag)\b/i, cls: "case-bear" },
+  { re: /\b(what would change|thesis (buster|breaker|risk)|catalyst|what to watch|triggers?)\b/i, cls: "case-flip" },
+];
+
+// Wraps each recognised section (heading + its body, up to the next heading) in a
+// coloured rail. Idempotent: re-running on already-decorated DOM is a no-op.
+function decorateCases(root) {
+  const heads = [...root.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+  heads.forEach((h) => {
+    if (h.classList.contains("case-head") || h.closest(".case-section")) return;
+    const text = (h.textContent || "").trim();
+    if (/^\s*verdict\b/i.test(text)) return; // owned by decorateVerdict
+    const rule = CASE_RULES.find((r) => r.re.test(text));
+    if (!rule) return;
+    const block = [];
+    for (let n = h.nextElementSibling; n && !/^H[1-6]$/.test(n.tagName); n = n.nextElementSibling) block.push(n);
+    const wrap = el("div", "case-section " + rule.cls);
+    h.parentNode.insertBefore(wrap, h);
+    h.classList.add("case-head", rule.cls);
+    wrap.appendChild(h);
+    block.forEach((n) => wrap.appendChild(n));
+  });
+}
+
+// The four canonical stances, mapped to the verdict palette. Matched
+// CASE-SENSITIVELY (capitalised) so we colour the deliberate recommendation
+// label ("Downgrade to Trim", "Upgrade to Accumulate") but NOT the lowercase
+// verb that shares the word -- e.g. "margins hold or improve", "avoid chasing".
+const DECISION_CLASS = { accumulate: "v-good", hold: "v-hold", trim: "v-warn", avoid: "v-bad" };
+const DECISION_RE = /\b(Accumulate|Hold|Trim|Avoid)\b/g;
+
+// Tints every capitalised stance word across the note (e.g. inside the
+// "What would change the thesis" triggers), reusing the verdict colours so an
+// upgrade-to/downgrade-to call is scannable wherever it appears. Skips text
+// already wrapped (verdict pill/stance) and links/code. Idempotent.
+function decorateStanceWords(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const targets = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    const parent = node.parentElement;
+    if (!parent || parent.closest(".verdict-stance, .verdict-pill, a, code, pre")) continue;
+    if (/\b(Accumulate|Hold|Trim|Avoid)\b/.test(node.nodeValue || "")) targets.push(node);
+  }
+  targets.forEach((n) => {
+    const text = n.nodeValue || "";
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(DECISION_RE)) {
+      const idx = m.index ?? 0;
+      if (idx > last) frag.appendChild(document.createTextNode(text.slice(last, idx)));
+      frag.appendChild(el("span", "verdict-stance " + DECISION_CLASS[m[0].toLowerCase()], esc(m[0])));
+      last = idx + m[0].length;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    n.parentNode.replaceChild(frag, n);
+  });
+}
+
+// One call to colour-code a rendered analysis: recommendation pill on the verdict
+// plus tinted bull/bear/trigger rails plus inline stance words. Order matters --
+// verdict first (its block scan runs before decorateCases rewraps siblings), then
+// stance words last so it skips anything the earlier passes already wrapped.
+function decorateAnalysis(root) {
+  decorateVerdict(root);
+  decorateCases(root);
+  decorateStanceWords(root);
+}
+
+const PROVIDER_LABELS = { yahoo: "Yahoo Finance", sec_edgar: "SEC EDGAR", fmp: "FMP" };
+
+// The model ends with a "Sources" section listing web citations, or a bare
+// "None — analysis is from the provided data only." when it worked purely from
+// the data we handed it. That "None" reads like a gap; when there are no actual
+// links, swap in the real provenance -- which deterministic providers fed the
+// note and how fresh the snapshot is -- so the section informs instead of shrugs.
+function decorateSources(root, rec) {
+  const heads = [...root.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+  const sh = heads.find((h) => /^\s*sources?\b/i.test(h.textContent || ""));
+  if (!sh) return;
+  const block = [];
+  for (let n = sh.nextElementSibling; n && !/^H[1-6]$/.test(n.tagName); n = n.nextElementSibling) block.push(n);
+  // Real web citations present? Leave the model's list untouched.
+  if (block.some((n) => n.querySelector && n.querySelector("a[href]"))) return;
+  const names = Object.keys(PROVIDER_LABELS)
+    .filter((k) => rec && rec.sources && rec.sources[k])
+    .map((k) => PROVIDER_LABELS[k]);
+  const list = names.length ? names.join(", ") : "the cached data snapshot";
+  const fresh = rec ? freshnessNote(rec.as_of) : "";
+  const p = el("p", "sources-provenance");
+  p.innerHTML =
+    `Built only from the deterministic data snapshot \u2014 <strong>${esc(list)}</strong>` +
+    (fresh ? `, pulled ${fresh}` : "") +
+    `. No external web search was used \u2014 verify time-sensitive claims independently.`;
+  block.forEach((n) => n.remove());
+  sh.parentNode.insertBefore(p, sh.nextSibling);
 }
 
 // Wraps the first regex match found in a text node under `host`. Returns true on
@@ -1129,6 +1234,10 @@ export {
   VERDICT_STANCES,
   detectStance,
   decorateVerdict,
+  decorateCases,
+  decorateStanceWords,
+  decorateAnalysis,
+  decorateSources,
   highlightFirstMatch,
   qaUsageHtml,
   renderQaCard,
