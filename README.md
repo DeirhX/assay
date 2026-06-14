@@ -41,7 +41,10 @@ You are a hands-on individual investor who wants to validate the data and
 allocations behind your own positions, run on-demand research, and keep a
 defensible standing plan. You run it locally, against your own private holdings,
 on your own machine. It is explicitly **not** multi-user, not a hosted service,
-not an order generator, and not a robo-advisor.
+and not a robo-advisor. Research never trades. There is one — and only one —
+surface that can place orders: the opt-in, paper-first **Trade desk** (see
+below), which is disabled by default and places only orders you confirm
+one-by-one.
 
 ### Prerequisites
 
@@ -71,14 +74,19 @@ for the full details.
 
 **This tool is for personal research and informational purposes only. It is not
 financial, investment, tax, or legal advice, and nothing it produces is a
-recommendation to buy or sell any security.** Assay does not place trades and is
-not connected to any broker for order execution. Market data is pulled from
+recommendation to buy or sell any security.** Market data is pulled from
 third-party sources that may be delayed, incomplete, or wrong — verify
 everything independently before acting. Any tax handling (including the Czech
 3-year lot logic) is a convenience estimate, not professional tax guidance.
-You alone are responsible for your investment decisions and their outcomes; the
-authors accept no liability for any loss arising from use of this software. Use
-at your own risk.
+
+The optional **Trade desk** can place real orders through Interactive Brokers,
+but only when you explicitly enable it (`IBKR_TRADING_ENABLED`), only after you
+preview the basket, and only for orders you confirm individually; live (non-paper)
+placement requires a second flag (`IBKR_ALLOW_LIVE`) on top. Order execution is
+inherently risky: prices move, orders can partially fill or be rejected, and a
+mistaken basket can lose real money. **You alone are responsible for every order
+and its outcome**; the authors accept no liability for any loss arising from use
+of this software. Validate on a paper account first. Use at your own risk.
 
 Start here if you are new to the repo:
 
@@ -236,6 +244,53 @@ py -3 tools/serve.py
 Then open the Setup tab, save the LLM provider preferences, run the CLI smoke
 checks, and verify Perplexity login. Do not commit `secrets.env`, browser
 profiles, API keys, or CLI tokens.
+
+## Live Trading (Trade desk)
+
+The **Trade desk** (Portfolio → Trade) is the only part of Assay that can place
+real orders. Everything else is read-only research. It is **off by default** and
+**paper-first** by design.
+
+It uses the IBKR **Client Portal Web API** over a local **Client Portal Gateway**
+(a Java program you run yourself), reached with stdlib `urllib` — no new Python
+dependencies. This is a supervised path: you log into the gateway (with 2FA) once
+per session, and you confirm every order.
+
+How it flows:
+
+1. Stage a basket in the **Rebalance** planner and press *Simulate basket*.
+2. Switch to **Trade**, which reuses that basket and shows the gateway/account
+   status (a loud banner distinguishes **paper** from **LIVE**).
+3. *Preview through IBKR* sizes the CZK basket into share orders and fetches
+   IBKR's margin/commission impact — nothing is placed.
+4. Tick each order to confirm, then *Place*. IBKR's confirmation prompts are
+   answered automatically; order status and a cancel control appear below.
+
+Enabling it (all gitignored in `tools/secrets.env`, or as env vars):
+
+```powershell
+# Run the Client Portal Gateway, then log in at https://localhost:5000 (2FA).
+$env:IBKR_TRADING_ENABLED = "1"          # master switch; off by default
+# $env:IBKR_ALLOW_LIVE   = "1"           # ONLY after validating on paper
+# $env:IBKR_GATEWAY_BASE = "https://localhost:5000/v1/api"   # default
+# $env:IBKR_TRADE_ACCOUNT_ID = "DU1234567"  # optional; default prefers paper
+```
+
+Safety model: trading is refused unless `IBKR_TRADING_ENABLED` is set; a basket
+must be previewed before it can be placed (the preview returns a token the place
+step must echo, so a mutated basket is rejected); orders are re-derived
+server-side from that token-bound basket, never trusted from the browser; and
+**live (non-paper) placement stays locked** until `IBKR_ALLOW_LIVE` is also set.
+Paper accounts are detected by their `DU` prefix.
+
+Paper validation checklist (do this before ever setting `IBKR_ALLOW_LIVE`):
+
+- [ ] Gateway running and logged in; Trade tab shows *Paper account DU…*.
+- [ ] Stage a small basket, *Preview*, and confirm the sized share counts and
+      IBKR margin/commission look sane.
+- [ ] Place it on paper; verify the orders appear in IBKR and in the live-orders
+      list, then cancel/let them fill.
+- [ ] Re-preview after the fill and confirm positions moved as expected.
 
 ## Pages
 

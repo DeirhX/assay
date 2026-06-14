@@ -1,9 +1,12 @@
 # Assay — Repo Orientation
 
-This repo is a portfolio research and rebalancing workspace. It is not an order
-generator and it does not trade. It holds the live research tooling, generators,
-and Cursor skills; the actual portfolio data (holdings, targets, research) lives
-in a **private `data/` git submodule**, so the code can be public without leaking
+This repo is a portfolio research and rebalancing workspace. The research and
+rebalancing halves never trade. The one exception is the opt-in, paper-first
+**Trade desk** (`tools/ibkr_trade.py` + the Trade view), which is disabled by
+default and places only orders you preview and confirm one-by-one — see *Live
+Trading* below. It holds the live research tooling, generators, and Cursor
+skills; the actual portfolio data (holdings, targets, research) lives in a
+**private `data/` git submodule**, so the code can be public without leaking
 positions. Run `git submodule update --init` after cloning (needs access to the
 private data repo).
 
@@ -22,6 +25,7 @@ private data repo).
 | Decision journal | `tools/journal.py`, `data/journal.json` (submodule) | Append-only decisions + outcome calibration (`GET/POST /api/journal`). |
 | Portfolio history | `tools/ibkr_history.py`, `data/cache/ibkr/portfolio-history.json` (gitignored) | Full trade ledger + day-by-day NAV via windowed read-only Flex; persists once then tops up only new days (incremental by default, `--full`/`{"full":true}` to rebuild). NAV-over-time chart with trade markers in the History tab (`GET /api/portfolio-history`, `POST /api/portfolio-history/sync`). |
 | Claim validator | `tools/verify_claims.py`, `data/research-claims.json` (submodule) | Checks valuation claims for arithmetic consistency and snapshot drift. |
+| Trade desk (GATED) | `tools/ibkr_trade.py`, Trade view (`web/src/trade.ts`) | The ONLY order-placing surface. CPAPI client over the local Client Portal Gateway; off unless `IBKR_TRADING_ENABLED`, paper-first, preview-then-confirm (`POST /api/trade/preview`, `/place`, `/cancel`). |
 | Research Console | `tools/serve.py`, `tools/research_pull.py`, `web/` | Local live research UI/API using Yahoo, SEC EDGAR, optional FMP. |
 | Research segments | `data/segments/*.json` (submodule) | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
 | Deep Research artifacts | `data/research/deep/` (submodule) | Perplexity reports, source sidecars, review-gate output, and target proposals. |
@@ -101,6 +105,40 @@ Research discipline:
   should remain non-overlapping unless deliberately modeled.
 - Disagreements are surfaced, not smoothed over. The whole damn point is to catch
   impossible market caps and stale valuation claims before they infect the plan.
+
+## Live Trading (Trade desk)
+
+The Trade desk is the only surface that can place orders; the rest of the app is
+read-only research. It is **off by default** and **paper-first**.
+
+Architecture: it talks to the IBKR **Client Portal Web API** (CPAPI) over a local
+**Client Portal Gateway** (a Java program you run + log into yourself) using
+stdlib `urllib` (`tools/ibkr_trade.py`), so it stays dependency-free and fits the
+synchronous `http.server` design. This is supervised use: daily browser re-auth
+(with 2FA) is expected, and every order is human-confirmed.
+
+Flow: stage a basket in the Rebalance planner (*Simulate basket*) → it lands in
+`state.stagedBasket` → the Trade view previews it (`POST /api/trade/preview`,
+which sizes the CZK basket into share orders via the holdings marks + a live
+CPAPI snapshot and returns IBKR's margin/commission plus a binding token) → you
+tick each order and place (`POST /api/trade/place`).
+
+Safety invariants (enforced in `serve.py`, tested in
+`tools/tests/test_ibkr_trade.py`):
+
+- Refused unless `IBKR_TRADING_ENABLED` is set.
+- A basket must be previewed before placement: place requires the preview token,
+  which is a hash of the exact `{account, trades}`; a mutated basket is rejected.
+- Orders are re-derived server-side from the token-bound basket — never trusted
+  from the browser.
+- Live (non-paper) accounts stay locked until `IBKR_ALLOW_LIVE` is also set;
+  paper accounts are detected by their `DU` prefix.
+
+Config lives in the same gitignored `tools/secrets.env` (or env):
+`IBKR_TRADING_ENABLED`, `IBKR_ALLOW_LIVE`, `IBKR_GATEWAY_BASE`,
+`IBKR_TRADE_ACCOUNT_ID`. Validate on paper before unlocking live (checklist in
+`README.md` → *Live Trading*). This is a separate concern from the read-only Flex
+reader, which still owns holdings/history and can never place a trade.
 
 ## Perplexity Deep Research
 

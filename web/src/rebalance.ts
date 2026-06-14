@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, sensitive, simpleTable, statTile } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, sensitive, simpleTable, state, statTile } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -332,6 +332,9 @@ function renderRebalance(plan) {
         if (czk == null || czk === 0) return;
         trades.push({ symbol: r.name, delta_czk: czk });
       });
+      // Share the staged basket with the Trade desk so it can preview/place the
+      // exact same trades you just simulated here.
+      state.stagedBasket = trades.slice();
       const box = $("#reb-whatif");
       if (!trades.length) {
         box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name, then simulate. (Sleeves are spread across members by hand, so they are not staged.)</div>`;

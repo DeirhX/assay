@@ -29,6 +29,7 @@ interface AppState {
   analysesRuns: any[];
   currentAnalysis: any;
   tickerSet: Set<string>;
+  stagedBasket: Array<{ symbol: string; delta_czk: number }>;
 }
 
 const state: AppState = {
@@ -49,6 +50,7 @@ const state: AppState = {
   analysesRuns: [],
   currentAnalysis: null,
   tickerSet: new Set<string>(),
+  stagedBasket: [],
 };
 
 // ---- tiny helpers ---------------------------------------------------------
