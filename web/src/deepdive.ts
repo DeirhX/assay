@@ -836,14 +836,22 @@ function chartSvg(rec, history) {
     );
   }).join("");
 
+  // Vertical "mountain" gradient: saturated at the price line, fading to nothing
+  // at the baseline. A flat-opacity fill (the old approach) reads as a featureless
+  // slab whose top — the volatile line — smears into a band; the fade ties the
+  // fill to the line and keeps the baseline unambiguous.
+  const fillId = "price-area-fill";
   const svg =
     `<svg class="price-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(rec.symbol)} ${esc(rangeLabel)} price history">` +
+      `<defs><linearGradient id="${fillId}" class="chart-fill-grad ${trend}" x1="0" y1="0" x2="0" y2="1">` +
+        `<stop class="cf-top" offset="0%"></stop><stop class="cf-bot" offset="100%"></stop>` +
+      `</linearGradient></defs>` +
       `<line class="chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>` +
       `<line class="chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>` +
       yAxis +
       `<text class="chart-label" x="${pad.left}" y="${height - 9}">${esc(dateLabel(first.date))}</text>` +
       `<text class="chart-label" x="${width - pad.right}" y="${height - 9}" text-anchor="end">${esc(dateLabel(last.date))}</text>` +
-      `<polygon class="chart-area ${trend}" points="${area}"></polygon>` +
+      `<polygon class="chart-area" fill="url(#${fillId})" points="${area}"></polygon>` +
       `<polyline class="chart-line ${trend}" points="${line}"></polyline>` +
       `<circle class="chart-dot" cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.close).toFixed(1)}" r="3.5"></circle>` +
     `</svg>`;

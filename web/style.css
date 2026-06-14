@@ -589,11 +589,17 @@ h2.section { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; 
 .chart-axis { stroke: var(--border); stroke-width: 1; }
 .chart-grid { stroke: var(--border); stroke-width: 1; opacity: .45; stroke-dasharray: 3 4; }
 .chart-label { fill: var(--muted); font-size: 11px; }
-.chart-area { opacity: .12; }
-.chart-area.good, .chart-line.good { fill: var(--good); stroke: var(--good); }
-.chart-area.bad, .chart-line.bad { fill: var(--bad); stroke: var(--bad); }
-.chart-area.muted, .chart-line.muted { fill: var(--info); stroke: var(--info); }
-.chart-line { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.chart-area { stroke: none; }
+.chart-line { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.chart-line.good { stroke: var(--good); }
+.chart-line.bad { stroke: var(--bad); }
+.chart-line.muted { stroke: var(--info); }
+/* Mountain fill: saturated under the line, fading into the baseline. */
+.chart-fill-grad .cf-top { stop-opacity: .30; }
+.chart-fill-grad .cf-bot { stop-opacity: 0; }
+.chart-fill-grad.good .cf-top, .chart-fill-grad.good .cf-bot { stop-color: var(--good); }
+.chart-fill-grad.bad .cf-top, .chart-fill-grad.bad .cf-bot { stop-color: var(--bad); }
+.chart-fill-grad.muted .cf-top, .chart-fill-grad.muted .cf-bot { stop-color: var(--info); }
 .chart-dot { fill: var(--text); stroke: var(--panel); stroke-width: 2; }
 
 table { width: 100%; border-collapse: collapse; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius-card); overflow: hidden; margin-top: 8px; }
