@@ -33,6 +33,7 @@
       <div class="subtabs" data-group="portfolio" hidden>
         <button class="subtab" data-view="holdings" type="button">Positions</button>
         <button class="subtab" data-view="rebalance" type="button">Rebalance</button>
+        <button class="subtab" data-view="trade" type="button">Trade</button>
         <button class="subtab" data-view="risk" type="button">Risk</button>
         <button class="subtab" data-view="journal" type="button">Journal</button>
       </div>
@@ -347,6 +348,22 @@
       <div id="reb-summary"></div>
       <div id="reb-whatif"></div>
       <div id="reb-result"></div>
+    </section>
+
+    <!-- TRADE -->
+    <section class="view" id="view-trade">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Trade desk</h2>
+          <p class="hint">Place the staged rebalance basket through Interactive Brokers via the local Client Portal Gateway. Every basket is previewed for margin and commission, and every order needs your explicit confirmation before it is sent. This is the only part of Assay that can place real trades — it is disabled by default and paper-first. Not advice; you are responsible for every order.</p>
+        </div>
+        <div class="reb-head-actions">
+          <button class="ghost" id="trade-refresh" type="button" title="Re-check the gateway connection and account">Refresh connection</button>
+        </div>
+      </div>
+      <div id="trade-banner"></div>
+      <div class="status" id="trade-status"></div>
+      <div id="trade-result"></div>
     </section>
 
     <!-- RISK -->

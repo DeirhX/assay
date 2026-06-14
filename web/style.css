@@ -141,7 +141,7 @@ input, select, textarea, button { font-family: inherit; }
 input::placeholder, textarea::placeholder { color: var(--muted); }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
 
-button.primary, button.ghost {
+button.primary, button.ghost, button.danger {
   display: inline-flex; align-items: center; justify-content: center;
   height: var(--control-h); padding: 0 16px;
   border-radius: var(--radius-soft); font-size: 14px; font-weight: 700;
@@ -151,8 +151,8 @@ button.primary { background: var(--accent); color: #0c1322; border: 1px solid tr
 button.primary:hover { filter: brightness(1.08); }
 button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); font-weight: 600; }
 button.ghost:hover { border-color: var(--accent); }
-button.danger { border-color: rgba(255,122,122,.5); color: var(--bad); }
-button.danger:hover { border-color: var(--bad); }
+button.danger { background: var(--panel-2); border: 1px solid rgba(255,122,122,.5); color: var(--bad); }
+button.danger:hover { border-color: var(--bad); filter: brightness(1.05); }
 button:disabled { opacity: .5; cursor: progress; }
 .privacy-inline { white-space: nowrap; }
 .privacy-inline[aria-pressed="true"] {
@@ -1777,3 +1777,39 @@ a.tlink:hover { border-bottom-style: solid; }
 #view-journal .reb-stat:hover { border-color: rgba(130, 170, 255, .4); transform: translateY(-1px); }
 #view-journal .reb-stat-k { font-size: 11px; }
 #view-journal .reb-stat-v { font-size: 23px; }
+
+/* ---- Trade desk (the only order-placing surface) ------------------------- */
+/* Connection / account banners. Live is deliberately loud (red-ish) so you can
+   never confuse a live account for the safe paper one at a glance. */
+.trade-bnr {
+  margin: 8px 0; padding: 10px 14px; border-radius: var(--radius-soft);
+  border: 1px solid var(--border); font-size: 13.5px; line-height: 1.5;
+}
+.trade-bnr code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+.trade-bnr.bad { border-color: rgba(255,122,122,.55); background: rgba(255,122,122,.08); }
+.trade-bnr.warn { border-color: rgba(240,200,120,.5); background: rgba(240,200,120,.08); }
+.trade-bnr.paper { border-color: rgba(120,210,160,.5); background: rgba(120,210,160,.08); }
+.trade-bnr.live { border-color: var(--bad); background: rgba(255,122,122,.12); }
+
+.trade-card { margin: 12px 0; border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel-2); padding: 14px 16px; }
+.trade-card-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.trade-card-title { font-weight: 700; font-size: 15px; }
+.trade-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+
+.trade-basket-table, .trade-orders-table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13.5px; }
+.trade-basket-table th, .trade-basket-table td,
+.trade-orders-table th, .trade-orders-table td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; }
+.trade-basket-table th, .trade-orders-table th { background: var(--panel-2); font-weight: 600; }
+.trade-orders-table td.num, .trade-basket-table td.num, .trade-orders-table th.num, .trade-basket-table th.num { text-align: right; }
+
+.trade-side { font-weight: 700; }
+.trade-side.buy { color: var(--good); }
+.trade-side.sell { color: var(--bad); }
+
+.trade-impact { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0; font-size: 13px; }
+.trade-impact-cell { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
+.trade-warn { color: var(--bad); font-size: 12.5px; margin: 4px 0; }
+.trade-raw { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; max-height: 320px; }
+
+.trade-live-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.trade-live-status { color: var(--muted); }

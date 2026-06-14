@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -68,6 +69,7 @@ import jobs  # noqa: E402
 import orchestrate  # noqa: E402  -- durable state machine for the guided strategy run
 import target_construct  # noqa: E402  -- LLM + deterministic target-model synthesis
 import ibkr_history  # noqa: E402  -- full trade + NAV history via windowed Flex
+import ibkr_trade  # noqa: E402  -- LIVE order execution via Client Portal Web API (gated)
 import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
@@ -1322,6 +1324,293 @@ def _save_ibkr_secrets(body: dict) -> dict:
     return _ibkr_status()
 
 
+# --------------------------------------------------------------------------- #
+# Live trading sidecar (Client Portal Web API) -- GATED.
+#
+# Unlike the read-only Flex path above, these helpers can place REAL orders, so
+# every entry point checks ibkr_trade.trading_enabled(); placement additionally
+# requires a matching preview token, an explicit confirm flag, and (for live,
+# non-paper accounts) IBKR_ALLOW_LIVE. Order details are always derived
+# server-side from the token-bound basket so a tampered client payload cannot
+# place something the human never previewed.
+# --------------------------------------------------------------------------- #
+class _Forbidden(Exception):
+    """A trading guard refused the request (maps to HTTP 403)."""
+
+
+def _normalize_basket(trades) -> list[dict]:
+    """Canonical, de-duplicated [{symbol, delta_czk}] used for both hashing and
+    sizing. Raises ValueError on malformed input (mirrors whatif._coerce_trades
+    so the two paths agree on what a basket is)."""
+    if not isinstance(trades, list):
+        raise ValueError("trades must be a list of {symbol, delta_czk}")
+    netted: dict[str, float] = {}
+    for t in trades:
+        if not isinstance(t, dict):
+            raise ValueError("each trade must be an object")
+        sym = str(t.get("symbol") or "").strip().upper()
+        if not sym:
+            raise ValueError("each trade needs a symbol")
+        try:
+            delta = float(t.get("delta_czk"))
+        except (TypeError, ValueError):
+            raise ValueError(f"trade for {sym} needs a numeric delta_czk")
+        netted[sym] = netted.get(sym, 0.0) + delta
+    return [{"symbol": s, "delta_czk": round(d, 2)} for s, d in sorted(netted.items())]
+
+
+def _basket_token(account_id: str, basket: list[dict]) -> str:
+    """Stable short hash binding a preview to the exact basket + account. The
+    place endpoint requires the caller to echo it, so an unreviewed or mutated
+    basket (or a switched account) is rejected."""
+    payload = json.dumps({"account": account_id, "trades": basket}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _trade_price_map() -> dict[str, dict]:
+    """Per-symbol {price, fx_to_base, currency} from the holdings snapshot -- the
+    very marks the CZK basket was sized against, so held names size precisely.
+    Names you don't hold are absent and get a live price at preview time."""
+    holdings = _load(HOLDINGS_JSON) or {}
+    out: dict[str, dict] = {}
+    for p in holdings.get("positions") or []:
+        sym = str(p.get("symbol") or "").strip().upper()
+        price = p.get("mark_price")
+        if sym and isinstance(price, (int, float)) and price:
+            out[sym] = {
+                "price": float(price),
+                "fx_to_base": float(p.get("fx_rate_to_base") or 1.0),
+                "currency": (p.get("currency") or "").upper(),
+            }
+    return out
+
+
+def _fx_by_currency() -> dict[str, float]:
+    """currency -> rate-to-base, harvested from held positions. Used to convert a
+    live price for a not-yet-held name; absent currencies fall back to 1.0."""
+    holdings = _load(HOLDINGS_JSON) or {}
+    out: dict[str, float] = {}
+    for p in holdings.get("positions") or []:
+        ccy = (p.get("currency") or "").upper()
+        fx = p.get("fx_rate_to_base")
+        if ccy and isinstance(fx, (int, float)) and fx:
+            out[ccy] = float(fx)
+    return out
+
+
+def _resolve_trade_account(requested) -> str:
+    """Pick the account to trade. An explicit request must be visible to the
+    session. Otherwise prefer IBKR_TRADE_ACCOUNT_ID, then a paper (DU) account,
+    then the first one -- paper-first by construction."""
+    accts = ibkr_trade.accounts()
+    ids = [str(a.get("accountId") or a.get("id") or "") for a in accts if isinstance(a, dict)]
+    ids = [i for i in ids if i]
+    if not ids:
+        raise ValueError("no IBKR accounts visible — is the Client Portal Gateway logged in?")
+    if requested:
+        req = str(requested)
+        if req not in ids:
+            raise ValueError(f"account {req} is not visible to this session")
+        return req
+    configured = ibkr_trade._config_value("IBKR_TRADE_ACCOUNT_ID")
+    if configured and configured in ids:
+        return configured
+    paper = [i for i in ids if ibkr_trade.is_paper_account(i)]
+    return paper[0] if paper else ids[0]
+
+
+def _parse_snapshot_price(raw) -> float | None:
+    """CPAPI market-data last-price (field 31) is a string that may carry a
+    leading letter flag (e.g. 'C'=prior close) or thousands separators. Extract
+    the number, or None if there isn't one."""
+    if raw in (None, ""):
+        return None
+    s = str(raw).replace(",", "").lstrip("CHchx ").strip()
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
+    """Translate a token-bound CZK basket into CPAPI order dicts, server-side.
+    Resolves conids, prices held names from the snapshot and unheld names from a
+    live CPAPI snapshot, then defers the shares math + skips to
+    ibkr_trade.build_orders. Returns (orders, warnings)."""
+    price_map = _trade_price_map()
+    fx_map = _fx_by_currency()
+    conids: dict[str, int] = {}
+    for t in basket:
+        cid = ibkr_trade.resolve_conid(t["symbol"])
+        if cid is not None:
+            conids[t["symbol"]] = cid
+
+    missing = [s for s in conids if s not in price_map]
+    snap = ibkr_trade.market_snapshot([conids[s] for s in missing]) if missing else {}
+    warnings: list[str] = []
+
+    def price_lookup(sym: str):
+        if sym in price_map:
+            return price_map[sym]
+        cid = conids.get(sym)
+        row = snap.get(cid) if cid is not None else None
+        px = _parse_snapshot_price(row.get("31")) if isinstance(row, dict) else None
+        if px is None:
+            return None
+        # Currency for an unheld name isn't reliably in the snapshot; assume USD
+        # (the dominant case) and surface it so the human can sanity-check size.
+        warnings.append(f"{sym}: not held — sized from a live price assuming USD FX")
+        return {"price": px, "fx_to_base": fx_map.get("USD", 1.0)}
+
+    orders, skip_warnings = ibkr_trade.build_orders(
+        basket,
+        price_lookup=price_lookup,
+        conid_lookup=lambda s: conids.get(s),
+        account_id=account_id,
+        coid_prefix="assay-" + _basket_token(account_id, basket),
+    )
+    return orders, warnings + skip_warnings
+
+
+def _trade_status() -> dict:
+    """Gateway/session + flag status for the Trade UI. Never raises: an
+    unreachable gateway yields a clean 'not connected' shape."""
+    status = {
+        "trading_enabled": ibkr_trade.trading_enabled(),
+        "live_allowed": ibkr_trade.live_allowed(),
+        "gateway_base": ibkr_trade.gateway_base(),
+        "authenticated": False,
+        "connected": False,
+        "competing": False,
+        "accounts": [],
+        "default_account": None,
+    }
+    try:
+        auth = ibkr_trade.auth_status()
+    except Exception:  # noqa: BLE001
+        auth = {}
+    status["authenticated"] = bool(auth.get("authenticated"))
+    status["connected"] = bool(auth.get("connected"))
+    status["competing"] = bool(auth.get("competing"))
+    if status["authenticated"]:
+        try:
+            out = []
+            for a in ibkr_trade.accounts():
+                aid = str(a.get("accountId") or a.get("id") or "")
+                if aid:
+                    out.append({"id": aid, "kind": ibkr_trade.account_kind(aid)})
+            status["accounts"] = out
+            if out:
+                try:
+                    status["default_account"] = _resolve_trade_account(None)
+                except ValueError:
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+    return status
+
+
+def _trade_preview(body: dict) -> dict:
+    """Resolve + price + size a basket and ask IBKR for its margin/commission
+    impact, WITHOUT placing anything. Also returns the local what-if so the two
+    can be eyeballed side by side, plus the token the place step must echo."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to use the trade desk")
+    basket = _normalize_basket(body.get("trades"))
+    if not basket:
+        raise ValueError("nothing staged to preview")
+    account_id = _resolve_trade_account(body.get("account"))
+    orders, warnings = _prepare_trade_orders(account_id, basket)
+
+    ibkr_preview: Any = {}
+    if orders:
+        try:
+            ibkr_preview = ibkr_trade.preview_orders(account_id, orders)
+        except ibkr_trade.CPAPIError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    local = None
+    holdings = _load(HOLDINGS_JSON)
+    model = _load(TARGET_MODEL_JSON)
+    if holdings and model:
+        try:
+            local = whatif.simulate(holdings, model, basket)
+        except ValueError:
+            local = None
+
+    return {
+        "account": account_id,
+        "kind": ibkr_trade.account_kind(account_id),
+        "is_paper": ibkr_trade.is_paper_account(account_id),
+        "live_allowed": ibkr_trade.live_allowed(),
+        "token": _basket_token(account_id, basket),
+        "trades": basket,
+        "orders": orders,
+        "warnings": warnings,
+        "ibkr_preview": ibkr_preview,
+        "local_whatif": local,
+    }
+
+
+def _trade_place(body: dict) -> dict:
+    """Place a previewed basket. Refuses unless trading is enabled, the caller
+    confirmed, the preview token matches the exact basket+account, and (for live
+    accounts) live placement is unlocked. Orders are re-derived server-side from
+    the token-bound basket, never trusted from the client."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to place orders")
+    if not body.get("confirm"):
+        raise ValueError("placement requires an explicit confirmation")
+    basket = _normalize_basket(body.get("trades"))
+    if not basket:
+        raise ValueError("nothing to place")
+    account_id = _resolve_trade_account(body.get("account"))
+    expected = _basket_token(account_id, basket)
+    if str(body.get("token") or "") != expected:
+        raise ValueError("preview token mismatch — re-preview before placing "
+                         "(the basket or account changed since the preview)")
+    if not ibkr_trade.is_paper_account(account_id) and not ibkr_trade.live_allowed():
+        raise _Forbidden("live account placement is locked — validate on paper, "
+                         "then set IBKR_ALLOW_LIVE to enable live orders")
+    orders, warnings = _prepare_trade_orders(account_id, basket)
+    if not orders:
+        raise ValueError("no orders could be sized from this basket — see preview warnings")
+    try:
+        placed = ibkr_trade.place_orders(account_id, orders)
+    except ibkr_trade.CPAPIError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return {
+        "account": account_id,
+        "kind": ibkr_trade.account_kind(account_id),
+        "is_paper": ibkr_trade.is_paper_account(account_id),
+        "orders": orders,
+        "warnings": warnings,
+        "placed": placed,
+    }
+
+
+def _trade_orders() -> dict:
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled")
+    try:
+        return {"orders": ibkr_trade.live_orders()}
+    except ibkr_trade.CPAPIError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _trade_cancel(body: dict) -> dict:
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled")
+    order_id = str(body.get("order_id") or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required")
+    account_id = _resolve_trade_account(body.get("account"))
+    try:
+        return {"cancelled": ibkr_trade.cancel_order(account_id, order_id)}
+    except ibkr_trade.CPAPIError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def _sync_holdings(progress=None) -> dict:
     """Re-pull the portfolio via the vendored read-only IBKR Flex reader and
     refresh data/current-holdings.json. Read-only: the Flex query cannot trade.
@@ -2207,6 +2496,8 @@ _GET_EXACT = {
     "/api/analysis-config": "_get_analysis_config",
     "/api/setup/status": "_get_setup_status",
     "/api/analysis-models": "_get_analysis_models",
+    "/api/trade/status": "_get_trade_status",
+    "/api/trade/orders": "_get_trade_orders",
     "/api/deep-research/login-status": "_get_login_status",
     "/api/deep-job": "_get_deep_job",
     "/api/deep-prompt": "_get_deep_prompt",
@@ -2249,6 +2540,9 @@ _POST_EXACT = {
     "/api/history/delete": "_post_history_delete",
     "/api/tax-plan": "_post_tax_plan",
     "/api/whatif": "_post_whatif",
+    "/api/trade/preview": "_post_trade_preview",
+    "/api/trade/place": "_post_trade_place",
+    "/api/trade/cancel": "_post_trade_cancel",
     "/api/journal": "_post_journal",
     "/api/journal/outcome": "_post_journal_outcome",
     "/api/symbol-alias": "_post_symbol_alias",
@@ -2486,6 +2780,18 @@ class Handler(BaseHTTPRequestHandler):
     def _get_analysis_models(self, path, query):
         force = (query.get("refresh") or ["0"])[0] in ("1", "true")
         return self._send_json({"models": ticker_analysis.provider_models(force=force)})
+
+    def _get_trade_status(self, path, query):
+        # Never errors: a down/locked gateway is a normal state the UI renders.
+        return self._send_json(_trade_status())
+
+    def _get_trade_orders(self, path, query):
+        try:
+            return self._send_json(_trade_orders())
+        except _Forbidden as exc:
+            return self._send_error_json(403, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(502, str(exc))
 
     def _get_login_status(self, path, query):
         return self._send_json(_get_auth_state())
@@ -2838,6 +3144,36 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
         except ValueError as exc:
             return self._send_error_json(400, str(exc))
+
+    def _post_trade_preview(self, path):
+        try:
+            return self._send_json(_trade_preview(self._read_body()))
+        except _Forbidden as exc:
+            return self._send_error_json(403, str(exc))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(502, str(exc))
+
+    def _post_trade_place(self, path):
+        try:
+            return self._send_json(_trade_place(self._read_body()))
+        except _Forbidden as exc:
+            return self._send_error_json(403, str(exc))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(502, str(exc))
+
+    def _post_trade_cancel(self, path):
+        try:
+            return self._send_json(_trade_cancel(self._read_body()))
+        except _Forbidden as exc:
+            return self._send_error_json(403, str(exc))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        except RuntimeError as exc:
+            return self._send_error_json(502, str(exc))
 
     def _post_journal(self, path):
         body = self._read_body()
