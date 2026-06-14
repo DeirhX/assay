@@ -59,7 +59,7 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .group.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
 
 /* Persistent ticker search in the header. */
-.topsearch { display: flex; }
+.topsearch { display: flex; position: relative; }
 .topsearch input {
   background: rgba(29, 33, 43, 0.72); color: var(--text);
   border: 1px solid var(--border); border-radius: 999px;
@@ -67,6 +67,29 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 }
 .topsearch input::placeholder { color: var(--muted); }
 .topsearch input:focus { outline: none; width: 230px; border-color: rgba(130,170,255,.55); }
+
+/* Autocomplete dropdown over locally-known tickers. */
+.topsearch-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30;
+  min-width: 230px; max-height: 320px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 5px; box-shadow: 0 14px 34px rgba(0,0,0,.45);
+}
+.topsearch-item {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 7px 10px; border-radius: 8px; font-size: 13px;
+}
+.topsearch-item:hover, .topsearch-item.active { background: rgba(130,170,255,.12); }
+.topsearch-item .ts-sym { font-weight: 800; letter-spacing: .02em; flex: none; min-width: 52px; }
+.topsearch-item .ts-name {
+  color: var(--muted); flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.topsearch-item .ts-badge {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--accent); background: rgba(130,170,255,.12);
+  border: 1px solid rgba(130,170,255,.30); border-radius: 999px; padding: 1px 7px;
+}
 
 /* Secondary nav: sub-tabs for the active group, wrapped onto its own row. */
 .subbar { flex-basis: 100%; display: flex; }
