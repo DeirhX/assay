@@ -53,6 +53,7 @@ ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import holdings_payload, holdings_weights, provider_symbol_for, symbol_aliases  # noqa: E402
 from providers import yahoo  # noqa: E402
+import instruments  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
@@ -133,6 +134,14 @@ def _annotate_symbol_record(rec: dict, input_symbol: str, provider_symbol: str) 
         rec = dict(rec)
         rec["input_symbol"] = input_symbol
         rec["provider_symbol"] = provider_symbol
+    # Always hand the UI a resolved instrument type, even for older cached
+    # records that predate quote_type capture (classify() falls back to
+    # symbol/profile heuristics in that case).
+    rec["instrument_type"] = instruments.classify(
+        provider_symbol,
+        quote_type=rec.get("quote_type") or rec.get("instrument_type"),
+        profile=rec.get("profile"),
+    )
     return rec
 
 
@@ -1055,6 +1064,11 @@ def _ticker_index() -> list[dict]:
         out[sym] = {
             "symbol": sym,
             "name": rec.get("name") or sym,
+            "type": instruments.classify(
+                sym,
+                quote_type=rec.get("quote_type") or rec.get("instrument_type"),
+                profile=rec.get("profile"),
+            ),
             "as_of": rec.get("as_of"),
             "analyzed_at": None,
             "has_analysis": False,
@@ -1065,7 +1079,7 @@ def _ticker_index() -> list[dict]:
         if not sym:
             continue
         row = out.setdefault(sym, {
-            "symbol": sym, "name": sym, "as_of": None,
+            "symbol": sym, "name": sym, "type": instruments.OTHER, "as_of": None,
             "analyzed_at": None, "has_analysis": False,
         })
         ts = meta.get("generated_at")
@@ -1107,11 +1121,21 @@ def _ibkr_status() -> dict:
 
     token = resolve("IBKR_FLEX_TOKEN")
     query_id = resolve("IBKR_FLEX_QUERY_ID")
+    # The full trade + NAV history needs its own Activity Flex query (Trades +
+    # "Net Asset Value (NAV) in Base"); the reader falls back to the snapshot
+    # query id, but that one lacks those sections, so report it separately.
+    history_query_id = resolve("IBKR_FLEX_HISTORY_QUERY_ID")
     return {
         "token_set": bool(token),
         "query_id": query_id,
+        "history_query_id": history_query_id,
+        "history_query_set": bool(history_query_id),
         "configured": bool(token and query_id),
+        # History needs a dedicated query; the snapshot-query fallback won't carry
+        # the Trades / NAV sections, so true readiness means an explicit one.
+        "history_configured": bool(token and history_query_id),
         "from_env": bool((os.environ.get("IBKR_FLEX_TOKEN") or "").strip()),
+        "history_from_env": bool((os.environ.get("IBKR_FLEX_HISTORY_QUERY_ID") or "").strip()),
         "secrets_path": str(IBKR_SECRETS.relative_to(REPO_ROOT)).replace("\\", "/"),
     }
 
@@ -1122,7 +1146,8 @@ def _save_ibkr_secrets(body: dict) -> dict:
     updated without re-pasting the token. Returns the (token-free) status."""
     token = str(body.get("token") or "").strip()
     query_id = str(body.get("query_id") or "").strip()
-    if not token and not query_id:
+    history_query_id = str(body.get("history_query_id") or "").strip()
+    if not token and not query_id and not history_query_id:
         raise ValueError("nothing to save: provide a Flex token and/or query id")
 
     existing = _read_env_file(IBKR_SECRETS)
@@ -1132,17 +1157,21 @@ def _save_ibkr_secrets(body: dict) -> dict:
     if query_id:
         existing["IBKR_FLEX_QUERY_ID"] = query_id
         os.environ["IBKR_FLEX_QUERY_ID"] = query_id
+    if history_query_id:
+        existing["IBKR_FLEX_HISTORY_QUERY_ID"] = history_query_id
+        os.environ["IBKR_FLEX_HISTORY_QUERY_ID"] = history_query_id
 
     lines = [
         "# IBKR Flex Web Service credentials -- gitignored, never commit.",
         "# Written by the Settings tab; read by tools/ibkr_portfolio.py.",
     ]
-    # Keep the two known keys first, then preserve any other keys already present.
-    for key in ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID"):
+    known = ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID", "IBKR_FLEX_HISTORY_QUERY_ID")
+    # Keep the known keys first, then preserve any other keys already present.
+    for key in known:
         if existing.get(key):
             lines.append(f"{key}={existing[key]}")
     for key, val in existing.items():
-        if key not in ("IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID") and val:
+        if key not in known and val:
             lines.append(f"{key}={val}")
     IBKR_SECRETS.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return _ibkr_status()
@@ -1466,6 +1495,87 @@ def _segments_list():
     return out
 
 
+# Metrics compared against segment peers, mirroring the dossier's tile order.
+_PEER_METRIC_KEYS = (
+    "market_cap_usd_b", "pe_ttm", "pe_fwd", "ps",
+    "revenue_ttm_usd_b", "net_income_ttm_usd_b",
+    "gross_margin_pct", "rev_growth_yoy_pct", "shares_out_b",
+)
+
+
+def _metric_value(rec: dict, key: str):
+    """Pull a finite float for *key* out of a research record's metrics, or None.
+    Metric nodes are usually {value, source, ...} but tolerate a bare number."""
+    try:
+        node = (rec.get("metrics") or {}).get(key)
+        v = node.get("value") if isinstance(node, dict) else node
+        v = float(v)
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
+
+
+def _segments_for_symbol(sym: str):
+    """(slug, title, [member symbols]) for every segment that lists *sym*."""
+    out = []
+    for path in sorted(SEGMENT_DEF_DIR.glob("*.json")):
+        definition = _load(path) or {}
+        members = [str(m.get("symbol") or "").upper()
+                   for m in (definition.get("members") or []) if m.get("symbol")]
+        if sym.upper() in members:
+            out.append((path.stem, definition.get("title", path.stem.title()), members))
+    return out
+
+
+def _peer_stats(symbol: str) -> dict:
+    """Where *symbol*'s metrics sit within the peer universe of each segment it
+    belongs to: a rank-percentile (0=lowest, 1=highest) per segment, plus an
+    aggregate (mean percentile) across segments. Drives the dossier position bars.
+    """
+    sym = _safe_symbol(symbol)
+    segs = _segments_for_symbol(sym)
+    result = {"symbol": sym, "segments": [s[0] for s in segs], "metrics": {}}
+    if not segs:
+        return result
+
+    cache: dict = {}
+
+    def member_metrics(msym: str) -> dict:
+        if msym not in cache:
+            cache[msym] = _load(RESEARCH_DIR / f"{msym}.json") or {}
+        return cache[msym]
+
+    subject = member_metrics(sym)
+    for key in _PEER_METRIC_KEYS:
+        subj_val = _metric_value(subject, key)
+        if subj_val is None:
+            continue
+        per_segment, pcts = [], []
+        for slug, title, members in segs:
+            values = [v for v in (_metric_value(member_metrics(m), key) for m in members) if v is not None]
+            if len(values) < 2:
+                continue  # nothing to compare against
+            srt = sorted(values)
+            n = len(srt)
+            below = sum(1 for v in srt if v < subj_val)
+            equal = sum(1 for v in srt if v == subj_val)
+            pct = max(0.0, min(1.0, (below + max(equal - 1, 0) / 2.0) / (n - 1)))
+            median = srt[n // 2] if n % 2 else (srt[n // 2 - 1] + srt[n // 2]) / 2.0
+            per_segment.append({
+                "segment": slug, "title": title, "pct": round(pct, 4),
+                "n": n, "min": srt[0], "max": srt[-1], "median": median,
+            })
+            pcts.append(pct)
+        if not per_segment:
+            continue
+        result["metrics"][key] = {
+            "value": subj_val,
+            "aggregate": {"pct": round(sum(pcts) / len(pcts), 4), "n_segments": len(per_segment)},
+            "per_segment": per_segment,
+        }
+    return result
+
+
 def _get_auth_state() -> dict:
     st = _load(AUTH_STATE_FILE) or {}
     return {
@@ -1741,10 +1851,12 @@ _GET_EXACT = {
     "/api/dev/livereload": "_get_livereload",
     "/api/holdings": "_get_holdings",
     "/api/portfolio-history": "_get_portfolio_history",
+    "/api/ibkr/status": "_get_ibkr_status",
     "/api/rebalance": "_get_rebalance",
     "/api/risk": "_get_risk",
     "/api/journal": "_get_journal",
     "/api/segments": "_get_segments",
+    "/api/peer-stats": "_get_peer_stats",
     "/api/deep-runs": "_get_deep_runs",
     "/api/reports": "_get_reports",
     "/api/error-log": "_get_error_log",
@@ -1932,6 +2044,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, "no portfolio history yet — pull it from IBKR (History tab)")
         return self._send_json(payload)
 
+    def _get_ibkr_status(self, path, query):
+        # Token-free credential status (see _ibkr_status); the History tab reads
+        # history_configured to guide setup before a pull is attempted.
+        return self._send_json(_ibkr_status())
+
     def _get_error_log(self, path, query):
         try:
             limit = int((query.get("limit") or ["200"])[0])
@@ -1972,6 +2089,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_segments(self, path, query):
         return self._send_json({"segments": _segments_list()})
+
+    def _get_peer_stats(self, path, query):
+        sym = (query.get("symbol") or [""])[0]
+        try:
+            return self._send_json(_peer_stats(_resolve_symbol(sym)))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
 
     def _get_segment_def(self, path, query):
         name = path.rsplit("/", 1)[-1].lower()

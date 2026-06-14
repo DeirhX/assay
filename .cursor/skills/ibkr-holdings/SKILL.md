@@ -63,9 +63,12 @@ Use the exact UI labels: there is no checkbox called "EquitySummaryInBase" — t
 is only the XML tag the "Net Asset Value (NAV) in Base" section emits. Do not pick
 "Change in NAV" instead; that is a single per-period summary, not the daily NAV
 series. The snapshot query (OpenPositions only) will not work. Create a dedicated
-Activity Flex query for history and set `IBKR_FLEX_HISTORY_QUERY_ID` in
-`tools/secrets.env` (it falls back to `IBKR_FLEX_QUERY_ID` if you put everything
-in one query).
+Activity Flex query for history and set `IBKR_FLEX_HISTORY_QUERY_ID`. The Settings
+tab's IBKR pane has a **History Flex Query ID** field that writes this to
+`tools/secrets.env` for you (and shows a "History query: ready / not set" badge);
+you can also edit the file directly. It falls back to `IBKR_FLEX_QUERY_ID` if you
+put everything in one query, but the positions snapshot query lacks the required
+sections, so a dedicated history query is what actually works.
 
 Easiest: click **Update from IBKR** in the History tab (or **Rebuild full** to
 force a complete rebuild), which runs this as a background job (kind
