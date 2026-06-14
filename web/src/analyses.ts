@@ -386,12 +386,17 @@ async function loadAnalysis(stem, { push = true } = {}) {
     (analysisBadges(meta) ? `<div class="analysis-row-badges">${analysisBadges(meta)}</div>` : "");
   reader.appendChild(head);
 
-  // The report itself — verbatim Perplexity output, framed as a document.
+  // The report itself — verbatim Perplexity output, framed as a collapsible
+  // document so a long report can be folded away while reading the Q&A below.
   if (rec.report) {
-    const doc = el("section", "report-doc");
-    doc.innerHTML =
-      `<div class="report-doc-head"><span class="report-doc-title">Deep Research report</span>` +
-      `<span class="report-doc-note">Verbatim Perplexity output — treat numbers as claims to verify</span></div>`;
+    const doc = el("details", "report-doc");
+    doc.open = true;
+    const sum = el("summary", "report-doc-head");
+    sum.innerHTML =
+      `<span class="report-doc-caret" aria-hidden="true">\u203a</span>` +
+      `<span class="report-doc-title">Deep Research report</span>` +
+      `<span class="report-doc-note">Verbatim Perplexity output — treat numbers as claims to verify</span>`;
+    doc.appendChild(sum);
     const body = el("div", "report-doc-body prose");
     body.innerHTML = renderStructuredReport(rec.report) || mdToHtml(rec.report);
     doc.appendChild(body);
@@ -483,6 +488,45 @@ function createQaCard(opts) {
   card.appendChild(form);
   card.appendChild(status);
 
+  // Each exchange (a question + its answer) renders as its own collapsible
+  // <details> so answers can be expanded/collapsed individually and deleted one
+  // at a time. The summary holds the question; the answer lives in the body.
+  function renderExchange(question, answer, userIdx) {
+    const ex = el("details", "qa-exchange");
+    ex.open = true;
+    const sum = el("summary", "qa-exchange-head");
+    sum.innerHTML =
+      `<span class="qa-caret" aria-hidden="true">\u203a</span>` +
+      `<span class="qa-q-text">${esc(question.text)}</span>`;
+    const del = el("button", "qa-del", "\u00d7");
+    del.type = "button";
+    del.title = "Delete this question and its answer";
+    del.setAttribute("aria-label", "Delete this question and its answer");
+    del.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteExchange(userIdx);
+    });
+    sum.appendChild(del);
+    ex.appendChild(sum);
+
+    const bodyWrap = el("div", "qa-exchange-body");
+    if (answer) {
+      const meta = (opts.turnMeta ? opts.turnMeta(answer) : []).filter(Boolean).map(esc).join(" \u00b7 ");
+      bodyWrap.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
+      const prose = el("div", "prose qa-prose");
+      prose.innerHTML = mdToHtml(answer.text || "");
+      linkifyTickers(prose);
+      bodyWrap.appendChild(prose);
+      const usage = opts.usageHtml ? opts.usageHtml(answer) : "";
+      if (usage) bodyWrap.insertAdjacentHTML("beforeend", usage);
+    } else {
+      bodyWrap.appendChild(el("div", "hint", "No answer was recorded \u2014 the question may have failed or been cancelled."));
+    }
+    ex.appendChild(bodyWrap);
+    return ex;
+  }
+
   function renderThread(turns) {
     thread.innerHTML = "";
     if (!turns.length) {
@@ -499,25 +543,26 @@ function createQaCard(opts) {
       `<span class="collapse-title">Conversation history</span>` +
       `<span class="collapse-meta">${exchanges} question${exchanges === 1 ? "" : "s"}</span>` +
       `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
-    turns.forEach((t) => {
-      if (t.role === "user") {
-        const q = el("div", "qa-turn qa-q");
-        q.appendChild(el("div", "qa-role", "You"));
-        q.appendChild(el("div", "qa-text", esc(t.text)));
-        thread.appendChild(q);
-      } else {
-        const a = el("div", "qa-turn qa-a");
-        const meta = (opts.turnMeta ? opts.turnMeta(t) : []).filter(Boolean).map(esc).join(" \u00b7 ");
-        a.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
-        const prose = el("div", "prose qa-prose");
-        prose.innerHTML = mdToHtml(t.text || "");
-        linkifyTickers(prose);
-        a.appendChild(prose);
-        const usage = opts.usageHtml ? opts.usageHtml(t) : "";
-        if (usage) a.insertAdjacentHTML("beforeend", usage);
-        thread.appendChild(a);
-      }
-    });
+    // Pair each user turn with the assistant turn that follows it. The user
+    // turn's index in the full array is the stable handle the server deletes by.
+    for (let i = 0; i < turns.length; i++) {
+      if (turns[i].role !== "user") continue;
+      const answer = (i + 1 < turns.length && turns[i + 1].role === "assistant") ? turns[i + 1] : null;
+      thread.appendChild(renderExchange(turns[i], answer, i));
+    }
+  }
+
+  async function deleteExchange(userIdx) {
+    if (!opts.deleteTurn) return;
+    if (!confirm("Delete this question and its answer?")) return;
+    status.classList.remove("err");
+    try {
+      const data = await opts.deleteTurn(userIdx);
+      renderThread(data.turns || []);
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "delete failed: " + e.message;
+    }
   }
 
   async function load() {
@@ -613,6 +658,7 @@ function renderDeepQaCard(stem, title) {
     loadThread: () => api("/api/deep-qa?stem=" + encodeURIComponent(stem)),
     postQuestion: (q) => api("/api/deep-qa", "POST", { stem, question: q }),
     clearThread: () => api("/api/deep-qa", "POST", { stem, clear: true }),
+    deleteTurn: (idx) => api("/api/deep-qa", "POST", { stem, delete: idx }),
     turnMeta: (t) => [t.backend_label, t.ts ? relAge(t.ts) : null],
   });
 }
