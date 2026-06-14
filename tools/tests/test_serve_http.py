@@ -237,6 +237,53 @@ class DeepQa(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("no saved report", payload["error"])
 
+    def test_delete_on_unknown_stem_is_noop_200(self):
+        status, payload = self._req(
+            "/api/deep-qa", method="POST",
+            body={"stem": "does-not-exist-2026-01-01", "delete": 0})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["turns"], [])
+
+
+class DropQaExchange(unittest.TestCase):
+    """The pure exchange-trimming helper: removes a question + its answer by the
+    question's array index, ignores bad targets, and drops the resumable session
+    so the next turn reseeds from the trimmed history."""
+
+    def _thread(self):
+        return {
+            "session": "abc",
+            "turns": [
+                {"role": "user", "text": "q1"},
+                {"role": "assistant", "text": "a1"},
+                {"role": "user", "text": "q2"},
+                {"role": "assistant", "text": "a2"},
+            ],
+        }
+
+    def test_deletes_pair_and_resets_session(self):
+        t = self._thread()
+        self.assertTrue(serve._drop_qa_exchange(t, 0))
+        self.assertEqual([x["text"] for x in t["turns"]], ["q2", "a2"])
+        self.assertNotIn("session", t)
+
+    def test_deletes_trailing_question_without_answer(self):
+        t = {"turns": [{"role": "user", "text": "q1"}]}
+        self.assertTrue(serve._drop_qa_exchange(t, 0))
+        self.assertEqual(t["turns"], [])
+
+    def test_rejects_non_user_index(self):
+        t = self._thread()
+        self.assertFalse(serve._drop_qa_exchange(t, 1))  # points at an assistant turn
+        self.assertEqual(len(t["turns"]), 4)
+
+    def test_rejects_out_of_range_and_garbage(self):
+        t = self._thread()
+        self.assertFalse(serve._drop_qa_exchange(t, 99))
+        self.assertFalse(serve._drop_qa_exchange(t, "nope"))
+        self.assertFalse(serve._drop_qa_exchange(t, None))
+        self.assertEqual(len(t["turns"]), 4)
+
 
 class RouteDispatch(unittest.TestCase):
     """End-to-end proof the table-driven dispatcher is wired correctly over the
@@ -336,6 +383,61 @@ class ErrorLogEndpoint(unittest.TestCase):
         status, payload = self._req("/api/error-log", method="POST", body={"clear": True})
         self.assertEqual(status, 200)
         self.assertEqual(payload["entries"], [])
+
+
+class PeerStats(unittest.TestCase):
+    """Rank-percentile of a metric within each segment's peers, plus the mean
+    across segments. Helpers are stubbed so the math is checked without touching
+    the data submodule."""
+
+    def test_metric_value_coercion(self):
+        self.assertEqual(serve._metric_value({"metrics": {"ps": {"value": 4.5}}}, "ps"), 4.5)
+        self.assertEqual(serve._metric_value({"metrics": {"ps": 7}}, "ps"), 7.0)
+        self.assertIsNone(serve._metric_value({"metrics": {"ps": {"value": None}}}, "ps"))
+        self.assertIsNone(serve._metric_value({"metrics": {}}, "ps"))
+        self.assertIsNone(serve._metric_value({"metrics": {"ps": {"value": "x"}}}, "ps"))
+
+    def test_no_segments_yields_empty_metrics(self):
+        with mock.patch.object(serve, "_segments_for_symbol", return_value=[]):
+            res = serve._peer_stats("ZZZ")
+        self.assertEqual(res["segments"], [])
+        self.assertEqual(res["metrics"], {})
+
+    def test_percentile_median_and_aggregate(self):
+        vals = {"AAA": 10.0, "BBB": 20.0, "CCC": 30.0, "DDD": 40.0, "SUB": 25.0}
+
+        def fake_load(path):
+            v = vals.get(Path(path).stem)
+            return {"metrics": {"pe_ttm": {"value": v}}} if v is not None else {}
+
+        seg = [("seg1", "Segment One", ["AAA", "BBB", "CCC", "DDD", "SUB"]),
+               ("seg2", "Segment Two", ["AAA", "SUB"])]  # 2 members -> pct 0/1 boundary
+        with mock.patch.object(serve, "_load", side_effect=fake_load), \
+             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
+            res = serve._peer_stats("SUB")
+        m = res["metrics"]["pe_ttm"]
+        self.assertEqual(m["value"], 25.0)
+        # seg1 sorted 10,20,25,30,40 -> 25 is the median -> 0.5 pctile, median 25
+        s1 = next(s for s in m["per_segment"] if s["segment"] == "seg1")
+        self.assertAlmostEqual(s1["pct"], 0.5, places=3)
+        self.assertEqual(s1["n"], 5)
+        self.assertEqual(s1["median"], 25.0)
+        # seg2 sorted 10,25 -> 25 is the top -> 1.0 pctile
+        s2 = next(s for s in m["per_segment"] if s["segment"] == "seg2")
+        self.assertAlmostEqual(s2["pct"], 1.0, places=3)
+        # aggregate = mean(0.5, 1.0) = 0.75
+        self.assertAlmostEqual(m["aggregate"]["pct"], 0.75, places=3)
+        self.assertEqual(m["aggregate"]["n_segments"], 2)
+
+    def test_single_peer_segment_is_skipped(self):
+        def fake_load(path):
+            return {"metrics": {"ps": {"value": 5.0}}}
+
+        seg = [("solo", "Solo", ["SUB"])]  # only the subject -> not comparable
+        with mock.patch.object(serve, "_load", side_effect=fake_load), \
+             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
+            res = serve._peer_stats("SUB")
+        self.assertNotIn("ps", res["metrics"])
 
 
 class HostGuard(unittest.TestCase):

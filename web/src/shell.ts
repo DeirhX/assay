@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { loadAnalyses, startPipeline } from "./analyses";
-import { $, api, applyPrivacyMode, el, esc, state } from "./core";
+import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
 import { initHistoryControls, loadHistory } from "./history";
@@ -11,6 +11,7 @@ import { loadRebalance, openTicker } from "./rebalance";
 import { initRiskControls, loadRisk } from "./risk";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
+import { initStrategy, loadStrategy } from "./strategy";
 import { getViewedMap, renderViewedTickers } from "./viewed";
 
 // ---- header ticker autocomplete --------------------------------------------
@@ -31,7 +32,7 @@ async function tickerSuggestRows() {
   const map: Record<string, any> = {};
   (_tkIndex || []).forEach((r) => {
     map[r.symbol] = {
-      symbol: r.symbol, name: r.name || "",
+      symbol: r.symbol, name: r.name || "", type: r.type || "",
       has_analysis: !!r.has_analysis, viewed: "",
     };
   });
@@ -76,6 +77,7 @@ function tickerMenuHtml(rows: any[]) {
     `<div class="topsearch-item" role="option" data-sym="${esc(r.symbol)}">` +
       `<span class="ts-sym">${esc(r.symbol)}</span>` +
       `<span class="ts-name">${esc(r.name || "")}</span>` +
+      instrumentBadge(r.type) +
       (r.has_analysis ? `<span class="ts-badge">analysis</span>` : "") +
     `</div>`).join("");
 }
@@ -131,7 +133,7 @@ function wireTickerSearch(input) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "history", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "history", "setup"]);
 
 // Two-level navigation: the header exposes three top-level GROUPS, each of which
 // fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
@@ -141,6 +143,7 @@ const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance
 // rather than being a destination of its own. `setup` (the gear) sits outside
 // the group bar entirely.
 const VIEW_GROUP = {
+  strategy: "strategy",
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
   holdings: "portfolio", history: "portfolio", rebalance: "portfolio", risk: "portfolio", journal: "portfolio",
@@ -152,10 +155,10 @@ const VIEW_SUBTAB = {
   analyses: "analyses", pipeline: "pipeline",
   holdings: "positions", history: "positions", rebalance: "rebalance", risk: "risk", journal: "journal",
 };
-const GROUP_DEFAULT = { deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const GROUP_DEFAULT = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup = { deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const lastViewByGroup = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
 
 const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw) => (raw || "").trim();
@@ -256,6 +259,7 @@ function setActiveView(view) {
   updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $("#view-" + active).classList.add("active");
+  if (active === "strategy") loadStrategy();
   if (active === "holdings") loadHoldings();
   if (active === "history") { initHistoryControls(); loadHistory(); }
   if (active === "pipeline") loadPipeline();
@@ -355,6 +359,9 @@ function initShell() {
   // Persistent header search with autocomplete over tickers we already have.
   const topTicker = $("#top-ticker");
   if (topTicker) wireTickerSearch(topTicker);
+
+  // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
+  initStrategy();
 
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.

@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import decision_label, holdings_weights, portfolio_context  # noqa: E402
 from hygiene import rel_diff as _rel, worst_severity as _worst_severity  # noqa: E402
 from store import load as _load, write_json as _store_write_json  # noqa: E402
+import instruments  # noqa: E402
 from providers import fmp, sec_edgar, yahoo  # noqa: E402
 from providers.common import (  # noqa: E402
     ProviderError,
@@ -274,10 +275,14 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
 
     name = (y or {}).get("name") or (s or {}).get("entity") or (f or {}).get("name") or symbol
     portfolio = portfolio_context(symbol)
+    profile = _merge_profile((y or {}).get("profile"), (f or {}).get("profile"))
+    quote_type = (y or {}).get("quote_type")
     record: dict[str, Any] = {
         "symbol": symbol,
         "name": name,
-        "profile": _merge_profile((y or {}).get("profile"), (f or {}).get("profile")),
+        "profile": profile,
+        "quote_type": quote_type,
+        "instrument_type": instruments.classify(symbol, quote_type=quote_type, profile=profile),
         "as_of": _now(),
         "currency": (y or {}).get("currency") or mo.get("currency") or "USD",
         "price": {"value": mo.get("last"), "source": "yahoo"} if mo.get("last") else (y or {}).get("price"),

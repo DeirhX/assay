@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createQaCard, ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
-import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, pctClass, sectionCard, simpleTable, state } from "./core";
+import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, freshnessNote, instrumentBadge, pctClass, sectionCard, simpleTable, state } from "./core";
 import { pollDeepJob } from "./errors";
 import { cleanSymbol, downloadText, modelLabel, pushNav, setActiveView } from "./shell";
 import { recordView, relTime, renderViewedTickers } from "./viewed";
@@ -92,11 +92,9 @@ function renderNoMarketData(rec) {
   const head = el("div", "nodata-head");
   head.innerHTML =
     `<span class="nodata-icon">${NODATA_ICON_SVG}</span>` +
-    `<div class="nodata-head-text">` +
-      `<h2 class="section">No market data for ${esc(provider)}</h2>` +
-      `<p class="nodata-lead">No usable quote or fundamentals came back for <strong>${esc(sym || provider)}</strong>. ` +
-      `Broker symbols often need an exchange suffix — pick a real match below.</p>` +
-    `</div>`;
+    `<h2 class="section">No market data for ${esc(provider)}</h2>` +
+    `<p class="nodata-lead">No usable quote or fundamentals came back for <strong>${esc(sym || provider)}</strong>. ` +
+    `Broker symbols often need an exchange suffix — pick a real match below.</p>`;
   card.appendChild(head);
 
   // Lead with the useful action: company-name / near-miss search. Maybe they
@@ -250,6 +248,50 @@ const METRIC_ROWS = [
   ["shares_out_b", "Shares out", fmtShares],
 ];
 
+const METRIC_FMT = Object.fromEntries(METRIC_ROWS.map(([k, , f]) => [k, f]));
+
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// A slim track (low -> high across the segment peers) with the subject's marker
+// at its rank-percentile and a centre tick marking the peer median. With one
+// segment the caption names it; with several it shows the aggregate and the
+// per-segment breakdown lives in the tooltip.
+function peerBar(key, m) {
+  const fmt = METRIC_FMT[key] || ((v) => String(v));
+  const pct = Math.max(0, Math.min(1, m.aggregate.pct));
+  const segs = m.per_segment || [];
+  const multi = segs.length > 1;
+  const cap = multi
+    ? `vs ${segs.length} sectors \u00b7 ${ordinal(Math.round(pct * 100))} pctile`
+    : `vs ${segs[0].title} \u00b7 ${ordinal(Math.round(pct * 100))} pctile`;
+  const tip = segs
+    .map((s) => `${s.title}: ${ordinal(Math.round(s.pct * 100))} pctile of ${s.n}` +
+      ` (median ${fmt(s.median)}, range ${fmt(s.min)}\u2013${fmt(s.max)})`)
+    .join("\n");
+  const wrap = el("div", "metric-peer");
+  wrap.title = tip;
+  wrap.innerHTML =
+    `<div class="mp-track"><span class="mp-median"></span>` +
+    `<span class="mp-marker" style="left:${(pct * 100).toFixed(1)}%"></span></div>` +
+    `<div class="mp-cap">${esc(cap)}</div>`;
+  return wrap;
+}
+
+async function loadPeerStats(symbol, grid) {
+  let data;
+  try { data = await api("/api/peer-stats?symbol=" + encodeURIComponent(symbol)); }
+  catch (_e) { return; }  // best-effort enrichment; tiles already rendered
+  const metrics = (data && data.metrics) || {};
+  if (!Object.keys(metrics).length) return;
+  grid.querySelectorAll(".metric-cell").forEach((cell) => {
+    const m = metrics[cell.dataset.metric];
+    if (m) cell.appendChild(peerBar(cell.dataset.metric, m));
+  });
+}
+
 function renderDeepDive(rec) {
   recordView(rec.symbol, rec.name);
   const out = $("#dd-result");
@@ -273,13 +315,14 @@ function renderDeepDive(rec) {
   head.innerHTML =
     `<span class="sym">${esc(rec.symbol)}</span>` +
     `<span class="name">${esc(rec.name || "")}</span>` +
+    instrumentBadge(rec.instrument_type) +
     `<span class="decision-pill ${decisionClass(decision)}">${esc(decision.replace("_", " "))}</span>` +
     `<span class="price">${fmtPrice(price)} <small class="muted">${esc(rec.currency || "")}</small></span>`;
   card.appendChild(head);
 
   const sub = el("div", "dd-sub");
   sub.innerHTML =
-    `<span>as of ${new Date(rec.as_of).toLocaleString()}</span>` +
+    `<span>as of ${freshnessNote(rec.as_of) || esc(new Date(rec.as_of).toLocaleString())}</span>` +
     (owned != null ? `<span class="owned-pill">held: ${fmtWeight(owned)} NAV</span>` : `<span class="muted">not held</span>`) +
     (target.rule ? `<span>rule: <strong>${esc(target.rule)}</strong></span>` : `<span class="muted">no target rule</span>`);
   const refreshBtn = el("button", "ghost dd-refresh", "\u21bb Refresh");
@@ -376,6 +419,7 @@ function renderDeepDive(rec) {
   METRIC_ROWS.forEach(([key, label, fmt]) => {
     const node = rec.metrics ? rec.metrics[key] : null;
     const cell = el("div", "metric-cell");
+    cell.dataset.metric = key;
     const srcLine = node ? sourceLine(node) : `<span class="muted">no data</span>`;
     cell.innerHTML =
       `<div class="label">${label}</div>` +
@@ -385,6 +429,9 @@ function renderDeepDive(rec) {
   });
   mcard.appendChild(grid);
   out.appendChild(mcard);
+  // Peer-comparison bars load off the critical path (they read every segment
+  // member's cached metrics server-side) and slot into the tiles when ready.
+  loadPeerStats(rec.symbol, grid);
 
   // momentum
   const mo = rec.momentum || {};
@@ -640,6 +687,7 @@ function renderQaCard(rec) {
     loadThread: () => api("/api/qa/" + encodeURIComponent(sym)),
     postQuestion: (q) => api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q }),
     clearThread: () => api("/api/qa/" + encodeURIComponent(sym), "POST", { clear: true }),
+    deleteTurn: (idx) => api("/api/qa/" + encodeURIComponent(sym), "POST", { delete: idx }),
     turnMeta: (t) => [t.backend_label, modelLabel(t.model), t.ts ? relTime(t.ts) : null],
     usageHtml: (t) => qaUsageHtml(t.usage),
   });
@@ -837,14 +885,22 @@ function chartSvg(rec, history) {
     );
   }).join("");
 
+  // Vertical "mountain" gradient: saturated at the price line, fading to nothing
+  // at the baseline. A flat-opacity fill (the old approach) reads as a featureless
+  // slab whose top — the volatile line — smears into a band; the fade ties the
+  // fill to the line and keeps the baseline unambiguous.
+  const fillId = "price-area-fill";
   const svg =
     `<svg class="price-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(rec.symbol)} ${esc(rangeLabel)} price history">` +
+      `<defs><linearGradient id="${fillId}" class="chart-fill-grad ${trend}" x1="0" y1="0" x2="0" y2="1">` +
+        `<stop class="cf-top" offset="0%"></stop><stop class="cf-bot" offset="100%"></stop>` +
+      `</linearGradient></defs>` +
       `<line class="chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>` +
       `<line class="chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>` +
       yAxis +
       `<text class="chart-label" x="${pad.left}" y="${height - 9}">${esc(dateLabel(first.date))}</text>` +
       `<text class="chart-label" x="${width - pad.right}" y="${height - 9}" text-anchor="end">${esc(dateLabel(last.date))}</text>` +
-      `<polygon class="chart-area ${trend}" points="${area}"></polygon>` +
+      `<polygon class="chart-area" fill="url(#${fillId})" points="${area}"></polygon>` +
       `<polyline class="chart-line ${trend}" points="${line}"></polyline>` +
       `<circle class="chart-dot" cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.close).toFixed(1)}" r="3.5"></circle>` +
     `</svg>`;

@@ -2,7 +2,7 @@
 // auto-linker. The report text comes from Perplexity (untrusted), so the
 // escape-first guarantees here are load-bearing.
 import { beforeEach, describe, expect, it } from "vitest";
-import { linkifyTickers, mdToHtml } from "../src/analyses";
+import { buildReportToc, collectReportTickers, linkifyTickers, mdToHtml, slugify } from "../src/analyses";
 import { state } from "../src/core";
 
 describe("mdToHtml", () => {
@@ -121,5 +121,89 @@ describe("linkifyTickers", () => {
   it("leaves text inside code and existing anchors alone", () => {
     const out = linkify('<p><code>AMD</code> and <a href="#">ARM</a></p>');
     expect(out.querySelectorAll("a.tlink").length).toBe(0);
+  });
+
+  it("links bare later mentions of a report-confirmed peer not in the curated set", () => {
+    // CCJ is not held / not curated, but the report $-tags it once. Every bare
+    // mention afterwards should then link.
+    const out = linkify("<p>Cameco ($CCJ) leads. CCJ also mines uranium. We rate CCJ a buy.</p>");
+    const links = out.querySelectorAll('a.tlink[data-ticker="CCJ"]');
+    expect(links.length).toBe(3);
+  });
+
+  it("harvests exchange-qualified mentions like (NYSE: CEG)", () => {
+    const out = linkify("<p>Constellation (NYSE: CEG) is core. CEG runs reactors.</p>");
+    expect(out.querySelectorAll('a.tlink[data-ticker="CEG"]').length).toBe(2);
+  });
+});
+
+describe("collectReportTickers", () => {
+  const collect = (html: string): Set<unknown> => {
+    const root = document.createElement("div");
+    root.innerHTML = html;
+    return collectReportTickers(root);
+  };
+
+  it("collects $-prefixed, parenthetical, and exchange-qualified symbols", () => {
+    const got = collect("<p>$LEU, Oklo (OKLO), NuScale (Nasdaq: SMR), $BRK.B</p>");
+    expect(got.has("LEU")).toBe(true);
+    expect(got.has("OKLO")).toBe(true);
+    expect(got.has("SMR")).toBe(true);
+    expect(got.has("BRK.B")).toBe(true);
+  });
+
+  it("trusts $-tagged symbols even when stoplisted, but not bare parentheticals", () => {
+    const got = collect("<p>$NOW is fine. Acronym (CEO) is not a ticker.</p>");
+    expect(got.has("NOW")).toBe(true);
+    expect(got.has("CEO")).toBe(false);
+  });
+
+  it("includes symbols from already-rendered Ticker-column anchors", () => {
+    const html = mdToHtml("| Ticker | Note |\n| --- | --- |\n| BWXT | reactors |");
+    const got = collect(html);
+    expect(got.has("BWXT")).toBe(true);
+  });
+});
+
+describe("buildReportToc", () => {
+  const renderBody = (md: string): HTMLElement => {
+    const body = document.createElement("div");
+    body.className = "prose";
+    body.innerHTML = mdToHtml(md);
+    document.body.appendChild(body);
+    return body;
+  };
+
+  it("builds a clickable outline from report headings", () => {
+    const body = renderBody("## Supply\ntext\n## Demand\ntext\n## Risks\ntext");
+    const toc = buildReportToc(body);
+    expect(toc).not.toBeNull();
+    const links = toc!.querySelectorAll("a.report-toc-link");
+    expect(links.length).toBe(3);
+    expect(links[0].getAttribute("href")).toBe("#supply");
+    expect(body.querySelector("h3#supply")).not.toBeNull();
+  });
+
+  it("returns null when there are too few headings", () => {
+    const body = renderBody("## Only one\nbody text here");
+    expect(buildReportToc(body)).toBeNull();
+  });
+
+  it("de-duplicates ids for repeated heading text", () => {
+    const body = renderBody("## Risks\na\n## Risks\nb\n## Risks\nc");
+    buildReportToc(body);
+    const ids = Array.from(body.querySelectorAll("h3")).map((h) => h.id);
+    expect(new Set(ids).size).toBe(3);
+  });
+});
+
+describe("slugify", () => {
+  it("lowercases, strips punctuation, and hyphenates", () => {
+    expect(slugify("  Supply & Demand!  ")).toBe("supply-demand");
+  });
+
+  it("falls back to 'section' for empty/symbol-only input", () => {
+    expect(slugify("***")).toBe("section");
+    expect(slugify("")).toBe("section");
   });
 });
