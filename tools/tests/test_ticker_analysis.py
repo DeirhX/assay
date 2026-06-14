@@ -151,40 +151,30 @@ class CursorVersionResolution(unittest.TestCase):
     (e.g. an orphaned 2026.06.12-19-59-36-f6aba9a) are ignored, and dist-package
     is the fallback when no version-named dir exists."""
 
-    def _resolve(self, names: list[str], *, root_has_node=False, dist_has_index=True):
-        # Build a fake install tree; only listed dirs (plus dist-package) exist.
-        made = {n: True for n in names}
+    def _resolve(self, names: list[str], *, with_dist=True):
+        # Build a REAL install tree in a temp dir so the resolution exercises
+        # actual filesystem semantics (string-matching path separators is
+        # platform-coupled and breaks between Windows and CI's Linux).
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "cursor-agent"
+        (root / "versions").mkdir(parents=True)
+        launcher = root / "cursor-agent.cmd"
+        launcher.write_text("@echo off\n", encoding="utf-8")
 
-        def fake_which(_):
-            return r"C:\fake\cursor-agent\cursor-agent.cmd"
+        def _mk(name):
+            d = root / "versions" / name
+            d.mkdir()
+            (d / "index.js").write_text("//\n", encoding="utf-8")
+            (d / "node.exe").write_text("\n", encoding="utf-8")
 
-        real_exists = Path.exists
-
-        def fake_exists(self):
-            s = str(self)
-            if s.endswith(r"cursor-agent\node.exe") or s.endswith(r"cursor-agent\index.js"):
-                return root_has_node
-            if s.endswith("versions"):
-                return True
-            if s.endswith(r"dist-package\index.js"):
-                return dist_has_index
-            if s.endswith("index.js") or s.endswith("node.exe"):
-                parent = Path(s).parent.name
-                return parent in made or parent == "dist-package"
-            return real_exists(self)
-
-        def fake_iterdir(self):
-            base = Path(str(self))
-            dirs = list(made.keys())
-            if dist_has_index:
-                dirs.append("dist-package")
-            return [base / d for d in dirs]
+        for name in names:
+            _mk(name)
+        if with_dist:
+            _mk("dist-package")
 
         with mock.patch.object(ta.sys, "platform", "win32"), \
-             mock.patch.object(ta.shutil, "which", side_effect=fake_which), \
-             mock.patch.object(Path, "exists", fake_exists), \
-             mock.patch.object(Path, "is_dir", lambda self: True), \
-             mock.patch.object(Path, "iterdir", fake_iterdir):
+             mock.patch.object(ta.shutil, "which", return_value=str(launcher)):
             return ta._cursor_argv_base()
 
     def test_picks_newest_official_version_ignoring_orphan(self):
@@ -199,7 +189,7 @@ class CursorVersionResolution(unittest.TestCase):
         self.assertIn("dist-package", argv[1])
 
     def test_orphan_only_and_no_dist_is_unresolved(self):
-        argv = self._resolve(["2026.06.12-19-59-36-f6aba9a"], dist_has_index=False)
+        argv = self._resolve(["2026.06.12-19-59-36-f6aba9a"], with_dist=False)
         self.assertIsNone(argv)
 
 
