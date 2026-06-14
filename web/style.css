@@ -935,6 +935,18 @@ a.analysis-row:hover { text-decoration: none; }
 .abadge.bad { color: var(--bad); border-color: rgba(255,122,122,.4); }
 .abadge.muted { color: var(--muted); }
 
+/* Color-coded freshness chip next to sync/snapshot timestamps. A dot + "x ago",
+   green when fresh, amber when aging, red when stale. */
+.fresh-note {
+  display: inline-flex; align-items: center; gap: 5px; vertical-align: middle;
+  padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  letter-spacing: .02em; white-space: nowrap; border: 1px solid transparent;
+}
+.fresh-note::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.fresh-note.fresh { color: var(--good); background: rgba(107,211,138,.12); border-color: rgba(107,211,138,.30); }
+.fresh-note.aging { color: var(--warn); background: rgba(245,199,107,.12); border-color: rgba(245,199,107,.30); }
+.fresh-note.stale { color: var(--bad); background: rgba(255,122,122,.12); border-color: rgba(255,122,122,.30); }
+
 /* segment launchpad rows in the Analyses pane */
 .seg-row .analysis-row-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .seg-run {
@@ -982,6 +994,34 @@ details.report-doc:not([open]) > .report-doc-head { border-bottom: 0; }
 .report-doc-title { font-weight: 700; font-size: 14px; }
 .report-doc-note { color: var(--muted); font-size: 12px; }
 .report-doc-body { padding: 20px 24px; }
+
+/* Auto-extracted, clickable outline hoisted from the report's headings. */
+.report-toc {
+  margin: 0 0 18px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-soft); background: rgba(130,170,255,.05);
+}
+.report-toc-det > summary.report-toc-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 9px 14px; cursor: pointer; list-style: none; user-select: none;
+}
+.report-toc-det > summary.report-toc-head::-webkit-details-marker { display: none; }
+.report-toc-caret { color: var(--muted); transition: transform .15s ease; align-self: center; }
+.report-toc-det[open] > .report-toc-head .report-toc-caret { transform: rotate(90deg); }
+.report-toc-title { font-weight: 600; font-size: 13px; }
+.report-toc-count { color: var(--muted); font-size: 12px; }
+.report-toc-list {
+  list-style: none; margin: 0; padding: 4px 14px 12px; columns: 2; column-gap: 28px;
+}
+.report-toc-item { margin: 3px 0; break-inside: avoid; }
+.report-toc-item.h3 { padding-left: 14px; }
+.report-toc-item.h4 { padding-left: 28px; }
+.report-toc-link {
+  color: var(--text); text-decoration: none; font-size: 13px; line-height: 1.45;
+  border-bottom: 1px dotted transparent;
+}
+.report-toc-item.h3 .report-toc-link, .report-toc-item.h4 .report-toc-link { color: var(--muted); }
+.report-toc-link:hover { color: var(--accent); border-bottom-color: rgba(130,170,255,.5); }
+@media (max-width: 640px) { .report-toc-list { columns: 1; } }
 
 /* Labelled separator between the report and everything we bolt on. */
 .synth-divider {

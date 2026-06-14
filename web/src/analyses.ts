@@ -72,9 +72,51 @@ function linkifyTextNode(node, set) {
   }
 }
 
+// High-confidence ticker signals the report itself carries. The Deep Research
+// prompt instructs the model to $-tag the first mention of every company and to
+// include a Ticker column, and Perplexity habitually writes exchange-qualified
+// mentions like "(NYSE: CCJ)". Harvesting these gives a report-local universe of
+// symbols we are confident are tickers -- so every *subsequent* bare mention can
+// be linked too, without pulling in the full US/EU list that collides with
+// English words (NOW, ON, ALL, IT...).
+const _DOLLAR_TICKER = /\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b/g;
+const _PAREN_TICKER = /\(\s*([A-Z]{2,5}(?:\.[A-Z]{1,2})?)\s*\)/g;
+const _EXCH_TICKER =
+  /\(\s*(?:NYSE(?:\s+American)?|NASDAQ|AMEX|CBOE|OTCMKTS|OTC|TSXV?|LSE|ASX|HKEX|EURONEXT)[:\s]+([A-Z]{1,5}(?:\.[A-Z]{1,2})?)\s*\)/gi;
+
+function collectReportTickers(root) {
+  const found = new Set();
+  if (!root) return found;
+  const text = root.textContent || "";
+  const harvest = (re, gate) => {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      const t = m[1].toUpperCase();
+      if (gate && (TICKER_STOP.has(t) || TICKER_STOP.has(t.split(".")[0]))) continue;
+      found.add(t);
+    }
+  };
+  // $-prefixed and exchange-qualified are explicit author intent -- trusted even
+  // if the symbol collides with a stoplisted word. Bare parentheticals are
+  // weaker, so they still respect the stoplist.
+  harvest(_DOLLAR_TICKER, false);
+  harvest(_EXCH_TICKER, false);
+  harvest(_PAREN_TICKER, true);
+  // Ticker/Symbol table cells were already turned into .tlink anchors by mdToHtml.
+  root.querySelectorAll("a.tlink[data-ticker]").forEach((a) => {
+    const t = (a.dataset.ticker || "").toUpperCase();
+    if (t) found.add(t);
+  });
+  return found;
+}
+
 function linkifyTickers(root) {
   if (!root) return;
-  const set = state.tickerSet || new Set();
+  // Union the curated server set with symbols this report self-identifies, so a
+  // peer the report discusses but you don't hold still links on every mention.
+  const set = new Set(state.tickerSet || []);
+  collectReportTickers(root).forEach((t) => set.add(t));
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(n) {
       if (!n.nodeValue || !/[A-Z]{2}/.test(n.nodeValue)) return NodeFilter.FILTER_REJECT;
@@ -153,6 +195,62 @@ function mdToHtml(md) {
   });
   flushPara(); closeList(); flushTable();
   return out.join("\n");
+}
+
+function slugify(s) {
+  return (
+    String(s).toLowerCase().trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "") || "section"
+  );
+}
+
+// Build a clickable table of contents from a rendered report body. Reports are
+// prose markdown with section headings (the Deep Research prompt mandates it), so
+// mdToHtml emits an h2..h4 outline we can hoist into a nav. Assigns stable,
+// de-duplicated ids to the headings as a side effect so the links resolve, and
+// returns null when there are too few headings to be worth the chrome.
+function buildReportToc(body) {
+  if (!body) return null;
+  const heads = Array.from(body.querySelectorAll("h2, h3, h4"))
+    .filter((h) => (h.textContent || "").trim());
+  if (heads.length < 3) return null;
+  const nav = el("nav", "report-toc");
+  nav.setAttribute("aria-label", "Report contents");
+  const det = el("details", "report-toc-det");
+  det.open = true;
+  det.innerHTML =
+    `<summary class="report-toc-head">` +
+    `<span class="report-toc-caret" aria-hidden="true">\u203a</span>` +
+    `<span class="report-toc-title">Contents</span>` +
+    `<span class="report-toc-count">${heads.length} sections</span></summary>`;
+  const ol = el("ol", "report-toc-list");
+  heads.forEach((h) => {
+    const text = (h.textContent || "").trim();
+    if (!h.id) {
+      const base = slugify(text);
+      let id = base, n = 2;
+      while (document.getElementById(id)) id = `${base}-${n++}`;
+      h.id = id;
+    }
+    const li = el("li", "report-toc-item " + h.tagName.toLowerCase());
+    const a = el("a", "report-toc-link");
+    a.href = "#" + h.id;
+    a.textContent = text;
+    // The app routes on ?view= query params, not the hash, so suppress the
+    // default jump (which would dirty the URL) and scroll the heading into view.
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      h.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    li.appendChild(a);
+    ol.appendChild(li);
+  });
+  det.appendChild(ol);
+  nav.appendChild(det);
+  return nav;
 }
 
 function analysisBadges(r) {
@@ -399,6 +497,8 @@ async function loadAnalysis(stem, { push = true } = {}) {
     doc.appendChild(sum);
     const body = el("div", "report-doc-body prose");
     body.innerHTML = renderStructuredReport(rec.report) || mdToHtml(rec.report);
+    const toc = buildReportToc(body);
+    if (toc) body.insertBefore(toc, body.firstChild);
     doc.appendChild(body);
     reader.appendChild(doc);
     linkifyTickers(body);
@@ -669,9 +769,12 @@ export {
   ensureTickerSet,
   tickerAnchorHtml,
   _TICKER_TOKEN,
+  collectReportTickers,
   linkifyTextNode,
   linkifyTickers,
   mdToHtml,
+  slugify,
+  buildReportToc,
   analysisBadges,
   markActiveAnalysis,
   synthBox,
