@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { loadAnalyses, startPipeline } from "./analyses";
-import { $, api, applyPrivacyMode, el, state } from "./core";
+import { $, api, applyPrivacyMode, el, esc, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
 import { initHistoryControls, loadHistory } from "./history";
@@ -11,7 +11,124 @@ import { loadRebalance, openTicker } from "./rebalance";
 import { initRiskControls, loadRisk } from "./risk";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
-import { renderViewedTickers } from "./viewed";
+import { getViewedMap, renderViewedTickers } from "./viewed";
+
+// ---- header ticker autocomplete --------------------------------------------
+// Suggestions are drawn ONLY from data we already have locally: the server's
+// cached ticker index (/api/ticker-index -- symbols we've pulled/analysed) plus
+// browser-local recents. The index is fetched once with a short TTL and filtered
+// in-memory, so typing never hits the network. We intentionally do NOT call the
+// live /api/symbol-search here -- that's for discovering symbols we DON'T have.
+let _tkIndex: any[] | null = null;
+let _tkIndexAt = 0;
+
+async function tickerSuggestRows() {
+  if (!_tkIndex || Date.now() - _tkIndexAt > 60000) {
+    try { _tkIndex = (await api("/api/ticker-index")).tickers || []; }
+    catch (_e) { _tkIndex = _tkIndex || []; }
+    _tkIndexAt = Date.now();
+  }
+  const map: Record<string, any> = {};
+  (_tkIndex || []).forEach((r) => {
+    map[r.symbol] = {
+      symbol: r.symbol, name: r.name || "",
+      has_analysis: !!r.has_analysis, viewed: "",
+    };
+  });
+  // Local recents fold in (and win on freshness ordering) so a ticker you just
+  // looked at is offered immediately, even before the server index refreshes.
+  const recents = getViewedMap();
+  Object.keys(recents).forEach((sym) => {
+    const m = map[sym] || (map[sym] = { symbol: sym, name: "", has_analysis: false });
+    if (!m.name && recents[sym].name) m.name = recents[sym].name;
+    m.viewed = recents[sym].ts || "";
+  });
+  return Object.values(map);
+}
+
+// Prefix-on-symbol beats prefix-on-name beats substring; empty query shows the
+// most recently viewed. Capped so the dropdown never becomes a wall.
+function rankTickerRows(rows: any[], q: string) {
+  q = (q || "").trim().toUpperCase();
+  if (!q) {
+    return rows.filter((r) => r.viewed)
+      .sort((a, b) => (b.viewed || "").localeCompare(a.viewed || ""))
+      .slice(0, 8);
+  }
+  const scored: [number, any][] = [];
+  rows.forEach((r) => {
+    const sym = r.symbol.toUpperCase();
+    const name = (r.name || "").toUpperCase();
+    let s = -1;
+    if (sym === q) s = 100;
+    else if (sym.startsWith(q)) s = 80;
+    else if (name.startsWith(q)) s = 55;
+    else if (sym.includes(q)) s = 40;
+    else if (name.includes(q)) s = 20;
+    if (s >= 0) scored.push([s, r]);
+  });
+  scored.sort((a, b) => b[0] - a[0] || a[1].symbol.localeCompare(b[1].symbol));
+  return scored.slice(0, 8).map((x) => x[1]);
+}
+
+function tickerMenuHtml(rows: any[]) {
+  return rows.map((r) =>
+    `<div class="topsearch-item" role="option" data-sym="${esc(r.symbol)}">` +
+      `<span class="ts-sym">${esc(r.symbol)}</span>` +
+      `<span class="ts-name">${esc(r.name || "")}</span>` +
+      (r.has_analysis ? `<span class="ts-badge">analysis</span>` : "") +
+    `</div>`).join("");
+}
+
+function wireTickerSearch(input) {
+  const menu = $("#top-ticker-menu");
+  if (!menu) return;
+
+  const render = async (showRecents: boolean) => {
+    const list = rankTickerRows(await tickerSuggestRows(), showRecents ? "" : input.value);
+    menu.innerHTML = tickerMenuHtml(list);
+    menu.hidden = !list.length;
+    input.setAttribute("aria-expanded", list.length ? "true" : "false");
+  };
+  const close = () => { menu.hidden = true; input.setAttribute("aria-expanded", "false"); };
+  const items = () => [...menu.querySelectorAll(".topsearch-item")];
+  const setActive = (its, idx) => {
+    its.forEach((it) => it.classList.remove("active"));
+    if (idx >= 0 && its[idx]) { its[idx].classList.add("active"); its[idx].scrollIntoView({ block: "nearest" }); }
+  };
+  const choose = (raw: string) => {
+    const sym = cleanSymbol(raw);
+    if (!sym) return;
+    close();
+    input.value = "";
+    input.blur();
+    openTicker(sym);
+  };
+  const submit = () => {
+    const active = menu.hidden ? null : menu.querySelector(".topsearch-item.active");
+    choose(active ? active.dataset.sym : input.value);
+  };
+
+  input.addEventListener("focus", () => render(true));
+  input.addEventListener("input", () => render(false));
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); return submit(); }
+    if (e.key === "Escape") return close();
+    const its = items();
+    if (menu.hidden || !its.length) return;
+    const idx = its.findIndex((it) => it.classList.contains("active"));
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive(its, Math.min(its.length - 1, idx + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive(its, Math.max(-1, idx - 1)); }
+  });
+  // mousedown (not click) so the pick lands before the input's blur closes us.
+  menu.addEventListener("mousedown", (e) => {
+    const it = e.target.closest(".topsearch-item");
+    if (!it) return;
+    e.preventDefault();
+    choose(it.dataset.sym);
+  });
+}
 
 // ---- location state --------------------------------------------------------
 const VIEWS = new Set(["deepdive", "segment", "pipeline", "analyses", "rebalance", "risk", "journal", "holdings", "history", "setup"]);
@@ -235,15 +352,9 @@ function initShell() {
     });
   });
 
-  // Persistent header search: analyze any ticker from anywhere in the app.
+  // Persistent header search with autocomplete over tickers we already have.
   const topTicker = $("#top-ticker");
-  if (topTicker) {
-    const submit = () => {
-      const sym = cleanSymbol(topTicker.value);
-      if (sym) { openTicker(sym); topTicker.value = ""; topTicker.blur(); }
-    };
-    topTicker.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
-  }
+  if (topTicker) wireTickerSearch(topTicker);
 
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.

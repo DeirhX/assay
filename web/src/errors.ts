@@ -439,13 +439,13 @@ function renderPipeReport() {
   if (stem) {
     box.appendChild(el("span", "pipe-report-link-text",
       "Full report, sources & follow-up Q&A live in the reader."));
-    const btn = el("button", "primary", "Open report & Q&A in Analyses \u2197");
+    const btn = el("button", "primary", "Open report & Q&A in Reports \u2197");
     btn.type = "button";
     btn.addEventListener("click", () => openRunInAnalyses(stem));
     box.appendChild(btn);
   } else {
     box.appendChild(el("span", "pipe-report-link-text",
-      "Save the report on the Report step to read it (and ask follow-ups) in Analyses."));
+      "Save the report on the Report step to read it (and ask follow-ups) in Reports."));
   }
 }
 
