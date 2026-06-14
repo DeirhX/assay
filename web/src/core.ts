@@ -96,6 +96,48 @@ function fmtStamp(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Color-coded "x ago" chip for sync/snapshot stamps so staleness is obvious at a
+// glance: green <=2d, amber <=14d, red older. Extends relAge to weeks/months and
+// returns an HTML string (title = exact local time). "" for junk/missing input.
+function freshnessNote(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const secs = Math.max(0, (Date.now() - then) / 1000);
+  const mins = secs / 60, hrs = mins / 60, days = hrs / 24;
+  let text: string;
+  if (secs < 90) text = "just now";
+  else if (mins < 90) text = `${Math.round(mins)}m ago`;
+  else if (hrs < 36) text = `${Math.round(hrs)}h ago`;
+  else if (days < 14) text = `${Math.round(days)}d ago`;
+  else if (days < 60) text = `${Math.round(days / 7)}w ago`;
+  else text = `${Math.round(days / 30)}mo ago`;
+  const bucket = days <= 2 ? "fresh" : days <= 14 ? "aging" : "stale";
+  return `<span class="fresh-note ${bucket}" title="${esc(new Date(then).toLocaleString())}">${esc(text)}</span>`;
+}
+
+// Human label per canonical instrument_type emitted by the backend
+// (tools/instruments.py). Keep keys in lockstep with that module.
+const INSTRUMENT_LABELS: Record<string, string> = {
+  stock: "Stock",
+  etf: "ETF",
+  futures: "Futures",
+  index: "Index",
+  fund: "Fund",
+  crypto: "Crypto",
+  fx: "FX",
+  other: "Other",
+};
+
+// Small pill that calls out what an instrument actually is (ETF vs single stock
+// vs futures...). Returns "" for unknown/missing so callers can omit it cleanly.
+function instrumentBadge(type: string | null | undefined): string {
+  const kind = (type || "").toLowerCase();
+  const label = INSTRUMENT_LABELS[kind];
+  if (!label) return "";
+  return `<span class="inst-pill inst-${esc(kind)}" title="Instrument type: ${esc(label)}">${esc(label)}</span>`;
+}
+
 const fmtPrice = (v: Num) => (v == null ? "n/a" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const fmtX = (v: Num) => (v == null ? "n/a" : Number(v).toFixed(1) + "x");
 const fmtPct = (v: Num) => (v == null ? "n/a" : (v >= 0 ? "+" : "") + Number(v).toFixed(1) + "%");
@@ -300,6 +342,8 @@ export {
   esc,
   relAge,
   fmtStamp,
+  freshnessNote,
+  instrumentBadge,
   fmtPrice,
   fmtX,
   fmtPct,

@@ -1,5 +1,5 @@
 import type { HoldingPosition, HoldingsPayload } from "./api-types";
-import { $, api, el, esc, fmtStamp, loadError, sensitive, state } from "./core";
+import { $, api, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./rebalance";
 
 // ---- holdings -------------------------------------------------------------
@@ -21,7 +21,7 @@ async function loadHoldings() {
       `NAV ${sensitive(`${Math.round(h.net_asset_value || 0).toLocaleString()} CZK`, "total NAV")} · ` +
       `invested ${sensitive(`${Math.round(h.invested_value || 0).toLocaleString()} CZK`, "invested value")}`;
     const synced = $("#hold-synced");
-    if (synced) synced.textContent = h.generated_at ? `Last synced ${fmtStamp(h.generated_at)}` : "No snapshot yet";
+    if (synced) synced.innerHTML = h.generated_at ? `Last synced ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}` : "No snapshot yet";
     out.innerHTML = "";
 
     const rows = (h.positions || [])

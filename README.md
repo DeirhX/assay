@@ -7,6 +7,79 @@ metallurgical assay tests whether a bar is really gold, it tests whether the
 numbers behind a position — price, market cap, multiples, target weights — hold
 up before you act on them.
 
+## Introduction
+
+### What it is for
+
+Assay is a personal, local-first **research and decision-support** tool for one
+investor managing one portfolio. Its whole reason to exist is distrust: market
+data is messy, and a single bad number (an impossible market cap, a stale price,
+a foreign filer with no independent anchor) can quietly poison a rebalancing
+decision. Assay pulls the same figures from multiple sources, cross-checks them,
+and surfaces the disagreements **before** you act.
+
+### What it gives you
+
+- **Verified numbers.** Live deep dives on any ticker — price, momentum, market
+  cap, P/E (ttm/fwd), P/S, revenue, margins, share count — pulled from Yahoo and
+  cross-checked against SEC EDGAR (and FMP if a key is set), with mismatches
+  flagged rather than smoothed over.
+- **A standing rebalance plan.** Current NAV weights compared against your
+  target bands, with risk, tax-lot, and what-if tooling to pressure-test a trade
+  basket before you place it.
+- **Segment and peer dashboards.** A whole peer universe (e.g. semiconductors)
+  ranked and cross-joined against what you already own.
+- **A Deep Research pipeline.** Perplexity report capture, source extraction, a
+  local review gate, and draft target-model proposals — none of which ever
+  create trades on their own.
+- **A separation of facts from judgement.** Fetched numbers and your written
+  thesis are kept strictly apart; re-pulling data never clobbers your reasoning.
+
+### Intended use case
+
+You are a hands-on individual investor who wants to validate the data and
+allocations behind your own positions, run on-demand research, and keep a
+defensible standing plan. You run it locally, against your own private holdings,
+on your own machine. It is explicitly **not** multi-user, not a hosted service,
+not an order generator, and not a robo-advisor.
+
+### Prerequisites
+
+- **Python 3** (stdlib only — no `pip install` needed for the backend).
+- **Node.js + npm** to build the TypeScript SPA once (`npm install && npm run build`).
+- **A `SEC_USER_AGENT`** environment variable identifying yourself to the SEC
+  fair-access API.
+- **Access to the private `data/` submodule** for your own holdings/targets;
+  without it the app still starts, just with empty portfolio views.
+- *Optional:* an `FMP_API_KEY` (third market-data opinion), one local LLM CLI
+  (`cursor-agent` or `claude`) for analyst notes, and a Perplexity Pro login for
+  the Deep Research pipeline.
+
+### How to use it (quickstart)
+
+```powershell
+git submodule update --init                        # private holdings (optional)
+npm install && npm run build                        # build the SPA once
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
+py -3 tools/serve.py                                # then open http://127.0.0.1:6060
+```
+
+See **Setup**, **Interactive Research Console**, and **First-Time Setup** below
+for the full details.
+
+### Disclaimer
+
+**This tool is for personal research and informational purposes only. It is not
+financial, investment, tax, or legal advice, and nothing it produces is a
+recommendation to buy or sell any security.** Assay does not place trades and is
+not connected to any broker for order execution. Market data is pulled from
+third-party sources that may be delayed, incomplete, or wrong — verify
+everything independently before acting. Any tax handling (including the Czech
+3-year lot logic) is a convenience estimate, not professional tax guidance.
+You alone are responsible for your investment decisions and their outcomes; the
+authors accept no liability for any loss arising from use of this software. Use
+at your own risk.
+
 Start here if you are new to the repo:
 
 `ORIENTATION.md`
