@@ -42,13 +42,50 @@ header.topbar {
   border-bottom: 1px solid var(--border);
 }
 header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
-.tabs { display: flex; gap: 6px; }
 .tab {
   background: transparent; color: var(--muted); border: 1px solid transparent;
   padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 14px; font-weight: 600;
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+
+/* Primary nav: three top-level groups. */
+.groups { display: flex; gap: 6px; }
+.group {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  padding: 7px 16px; border-radius: 999px; cursor: pointer; font-size: 15px; font-weight: 700;
+}
+.group:hover { color: var(--text); }
+.group.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+
+/* Persistent ticker search in the header. */
+.topsearch { display: flex; }
+.topsearch input {
+  background: rgba(29, 33, 43, 0.72); color: var(--text);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 6px 14px; font-size: 13px; width: 170px; transition: width .18s ease, border-color .18s ease;
+}
+.topsearch input::placeholder { color: var(--muted); }
+.topsearch input:focus { outline: none; width: 230px; border-color: rgba(130,170,255,.55); }
+
+/* Secondary nav: sub-tabs for the active group, wrapped onto its own row. */
+.subbar { flex-basis: 100%; display: flex; }
+.subtabs { display: flex; gap: 6px; padding-top: 10px; }
+.subtab {
+  background: transparent; color: var(--muted); border: 1px solid transparent;
+  padding: 4px 13px; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.subtab:hover { color: var(--text); }
+.subtab.active { color: var(--accent); background: rgba(130,170,255,.12); border-color: var(--border); }
+
+/* Now / Over-time toggle shared by the merged Positions views. */
+.pos-toggle { display: inline-flex; gap: 0; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.pos-toggle button {
+  background: transparent; color: var(--muted); border: 0;
+  padding: 5px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.pos-toggle button:hover { color: var(--text); }
+.pos-toggle button.active { color: var(--text); background: var(--panel-2); }
 .tab.settings-cog {
   width: var(--control-h); height: var(--control-h); padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
@@ -59,15 +96,6 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .tab.settings-cog:hover svg { transform: rotate(45deg); }
 .tab.settings-cog.active { color: var(--accent); border-color: var(--accent); background: rgba(130,170,255,.12); }
 .topbar .spacer { flex: 1; }
-.topbar nav { display: flex; gap: 8px; font-size: 13px; flex-wrap: wrap; }
-.topbar nav a {
-  color: var(--muted);
-  border: 1px solid var(--border);
-  background: rgba(29, 33, 43, 0.72);
-  border-radius: 999px;
-  padding: 5px 10px;
-}
-.topbar nav a:hover { color: var(--text); border-color: rgba(130,170,255,.55); text-decoration: none; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 24px 22px 64px; }
 .view { display: none; }
