@@ -4,6 +4,7 @@ the misconfigured-query guard. An injected ``fetch`` keeps it fully offline."""
 
 from __future__ import annotations
 
+import json
 import unittest
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -392,6 +393,131 @@ class Incremental(unittest.TestCase):
         self.assertEqual(by["AMD"]["net_base_cash_flow"], 50.0)
         self.assertEqual(by["AMD"]["realized_pnl"], 50.0)
         self.assertEqual(h["summary"]["realized_pnl_total"], 50.0)
+
+
+class DeriveUnderlying(unittest.TestCase):
+    def test_stock_groups_under_its_own_symbol(self):
+        self.assertEqual(H.derive_underlying("STK", "AMD", "Advanced Micro Devices"), "AMD")
+
+    def test_option_prefers_explicit_underlying_symbol(self):
+        self.assertEqual(
+            H.derive_underlying("OPT", "META  240322P00470000", "META 22MAR24 470 P",
+                                underlying_symbol="meta"),
+            "META")
+
+    def test_option_falls_back_to_description_first_token(self):
+        # The raw symbol's first token is NOT the underlying ("P VO3 ...").
+        self.assertEqual(
+            H.derive_underlying("OPT", "P VO3  20240621 110 M", "VOW3 21JUN24 110 P"),
+            "VOW3")
+
+    def test_option_without_description_uses_symbol_token(self):
+        self.assertEqual(H.derive_underlying("OPT", "BABA  240419P00060000", ""), "BABA")
+
+    def test_blank_symbol_is_placeholder(self):
+        self.assertEqual(H.derive_underlying("STK", "", ""), "?")
+
+
+class EnrichPayload(unittest.TestCase):
+    def _payload(self):
+        # Mimic an OLD cache: trades + by_symbol rows lacking the new fields.
+        return {
+            "trades": [
+                {"symbol": "AMD", "asset_class": "STK", "side": "BUY"},
+                {"symbol": "P VO3  20240621 110 M", "asset_class": "OPT",
+                 "description": "VOW3 21JUN24 110 P", "side": "SELL"},
+            ],
+            "summary": {"by_symbol": [
+                {"symbol": "AMD", "n": 1},
+                {"symbol": "P VO3  20240621 110 M", "n": 1},
+            ]},
+        }
+
+    def test_backfills_trade_grouping_fields(self):
+        h = H.enrich_history_payload(self._payload())
+        amd, opt = h["trades"]
+        self.assertEqual(amd["underlying"], "AMD")
+        self.assertFalse(amd["is_option"])
+        self.assertEqual(opt["underlying"], "VOW3")
+        self.assertTrue(opt["is_option"])
+
+    def test_backfills_by_symbol_from_trades(self):
+        h = H.enrich_history_payload(self._payload())
+        rows = {r["symbol"]: r for r in h["summary"]["by_symbol"]}
+        self.assertEqual(rows["P VO3  20240621 110 M"]["underlying"], "VOW3")
+        self.assertTrue(rows["P VO3  20240621 110 M"]["is_option"])
+        self.assertFalse(rows["AMD"]["is_option"])
+
+    def test_is_idempotent(self):
+        once = H.enrich_history_payload(self._payload())
+        twice = H.enrich_history_payload(json.loads(json.dumps(once)))
+        self.assertEqual(once, twice)
+
+    def test_none_passes_through(self):
+        self.assertIsNone(H.enrich_history_payload(None))
+
+
+class MultiCurrency(unittest.TestCase):
+    """Trades span currencies, so totals must be in base (fx==1) currency; raw
+    native P&L summed across USD/CZK/HKD is meaningless."""
+
+    def _history(self):
+        # CZK is base (fx 1); USD converts at 23x. Both realize 100 native.
+        w = statement(
+            trades=[
+                {"txn": "a", "symbol": "CEZ", "ccy": "CZK", "fx": 1, "side": "SELL",
+                 "net": 500, "pnl": 100},
+                {"txn": "b", "symbol": "AMD", "ccy": "USD", "fx": 23, "side": "SELL",
+                 "net": 200, "pnl": 100},
+            ],
+            nav=[("20250101", 1000.0)],
+        )
+        return H.build_history("tok", "qid", today=date(2026, 1, 1), sleep=0,
+                               fetch=FakeFetch([w, statement(), statement()]))
+
+    def test_base_currency_is_the_fx1_currency(self):
+        self.assertEqual(self._history()["base_currency"], "CZK")
+
+    def test_realized_total_is_base_not_naive_sum(self):
+        h = self._history()
+        # NOT 200 (naive 100+100); base = 100*1 (CEZ) + 100*23 (AMD) = 2400.
+        self.assertEqual(h["summary"]["realized_pnl_total"], 2400.0)
+
+    def test_by_symbol_carries_native_currency_and_base_pnl(self):
+        by = {r["symbol"]: r for r in self._history()["summary"]["by_symbol"]}
+        self.assertEqual(by["AMD"]["currency"], "USD")
+        self.assertEqual(by["AMD"]["base_realized_pnl"], 2300.0)  # 100 USD * 23
+        self.assertEqual(by["AMD"]["realized_pnl"], 100.0)        # native untouched
+        self.assertEqual(by["CEZ"]["currency"], "CZK")
+        self.assertEqual(by["CEZ"]["base_realized_pnl"], 100.0)
+
+    def test_trades_get_base_realized_pnl(self):
+        amd = next(t for t in self._history()["trades"] if t["symbol"] == "AMD")
+        self.assertEqual(amd["base_realized_pnl"], 2300.0)
+        self.assertEqual(amd["realized_pnl"], 100.0)
+
+
+class BoughtSoldAmounts(unittest.TestCase):
+    """by_symbol carries gross base cash bought/sold, and sold - bought ties out
+    to the net cash flow."""
+
+    def _history(self):
+        w = statement(
+            trades=[
+                # AAA: buy 1000 (cash out), then sell 1500 (cash in) -> net +500.
+                {"txn": "a1", "symbol": "AAA", "ccy": "USD", "fx": 1, "side": "BUY", "net": -1000},
+                {"txn": "a2", "symbol": "AAA", "ccy": "USD", "fx": 1, "side": "SELL", "net": 1500},
+            ],
+            nav=[("20250101", 1000.0)],
+        )
+        return H.build_history("tok", "qid", today=date(2026, 1, 1), sleep=0,
+                               fetch=FakeFetch([w, statement(), statement()]))
+
+    def test_bought_and_sold_are_gross_and_net_ties_out(self):
+        row = self._history()["summary"]["by_symbol"][0]
+        self.assertEqual(row["bought_base"], 1000.0)
+        self.assertEqual(row["sold_base"], 1500.0)
+        self.assertEqual(round(row["sold_base"] - row["bought_base"], 2), row["net_base_cash_flow"])
 
 
 if __name__ == "__main__":

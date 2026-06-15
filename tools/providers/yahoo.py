@@ -256,6 +256,33 @@ def _profile(ap: dict[str, Any]) -> dict[str, Any] | None:
     return out if any(out.values()) else None
 
 
+def asset_profile(symbol: str) -> dict[str, Any] | None:
+    """Just the business/sector tags (assetProfile module) -- much lighter than
+    ``fundamentals`` when all we want is the sector for a traded symbol. Returns
+    None when Yahoo has nothing usable (common for foreign/derivative codes)."""
+    opener, crumb = _session()
+    url = (
+        f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/"
+        f"{urllib.parse.quote(symbol)}?modules=assetProfile"
+        f"&crumb={urllib.parse.quote(crumb, safe='')}"
+    )
+    try:
+        data = get_json(url, opener=opener)
+    except ProviderError:
+        reset_session()
+        opener, crumb = _session()
+        url = (
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/"
+            f"{urllib.parse.quote(symbol)}?modules=assetProfile"
+            f"&crumb={urllib.parse.quote(crumb, safe='')}"
+        )
+        data = get_json(url, opener=opener)
+    results = data.get("quoteSummary", {}).get("result") or []
+    if not results:
+        return None
+    return _profile(results[0].get("assetProfile", {}))
+
+
 def fundamentals(symbol: str) -> dict[str, Any]:
     """Market cap, multiples, shares, margins, revenue from quoteSummary."""
     opener, crumb = _session()

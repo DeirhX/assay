@@ -70,6 +70,7 @@ import orchestrate  # noqa: E402  -- durable state machine for the guided strate
 import target_construct  # noqa: E402  -- LLM + deterministic target-model synthesis
 import ibkr_history  # noqa: E402  -- full trade + NAV history via windowed Flex
 import ibkr_trade  # noqa: E402  -- LIVE order execution via Client Portal Web API (gated)
+import sectors  # noqa: E402  -- symbol -> sector map (research seed + Yahoo backfill)
 import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
@@ -1773,9 +1774,77 @@ def _start_history_sync(full: bool = False) -> dict:
     return _job_public(job)
 
 
+SECTORS_JSON = IBKR_CACHE_DIR / "sectors.json"  # gitignored (mirrors trade ledger)
+
+
+def _attach_sectors(payload: dict | None) -> dict | None:
+    """Tag each ``by_symbol`` row with a sector for the "By sector" view.
+
+    Read-only and free: loads the cached sector map and seeds it from research
+    dossiers in memory (no network, no write -- the Yahoo backfill is a separate
+    on-demand job). Rows whose underlying isn't resolved get sector "" and land
+    in the UI's "Unknown" bucket."""
+    if not payload:
+        return payload
+    cache = sectors.load_cache(SECTORS_JSON)
+    sectors.seed_from_research(cache, RESEARCH_DIR)
+    rows = (payload.get("summary") or {}).get("by_symbol") or []
+    for r in rows:
+        r["sector"] = sectors.sector_of(r.get("underlying") or r.get("symbol") or "", cache)
+    payload["sectors_updated_at"] = cache.get("updated_at")
+    return payload
+
+
 def _history_payload() -> dict | None:
-    """The cached normalized history, or None if it hasn't been pulled yet."""
-    return _load(IBKR_HISTORY_JSON)
+    """The cached normalized history, or None if it hasn't been pulled yet.
+
+    Enriched on read so caches written before the grouping/currency fields
+    existed still carry ``underlying`` / ``is_option`` / ``base_realized_pnl``
+    and a per-row ``sector`` (idempotent; no re-pull needed)."""
+    return _attach_sectors(ibkr_history.enrich_history_payload(_load(IBKR_HISTORY_JSON)))
+
+
+def _sectors_running() -> bool:
+    return jobs.find(
+        lambda j: j.get("kind") == "ibkr_sectors"
+        and j.get("state") in ("queued", "running")
+        and not j.get("cancelled")
+    )
+
+
+def _run_sectors_job(job_id: str) -> None:
+    """Seed the sector map from research dossiers, then resolve the still-unknown
+    traded underlyings via Yahoo (cached, so this is a one-time-ish cost)."""
+    _update_job(job_id, state="running", message="loading traded names…")
+    payload = ibkr_history.enrich_history_payload(_load(IBKR_HISTORY_JSON))
+    if not payload:
+        _update_job(job_id, state="error", error="no portfolio history yet — pull it first")
+        return
+    rows = (payload.get("summary") or {}).get("by_symbol") or []
+    symbols = [r.get("underlying") or r.get("symbol") or "" for r in rows]
+    cache = sectors.load_cache(SECTORS_JSON)
+    sectors.seed_from_research(cache, RESEARCH_DIR)
+    sectors.save_cache(SECTORS_JSON, cache)  # persist the free research seeds first
+    try:
+        stats = sectors.backfill(
+            symbols, cache, fetch=sectors.yahoo_fetch,
+            progress=lambda msg: _update_job(job_id, message=msg))
+    except Exception as exc:  # noqa: BLE001 -- never let the worker thread die silently
+        errorlog.log("sectors_backfill_failed", str(exc), level="warning")
+        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+    sectors.save_cache(SECTORS_JSON, cache)
+    msg = (f"resolved {stats['resolved']} new sector(s); "
+           f"{stats['unresolved']} unresolved of {stats['considered']} unknown")
+    _update_job(job_id, state="done", message=msg, result=stats)
+
+
+def _start_sectors_sync() -> dict:
+    if _sectors_running():
+        raise RuntimeError("a sector lookup is already running")
+    job = _new_job("ibkr_sectors")
+    threading.Thread(target=_run_sectors_job, args=(job["id"],), daemon=True).start()
+    return _job_public(job)
 
 
 def _regenerate_site() -> dict:
@@ -2523,6 +2592,7 @@ _POST_EXACT = {
     "/api/strategy/start": "_post_strategy_start",
     "/api/holdings/sync": "_post_holdings_sync",
     "/api/portfolio-history/sync": "_post_portfolio_history_sync",
+    "/api/portfolio-history/sectors": "_post_portfolio_history_sectors",
     "/api/site/regenerate": "_post_site_regenerate",
     "/api/deep-job/cancel": "_post_deep_job_cancel",
     "/api/deep-qa": "_post_deep_qa",
@@ -2955,6 +3025,12 @@ class Handler(BaseHTTPRequestHandler):
         full = bool(self._read_body().get("full"))
         try:
             return self._send_json(_start_history_sync(full=full))
+        except RuntimeError as exc:
+            return self._send_error_json(409, str(exc))
+
+    def _post_portfolio_history_sectors(self, path):
+        try:
+            return self._send_json(_start_sectors_sync())
         except RuntimeError as exc:
             return self._send_error_json(409, str(exc))
 
