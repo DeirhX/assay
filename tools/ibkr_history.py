@@ -162,6 +162,30 @@ def _trade_datetime(t: ET.Element) -> str:
     return _iso_date(td)
 
 
+_OPTION_CLASSES = ("OPT", "FOP")
+
+
+def derive_underlying(asset_class: str, symbol: str,
+                      description: str = "", underlying_symbol: str = "") -> str:
+    """Best-effort underlying ticker, used as the grouping key.
+
+    Options/FOPs: prefer the Flex ``underlyingSymbol``; failing that, the first
+    token of the human description (``"VOW3 21JUN24 110 P"`` -> ``"VOW3"``),
+    which is reliable where the raw option ``symbol`` is not (IBKR renders some
+    as ``"P VO3  20240621 110 M"`` -- the underlying is NOT the first token).
+    Everything else groups under its own symbol."""
+    if (asset_class or "").upper() in _OPTION_CLASSES:
+        if (underlying_symbol or "").strip():
+            return underlying_symbol.strip().upper()
+        desc_tok = (description or "").strip().split()
+        if desc_tok:
+            return desc_tok[0].upper()
+        sym_tok = (symbol or "").strip().split()
+        if sym_tok:
+            return sym_tok[0].upper()
+    return (symbol or "").strip() or "?"
+
+
 def parse_trade(t: ET.Element) -> dict:
     """Normalize one Flex <Trade> execution row.
 
@@ -174,13 +198,17 @@ def parse_trade(t: ET.Element) -> dict:
     buy_sell = (t.get("buySell") or "").upper()
     qty = _dec(t.get("quantity"))
     side = buy_sell or ("BUY" if qty >= 0 else "SELL")
+    asset_class = t.get("assetCategory", "")
+    symbol = t.get("symbol", "")
+    description = t.get("description", "")
+    underlying_symbol = t.get("underlyingSymbol", "")
     return {
         "trade_id": t.get("tradeID", ""),
         "transaction_id": t.get("transactionID", ""),
         "datetime": _trade_datetime(t),
         "date": _iso_date(t.get("tradeDate")),
-        "symbol": t.get("symbol", ""),
-        "asset_class": t.get("assetCategory", ""),
+        "symbol": symbol,
+        "asset_class": asset_class,
         "currency": t.get("currency", ""),
         "side": side,
         "quantity": qty,
@@ -195,8 +223,15 @@ def parse_trade(t: ET.Element) -> dict:
         "base_value": round(proceeds * fx, 2),
         "realized_pnl": _dec(t.get("fifoPnlRealized")),
         "open_close": t.get("openCloseIndicator", ""),
-        "description": t.get("description", ""),
+        "description": description,
         "listing_exchange": t.get("listingExchange", ""),
+        # Derivative metadata + the grouping key (the underlying ticker), so the
+        # UI can collapse a swarm of option contracts under one name.
+        "underlying_symbol": underlying_symbol,
+        "underlying": derive_underlying(asset_class, symbol, description, underlying_symbol),
+        "put_call": (t.get("putCall") or "").upper(),
+        "strike": _dec(t.get("strike")) or None,
+        "expiry": _iso_date(t.get("expiry")) if t.get("expiry") else "",
     }
 
 
@@ -489,7 +524,7 @@ def normalize(account: str, trades: dict[str, dict], nav: dict[str, dict],
         rec["realized_pnl"] = round(rec["realized_pnl"] + t["realized_pnl"], 2)
 
     trade_dates = [t["date"] for t in trade_list if t["date"]]
-    return {
+    payload = {
         "account": account,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "to_date": end.isoformat(),
@@ -508,6 +543,78 @@ def normalize(account: str, trades: dict[str, dict], nav: dict[str, dict],
             "by_symbol": sorted(by_symbol.values(), key=lambda r: -r["n"]),
         },
     }
+    return enrich_history_payload(payload)
+
+
+def enrich_history_payload(payload: dict | None) -> dict | None:
+    """Idempotently attach the grouping + currency fields the UI needs.
+
+    Ensures every trade carries ``underlying`` / ``is_option`` /
+    ``base_realized_pnl`` and every ``by_symbol`` row carries ``asset_class`` /
+    ``underlying`` / ``is_option`` / ``label`` / ``currency`` /
+    ``base_realized_pnl``, plus a top-level ``base_currency``. Trades span many
+    currencies (price + native realized P&L differ per ticker), so the
+    cross-ticker ``realized_pnl_total`` is (re)computed in base currency from
+    the per-trade fx rate -- summing raw native P&L across USD/CZK/HKD/... is
+    nonsense. Caches written before these fields existed are upgraded on read
+    with no re-pull; re-running is a no-op. Mutates in place and returns it."""
+    if not isinstance(payload, dict):
+        return payload
+    trades = payload.get("trades") or []
+    sym_meta: dict[str, dict] = {}  # symbol -> {asset_class, underlying, description}
+    sym_agg: dict[str, dict] = {}   # symbol -> {currency, base_pnl}
+    base_ccy = payload.get("base_currency") or ""
+    base_pnl_total = 0.0
+    for t in trades:
+        ac = t.get("asset_class", "")
+        if not t.get("underlying"):
+            t["underlying"] = derive_underlying(
+                ac, t.get("symbol", ""), t.get("description", ""), t.get("underlying_symbol", ""))
+        t["is_option"] = (ac or "").upper() in _OPTION_CLASSES
+        fx = float(t.get("fx_rate_to_base") or 1) or 1.0
+        if "base_realized_pnl" not in t:
+            t["base_realized_pnl"] = round(float(t.get("realized_pnl") or 0) * fx, 2)
+        base_pnl_total += t["base_realized_pnl"]
+        ccy = t.get("currency", "")
+        # The base currency is the one that needs no conversion (fx == 1).
+        if not base_ccy and ccy and abs(fx - 1.0) < 1e-9:
+            base_ccy = ccy
+        sym = t.get("symbol", "")
+        sym_meta.setdefault(sym, {
+            "asset_class": ac, "underlying": t["underlying"],
+            "description": t.get("description", "")})
+        agg = sym_agg.setdefault(sym, {"currency": ccy, "base_pnl": 0.0,
+                                       "bought": 0.0, "sold": 0.0})
+        agg["base_pnl"] += t["base_realized_pnl"]
+        # Gross cash out (buys) vs in (sells) in base currency, by cash-flow sign
+        # so sold - bought == net_base_cash_flow exactly. Both are >= 0.
+        cf = float(t.get("base_cash_flow") or 0)
+        if cf < 0:
+            agg["bought"] += -cf
+        else:
+            agg["sold"] += cf
+    payload["base_currency"] = base_ccy
+    for r in (payload.get("summary") or {}).get("by_symbol") or []:
+        meta = sym_meta.get(r.get("symbol", ""), {})
+        agg = sym_agg.get(r.get("symbol", ""), {})
+        r.setdefault("asset_class", meta.get("asset_class", ""))
+        if not r.get("underlying"):
+            r["underlying"] = meta.get("underlying") or r.get("symbol", "")
+        r["is_option"] = (r.get("asset_class") or "").upper() in _OPTION_CLASSES
+        if not r.get("label"):
+            desc = meta.get("description", "")
+            r["label"] = desc if (r["is_option"] and desc) else r.get("symbol", "")
+        if not r.get("currency"):
+            r["currency"] = agg.get("currency", "")
+        if "base_realized_pnl" not in r:
+            r["base_realized_pnl"] = round(float(agg.get("base_pnl", 0.0)), 2)
+        if "bought_base" not in r:
+            r["bought_base"] = round(float(agg.get("bought", 0.0)), 2)
+        if "sold_base" not in r:
+            r["sold_base"] = round(float(agg.get("sold", 0.0)), 2)
+    if trades:
+        payload.setdefault("summary", {})["realized_pnl_total"] = round(base_pnl_total, 2)
+    return payload
 
 
 # --------------------------------------------------------------------------- #

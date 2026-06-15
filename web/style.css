@@ -1694,7 +1694,8 @@ a.tlink:hover { border-bottom-style: solid; }
   background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft);
   padding: 10px 12px; margin-top: 6px;
 }
-.hist-chart { width: 100%; height: auto; display: block; }
+.hist-chart { width: 100%; height: auto; display: block; cursor: grab; touch-action: none; }
+.hist-chart.dragging { cursor: grabbing; }
 .hist-grid { stroke: var(--border); stroke-width: 1; opacity: .6; }
 .hist-ylabel, .hist-xlabel { fill: var(--muted); font-size: 12px; font-family: inherit; }
 .hist-area { fill: rgba(130, 170, 255, .12); stroke: none; }
@@ -1712,6 +1713,68 @@ a.tlink:hover { border-bottom-style: solid; }
 .hist-key.sell { background: rgba(225, 90, 80, .9); }
 
 .hist-trades td, .hist-trades th { font-size: 13px; }
+
+/* Per-day trade markers + hover card */
+.hist-dot.mixed { fill: rgba(245, 199, 107, .95); }
+.hist-hit { fill: transparent; pointer-events: all; cursor: help; }
+.hist-chart-wrap { position: relative; }
+.hist-tip {
+  position: absolute; z-index: 5; pointer-events: none;
+  min-width: 180px; max-width: 280px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius-soft); box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  padding: 8px 10px; font-size: 12px; line-height: 1.5; color: var(--text);
+}
+.hist-tip[hidden] { display: none; }
+.hist-tip-date { font-weight: 600; margin-bottom: 4px; }
+.hist-tip-row { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-tip-side { font-weight: 600; }
+.hist-tip-side.buy { color: var(--good); }
+.hist-tip-side.sell { color: var(--bad); }
+.hist-tip-more { color: var(--muted); margin-top: 2px; }
+.hist-tip-net { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); color: var(--muted); }
+
+/* Collapsible section heading */
+.hist-section { margin-top: 18px; }
+.hist-section-sum {
+  cursor: pointer; list-style: none; font-weight: 600; font-size: 15px;
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.hist-section-sum::-webkit-details-marker { display: none; }
+.hist-section-sum::before { content: "\25B8"; color: var(--muted); font-size: .85em; }
+.hist-section[open] .hist-section-sum::before { content: "\25BE"; }
+
+/* Grouped activity rows (options folded under their underlying) */
+.hist-grp.expandable { cursor: pointer; }
+.hist-grp.expandable:hover { background: var(--panel-2); }
+.hist-caret { display: inline-block; width: 1.1em; margin-right: 3px; text-align: center; color: var(--muted); font-size: .85em; }
+.hist-optbadge {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 7px; margin-left: 6px; vertical-align: 1px;
+}
+.hist-member > td { background: var(--panel-2); font-size: 12px; }
+.hist-member-sym { padding-left: 26px !important; color: var(--muted); }
+
+/* Native-currency code chip — muted, uppercase, sits beside a value. */
+.ccy {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--muted); text-transform: uppercase; vertical-align: 1px;
+}
+.hist-activity td.num .ccy { font-size: 11px; }
+/* Trades count: hover reveals the buy/sell split (native title). */
+.hist-trades-n { cursor: help; border-bottom: 1px dotted var(--border); }
+
+/* "By sector" toolbar: freshness note + the Yahoo backfill trigger. */
+.hist-sectools { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; flex-wrap: wrap; }
+.hist-sectools .spinner { margin-right: 4px; }
+
+/* Pager (activity + ledger) */
+.hist-pager {
+  display: flex; align-items: center; gap: 12px; margin-top: 8px;
+  color: var(--muted); font-size: 13px;
+}
+.hist-pager .linklike:disabled { opacity: .4; cursor: default; }
+.hist-pager-label { min-width: 0; }
 
 /* ---- Guided strategy flow (Direction -> Rebalance) ----------------------- */
 .strat-head h2 { margin: 0 0 4px; }

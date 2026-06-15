@@ -25,6 +25,156 @@ function svg(tag, attrs = {}) {
   return n;
 }
 
+// ---- pure data shaping (unit-tested) ---------------------------------------
+// Collapse a trade list to one entry per execution day, ascending by date, so
+// the chart can mark days (not individual fills) and a hover can list them.
+function dayGroups(trades) {
+  const m = new Map();
+  for (const t of trades || []) {
+    if (!t || !t.date) continue;
+    if (!m.has(t.date)) m.set(t.date, []);
+    m.get(t.date).push(t);
+  }
+  return [...m.entries()]
+    .map(([date, ts]) => ({ date, trades: ts }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+// Group "activity by name" rows under a single underlying, so a name's shares
+// AND its option contracts collapse into one row (e.g. SOFI stock + SOFI opts).
+// Unexpanded shows the combined aggregate; expanded shows each leg separately.
+// A name with a single leg (a lone stock, or one contract) stays a singleton.
+function groupActivity(rows) {
+  const groups = new Map();
+  for (const r of rows || []) {
+    const isOpt = !!r.is_option;
+    // The underlying is the grouping key for both shares and options.
+    const name = (isOpt ? r.underlying : r.symbol) || r.symbol || "?";
+    let g = groups.get(name);
+    if (!g) {
+      g = { key: name, label: name, is_option: false, opt_count: 0, n: 0, buys: 0, sells: 0,
+        bought_base: 0, sold_base: 0,
+        net_base_cash_flow: 0, base_realized_pnl: 0, currencies: new Set(), members: [] };
+      groups.set(name, g);
+    }
+    g.n += Number(r.n) || 0;
+    g.buys += Number(r.buys) || 0;
+    g.sells += Number(r.sells) || 0;
+    g.bought_base += Number(r.bought_base) || 0;
+    g.sold_base += Number(r.sold_base) || 0;
+    g.net_base_cash_flow += Number(r.net_base_cash_flow) || 0;
+    // P&L is summed in BASE currency: a group can't be summed in native units
+    // if its members trade in different ones (and the grand total never could).
+    g.base_realized_pnl += Number(r.base_realized_pnl) || 0;
+    if (r.currency) g.currencies.add(r.currency);
+    if (isOpt) g.opt_count += 1;
+    g.members.push(r);
+  }
+  const out = [...groups.values()];
+  out.forEach((g) => {
+    g.bought_base = Math.round(g.bought_base * 100) / 100;
+    g.sold_base = Math.round(g.sold_base * 100) / 100;
+    g.net_base_cash_flow = Math.round(g.net_base_cash_flow * 100) / 100;
+    g.base_realized_pnl = Math.round(g.base_realized_pnl * 100) / 100;
+    // is_option here means "this name has option legs" (drives the badge/hint).
+    g.is_option = g.opt_count > 0;
+    // The native trading currency of the name; "mixed" only if it ever varies.
+    g.currency = g.currencies.size === 1 ? [...g.currencies][0] : g.currencies.size ? "mixed" : "";
+    // Shares first, then contracts by trade count, so the equity leg leads.
+    g.members.sort((a, b) =>
+      (a.is_option ? 1 : 0) - (b.is_option ? 1 : 0) || (Number(b.n) || 0) - (Number(a.n) || 0));
+  });
+  return out.sort((a, b) => b.n - a.n);
+}
+
+// Group the same by_symbol rows by sector, folding names within each sector via
+// groupActivity. Sums are base-currency (the only valid way across tickers).
+// Names with no resolved sector collect into "Unknown", which always sorts last.
+function groupBySector(rows) {
+  const byS = new Map();
+  for (const r of rows || []) {
+    const sector = (r.sector || "").trim() || "Unknown";
+    let g = byS.get(sector);
+    if (!g) {
+      g = { sector, n: 0, buys: 0, sells: 0, bought_base: 0, sold_base: 0, net_base_cash_flow: 0, base_realized_pnl: 0, rows: [] };
+      byS.set(sector, g);
+    }
+    g.n += Number(r.n) || 0;
+    g.buys += Number(r.buys) || 0;
+    g.sells += Number(r.sells) || 0;
+    g.bought_base += Number(r.bought_base) || 0;
+    g.sold_base += Number(r.sold_base) || 0;
+    g.net_base_cash_flow += Number(r.net_base_cash_flow) || 0;
+    g.base_realized_pnl += Number(r.base_realized_pnl) || 0;
+    g.rows.push(r);
+  }
+  const out = [...byS.values()];
+  out.forEach((g) => {
+    g.bought_base = Math.round(g.bought_base * 100) / 100;
+    g.sold_base = Math.round(g.sold_base * 100) / 100;
+    g.net_base_cash_flow = Math.round(g.net_base_cash_flow * 100) / 100;
+    g.base_realized_pnl = Math.round(g.base_realized_pnl * 100) / 100;
+    g.groups = groupActivity(g.rows); // folded names within the sector
+    g.names = g.groups.length;
+  });
+  return out.sort((a, b) => {
+    const au = a.sector === "Unknown", bu = b.sector === "Unknown";
+    if (au !== bu) return au ? 1 : -1;
+    return b.n - a.n;
+  });
+}
+
+// 1-based pagination over an array; clamps the requested page into range.
+function paginate(arr, page, size) {
+  const total = arr.length;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const p = Math.min(Math.max(1, page | 0 || 1), pages);
+  const start = (p - 1) * size;
+  return { page: p, pages, total, start, items: arr.slice(start, start + size) };
+}
+
+const _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const _MON_IDX = Object.fromEntries(_MONTHS.map((m, i) => [m.toUpperCase(), i]));
+// Strike with trailing zeros trimmed: 7.50 -> "7.5", 310.0 -> "310".
+const _strike = (n) => String(Number(n)).replace(/\.0+$/, "");
+const _expiry = (day, monIdx, yy) =>
+  monIdx == null || day == null ? "" : `${Number(day)} ${_MONTHS[monIdx]} '${yy}`;
+const _right = (r) => (r === "P" ? "Put" : r === "C" ? "Call" : r);
+
+// Nicely formatted option title with the ticker dropped (it's already the row's
+// parent), e.g. "UAA 28JUN24 7 P" -> "7 Put · 28 Jun '24". Parses IBKR's
+// readable label first, then the OCC symbol; falls back to the raw string.
+function contractLabel(m) {
+  const lab = m.label || m.description || "";
+  // "TICKER 28JUN24 7 P"
+  let mt = /^\S+\s+(\d{1,2})([A-Za-z]{3})(\d{2})\s+([\d.]+)\s+([CP])$/.exec(lab.trim());
+  if (mt) {
+    const [, d, mon, yy, strike, r] = mt;
+    const idx = _MON_IDX[mon.toUpperCase()];
+    if (idx != null) return `${_strike(strike)} ${_right(r)} · ${_expiry(d, idx, yy)}`;
+  }
+  // OCC symbol: "UAA   240628P00007000" (root, YYMMDD, right, strike*1000)
+  mt = /^.+?\s+(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/.exec((m.symbol || "").trim());
+  if (mt) {
+    const [, yy, mm, dd, r, strike] = mt;
+    return `${_strike(Number(strike) / 1000)} ${_right(r)} · ${_expiry(dd, Number(mm) - 1, yy)}`;
+  }
+  // Last resort: at least strip a leading "TICKER " so we don't repeat it.
+  const under = (m.underlying || "").trim();
+  const raw = lab || m.symbol || "?";
+  return under && raw.toUpperCase().startsWith(under.toUpperCase() + " ")
+    ? raw.slice(under.length + 1).trim() : raw;
+}
+
+// A muted currency-code chip. Not sensitive (a code isn't a value), so it stays
+// visible under privacy mode while the number beside it blurs.
+const ccyTag = (code) => (code ? ` <span class="ccy">${esc(code)}</span>` : "");
+
+// Leading caret cell for a grouped row. Always rendered (empty when there's
+// nothing to expand) so expandable and plain names share the same left edge.
+const caretCell = (expandable) =>
+  `<span class="hist-caret">${expandable ? "\u25B8" : ""}</span>`;
+
 let _wired = false;
 
 // Cheap, token-free credential check so we can guide setup *before* a pull fails.
@@ -109,6 +259,7 @@ function renderHistory(h) {
     `<span>${esc(h.from_date || "?")} → ${esc(h.to_date || "?")}</span>` +
     `<span>${esc(s.n_trades ?? 0)} trades · ${esc(s.n_nav_points ?? 0)} NAV points</span>` +
     `<span>${esc(s.windows ?? 0)} Flex window(s)</span>` +
+    (h.base_currency ? `<span>base ${esc(h.base_currency)}</span>` : "") +
     `<span>pulled ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}</span>`;
   out.appendChild(meta);
 
@@ -119,8 +270,10 @@ function renderHistory(h) {
   chartSec.appendChild(el("h3", null, "Portfolio value & actions"));
   if (series.length >= 2) {
     chartSec.appendChild(el("p", "hint",
-      "Net asset value over time. Markers are trades on the day they executed — green buy, red sell. Hover any marker for detail."));
-    chartSec.appendChild(navChart(series, h.trades || []));
+      "Net asset value over time. Each marker is a day you traded (bigger = more fills); " +
+      "green = buys only, red = sells only, amber = both. Hover a marker to see what traded that day. " +
+      "Scroll to zoom the timeline, drag to pan, double-click to reset."));
+    chartSec.appendChild(navChart(series, h.trades || [], h.base_currency || ""));
     chartSec.appendChild(legend());
   } else {
     chartSec.appendChild(el("p", "hint err",
@@ -129,32 +282,174 @@ function renderHistory(h) {
   out.appendChild(chartSec);
 
   if (s.by_symbol && s.by_symbol.length) {
-    const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, "Activity by name"));
-    sec.appendChild(bySymbolTable(s.by_symbol));
-    out.appendChild(sec);
+    const bcy = h.base_currency || "";
+    const secGroups = groupBySector(s.by_symbol);
+    const known = secGroups.filter((g) => g.sector !== "Unknown").length;
+    const unknown = secGroups.find((g) => g.sector === "Unknown");
+    const body = el("div");
+    body.appendChild(sectorToolbar(h, unknown ? unknown.names : 0));
+    body.appendChild(sectorTable(secGroups, bcy));
+    out.appendChild(section(
+      `By sector (${known})`,
+      body,
+      `Sectors come from research dossiers + Yahoo; names we couldn't resolve sit in "Unknown". ` +
+      `Click a ${"\u25B8"} sector to expand its names. Cash flow & P&L are base${bcy ? " " + bcy : ""}.`,
+      false,
+    ));
+  }
+
+  if (s.by_symbol && s.by_symbol.length) {
+    const groups = groupActivity(s.by_symbol);
+    const optGroups = groups.filter((g) => g.is_option).length;
+    const bcy = h.base_currency || "";
+    const foldHint = optGroups
+      ? `Option contracts are folded under their underlying — click a ${"\u25B8"} row to expand its contracts. `
+      : "";
+    out.appendChild(section(
+      `Activity by name (${groups.length})`,
+      activityTable(groups, bcy),
+      foldHint + `Ccy is each name's trading currency; cash flow & P&L are in base${bcy ? " " + bcy : ""} so they sum across names.`,
+    ));
   }
 
   if (h.trades && h.trades.length) {
-    const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, `Trade ledger (${h.trades.length})`));
-    sec.appendChild(el("p", "hint", "Newest first. Base cash flow is negative for buys (cash out), positive for sells."));
-    sec.appendChild(tradeTable(h.trades));
-    out.appendChild(sec);
+    const bcy = h.base_currency || "";
+    out.appendChild(section(
+      `Trade ledger (${h.trades.length})`,
+      tradeTable(h.trades, bcy),
+      `Newest first. Price is in each trade's native currency; cash flow is base${bcy ? " " + bcy : ""} ` +
+      `(negative for buys, positive for sells).`,
+    ));
+  }
+}
+
+// Collapsible section: the heading is a <summary> so a long page can be folded
+// down to just the parts you care about. Open by default.
+function section(title, bodyNode, hint, open = true) {
+  const d = el("details", "risk-section hist-section");
+  d.open = open;
+  const sum = el("summary", "hist-section-sum");
+  sum.innerHTML = `<span>${esc(title)}</span>`;
+  d.appendChild(sum);
+  if (hint) d.appendChild(el("p", "hint", hint));
+  d.appendChild(bodyNode);
+  return d;
+}
+
+// Prev / page-of / Next control. Renders nothing interactive for a single page.
+function drawPager(pager, pg, onGo) {
+  pager.innerHTML = "";
+  if (pg.pages <= 1) {
+    pager.appendChild(el("span", "hint", `${pg.total} row${pg.total === 1 ? "" : "s"}`));
+    return;
+  }
+  const prev = el("button", "linklike", "\u2039 Prev");
+  const next = el("button", "linklike", "Next \u203a");
+  prev.disabled = pg.page <= 1;
+  next.disabled = pg.page >= pg.pages;
+  prev.addEventListener("click", () => onGo(pg.page - 1));
+  next.addEventListener("click", () => onGo(pg.page + 1));
+  pager.appendChild(prev);
+  pager.appendChild(el("span", "hist-pager-label",
+    `Page ${pg.page} of ${pg.pages} · ${pg.total} rows`));
+  pager.appendChild(next);
+}
+
+// "By sector" table: one row per sector, expandable to the folded names within.
+// Columns mirror "Activity by name" so member rows can reuse activityCells; the
+// sector header row leaves the Ccy cell blank (a sector spans many currencies).
+function sectorTable(secGroups, baseCcy) {
+  const baseLbl = baseCcy ? ` (${esc(baseCcy)})` : "";
+  const tbl = el("table", "risk-pos-table hist-activity");
+  tbl.innerHTML =
+    `<thead><tr><th>Sector</th><th class="num">Ccy</th><th class="num">Trades</th>` +
+    `<th class="num">Bought${baseLbl}</th><th class="num">Sold${baseLbl}</th>` +
+    `<th class="num">Net cash flow${baseLbl}</th><th class="num">Realized P&L${baseLbl}</th></tr></thead>`;
+  const body = el("tbody");
+  tbl.appendChild(body);
+  secGroups.forEach((g) => {
+    const expandable = g.groups.length > 0;
+    const tr = el("tr", "hist-grp" + (expandable ? " expandable" : ""));
+    const badge = ` <span class="hist-optbadge">${g.names} name${g.names === 1 ? "" : "s"}</span>`;
+    tr.innerHTML = `<td class="risk-pos-sym">${caretCell(expandable)}${esc(g.sector)}${badge}</td>` + activityCells(g);
+    body.appendChild(tr);
+    if (!expandable) return;
+    const memberRows = g.groups.map((m) => {
+      const mtr = el("tr", "hist-member");
+      mtr.hidden = true;
+      mtr.innerHTML = `<td class="risk-pos-sym hist-member-sym">${esc(m.label)}</td>` + activityCells(m);
+      body.appendChild(mtr);
+      return mtr;
+    });
+    tr.addEventListener("click", () => {
+      const open = tr.classList.toggle("open");
+      const c = tr.querySelector(".hist-caret");
+      if (c) c.textContent = open ? "\u25BE" : "\u25B8";
+      memberRows.forEach((mr) => (mr.hidden = !open));
+    });
+  });
+  return tbl;
+}
+
+// Toolbar above the sector table: how fresh the sector map is + a button to
+// resolve the still-unknown names from Yahoo (a background job).
+function sectorToolbar(h, unknownNames) {
+  const bar = el("div", "hist-sectools");
+  const fresh = h.sectors_updated_at
+    ? `sectors ${freshnessNote(h.sectors_updated_at) || esc(fmtStamp(h.sectors_updated_at))}`
+    : "sectors not fetched yet";
+  bar.innerHTML = `<span class="hint">${fresh}` +
+    (unknownNames ? ` · ${unknownNames} name(s) Unknown` : "") + `</span>`;
+  const btn = el("button", "linklike", "Fetch sectors");
+  btn.id = "hist-sectors";
+  const status = el("span", "hint");
+  status.id = "hist-sectors-status";
+  bar.appendChild(btn);
+  bar.appendChild(status);
+  btn.addEventListener("click", () => runSectorFetch());
+  return bar;
+}
+
+async function runSectorFetch() {
+  const btn = $("#hist-sectors");
+  const status = $("#hist-sectors-status");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Resolving…";
+  status.classList.remove("err");
+  status.innerHTML = `<span class="spinner"></span> resolving sectors from Yahoo…`;
+  try {
+    const job = await api("/api/portfolio-history/sectors", "POST", {});
+    await pollDeepJob(job.id, status, async (done) => {
+      await loadHistory();
+      const r = done.result || {};
+      status.textContent = `Done — resolved ${r.resolved ?? 0} new, ${r.unresolved ?? 0} still unknown.`;
+    }, "sector lookup");
+  } catch (e) {
+    status.textContent = "Sector lookup failed: " + e.message;
+    status.classList.add("err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
   }
 }
 
 function statCards(h) {
   const s = h.summary || {};
+  const bcy = h.base_currency || "";
   const series = h.nav_series || [];
   const latest = series.length ? series[series.length - 1].nav : null;
   const first = series.length ? series[0].nav : null;
   const change = latest != null && first != null ? latest - first : null;
   const wrap = el("div", "risk-stats");
-  wrap.appendChild(card("Latest NAV", sensitive(fmtMoney(latest), "net asset value")));
-  wrap.appendChild(card("Change over span", change == null ? "n/a" : sensitive(fmtSigned(change), "nav change"),
+  // NAV, change and the realized total are all base-currency figures.
+  wrap.appendChild(card("Latest NAV", sensitive(fmtMoney(latest), "net asset value") + ccyTag(bcy)));
+  wrap.appendChild(card("Change over span",
+    change == null ? "n/a" : sensitive(fmtSigned(change), "nav change") + ccyTag(bcy),
     change == null ? "muted" : change >= 0 ? "good" : "bad"));
-  wrap.appendChild(card("Realized P&L", s.realized_pnl_total == null ? "n/a" : sensitive(fmtSigned(s.realized_pnl_total), "realized pnl"),
+  wrap.appendChild(card(`Realized P&L${bcy ? " (base)" : ""}`,
+    s.realized_pnl_total == null ? "n/a" : sensitive(fmtSigned(s.realized_pnl_total), "realized pnl") + ccyTag(bcy),
     s.realized_pnl_total == null ? "muted" : s.realized_pnl_total >= 0 ? "good" : "bad"));
   wrap.appendChild(card("Trades", String(s.n_trades ?? 0)));
   return wrap;
@@ -179,18 +474,26 @@ function navAtOrBefore(series, ms) {
   return ans;
 }
 
-function navChart(series, trades) {
+const DAY_MS = 86400000;
+
+function navChart(series, trades, baseCcy = "") {
   const x0 = msOf(series[0].date);
   const x1 = msOf(series[series.length - 1].date);
-  const span = x1 - x0 || 1;
+  const fullSpan = x1 - x0 || 1;
+  const minSpan = Math.min(fullSpan, 5 * DAY_MS); // can't zoom tighter than ~5 days
   const navs = series.map((p) => Number(p.nav));
   let ymin = Math.min(...navs);
   let ymax = Math.max(...navs);
   const padY = (ymax - ymin) * 0.08 || Math.abs(ymax) * 0.08 || 1;
   ymin -= padY; ymax += padY;
   const yspan = ymax - ymin || 1;
+  const plotW = W - PAD.l - PAD.r;
 
-  const xFor = (ms) => PAD.l + ((ms - x0) / span) * (W - PAD.l - PAD.r);
+  // The currently visible time window, mapped across the full plot width. Zoom
+  // narrows it (spreading points apart); pan slides it. y stays fixed so the
+  // line doesn't rescale vertically as you scrub along time.
+  const view = { a: x0, b: x1 };
+  const xFor = (ms) => PAD.l + ((ms - view.a) / (view.b - view.a || 1)) * plotW;
   const yFor = (v) => H - PAD.b - ((v - ymin) / yspan) * (H - PAD.t - PAD.b);
 
   const root = svg("svg", {
@@ -199,9 +502,18 @@ function navChart(series, trades) {
     "aria-label": "Portfolio value over time with trade markers",
   });
 
-  // Horizontal gridlines + y labels (NAV is money -> blur under privacy mode).
-  const axisG = svg("g", { "data-sensitive": "", class: "hist-axis" });
+  // Clip dynamic content to the plot rect so panned line/dots don't spill over
+  // the axes. Unique id in case more than one chart ever shares a page.
+  const cid = "histclip-" + Math.random().toString(36).slice(2, 8);
+  const defs = svg("defs");
+  const clip = svg("clipPath", { id: cid });
+  clip.appendChild(svg("rect", { x: PAD.l, y: PAD.t, width: plotW, height: H - PAD.t - PAD.b }));
+  defs.appendChild(clip);
+  root.appendChild(defs);
+
+  // Static horizontal gridlines + y labels (y domain never changes on zoom).
   const ticks = 4;
+  const axisG = svg("g", { "data-sensitive": "", class: "hist-axis" });
   for (let i = 0; i <= ticks; i++) {
     const v = ymin + (yspan * i) / ticks;
     const y = yFor(v);
@@ -211,114 +523,301 @@ function navChart(series, trades) {
     axisG.appendChild(label);
   }
 
-  // NAV area + line.
-  const linePts = series.map((p) => `${xFor(msOf(p.date)).toFixed(1)},${yFor(Number(p.nav)).toFixed(1)}`);
-  const areaD = `M ${linePts[0]} L ${linePts.join(" L ")} L ${xFor(x1).toFixed(1)},${(H - PAD.b).toFixed(1)} L ${xFor(x0).toFixed(1)},${(H - PAD.b).toFixed(1)} Z`;
-  root.appendChild(svg("path", { class: "hist-area", d: areaD }));
-  root.appendChild(svg("polyline", { class: "hist-line", points: linePts.join(" ") }));
-
-  // x labels: first, middle, last.
+  const plotG = svg("g", { "clip-path": `url(#${cid})` }); // area + line + dots
   const xlabG = svg("g", { class: "hist-axis" });
-  [series[0], series[Math.floor(series.length / 2)], series[series.length - 1]].forEach((p, i) => {
-    const anchor = i === 0 ? "start" : i === 2 ? "end" : "middle";
-    const tx = svg("text", { class: "hist-xlabel", x: xFor(msOf(p.date)), y: H - 10, "text-anchor": anchor });
-    tx.textContent = p.date;
-    xlabG.appendChild(tx);
-  });
+  root.appendChild(plotG);
+  root.appendChild(axisG);
   root.appendChild(xlabG);
 
-  // Trade markers on the NAV line. Cap to keep the DOM sane on huge ledgers.
-  const dotsG = svg("g", { class: "hist-dots" });
-  const capped = trades.length > 2000 ? trades.slice(-2000) : trades;
-  capped.forEach((t) => {
-    if (!t.date) return;
-    const ms = msOf(t.date);
-    if (ms < x0 || ms > x1) return;
-    const ref = navAtOrBefore(series, ms);
-    const cx = xFor(ms);
-    const cy = yFor(Number(ref.nav));
-    const buy = t.side === "BUY";
-    const dot = svg("circle", {
-      class: "hist-dot " + (buy ? "buy" : "sell"),
-      cx: cx.toFixed(1), cy: cy.toFixed(1), r: 3.2,
-    });
-    const title = svg("title");
-    title.textContent =
-      `${t.date} ${t.side} ${t.symbol} · ${Math.abs(Number(t.quantity))} @ ${t.price}`;
-    dot.appendChild(title);
-    dotsG.appendChild(dot);
-  });
-  root.appendChild(axisG);
-  root.appendChild(dotsG);
-
   const wrap = el("div", "hist-chart-wrap");
+  const tip = el("div", "hist-tip");
+  tip.hidden = true;
+  const place = (ev) => {
+    const r = wrap.getBoundingClientRect();
+    const x = ev.clientX - r.left;
+    const y = ev.clientY - r.top;
+    const left = Math.max(6, Math.min(x + 14, wrap.clientWidth - tip.offsetWidth - 8));
+    const top = Math.max(6, y - tip.offsetHeight - 12);
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  };
+
+  const allDays = dayGroups(trades);
+  let dragging = false;
+
+  // Rebuild everything that depends on the visible window.
+  const render = () => {
+    plotG.innerHTML = "";
+    xlabG.innerHTML = "";
+
+    const linePts = series.map((p) => `${xFor(msOf(p.date)).toFixed(1)},${yFor(Number(p.nav)).toFixed(1)}`);
+    const areaD = `M ${linePts[0]} L ${linePts.join(" L ")} ` +
+      `L ${xFor(x1).toFixed(1)},${(H - PAD.b).toFixed(1)} L ${xFor(x0).toFixed(1)},${(H - PAD.b).toFixed(1)} Z`;
+    plotG.appendChild(svg("path", { class: "hist-area", d: areaD }));
+    plotG.appendChild(svg("polyline", { class: "hist-line", points: linePts.join(" ") }));
+
+    // x labels at the window's start / middle / end dates.
+    const fmtMs = (ms) => new Date(ms).toISOString().slice(0, 10);
+    [[view.a, "start"], [(view.a + view.b) / 2, "middle"], [view.b, "end"]].forEach(([ms, anchor]) => {
+      const tx = svg("text", { class: "hist-xlabel", x: xFor(ms), y: H - 10, "text-anchor": anchor });
+      tx.textContent = fmtMs(ms);
+      xlabG.appendChild(tx);
+    });
+
+    // Markers only for days inside the window (one per trading day).
+    allDays.forEach((d) => {
+      const ms = msOf(d.date);
+      if (ms < view.a || ms > view.b) return;
+      const ref = navAtOrBefore(series, ms);
+      const cx = xFor(ms);
+      const cy = yFor(Number(ref.nav));
+      const sides = new Set(d.trades.map((t) => t.side));
+      const cls = sides.size > 1 ? "mixed" : sides.has("BUY") ? "buy" : "sell";
+      const rad = Math.min(6.5, 3 + Math.log2(d.trades.length + 1));
+      plotG.appendChild(svg("circle", {
+        class: "hist-dot " + cls, cx: cx.toFixed(1), cy: cy.toFixed(1), r: rad.toFixed(1),
+      }));
+      const hit = svg("circle", {
+        class: "hist-hit", cx: cx.toFixed(1), cy: cy.toFixed(1), r: Math.max(9, rad + 5).toFixed(1),
+      });
+      hit.addEventListener("mouseenter", (ev) => {
+        if (dragging) return;
+        tip.innerHTML = dayTipHtml(d, baseCcy);
+        tip.hidden = false;
+        place(ev);
+      });
+      hit.addEventListener("mousemove", (ev) => { if (!dragging) place(ev); });
+      hit.addEventListener("mouseleave", () => { tip.hidden = true; });
+      plotG.appendChild(hit);
+    });
+  };
+
+  // clientX -> SVG user-space x (viewBox is 0..W, stretched to the element).
+  const userX = (clientX) => {
+    const r = root.getBoundingClientRect();
+    return r.width ? ((clientX - r.left) / r.width) * W : clientX;
+  };
+  const msForUserX = (ux) => view.a + ((ux - PAD.l) / plotW) * (view.b - view.a);
+  const setWindow = (a, b) => {
+    const span = Math.max(minSpan, Math.min(fullSpan, b - a));
+    if (a < x0) a = x0;
+    if (a + span > x1) a = x1 - span;
+    view.a = Math.max(x0, a);
+    view.b = Math.min(x1, view.a + span);
+    render();
+  };
+
+  // Wheel = zoom toward the cursor; the date under the pointer stays put.
+  root.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const anchor = msForUserX(userX(ev.clientX));
+    const span = view.b - view.a;
+    const factor = ev.deltaY < 0 ? 0.82 : 1 / 0.82;
+    const newSpan = Math.max(minSpan, Math.min(fullSpan, span * factor));
+    const ratio = (anchor - view.a) / span; // keep anchor at same fractional x
+    setWindow(anchor - ratio * newSpan, anchor - ratio * newSpan + newSpan);
+  }, { passive: false });
+
+  // Drag = pan. Track on the document so a fast drag doesn't escape the svg.
+  let dragStartX = 0, dragA = 0, dragB = 0;
+  const onMove = (ev) => {
+    const dms = (userX(dragStartX) - userX(ev.clientX)) / plotW * (dragB - dragA);
+    setWindow(dragA + dms, dragB + dms);
+  };
+  const onUp = () => {
+    dragging = false;
+    root.classList.remove("dragging");
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  };
+  root.addEventListener("mousedown", (ev) => {
+    if (view.b - view.a >= fullSpan) return; // nothing to pan when fully zoomed out
+    dragging = true;
+    tip.hidden = true;
+    dragStartX = ev.clientX; dragA = view.a; dragB = view.b;
+    root.classList.add("dragging");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    ev.preventDefault();
+  });
+  // Double-click anywhere resets to the full span.
+  root.addEventListener("dblclick", () => setWindow(x0, x1));
+
+  render();
   wrap.appendChild(root);
+  wrap.appendChild(tip);
   return wrap;
+}
+
+// Hover card for a single trading day: a per-name digest (options folded under
+// their underlying) plus the day's net cash flow, capped so a 29-fill day stays
+// readable.
+function dayTipHtml(d, baseCcy = "") {
+  const n = d.trades.length;
+  const head =
+    `<div class="hist-tip-date">${esc(d.date)} · ${n} trade${n > 1 ? "s" : ""}</div>`;
+  const byName = new Map();
+  for (const t of d.trades) {
+    const name = t.underlying || t.symbol || "?";
+    if (!byName.has(name)) byName.set(name, []);
+    byName.get(name).push(t);
+  }
+  const entries = [...byName.entries()];
+  const shown = entries.slice(0, 8);
+  const rows = shown.map(([name, ts]) => tradeLine(name, ts)).join("");
+  const more = entries.length > shown.length
+    ? `<div class="hist-tip-more">+${entries.length - shown.length} more name(s)</div>`
+    : "";
+  const net = d.trades.reduce((s, t) => s + (Number(t.base_cash_flow) || 0), 0);
+  const netLine =
+    `<div class="hist-tip-net">net cash ${sensitive(fmtSigned(net), "cash flow")}${ccyTag(baseCcy)}</div>`;
+  return head + `<div class="hist-tip-rows">${rows}</div>` + more + netLine;
+}
+
+function tradeLine(name, ts) {
+  if (ts.length === 1 && !ts[0].is_option) {
+    const t = ts[0];
+    const side = t.side === "BUY" ? "buy" : "sell";
+    return `<div class="hist-tip-row"><span class="hist-tip-side ${side}">${esc(t.side)}</span> ` +
+      `${esc(Math.abs(Number(t.quantity)))} <strong>${esc(name)}</strong> @ ${esc(t.price)}${ccyTag(t.currency)}</div>`;
+  }
+  const buys = ts.filter((t) => t.side === "BUY").length;
+  const sells = ts.length - buys;
+  const isOpt = ts.some((t) => t.is_option);
+  const what = isOpt ? `${ts.length} opt${ts.length > 1 ? "s" : ""}` : `${ts.length} trades`;
+  return `<div class="hist-tip-row"><strong>${esc(name)}</strong> · ${what} ` +
+    `<span class="muted">(${buys}B/${sells}S)</span></div>`;
 }
 
 function legend() {
   const l = el("div", "hist-legend");
   l.innerHTML =
     `<span><i class="hist-key line"></i> NAV</span>` +
-    `<span><i class="hist-key buy"></i> Buy</span>` +
-    `<span><i class="hist-key sell"></i> Sell</span>`;
+    `<span><i class="hist-key buy"></i> Buy day</span>` +
+    `<span><i class="hist-key sell"></i> Sell day</span>` +
+    `<span><i class="hist-key mixed"></i> Buy + sell</span>`;
   return l;
 }
 
-function bySymbolTable(rows) {
-  const tbl = el("table", "risk-pos-table");
-  tbl.innerHTML =
-    `<thead><tr><th>Name</th><th class="num">Trades</th><th class="num">Buys</th><th class="num">Sells</th>` +
-    `<th class="num">Net cash flow</th><th class="num">Realized P&L</th></tr></thead>`;
-  const body = el("tbody");
-  rows.forEach((r) => {
-    const tr = el("tr");
-    const flowCls = r.net_base_cash_flow >= 0 ? "good" : "bad";
-    const pnlCls = r.realized_pnl > 0 ? "good" : r.realized_pnl < 0 ? "bad" : "muted";
-    tr.innerHTML =
-      `<td class="risk-pos-sym">${esc(r.symbol)}</td>` +
-      `<td class="num">${esc(r.n)}</td>` +
-      `<td class="num">${esc(r.buys)}</td>` +
-      `<td class="num">${esc(r.sells)}</td>` +
-      `<td class="num ${flowCls}">${sensitive(fmtSigned(r.net_base_cash_flow), "cash flow")}</td>` +
-      `<td class="num ${pnlCls}">${sensitive(fmtSigned(r.realized_pnl), "realized pnl")}</td>`;
-    body.appendChild(tr);
-  });
-  tbl.appendChild(body);
-  return tbl;
+const ACTIVITY_PAGE = 25;
+
+// Money cells share one shape across the group row and its contract members.
+// Both cash flow and P&L are BASE-currency (the only way cross-ticker sums are
+// valid); the per-name native currency is shown in its own column instead.
+function activityCells(r) {
+  const pnl = Number(r.base_realized_pnl) || 0;
+  const flowCls = r.net_base_cash_flow >= 0 ? "good" : "bad";
+  const pnlCls = pnl > 0 ? "good" : pnl < 0 ? "bad" : "muted";
+  // Gross cash out (bought) and in (sold), base currency. Unsigned magnitudes;
+  // net cash flow keeps the signed good/bad treatment.
+  const b = Number(r.buys) || 0, s = Number(r.sells) || 0;
+  const split = `${b} buy${b === 1 ? "" : "s"} \u00b7 ${s} sell${s === 1 ? "" : "s"}`;
+  return `<td class="num"><span class="ccy">${esc(r.currency || "")}</span></td>` +
+    `<td class="num"><span class="hist-trades-n" title="${esc(split)}">${esc(r.n)}</span></td>` +
+    `<td class="num muted">${sensitive(fmtMoney(r.bought_base), "amount bought")}</td>` +
+    `<td class="num muted">${sensitive(fmtMoney(r.sold_base), "amount sold")}</td>` +
+    `<td class="num ${flowCls}">${sensitive(fmtSigned(r.net_base_cash_flow), "cash flow")}</td>` +
+    `<td class="num ${pnlCls}">${sensitive(fmtSigned(pnl), "realized pnl")}</td>`;
 }
 
-function tradeTable(trades) {
+function activityTable(groups, baseCcy) {
+  const wrap = el("div");
+  const baseLbl = baseCcy ? ` (${esc(baseCcy)})` : "";
+  const tbl = el("table", "risk-pos-table hist-activity");
+  tbl.innerHTML =
+    `<thead><tr><th>Name</th><th class="num">Ccy</th><th class="num">Trades</th>` +
+    `<th class="num">Bought${baseLbl}</th><th class="num">Sold${baseLbl}</th>` +
+    `<th class="num">Net cash flow${baseLbl}</th><th class="num">Realized P&L${baseLbl}</th></tr></thead>`;
+  const body = el("tbody");
+  tbl.appendChild(body);
+  const pager = el("div", "hist-pager");
+  let page = 1;
+
+  const draw = () => {
+    const pg = paginate(groups, page, ACTIVITY_PAGE);
+    page = pg.page;
+    body.innerHTML = "";
+    pg.items.forEach((g) => {
+      // Expand when there's more than one leg to reveal (shares + options, or
+      // several contracts). A lone stock or single contract has nothing to open.
+      const expandable = g.members.length > 1;
+      const tr = el("tr", "hist-grp" + (expandable ? " expandable" : ""));
+      const badge = g.opt_count
+        ? ` <span class="hist-optbadge">${g.opt_count} opt${g.opt_count > 1 ? "s" : ""}</span>`
+        : "";
+      tr.innerHTML = `<td class="risk-pos-sym">${caretCell(expandable)}${esc(g.label)}${badge}</td>` + activityCells(g);
+      body.appendChild(tr);
+      if (!expandable) return;
+      const memberRows = g.members.map((m) => {
+        const mtr = el("tr", "hist-member");
+        mtr.hidden = true;
+        // Distinguish the equity leg from contracts when both sit under one name.
+        const label = m.is_option ? contractLabel(m) : `${m.symbol} shares`;
+        mtr.innerHTML =
+          `<td class="risk-pos-sym hist-member-sym">${esc(label)}</td>` + activityCells(m);
+        body.appendChild(mtr);
+        return mtr;
+      });
+      tr.addEventListener("click", () => {
+        const open = tr.classList.toggle("open");
+        const c = tr.querySelector(".hist-caret");
+        if (c) c.textContent = open ? "\u25BE" : "\u25B8";
+        memberRows.forEach((m) => (m.hidden = !open));
+      });
+    });
+    drawPager(pager, pg, (p) => { page = p; draw(); });
+  };
+  draw();
+
+  wrap.appendChild(tbl);
+  wrap.appendChild(pager);
+  return wrap;
+}
+
+const LEDGER_PAGE = 50;
+
+function tradeTable(trades, baseCcy) {
+  const all = [...trades].reverse(); // newest first; full set, now paginated
+  const baseLbl = baseCcy ? ` (${esc(baseCcy)})` : "";
+  const wrap = el("div");
   const tbl = el("table", "risk-pos-table hist-trades");
   tbl.innerHTML =
     `<thead><tr><th>Date</th><th>Side</th><th>Name</th><th class="num">Qty</th>` +
-    `<th class="num">Price</th><th class="num">Base cash flow</th><th class="num">Realized P&L</th></tr></thead>`;
+    `<th class="num">Price</th><th class="num">Cash flow${baseLbl}</th>` +
+    `<th class="num">Realized P&L</th></tr></thead>`;
   const body = el("tbody");
-  // Newest first; cap the rendered rows (full set lives in the JSON).
-  const rows = [...trades].reverse().slice(0, 250);
-  rows.forEach((t) => {
-    const tr = el("tr");
-    const buy = t.side === "BUY";
-    const pnlCls = t.realized_pnl > 0 ? "good" : t.realized_pnl < 0 ? "bad" : "muted";
-    tr.innerHTML =
-      `<td>${esc(t.date)}</td>` +
-      `<td class="${buy ? "good" : "bad"}">${esc(t.side)}</td>` +
-      `<td class="risk-pos-sym">${esc(t.symbol)}</td>` +
-      `<td class="num">${esc(Math.abs(Number(t.quantity)))}</td>` +
-      `<td class="num">${esc(t.price)}</td>` +
-      `<td class="num">${sensitive(fmtSigned(t.base_cash_flow), "cash flow")}</td>` +
-      `<td class="num ${pnlCls}">${t.realized_pnl ? sensitive(fmtSigned(t.realized_pnl), "realized pnl") : "—"}</td>`;
-    body.appendChild(tr);
-  });
   tbl.appendChild(body);
-  if (trades.length > rows.length) {
-    const note = el("div", "hint", `Showing the latest ${rows.length} of ${trades.length} trades.`);
-    const wrap = el("div");
-    wrap.appendChild(tbl);
-    wrap.appendChild(note);
-    return wrap;
-  }
-  return tbl;
+  const pager = el("div", "hist-pager");
+  let page = 1;
+
+  const draw = () => {
+    const pg = paginate(all, page, LEDGER_PAGE);
+    page = pg.page;
+    body.innerHTML = "";
+    pg.items.forEach((t) => {
+      const tr = el("tr");
+      const buy = t.side === "BUY";
+      const pnlCls = t.realized_pnl > 0 ? "good" : t.realized_pnl < 0 ? "bad" : "muted";
+      // Options: show the readable contract ("AMD 19APR24 7.5 P") not the cryptic symbol.
+      const name = t.is_option ? (t.description || t.symbol) : t.symbol;
+      // Price + realized P&L are NATIVE currency (per ticker); cash flow is base.
+      tr.innerHTML =
+        `<td>${esc(t.date)}</td>` +
+        `<td class="${buy ? "good" : "bad"}">${esc(t.side)}</td>` +
+        `<td class="risk-pos-sym">${esc(name)}</td>` +
+        `<td class="num">${esc(Math.abs(Number(t.quantity)))}</td>` +
+        `<td class="num">${esc(t.price)}${ccyTag(t.currency)}</td>` +
+        `<td class="num">${sensitive(fmtSigned(t.base_cash_flow), "cash flow")}</td>` +
+        `<td class="num ${pnlCls}">${t.realized_pnl ? sensitive(fmtSigned(t.realized_pnl), "realized pnl") + ccyTag(t.currency) : "\u2014"}</td>`;
+      body.appendChild(tr);
+    });
+    drawPager(pager, pg, (p) => { page = p; draw(); });
+  };
+  draw();
+
+  wrap.appendChild(tbl);
+  wrap.appendChild(pager);
+  return wrap;
 }
 
 async function runSync(full) {
@@ -364,4 +863,4 @@ function initHistoryControls() {
   if (full) full.addEventListener("click", () => runSync(true));
 }
 
-export { loadHistory, renderHistory, initHistoryControls };
+export { loadHistory, renderHistory, initHistoryControls, dayGroups, groupActivity, groupBySector, paginate, contractLabel };
