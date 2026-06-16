@@ -241,7 +241,12 @@ $("#pipe-draft").addEventListener("click", async () => {
       const rec = done.result || {};
       $("#pipe-slug").value = rec.slug || "";
       $("#pipe-segment-json").value = JSON.stringify(rec.definition || {}, null, 2);
-      $("#pipe-prompt").value = rec.llm_prompt || "";
+      // The draft prompt asks an LLM for structured JSON members; it is NOT the
+      // Deep Research prompt (Step 2 builds that from the saved segment). Keep it
+      // here in Step 1 as a copy-paste fallback so it can't leak into #pipe-prompt.
+      const draftPrompt = rec.llm_prompt || "";
+      $("#pipe-draft-prompt").value = draftPrompt;
+      $("#pipe-draft-prompt-wrap").hidden = !draftPrompt;
       $("#seg-draft-editor").hidden = false;
       const warn = (rec.warnings || []).join(" ");
       status.textContent = warn || `drafted ${rec.member_count || 0} names — review, then approve to continue`;
