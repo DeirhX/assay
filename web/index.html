@@ -145,6 +145,11 @@
                 <input id="pipe-slug" placeholder="segment-slug">
                 <label>Segment definition JSON</label>
                 <textarea id="pipe-segment-json" rows="12" spellcheck="false"></textarea>
+                <div id="pipe-draft-prompt-wrap" hidden>
+                  <label>Drafting prompt (fallback)</label>
+                  <textarea id="pipe-draft-prompt" rows="6" spellcheck="false" readonly></textarea>
+                  <div class="hint">No analysis CLI? Paste this into any LLM and paste the JSON it returns into the definition above. This is <em>not</em> the Deep Research prompt — that one is built for you on the next step.</div>
+                </div>
                 <div class="thesis-actions">
                   <button class="primary" id="pipe-save-segment">Approve &amp; continue →</button>
                 </div>
