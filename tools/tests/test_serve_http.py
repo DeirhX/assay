@@ -569,12 +569,40 @@ class PeerStats(unittest.TestCase):
         self.assertAlmostEqual(s1["pct"], 0.5, places=3)
         self.assertEqual(s1["n"], 5)
         self.assertEqual(s1["median"], 25.0)
+        self.assertEqual(s1["members_total"], 5)
+        self.assertTrue(s1["reliable"])           # 5 peers with data clears the bar
         # seg2 sorted 10,25 -> 25 is the top -> 1.0 pctile
         s2 = next(s for s in m["per_segment"] if s["segment"] == "seg2")
         self.assertAlmostEqual(s2["pct"], 1.0, places=3)
-        # aggregate = mean(0.5, 1.0) = 0.75
+        self.assertFalse(s2["reliable"])          # only 2 peers -> not reliable
+        # aggregate = mean(0.5, 1.0) = 0.75; the metric is reliable because at
+        # least one segment had a big enough sample (seg1, n=5).
         self.assertAlmostEqual(m["aggregate"]["pct"], 0.75, places=3)
         self.assertEqual(m["aggregate"]["n_segments"], 2)
+        self.assertEqual(m["n"], 5)
+        self.assertTrue(m["reliable"])
+
+    def test_small_sample_is_flagged_unreliable(self):
+        # A segment with only 3 members that have data: the percentile is still
+        # computed, but flagged unreliable so the UI won't present it as a hard
+        # 0th/100th -- this is the SHEL "always 0 or 100" case.
+        vals = {"XOM": 584.0, "CVX": 359.0, "SUB": 229.0}
+
+        def fake_load(path):
+            v = vals.get(Path(path).stem)
+            return {"metrics": {"market_cap_usd_b": {"value": v}}} if v is not None else {}
+
+        # roster of 6, but only 3 have research data
+        seg = [("oil", "Oil majors", ["XOM", "CVX", "SUB", "COP", "EOG", "SLB"])]
+        with mock.patch.object(serve, "_load", side_effect=fake_load), \
+             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
+            res = serve._peer_stats("SUB")
+        m = res["metrics"]["market_cap_usd_b"]
+        self.assertAlmostEqual(m["aggregate"]["pct"], 0.0, places=3)  # subject is smallest
+        self.assertEqual(m["n"], 3)
+        self.assertEqual(m["members_total"], 6)
+        self.assertFalse(m["reliable"])
+        self.assertFalse(m["per_segment"][0]["reliable"])
 
     def test_single_peer_segment_is_skipped(self):
         def fake_load(path):

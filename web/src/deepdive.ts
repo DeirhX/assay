@@ -255,23 +255,55 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+// Qualitative rank for samples too small to carry a percentile.
+function rankWord(pct) {
+  if (pct <= 0) return "lowest";
+  if (pct >= 1) return "highest";
+  if (pct < 0.5) return "below median";
+  if (pct > 0.5) return "above median";
+  return "at median";
+}
+
 // A slim track (low -> high across the segment peers) with the subject's marker
 // at its rank-percentile and a centre tick marking the peer median. With one
 // segment the caption names it; with several it shows the aggregate and the
 // per-segment breakdown lives in the tooltip.
+//
+// A rank-percentile over a handful of peers is noise (n=3 -> only 0/50/100), so
+// when too few segment members have data the backend marks the metric
+// unreliable: we then drop the precise-looking "Nth pctile" for an honest rank +
+// coverage ("lowest · 3 of 19 peers") and de-emphasize the bar.
 function peerBar(key, m) {
   const fmt = METRIC_FMT[key] || ((v) => String(v));
   const pct = Math.max(0, Math.min(1, m.aggregate.pct));
   const segs = m.per_segment || [];
   const multi = segs.length > 1;
-  const cap = multi
-    ? `vs ${segs.length} sectors \u00b7 ${ordinal(Math.round(pct * 100))} pctile`
-    : `vs ${segs[0].title} \u00b7 ${ordinal(Math.round(pct * 100))} pctile`;
-  const tip = segs
-    .map((s) => `${s.title}: ${ordinal(Math.round(s.pct * 100))} pctile of ${s.n}` +
-      ` (median ${fmt(s.median)}, range ${fmt(s.min)}\u2013${fmt(s.max)})`)
-    .join("\n");
-  const wrap = el("div", "metric-peer");
+  const best = segs.reduce((a, s) => (s.n > a.n ? s : a), segs[0] || { n: 0, members_total: 0 });
+  // Backend flag is authoritative; fall back to sample size for older payloads.
+  const reliable = m.reliable != null ? m.reliable : best.n >= 5;
+  const coverage = best.members_total
+    ? `${best.n} of ${best.members_total} peers`
+    : `${best.n} peers`;
+
+  let cap, tip;
+  if (reliable) {
+    cap = multi
+      ? `vs ${segs.length} sectors \u00b7 ${ordinal(Math.round(pct * 100))} pctile`
+      : `vs ${segs[0].title} \u00b7 ${ordinal(Math.round(pct * 100))} pctile`;
+    tip = segs
+      .map((s) => `${s.title}: ${ordinal(Math.round(s.pct * 100))} pctile of ${s.n}` +
+        ` (median ${fmt(s.median)}, range ${fmt(s.min)}\u2013${fmt(s.max)})`)
+      .join("\n");
+  } else {
+    cap = `${rankWord(pct)} \u00b7 ${coverage}`;
+    tip = "Too few peers have data for a meaningful percentile.\n" + segs
+      .map((s) => `${s.title}: ${rankWord(s.pct)} of ${s.n}` +
+        (s.members_total ? ` of ${s.members_total}` : "") +
+        ` (median ${fmt(s.median)}, range ${fmt(s.min)}\u2013${fmt(s.max)})`)
+      .join("\n");
+  }
+
+  const wrap = el("div", reliable ? "metric-peer" : "metric-peer sparse");
   wrap.title = tip;
   wrap.innerHTML =
     `<div class="mp-track"><span class="mp-median"></span>` +

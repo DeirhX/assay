@@ -69,6 +69,24 @@ _TRANSITIONS: dict[str | None, set[str]] = {
 GATE_STATES = {AWAITING_SEGMENT, AWAITING_PROPOSAL, NEEDS_LOGIN}
 # Terminal-ish states the UI should stop polling on.
 RESTING_STATES = GATE_STATES | {DONE, ERROR}
+# States in which a background worker thread SHOULD be alive driving the run.
+# A thread cannot outlive its process, so if a run is parked in one of these from
+# a previous server boot, its worker is dead and the run is orphaned (see
+# is_orphaned / reap_if_orphaned).
+RUNNING_STATES = {DRAFT_RUNNING, SYNTHESIS_RUNNING, APPLYING}
+
+# Identifies the current server process. serve.py stamps this once at startup;
+# every run that enters a RUNNING_STATE records the boot token of the process
+# that started its worker. When the token on a running run no longer matches the
+# live process, the worker died on a restart -- the run is orphaned. None (the
+# default, e.g. in unit tests) disables the check.
+_BOOT_TOKEN: str | None = None
+
+
+def set_boot_token(token: str | None) -> None:
+    """Register the live server process token (called once by serve.py at boot)."""
+    global _BOOT_TOKEN
+    _BOOT_TOKEN = token
 
 
 def _now() -> str:
@@ -97,6 +115,7 @@ def new_run(direction: str) -> dict[str, Any]:
         "updated_at": _now(),
         "message": "drafting a research segment…",
         "job_id": None,
+        "boot": None,
         "segment": None,
         "date": None,
         "draft": None,
@@ -126,6 +145,10 @@ def _transition(manifest: dict[str, Any], to_state: str) -> None:
     if not can_transition(current, to_state):
         raise ValueError(f"illegal strategy transition: {current} -> {to_state}")
     manifest["state"] = to_state
+    # Stamp the live process onto any run we hand to a worker, so a later restart
+    # can recognize the (now-dead) worker's run as orphaned.
+    if to_state in RUNNING_STATES:
+        manifest["boot"] = _BOOT_TOKEN
 
 
 def set_state(run_id: str, to_state: str, **fields: Any) -> dict[str, Any]:
@@ -149,6 +172,31 @@ def update_run(run_id: str, **fields: Any) -> dict[str, Any] | None:
     return save_run(manifest)
 
 
+def is_orphaned(manifest: dict[str, Any] | None) -> bool:
+    """True if *manifest* claims a worker is running but that worker belongs to a
+    dead server process. A thread cannot survive a restart, so a run in a
+    RUNNING_STATE whose boot token != the live process's is provably stalled."""
+    if not manifest or manifest.get("state") not in RUNNING_STATES:
+        return False
+    if _BOOT_TOKEN is None:
+        return False  # liveness unknown (no server context) -- don't reap
+    return manifest.get("boot") != _BOOT_TOKEN
+
+
+def reap_if_orphaned(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Durably fail an orphaned run so the UI stops spinning forever and offers a
+    retry. Returns the healed manifest (or the original if nothing to do). An
+    errored run is retryable per _TRANSITIONS (ERROR -> DRAFT_RUNNING/SYNTHESIS)."""
+    if not is_orphaned(manifest):
+        return manifest
+    return set_state(
+        manifest["run_id"], ERROR,
+        error="The run was interrupted by a server restart; its background worker "
+              "did not survive. Start a new run.",
+        message="interrupted by a server restart",
+    )
+
+
 def list_runs(limit: int = 25) -> list[dict[str, Any]]:
     """Recent runs (newest first), trimmed to list-card fields."""
     out: list[dict[str, Any]] = []
@@ -158,6 +206,7 @@ def list_runs(limit: int = 25) -> list[dict[str, Any]]:
         m = _load(path) or {}
         if not m.get("run_id"):
             continue
+        m = reap_if_orphaned(m) or m  # keep the recents list honest, too
         out.append({
             "run_id": m["run_id"],
             "direction": m.get("direction"),

@@ -184,8 +184,21 @@ function downloadText(filename, text) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+// Parse the query string, tolerating links whose separators got percent-encoded
+// by an external encoder (chat/markdown renderers love to turn "?a=b&c=d" into
+// "?a%3Db%26c%3Dd"). That mangled form parses as a single junk key with no value,
+// so every param reads back null and we'd silently fall back to the default view.
+// Detect it (encoded '=' present but no real '=' pair) and decode once.
+function parseSearch(search = window.location.search) {
+  let raw = (search || "").replace(/^\?/, "");
+  if (raw && !raw.includes("=") && /%3d/i.test(raw)) {
+    try { raw = decodeURIComponent(raw); } catch { /* malformed escape: use as-is */ }
+  }
+  return new URLSearchParams(raw);
+}
+
 function navFromUrl() {
-  const params = new URLSearchParams(window.location.search);
+  const params = parseSearch();
   const view = VIEWS.has(params.get("view")) ? params.get("view") : "deepdive";
   return {
     view,
@@ -469,6 +482,7 @@ function planMsg(site) {
 export {
   initShell,
   VIEWS,
+  parseSearch,
   cleanSymbol,
   cleanSlug,
   isSegmentSlug,
