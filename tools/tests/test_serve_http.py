@@ -123,6 +123,76 @@ class HoldingsSyncJob(unittest.TestCase):
         self.assertIn("credentials", pub["error"])
 
 
+class JobsListEndpoint(unittest.TestCase):
+    """GET /api/jobs is the central Task Center feed: every in-memory job, newest
+    first, capped to JOBS_LIST_LIMIT. The in-process registry is shared, so these
+    tests pin their own jobs into the future to assert ordering/cap deterministically."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def _get(self, path: str):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_feed_returns_started_job_with_routing_fields(self):
+        def fake_sync(progress=None):
+            return {"site": {"ok": True, "written": []}, "generated_at": "2026-06-13T00:00:00+00:00"}
+
+        with mock.patch.object(serve, "_sync_holdings", side_effect=fake_sync):
+            job = serve._start_holdings_sync()
+            # wait for it to settle so the result is attached
+            deadline = time.time() + 4
+            while time.time() < deadline and (serve.jobs.get_public(job["id"]) or {}).get("state") != "done":
+                time.sleep(0.02)
+
+        status, payload = self._get("/api/jobs")
+        self.assertEqual(status, 200)
+        self.assertIn("jobs", payload)
+        self.assertIsInstance(payload["jobs"], list)
+        mine = next((j for j in payload["jobs"] if j["id"] == job["id"]), None)
+        self.assertIsNotNone(mine, "started job missing from /api/jobs feed")
+        self.assertEqual(mine["kind"], "ibkr_sync")
+        self.assertEqual(mine["state"], "done")
+        self.assertIn("created_at", mine)
+        # routing identifiers exposed for the Task Center navigation map
+        for key in ("symbol", "stem", "run_id"):
+            self.assertIn(key, mine)
+
+    def test_newest_first_ordering(self):
+        older = serve.jobs.new_job("test_order", created_at="2099-01-01T00:00:01+00:00")
+        newer = serve.jobs.new_job("test_order", created_at="2099-01-01T00:00:02+00:00")
+        _, payload = self._get("/api/jobs")
+        ids = [j["id"] for j in payload["jobs"]]
+        self.assertIn(newer["id"], ids)
+        self.assertIn(older["id"], ids)
+        self.assertLess(ids.index(newer["id"]), ids.index(older["id"]))
+
+    def test_feed_is_capped_to_limit(self):
+        # Pin three jobs into the far future so they are guaranteed the newest,
+        # then shrink the cap to 2 and prove only the two newest survive.
+        j1 = serve.jobs.new_job("test_cap", created_at="2099-02-01T00:00:01+00:00")
+        j2 = serve.jobs.new_job("test_cap", created_at="2099-02-01T00:00:02+00:00")
+        j3 = serve.jobs.new_job("test_cap", created_at="2099-02-01T00:00:03+00:00")
+        with mock.patch.object(serve, "JOBS_LIST_LIMIT", 2):
+            _, payload = self._get("/api/jobs")
+        ids = [j["id"] for j in payload["jobs"]]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(ids, [j3["id"], j2["id"]])
+        self.assertNotIn(j1["id"], ids)
+
+
 class DeepArtifactJsonGuard(unittest.TestCase):
     """A Deep Research report is narrative markdown. A bad scrape/paste once
     stored a JSON segment-universe blob as the `.md`, which the Analyses view

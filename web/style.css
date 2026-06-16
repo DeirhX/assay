@@ -692,8 +692,9 @@ tr:last-child td { border-bottom: 0; }
   border-radius: 999px; padding: 8px 16px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, .5);
   font-size: 13px; font-weight: 600; color: var(--text);
-  pointer-events: none; animation: pill-in .2s ease;
+  cursor: pointer; animation: pill-in .2s ease;
 }
+.global-pill:hover { background: var(--panel); }
 .global-pill[hidden] { display: none; }
 .global-pill .global-pill-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .global-pill .global-pill-count {
@@ -701,6 +702,72 @@ tr:last-child td { border-bottom: 0; }
   padding: 1px 7px; font-size: 11px; font-weight: 800; flex: 0 0 auto;
 }
 @keyframes pill-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ---- Central Task Center -------------------------------------------------- */
+/* Header button: always present so the panel is reachable even with no pill up.
+   Goes accent + count badge while work is in flight. */
+.task-indicator {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  font-size: 13px; font-weight: 700; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.task-indicator:hover { border-color: var(--accent); }
+.task-indicator.busy { border-color: var(--accent); color: var(--accent); }
+.task-indicator-count {
+  background: var(--accent); color: #0c1322; border-radius: 999px;
+  padding: 1px 7px; font-size: 11px; font-weight: 800;
+}
+.task-panel {
+  position: sticky; top: var(--topbar-h, 64px); z-index: 9;
+  width: min(460px, calc(100% - 44px));
+  margin: 10px 22px 0 auto;
+  background: var(--panel); border: 1px solid rgba(130, 170, 255, 0.45);
+  border-radius: var(--radius-card);
+  box-shadow: 0 18px 40px rgba(0,0,0,.45);
+  padding: 16px 18px;
+}
+.task-panel[hidden] { display: none; }
+.task-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.task-panel-actions { display: flex; align-items: center; gap: 10px; }
+.task-panel-note { color: var(--muted); font-size: 11px; }
+.task-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.task-empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
+.task-group-head {
+  color: var(--muted); font-size: 11px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .04em;
+  margin: 6px 2px 2px;
+}
+.task-item {
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 10px; padding: 9px 12px;
+  background: rgba(130, 170, 255, 0.06);
+}
+.task-item.navigable { cursor: pointer; }
+.task-item.navigable:hover { border-color: var(--accent); background: rgba(130, 170, 255, 0.12); }
+.task-item.task-done { border-left-color: var(--good); background: rgba(107, 211, 138, 0.06); }
+.task-item.task-error { border-left-color: var(--bad); background: rgba(255, 122, 122, 0.06); }
+.task-item.task-cancelled { border-left-color: var(--muted); opacity: .8; }
+.task-item-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; font-size: 11px; }
+.task-kind { color: var(--text); font-weight: 800; text-transform: uppercase; letter-spacing: .03em; }
+.task-state {
+  margin-left: auto; text-transform: uppercase; letter-spacing: .03em;
+  font-weight: 700; color: var(--muted);
+}
+.task-state-running, .task-state-queued, .task-state-needs_login { color: var(--accent); }
+.task-state-done { color: var(--good); }
+.task-state-error { color: var(--bad); }
+.task-age { color: var(--muted); }
+.task-subject { font-size: 13px; font-weight: 600; color: var(--text); word-break: break-word; }
+.task-detail { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-word; }
+.task-actions { margin-top: 8px; }
+.task-cancel {
+  background: transparent; color: var(--bad);
+  border: 1px solid rgba(255, 122, 122, 0.55);
+  border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+}
+.task-cancel:hover { background: rgba(255, 122, 122, 0.14); }
 .status { color: var(--muted); font-size: 13px; margin: 10px 2px; min-height: 18px; }
 .status.err { color: var(--bad); }
 .status a, .live-run-link { text-decoration: underline; white-space: nowrap; }

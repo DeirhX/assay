@@ -105,11 +105,26 @@ export interface Job {
   message: string;
   segment?: string | null;
   date?: string | null;
+  // Routing identifiers the Task Center uses to deep-link a finished task back
+  // to its result view (see navForTask in tasks.ts). Populated per kind.
+  symbol?: string | null;
+  stem?: string | null;
+  run_id?: string | null;
+  source_url?: string | null;
   result?: Record<string, unknown> | null;
   artifact?: { stem?: string; [key: string]: unknown } | null;
   error?: string | null;
   cancelled: boolean;
+  created_at?: string | null;
   updated_at?: string | null;
+}
+
+// One entry in the central Task Center feed (GET /api/jobs). Same shape as a
+// single-job poll; named separately so call sites read intentionally.
+export type JobListing = Job;
+
+export interface JobsResponse {
+  jobs: JobListing[];
 }
 
 // ---- setup / status (GET /api/setup/status) -------------------------------

@@ -3,7 +3,7 @@ import { $, api, el, esc, relAge, sectionCard, setErrorSink, state } from "./cor
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
 import { pushNav } from "./shell";
 import { mdToHtml, openRunInAnalyses } from "./analyses";
-import { taskEnd, taskStart, taskUpdate } from "./tasks";
+import { kickTaskPoll } from "./tasks";
 
 // ---- Centralized error center ----------------------------------------------
 // Counterpart to the task pill: failures collect here instead of dying in a
@@ -124,7 +124,10 @@ function linkifyHtml(text) {
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
 async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
-  if (label) taskStart(jobId, label);
+  // The global Task Center poller (tasks.ts) owns the pill/panel now; just nudge
+  // it so this freshly-started job shows up promptly. This loop keeps driving the
+  // per-view status line + onDone refresh for whoever started the job.
+  kickTaskPoll();
   try {
     for (;;) {
       await new Promise((r) => setTimeout(r, 4000));
@@ -144,7 +147,6 @@ async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
           ? ` <a href="${esc(job.source_url)}" target="_blank" rel="noopener" class="live-run-link">view live run \u2197</a>`
           : "";
         statusEl.innerHTML = `<span class="spinner"></span> ${esc(job.message || job.state)}${live}`;
-        if (label) taskUpdate(jobId, job.message || job.state);
         continue;
       }
       if (job.state === "done") {
@@ -174,7 +176,8 @@ async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
       return;
     }
   } finally {
-    if (label) taskEnd(jobId);
+    // Refresh the Task Center so the panel/pill reflect the terminal state fast.
+    kickTaskPoll();
   }
 }
 

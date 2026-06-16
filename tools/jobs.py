@@ -56,7 +56,14 @@ def update_job(job_id: str, **fields) -> None:
 
 
 def public(job: dict) -> dict:
-    """The UI-safe view of a job (no giant report body)."""
+    """The UI-safe view of a job (no giant report body).
+
+    Besides progress fields, this exposes the small set of identifiers the Task
+    Center needs to route a finished task back to its result view -- ``symbol``
+    (ticker analysis/Q&A), ``stem`` (deep-research report Q&A), ``run_id``
+    (guided strategy run) -- alongside ``segment``/``artifact``/``result`` which
+    already carry stems and slugs for the other kinds.
+    """
     return {
         "id": job["id"],
         "kind": job["kind"],
@@ -64,6 +71,9 @@ def public(job: dict) -> dict:
         "message": job.get("message", ""),
         "segment": job.get("segment"),
         "date": job.get("date"),
+        "symbol": job.get("symbol"),
+        "stem": job.get("stem"),
+        "run_id": job.get("run_id"),
         # The live Perplexity run URL, surfaced mid-run so the UI can link to the
         # ongoing analysis (and so a clarification stall is one click away).
         "source_url": job.get("source_url"),
@@ -71,6 +81,7 @@ def public(job: dict) -> dict:
         "artifact": job.get("artifact"),
         "error": job.get("error"),
         "cancelled": bool(job.get("cancelled")),
+        "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
     }
 
@@ -101,6 +112,18 @@ def get_public(job_id: str) -> dict | None:
     with _LOCK:
         job = _JOBS.get(job_id)
         return public(job) if job else None
+
+
+def list_public() -> list[dict]:
+    """Public snapshots of every known job, newest first.
+
+    Backs the central Task Center. The registry is in-memory, so this is the
+    full set of jobs since the server last started -- it does not survive a
+    restart, by design (the durable record is the artifacts on disk)."""
+    with _LOCK:
+        jobs = [public(j) for j in _JOBS.values()]
+    jobs.sort(key=lambda j: j.get("created_at") or "", reverse=True)
+    return jobs
 
 
 def find(predicate: Callable[[dict], bool]) -> bool:

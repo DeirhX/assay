@@ -105,6 +105,7 @@ _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
 
 # The deep-research / login / analysis job registry lives in jobs.py; the single
 # active-browser slot is jobs.claim_active / jobs.release_active.
+JOBS_LIST_LIMIT = 100  # cap the central Task Center feed (newest first)
 
 # Dev live-reload. Off unless started with --reload. _BOOT_TOKEN is recomputed
 # each time the process (re)starts, so the browser can tell an API restart apart
@@ -2449,7 +2450,7 @@ def _run_strategy_synthesis(run_id: str) -> None:
     if not run:
         return
     seg = run["segment"]
-    job = _new_job("strategy", segment=seg)
+    job = _new_job("strategy", segment=seg, run_id=run_id)
     orchestrate.update_run(run_id, job_id=job["id"])
     progress = _strategy_progress(run_id, job["id"])
 
@@ -2592,6 +2593,7 @@ _GET_EXACT = {
     "/api/trade/orders": "_get_trade_orders",
     "/api/deep-research/login-status": "_get_login_status",
     "/api/deep-job": "_get_deep_job",
+    "/api/jobs": "_get_jobs",
     "/api/deep-prompt": "_get_deep_prompt",
     "/api/deep-qa": "_get_deep_qa",
     "/api/target-model": "_get_target_model",
@@ -2896,6 +2898,12 @@ class Handler(BaseHTTPRequestHandler):
         if not pub:
             return self._send_error_json(404, f"unknown job {job_id}")
         return self._send_json(pub)
+
+    def _get_jobs(self, path, query):
+        # Central Task Center feed: every known job, newest first. Capped so a
+        # long-lived dev session can't make the payload unbounded -- finished
+        # jobs are never evicted from the in-memory registry.
+        return self._send_json({"jobs": jobs.list_public()[:JOBS_LIST_LIMIT]})
 
     def _get_deep_prompt(self, path, query):
         name = (query.get("segment") or [""])[0]
