@@ -1,7 +1,7 @@
 // Tests for URL <-> nav-state mapping: deep links are the app's persistence
 // layer, so parse/serialize must round-trip and reject junk.
 import { beforeEach, describe, expect, it } from "vitest";
-import { isSegmentSlug, navFromUrl, urlForNav } from "../src/shell";
+import { isSegmentSlug, navFromUrl, parseSearch, urlForNav } from "../src/shell";
 
 const setUrl = (search: string) => {
   window.history.replaceState({}, "", "/" + (search ? "?" + search : ""));
@@ -29,6 +29,37 @@ describe("navFromUrl", () => {
   it("uppercases and trims tickers", () => {
     setUrl("view=deepdive&ticker=%20amd%20");
     expect(navFromUrl().ticker).toBe("AMD");
+  });
+
+  it("recovers a deep link whose separators got percent-encoded", () => {
+    // External encoders (chat/markdown) turn "?view=strategy&run=X" into
+    // "?view%3Dstrategy%26run%3DX", which would otherwise parse as one junk key.
+    setUrl("view%3Dstrategy%26run%3D18f100b5");
+    const nav = navFromUrl();
+    expect(nav.view).toBe("strategy");
+    expect(nav.run).toBe("18f100b5");
+  });
+});
+
+describe("parseSearch", () => {
+  it("decodes a fully percent-encoded query", () => {
+    const p = parseSearch("?view%3Dstrategy%26run%3D18f100b5");
+    expect(p.get("view")).toBe("strategy");
+    expect(p.get("run")).toBe("18f100b5");
+  });
+
+  it("leaves a normal query untouched", () => {
+    const p = parseSearch("?view=segment&segment=semis");
+    expect(p.get("view")).toBe("segment");
+    expect(p.get("segment")).toBe("semis");
+  });
+
+  it("does not over-decode a value that legitimately contains %3D", () => {
+    // A real '=' pair is present, so we must NOT decode the whole string and
+    // mangle an encoded '=' that lives inside a value.
+    const p = parseSearch("?ticker=AMD&q=a%3Db");
+    expect(p.get("ticker")).toBe("AMD");
+    expect(p.get("q")).toBe("a=b");
   });
 });
 

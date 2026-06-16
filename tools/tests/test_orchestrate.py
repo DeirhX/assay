@@ -94,5 +94,60 @@ class StateMachine(unittest.TestCase):
         self.assertTrue(view2["at_gate"])
 
 
+class OrphanReaping(unittest.TestCase):
+    """A guided run whose worker thread was killed by a server restart must be
+    detected (its boot token != the live process) and durably failed, instead of
+    leaving the UI polling a spinner that will never advance."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig_dir = orch.STRATEGY_DIR
+        orch.STRATEGY_DIR = Path(self.tmp.name) / "strategy"
+        self._orig_boot = orch._BOOT_TOKEN
+        orch.set_boot_token("boot-A")
+
+    def tearDown(self):
+        orch.STRATEGY_DIR = self._orig_dir
+        orch.set_boot_token(self._orig_boot)
+        self.tmp.cleanup()
+
+    def test_running_run_from_a_dead_process_is_reaped_to_error(self):
+        run = orch.new_run("add nuclear supply chain")
+        self.assertEqual(run["boot"], "boot-A")          # stamped on entering DRAFT_RUNNING
+        orch.set_boot_token("boot-B")                    # simulate a server restart
+        loaded = orch.load_run(run["run_id"])
+        self.assertTrue(orch.is_orphaned(loaded))
+        healed = orch.reap_if_orphaned(loaded)
+        self.assertEqual(healed["state"], orch.ERROR)
+        self.assertIn("server restart", healed["error"])
+        # ERROR is retryable, so the user can start the run over.
+        self.assertTrue(orch.can_transition(healed["state"], orch.DRAFT_RUNNING))
+
+    def test_running_run_in_the_same_process_is_not_orphaned(self):
+        run = orch.new_run("x")
+        self.assertFalse(orch.is_orphaned(orch.load_run(run["run_id"])))
+        self.assertEqual(orch.reap_if_orphaned(orch.load_run(run["run_id"]))["state"], orch.DRAFT_RUNNING)
+
+    def test_gate_state_is_never_orphaned(self):
+        run = orch.new_run("x")
+        orch.set_state(run["run_id"], orch.AWAITING_SEGMENT)
+        orch.set_boot_token("boot-B")                    # restart while parked at a gate
+        self.assertFalse(orch.is_orphaned(orch.load_run(run["run_id"])))
+
+    def test_legacy_running_run_without_boot_field_is_orphaned(self):
+        # The real-world case: a run created before the boot stamp existed, left
+        # in draft_running by a restart, has no "boot" key at all.
+        run = orch.new_run("x")
+        m = orch.load_run(run["run_id"])
+        m.pop("boot", None)
+        orch.save_run(m)
+        self.assertTrue(orch.is_orphaned(orch.load_run(run["run_id"])))
+
+    def test_check_is_disabled_without_a_boot_token(self):
+        run = orch.new_run("x")
+        orch.set_boot_token(None)                         # no server context (e.g. bare unit test)
+        self.assertFalse(orch.is_orphaned(orch.load_run(run["run_id"])))
+
+
 if __name__ == "__main__":
     unittest.main()

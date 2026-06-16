@@ -112,6 +112,10 @@ JOBS_LIST_LIMIT = 100  # cap the central Task Center feed (newest first)
 # from a no-op poll and reload itself even when no static asset changed.
 _RELOAD = False
 _BOOT_TOKEN = f"{time.time():.3f}"
+# Let the strategy state machine recognize runs orphaned by a restart: any guided
+# run still parked in a "running" state from a previous _BOOT_TOKEN had its worker
+# thread killed by that restart and must be reaped instead of spun on forever.
+orchestrate.set_boot_token(_BOOT_TOKEN)
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -2029,6 +2033,13 @@ _PEER_METRIC_KEYS = (
     "gross_margin_pct", "rev_growth_yoy_pct", "shares_out_b",
 )
 
+# A rank-percentile over a handful of peers is noise: with n comparable peers the
+# resolution is only 1/(n-1), so n=3 can produce just {0, 50, 100}. Most segments
+# have many members but only a few have been pulled into the research cache, so we
+# flag a comparison as reliable only once enough peers actually have data. Below
+# this the dossier shows an honest "k of m peers" rank instead of a hard pctile.
+MIN_PEER_SAMPLE = 5
+
 
 def _metric_value(rec: dict, key: str):
     """Pull a finite float for *key* out of a research record's metrics, or None.
@@ -2090,13 +2101,22 @@ def _peer_stats(symbol: str) -> dict:
             median = srt[n // 2] if n % 2 else (srt[n // 2 - 1] + srt[n // 2]) / 2.0
             per_segment.append({
                 "segment": slug, "title": title, "pct": round(pct, 4),
-                "n": n, "min": srt[0], "max": srt[-1], "median": median,
+                # n = peers WITH data (the comparison sample); members_total = the
+                # segment's full roster. reliable gates the "percentile" framing.
+                "n": n, "members_total": len(members), "reliable": n >= MIN_PEER_SAMPLE,
+                "min": srt[0], "max": srt[-1], "median": median,
             })
             pcts.append(pct)
         if not per_segment:
             continue
+        best_n = max(s["n"] for s in per_segment)
         result["metrics"][key] = {
             "value": subj_val,
+            # Surfaced so the frontend can tell a meaningful percentile from a
+            # two-or-three-peer coin flip and label it honestly.
+            "n": best_n,
+            "members_total": max(s["members_total"] for s in per_segment),
+            "reliable": best_n >= MIN_PEER_SAMPLE,
             "aggregate": {"pct": round(sum(pcts) / len(pcts), 4), "n_segments": len(per_segment)},
             "per_segment": per_segment,
         }
@@ -2843,6 +2863,9 @@ class Handler(BaseHTTPRequestHandler):
         run = orchestrate.load_run(run_id)
         if not run:
             return self._send_error_json(404, f"unknown strategy run {run_id}")
+        # A run left "running" by a previous server process has a dead worker;
+        # fail it now so the client stops polling a spinner that will never move.
+        run = orchestrate.reap_if_orphaned(run)
         job = jobs.get_public(run["job_id"]) if run.get("job_id") else None
         return self._send_json(orchestrate.public(run, job=job))
 

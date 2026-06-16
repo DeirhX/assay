@@ -3,7 +3,7 @@ import { ensureTickerSet } from "./analyses";
 import { $, api, applyPrivacyMode, state } from "./core";
 import { clearErrors, recordError, refreshLoginStatus, renderErrorCenter, toggleErrorPanel } from "./errors";
 import "./livereload";
-import { initShell, navFromUrl, restoreNav } from "./shell";
+import { initShell, navFromUrl, parseSearch, restoreNav, urlForNav } from "./shell";
 import { startTaskCenter } from "./tasks";
 
 // ---- boot -----------------------------------------------------------------
@@ -38,7 +38,7 @@ const initialNav = navFromUrl();
 boot();
 
 async function boot() {
-  const params = new URLSearchParams(window.location.search);
+  const params = parseSearch();
   let nav = initialNav;
   if (!params.has("view")) {
     try {
@@ -51,7 +51,9 @@ async function boot() {
       // the error center already records API failures.
     }
   }
-  window.history.replaceState(nav, "", nav.view === "setup" ? "?view=setup" : window.location.href);
+  // Always write the canonical URL so a mangled/encoded deep link self-heals in
+  // the address bar (e.g. "?view%3Dstrategy%26run%3D..." -> "?view=strategy&run=...").
+  window.history.replaceState(nav, "", urlForNav(nav));
   await restoreNav(nav);
   refreshLoginStatus();
   ensureTickerSet();

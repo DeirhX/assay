@@ -25,6 +25,27 @@ const STATE_STAGE = {
 
 let _activeRunId = null;
 let _pollTimer = null;
+// The user can revisit any step the run has already reached. `_viewStage` pins a
+// past step for read-only viewing; null means "follow the live step" (the one the
+// run is actually working on or parked at). `_lastM` caches the last manifest so
+// a stepper click can re-render instantly without re-fetching.
+let _viewStage = null;
+let _lastM = null;
+
+const STAGE_TITLE = {
+  draft: "Draft", segment: "Segment", research: "Research",
+  synthesize: "Synthesize", review: "Review", done: "Recommendation",
+};
+
+// The stage the run is currently on, derived from its state.
+const liveStage = (m) => STATE_STAGE[m.state] || "draft";
+// Stages the user may click into: everything up to and including the live one.
+// (Nothing is revisitable while errored — the run never produced those steps.)
+function reachedStages(m) {
+  if (m.state === "error") return [];
+  const liveIdx = STAGE_ORDER.indexOf(liveStage(m));
+  return STAGE_ORDER.slice(0, Math.max(0, liveIdx) + 1);
+}
 
 function currentRunParam() {
   return new URLSearchParams(window.location.search).get("run") || "";
@@ -32,6 +53,8 @@ function currentRunParam() {
 
 async function loadStrategy() {
   const runId = currentRunParam();
+  _viewStage = null;  // a fresh load always lands on the live/actionable step
+  _lastM = null;
   if (runId) {
     _activeRunId = runId;
     $("#strat-start").hidden = true;
@@ -85,6 +108,7 @@ async function startRun() {
   try {
     const m = await api("/api/strategy/start", "POST", { direction: dir });
     _activeRunId = m.run_id;
+    _viewStage = null;
     $("#strat-start").hidden = true;
     status.textContent = "";
     pushNav({ view: "strategy", run: m.run_id });
@@ -119,13 +143,26 @@ async function loadRecentRuns() {
 
 // ---- render dispatch ------------------------------------------------------
 function render(m) {
+  _lastM = m;
   renderStages(m);
   const panel = $("#strat-panel");
+  if (m.state === "error") { _viewStage = null; return renderError(m.error || "the run failed"); }
+  // Drop a stale pin (e.g. a run reloaded at an earlier state) and decide whether
+  // we're showing the live step (interactive) or a revisited one (read-only).
+  const reached = reachedStages(m);
+  if (_viewStage && !reached.includes(_viewStage)) _viewStage = null;
+  const live = liveStage(m);
+  const showing = _viewStage || live;
+  if (showing === live) return renderLiveStage(m, panel);
+  renderPastStage(m, showing, panel);
+}
+
+// The live step keeps its full interactive treatment (gate / spinner / done).
+function renderLiveStage(m, panel) {
   if (m.state === "awaiting_segment_approval") return renderSegmentGate(m, panel);
   if (m.state === "awaiting_proposal_approval") return renderProposalGate(m, panel);
   if (m.state === "needs_login") return renderNeedsLogin(m, panel);
   if (m.state === "done") return renderDone(m, panel);
-  if (m.state === "error") return renderError(m.error || "the run failed");
   // Any running state: a spinner with the live message.
   renderLoading(m.message || m.state);
 }
@@ -134,13 +171,149 @@ function renderStages(m) {
   const wrap = $("#strat-stages");
   if (!wrap) return;
   wrap.hidden = false;
-  const activeStage = STATE_STAGE[m.state] || "draft";
-  const activeIdx = STAGE_ORDER.indexOf(activeStage);
+  const errored = m.state === "error";
+  const live = liveStage(m);
+  const liveIdx = STAGE_ORDER.indexOf(live);
+  const reached = reachedStages(m);
+  const showing = (!errored && _viewStage && reached.includes(_viewStage)) ? _viewStage : live;
   wrap.querySelectorAll("li").forEach((li) => {
-    const idx = STAGE_ORDER.indexOf(li.dataset.stage);
-    li.classList.toggle("active", idx === activeIdx && m.state !== "done");
-    li.classList.toggle("done", idx < activeIdx || m.state === "done");
+    const stage = li.dataset.stage;
+    const idx = STAGE_ORDER.indexOf(stage);
+    li.classList.toggle("active", !errored && stage === showing);
+    li.classList.toggle("done", !errored && (idx < liveIdx || m.state === "done"));
+    li.classList.toggle("live", !errored && stage === live && m.state !== "done");
+    li.classList.toggle("clickable", reached.includes(stage));
+    li.setAttribute("aria-current", !errored && stage === showing ? "step" : "false");
   });
+}
+
+// ---- revisiting completed steps -------------------------------------------
+// A reached-but-not-live step renders read-only from the persisted manifest, with
+// a banner that jumps back to wherever the run actually is.
+function renderPastStage(m, stage, panel) {
+  const renderer = {
+    draft: renderDraftStep, segment: renderSegmentStep, research: renderResearchStep,
+    synthesize: renderSynthesizeStep, review: renderReviewStep, done: renderDone,
+  }[stage] || renderLoading;
+  renderer(m, panel);
+  panel.insertBefore(viewingBar(m, stage), panel.firstChild);
+}
+
+function viewingBar(m, stage) {
+  const bar = el("div", "strat-viewing-bar");
+  bar.innerHTML = `<span>Viewing the <strong>${esc(STAGE_TITLE[stage] || "completed")}</strong> step (read-only).</span>`;
+  const btn = el("button", "ghost", `Back to current step: ${esc(STAGE_TITLE[liveStage(m)] || "")} →`);
+  btn.type = "button";
+  btn.addEventListener("click", () => { _viewStage = null; if (_lastM) render(_lastM); });
+  bar.appendChild(btn);
+  return bar;
+}
+
+function memberTable(definition) {
+  const members = (definition && definition.members) || [];
+  const tbl = el("table", "strat-changes");
+  tbl.innerHTML = `<thead><tr><th>Symbol</th><th>Conviction</th><th>Sleeve</th><th>Rationale</th></tr></thead>`;
+  const body = el("tbody");
+  if (!members.length) body.innerHTML = `<tr><td colspan="4" class="muted">No members recorded.</td></tr>`;
+  members.forEach((mem) => {
+    const conf = mem.confidence || "";
+    const tr = el("tr");
+    tr.innerHTML =
+      `<td><strong>${esc(mem.symbol || "")}</strong></td>` +
+      `<td><span class="strat-conv strat-conv-${esc(conf)}">${esc(conf || "—")}</span></td>` +
+      `<td>${esc(mem.sleeve || "")}</td>` +
+      `<td class="strat-rationale">${esc(mem.rationale || "")}</td>`;
+    body.appendChild(tr);
+  });
+  tbl.appendChild(body);
+  return tbl;
+}
+
+function renderDraftStep(m, panel) {
+  const def = (m.draft && m.draft.definition) || {};
+  const warnings = ((m.draft && m.draft.warnings) || []).join(" ");
+  const n = (def.members || []).length;
+  panel.innerHTML = "";
+  const card = el("div", "card strat-gate");
+  card.innerHTML =
+    `<h3>Draft · ${n} candidate name(s)</h3>` +
+    `<p class="hint">${esc(def.comment || "The segment the run drafted from your direction.")}</p>` +
+    (warnings ? `<div class="strat-warn">${esc(warnings)}</div>` : "");
+  card.appendChild(memberTable(def));
+  panel.appendChild(card);
+}
+
+function renderSegmentStep(m, panel) {
+  const def = (m.draft && m.draft.definition) || {};
+  panel.innerHTML = "";
+  const card = el("div", "card strat-gate");
+  card.innerHTML =
+    `<h3>Segment · ${esc(m.segment || "approved")}</h3>` +
+    `<p class="hint">The approved research segment. Deep Research and synthesis ran against these names.</p>` +
+    `<label>Segment definition JSON</label>` +
+    `<textarea rows="14" spellcheck="false" readonly></textarea>`;
+  panel.appendChild(card);
+  card.querySelector("textarea").value = JSON.stringify(def, null, 2);
+}
+
+function renderResearchStep(m, panel) {
+  const review = m.review || {};
+  const blocked = review.blocked_symbols || [];
+  const ready = m.review != null;
+  panel.innerHTML = "";
+  const card = el("div", "card strat-gate");
+  card.innerHTML =
+    `<h3>Research · Deep Research ${esc(m.date || "")}</h3>` +
+    `<p class="hint">${esc(!ready ? "Research is still in progress…"
+      : (typeof review.source_summary === "string" ? review.source_summary
+         : "Deep Research report reviewed before synthesis."))}</p>` +
+    (blocked.length ? `<div class="strat-warn">Blocked (insufficient/ERROR data, skipped): ${blocked.map(esc).join(", ")}</div>` : "");
+  if (review.findings != null) {
+    const det = el("details", "strat-advanced");
+    det.innerHTML = `<summary>Review findings (raw)</summary>` +
+      `<pre class="strat-pre">${esc(JSON.stringify(review.findings, null, 2))}</pre>`;
+    card.appendChild(det);
+  }
+  if (m.segment && m.date) {
+    const actions = el("div", "thesis-actions");
+    const open = el("button", "ghost", "Open the full Deep Research run ↗");
+    open.type = "button";
+    open.addEventListener("click", () => {
+      pushNav({ view: "pipeline", segment: m.segment, run: `${m.segment}-${m.date}` });
+      setActiveView("pipeline");
+    });
+    actions.appendChild(open);
+    card.appendChild(actions);
+  }
+  panel.appendChild(card);
+}
+
+function renderSynthesizeStep(m, panel) {
+  const proposal = m.proposal || {};
+  const meta = proposal.construct_meta || {};
+  const changes = proposal.changes || [];
+  panel.innerHTML = "";
+  const card = el("div", "card strat-gate");
+  card.innerHTML =
+    `<h3>Synthesize · ${changes.length} target band(s)</h3>` +
+    `<p class="hint">${m.proposal
+      ? `Budget ${esc(meta.segment_budget_pct ?? "?")}% of book, sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%.`
+      : "Synthesis is still in progress…"}</p>`;
+  if (m.proposal) card.appendChild(changesTable(changes));
+  panel.appendChild(card);
+}
+
+function renderReviewStep(m, panel) {
+  const proposal = m.proposal || {};
+  const changes = proposal.changes || [];
+  panel.innerHTML = "";
+  const card = el("div", "card strat-gate");
+  card.innerHTML =
+    `<h3>Review · proposed target-model changes</h3>` +
+    `<p class="hint">The bands ${m.state === "done" ? "you approved" : "proposed"} at Gate 2.</p>`;
+  card.appendChild(changesTable(changes));
+  card.appendChild(previewBlock(m.preview));
+  panel.appendChild(card);
 }
 
 function renderLoading(msg) {
@@ -429,6 +602,16 @@ function initStrategy() {
   if (go) go.addEventListener("click", startRun);
   const dir = $("#strat-direction");
   if (dir) dir.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); startRun(); } });
+
+  // Stepper navigation: clicking a reached step pins it for read-only viewing;
+  // clicking the live step (or "Back to current step") unpins and follows along.
+  const stages = $("#strat-stages");
+  if (stages) stages.addEventListener("click", (e) => {
+    const li = e.target.closest ? e.target.closest("li") : null;
+    if (!li || !li.classList.contains("clickable") || !_lastM) return;
+    _viewStage = li.dataset.stage === liveStage(_lastM) ? null : li.dataset.stage;
+    render(_lastM);
+  });
 }
 
 export { initStrategy, loadStrategy };
