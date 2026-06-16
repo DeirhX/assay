@@ -4,6 +4,7 @@ import { $, api, applyPrivacyMode, state } from "./core";
 import { clearErrors, recordError, refreshLoginStatus, renderErrorCenter, toggleErrorPanel } from "./errors";
 import "./livereload";
 import { initShell, navFromUrl, restoreNav } from "./shell";
+import { startTaskCenter } from "./tasks";
 
 // ---- boot -----------------------------------------------------------------
 // Catch-all for failures nobody handled locally: uncaught promise rejections
@@ -54,6 +55,9 @@ async function boot() {
   await restoreNav(nav);
   refreshLoginStatus();
   ensureTickerSet();
+  // Start the central Task Center poller: repopulates in-progress tasks from the
+  // server so they survive navigation and a page reload (within a server run).
+  startTaskCenter();
 }
 
 export {
