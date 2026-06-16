@@ -626,6 +626,29 @@ def _save_deep_artifact(body: dict) -> dict:
     return {"stem": stem, "report": f"data/research/deep/{stem}.md", "sources": f"data/research/deep/{stem}.sources.json"}
 
 
+# Every artifact a single Deep Research run can leave behind, keyed off its stem
+# (segment-date). Deleting a run must clear all of them -- report, sidecars, and
+# the follow-up Q&A archive -- so no orphaned half of a run lingers in the list.
+_DEEP_RUN_SUFFIXES = (".md", ".sources.json", ".review.md", ".target-proposal.json", ".qa.json")
+
+
+def _delete_deep_run(stem: str) -> dict:
+    """Remove a saved Deep Research run and all of its sidecar artifacts. Raises
+    ValueError if the stem is empty or nothing on disk matches it."""
+    if not (stem or "").strip():
+        raise ValueError("stem is required")
+    stem = _slugify(stem)
+    removed = []
+    for suffix in _DEEP_RUN_SUFFIXES:
+        path = DEEP_DIR / f"{stem}{suffix}"
+        if path.exists():
+            path.unlink()
+            removed.append(path.name)
+    if not removed:
+        raise ValueError(f"unknown run {stem}")
+    return {"stem": stem, "removed": removed, "runs": _deep_runs()}
+
+
 # --------------------------------------------------------------------------- #
 # On-demand single-ticker analysis (cheap CLI tier: Claude -> Cursor fallback)
 # --------------------------------------------------------------------------- #
@@ -2595,6 +2618,7 @@ _POST_EXACT = {
     "/api/portfolio-history/sectors": "_post_portfolio_history_sectors",
     "/api/site/regenerate": "_post_site_regenerate",
     "/api/deep-job/cancel": "_post_deep_job_cancel",
+    "/api/deep-run/delete": "_post_deep_run_delete",
     "/api/deep-qa": "_post_deep_qa",
     "/api/error-log": "_post_error_log",
     "/api/analysis-config": "_post_analysis_config",
@@ -3051,6 +3075,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(400, str(exc))
         except RuntimeError as exc:
             return self._send_error_json(409, str(exc))
+
+    def _post_deep_run_delete(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(_delete_deep_run(str(body.get("stem") or "")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
 
     def _post_error_log(self, path):
         body = self._read_body()

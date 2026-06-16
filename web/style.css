@@ -983,12 +983,28 @@ a.analysis-row:hover { text-decoration: none; }
 
 /* segment launchpad rows in the Analyses pane */
 .seg-row .analysis-row-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.seg-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
 .seg-run {
   flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--accent);
   border: 1px solid rgba(130,170,255,.4); border-radius: 999px; padding: 1px 8px;
   opacity: .85; transition: background .15s, opacity .15s;
 }
 .seg-run:hover { background: rgba(130,170,255,.14); opacity: 1; }
+.seg-del {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+  opacity: .7; transition: color .15s, background .15s, border-color .15s, opacity .15s;
+}
+.seg-del:hover { color: var(--bad); background: rgba(255,122,122,.14); border-color: rgba(255,122,122,.4); opacity: 1; }
+
+/* Per-run delete (×) on analysis rows; floats to the row's top-right corner. */
+.analysis-row-del {
+  float: right; margin: -2px -4px 0 8px; font-size: 15px; line-height: 1; color: var(--muted);
+  border: 1px solid transparent; border-radius: 6px; padding: 1px 6px; opacity: .55;
+  transition: color .15s, background .15s, opacity .15s;
+}
+.analysis-row-del:hover { color: var(--bad); background: rgba(255,122,122,.14); opacity: 1; }
 .analysis-row.sub-run {
   margin-left: 16px; padding: 8px 12px; background: transparent;
   border-style: dashed; border-color: var(--border);
@@ -999,8 +1015,15 @@ a.analysis-row:hover { text-decoration: none; }
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft);
   padding: 22px 26px; min-height: 240px; min-width: 0; overflow-wrap: break-word;
 }
-.analysis-header { padding-bottom: 14px; margin-bottom: 6px; }
-.analysis-header h2 { margin: 0 0 6px; font-size: 22px; }
+.analysis-header { position: relative; padding-bottom: 14px; margin-bottom: 6px; }
+.analysis-header h2 { margin: 0 0 6px; font-size: 22px; padding-right: 120px; }
+.analysis-delete {
+  position: absolute; top: 0; right: 0; font-size: 12px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 5px 11px;
+  background: var(--panel); cursor: pointer;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.analysis-delete:hover { color: var(--bad); background: rgba(255,122,122,.10); border-color: rgba(255,122,122,.45); }
 .analysis-sub { color: var(--muted); font-size: 13px; }
 .analysis-sub a { color: var(--accent); }
 .analysis-header .analysis-row-badges { margin-top: 10px; }
