@@ -341,6 +341,25 @@ function renderStructuredReport(raw) {
   return html || null;
 }
 
+// Delete a saved Deep Research run (its report, sidecars, and Q&A archive) after
+// confirmation, then refresh the list. If the deleted run was open in the reader,
+// loadAnalyses re-renders it to the next run (or an empty state).
+async function deleteAnalysis(stem) {
+  if (!stem) return;
+  if (!confirm(
+    "Delete this Deep Research analysis?\n\n" +
+    "This removes the report, its sources, the review gate, any target proposal, " +
+    "and the follow-up Q&A thread. This cannot be undone.")) return;
+  try {
+    await api("/api/deep-run/delete", "POST", { stem });
+  } catch (e) {
+    alert("Delete failed: " + e.message);
+    return;
+  }
+  if (state.currentAnalysis === stem) state.currentAnalysis = null;
+  await loadAnalyses();
+}
+
 async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
@@ -366,6 +385,16 @@ async function loadAnalyses() {
 
   list.innerHTML = "";
 
+  const delHtml = `<span class="analysis-row-del" role="button" tabindex="0" title="Delete this analysis" aria-label="Delete this analysis">\u00d7</span>`;
+  const wireDelete = (row, stem) => {
+    const del = row.querySelector(".analysis-row-del");
+    if (!del) return;
+    del.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(stem); });
+    del.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); deleteAnalysis(stem); }
+    });
+  };
+
   const runRow = (r, cls) => {
     const row = el("button", "analysis-row" + (cls ? " " + cls : ""));
     row.dataset.stem = r.stem;
@@ -373,9 +402,10 @@ async function loadAnalyses() {
     const meta = `${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources`;
     const badges = analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "";
     row.innerHTML = cls === "sub-run"
-      ? `<div class="analysis-row-meta">${meta}</div>${badges}`
-      : `<div class="analysis-row-title">${esc(r.title || r.stem)}</div><div class="analysis-row-meta">${meta}</div>${badges}`;
+      ? `${delHtml}<div class="analysis-row-meta">${meta}</div>${badges}`
+      : `${delHtml}<div class="analysis-row-title">${esc(r.title || r.stem)}</div><div class="analysis-row-meta">${meta}</div>${badges}`;
     row.addEventListener("click", () => loadAnalysis(r.stem));
+    wireDelete(row, r.stem);
     return row;
   };
 
@@ -392,9 +422,13 @@ async function loadAnalyses() {
         ? `<span class="abadge ok">analysed · ${esc(latest.date)}</span>`
         : `<span class="abadge muted">not analysed</span>`;
       const moreBadges = latest && analysisBadges(latest) ? " " + analysisBadges(latest) : "";
+      const segDel = latest
+        ? `<span class="seg-del" role="button" tabindex="0" title="Delete the latest analysis (${esc(latest.date)}) for this segment" aria-label="Delete the latest analysis for this segment">\u00d7 analysis</span>`
+        : "";
       row.innerHTML =
-        `<div class="analysis-row-title">${esc(s.title || s.name)}` +
-          `<span class="seg-run" role="button" tabindex="0" title="Run a new Deep Research for this segment">+ run</span></div>` +
+        `<div class="analysis-row-title"><span class="seg-title-text">${esc(s.title || s.name)}</span>` +
+          `<span class="seg-actions">${segDel}` +
+          `<span class="seg-run" role="button" tabindex="0" title="Run a new Deep Research for this segment">+ run</span></span></div>` +
         `<div class="analysis-row-meta">${s.count} name${s.count === 1 ? "" : "s"} · ${runCount}${s.status === "draft" ? " · draft" : ""}</div>` +
         `<div class="analysis-row-badges">${cover}${moreBadges}</div>`;
       row.addEventListener("click", () => { if (latest) loadAnalysis(latest.stem); else startPipeline(s.name); });
@@ -403,6 +437,13 @@ async function loadAnalyses() {
       runBtn.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); startPipeline(s.name); }
       });
+      if (latest) {
+        const segDelBtn = row.querySelector(".seg-del");
+        segDelBtn.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(latest.stem); });
+        segDelBtn.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); deleteAnalysis(latest.stem); }
+        });
+      }
       list.appendChild(row);
       segRuns.slice(1).forEach((r) => list.appendChild(runRow(r, "sub-run")));  // older runs, nested
     });
@@ -482,6 +523,11 @@ async function loadAnalysis(stem, { push = true } = {}) {
     `<h2>${esc(meta.title || stem)}</h2>` +
     `<div class="analysis-sub">${sub}</div>` +
     (analysisBadges(meta) ? `<div class="analysis-row-badges">${analysisBadges(meta)}</div>` : "");
+  const delBtn = el("button", "ghost analysis-delete", "Delete analysis");
+  delBtn.type = "button";
+  delBtn.title = "Delete this Deep Research run and all its artifacts";
+  delBtn.addEventListener("click", () => deleteAnalysis(stem));
+  head.appendChild(delBtn);
   reader.appendChild(head);
 
   // The report itself — verbatim Perplexity output, framed as a collapsible

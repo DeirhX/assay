@@ -245,6 +245,83 @@ class DeepQa(unittest.TestCase):
         self.assertEqual(payload["turns"], [])
 
 
+class DeepRunDelete(unittest.TestCase):
+    """Deleting a saved Deep Research run removes the report plus every sidecar
+    (sources, review, proposal, Q&A) for that stem, returns the refreshed run
+    list, and 400s on an unknown/empty stem. DEEP_DIR is redirected to a temp
+    dir so the real data/ tree is untouched."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        # DEEP_DIR must sit under REPO_ROOT because _deep_runs() reports each run
+        # path relative to REPO_ROOT; redirect both to a temp tree so the real
+        # data/ dir is untouched and relative_to() still resolves.
+        self._dir = tempfile.TemporaryDirectory()
+        self._orig_deep = serve.DEEP_DIR
+        self._orig_root = serve.REPO_ROOT
+        serve.REPO_ROOT = Path(self._dir.name)
+        serve.DEEP_DIR = serve.REPO_ROOT / "data" / "research" / "deep"
+        serve.DEEP_DIR.mkdir(parents=True)
+
+    def tearDown(self):
+        serve.DEEP_DIR = self._orig_deep
+        serve.REPO_ROOT = self._orig_root
+        self._dir.cleanup()
+
+    def _post(self, path, body):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read().decode("utf-8"))
+
+    def _seed(self, stem, suffixes):
+        for suffix in suffixes:
+            (serve.DEEP_DIR / f"{stem}{suffix}").write_text("x", encoding="utf-8")
+
+    def test_delete_removes_all_artifacts(self):
+        stem = "demo-segment-2026-01-02"
+        self._seed(stem, [".md", ".sources.json", ".review.md",
+                          ".target-proposal.json", ".qa.json"])
+        # An unrelated run must survive the delete.
+        self._seed("other-segment-2026-01-02", [".md", ".sources.json"])
+
+        status, payload = self._post("/api/deep-run/delete", {"stem": stem})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["stem"], stem)
+        self.assertEqual(
+            sorted(payload["removed"]),
+            sorted([f"{stem}{s}" for s in serve._DEEP_RUN_SUFFIXES]))
+        self.assertEqual(list(serve.DEEP_DIR.glob(f"{stem}*")), [])
+        self.assertTrue((serve.DEEP_DIR / "other-segment-2026-01-02.md").exists())
+
+    def test_delete_unknown_stem_is_400(self):
+        status, payload = self._post(
+            "/api/deep-run/delete", {"stem": "nope-2026-01-01"})
+        self.assertEqual(status, 400)
+        self.assertIn("unknown run", payload["error"])
+
+    def test_delete_empty_stem_is_400(self):
+        status, payload = self._post("/api/deep-run/delete", {"stem": ""})
+        self.assertEqual(status, 400)
+        self.assertIn("stem is required", payload["error"])
+
+
 class DropQaExchange(unittest.TestCase):
     """The pure exchange-trimming helper: removes a question + its answer by the
     question's array index, ignores bad targets, and drops the resumable session
