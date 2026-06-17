@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Social share card source. Render to site/og.png at 1200x630 with:
+    py -3 -m http.server 8090 --bind 127.0.0.1 --directory site
+    (then screenshot http://127.0.0.1:8090/og.html at a 1200x630 viewport)
+  Self-contained on purpose so it never depends on styles.css drifting.
+-->
+<style>
+  :root {
+    --bg: #0b0d11; --panel: #14171e; --text: #eceff4; --muted: #a8b0bf;
+    --faint: #6b7282; --accent: #82aaff; --gold: #f5c76b; --gold-2: #e0a23a; --border: #262b36;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    position: relative; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* ambient mesh + grid, mirrors the live hero */
+  .glow {
+    position: absolute; inset: -160px -120px auto auto; width: 760px; height: 620px; pointer-events: none;
+    background:
+      radial-gradient(closest-side, rgba(130,170,255,.30), transparent 70%),
+      radial-gradient(closest-side, rgba(245,199,107,.22), transparent 70%);
+    background-position: 20% 25%, 80% 35%; background-repeat: no-repeat; filter: blur(10px);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background-image:
+      linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
+    background-size: 54px 54px;
+    -webkit-mask-image: radial-gradient(circle at 72% 30%, #000 0%, transparent 70%);
+            mask-image: radial-gradient(circle at 72% 30%, #000 0%, transparent 70%);
+  }
+  .wrap { position: relative; z-index: 2; height: 100%; padding: 72px 80px; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .brand svg { width: 64px; height: 64px; display: block; filter: drop-shadow(0 6px 18px rgba(0,0,0,.5)); }
+  .brand .name { font-size: 38px; font-weight: 800; letter-spacing: -.01em; }
+  .eyebrow {
+    display: inline-block; margin-top: 6px; font-size: 18px; font-weight: 700; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--gold);
+  }
+  .headline { margin-top: auto; font-size: 92px; line-height: 1.04; font-weight: 850; letter-spacing: -.035em; }
+  .grad {
+    background: linear-gradient(110deg, var(--gold) 0%, #ffe2a6 38%, var(--accent) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { margin-top: 26px; max-width: 880px; font-size: 27px; line-height: 1.45; color: var(--muted); }
+  .lede b { color: var(--text); }
+  .meta { margin-top: auto; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .chip {
+    font-size: 19px; font-weight: 600; color: var(--muted);
+    border: 1px solid var(--border); background: rgba(255,255,255,.02);
+    padding: 9px 18px; border-radius: 999px;
+  }
+  .chip b { color: var(--text); font-weight: 800; }
+  .url { margin-left: auto; font-size: 20px; color: var(--faint); font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="grid"></div>
+  <div class="wrap">
+    <div>
+      <div class="brand">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
+          <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f5c76b"/><stop offset="1" stop-color="#e0a23a"/></linearGradient></defs>
+          <rect width="64" height="64" rx="14" fill="#14171e"/>
+          <path d="M32 12v34" stroke="#82aaff" stroke-width="3" stroke-linecap="round"/>
+          <path d="M14 20h36" stroke="#82aaff" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="32" cy="12" r="3.4" fill="#82aaff"/>
+          <path d="M9 20l-4 9a9 9 0 0 0 18 0l-4-9" fill="none" stroke="#a8b0bf" stroke-width="2.4" stroke-linejoin="round"/>
+          <path d="M43 20l-4 9a9 9 0 0 0 18 0l-4-9" fill="none" stroke="#a8b0bf" stroke-width="2.4" stroke-linejoin="round"/>
+          <rect x="44" y="24.5" width="12" height="5.5" rx="1.4" fill="url(#g)"/>
+          <path d="M22 50h20" stroke="#82aaff" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <div class="name">Assay</div>
+          <span class="eyebrow">Local-first · open source</span>
+        </div>
+      </div>
+    </div>
+
+    <h1 class="headline">Weigh the metal,<br><span class="grad">not the hype.</span></h1>
+    <p class="lede">A local-first portfolio research &amp; rebalancing workbench built on distrust — it tests whether the numbers behind a position hold up <b>before</b> you act on them.</p>
+
+    <div class="meta">
+      <span class="chip"><b>Python stdlib</b> backend</span>
+      <span class="chip"><b>Vite + TypeScript</b> SPA</span>
+      <span class="chip"><b>3-source</b> cross-check</span>
+      <span class="url">github.com/DeirhX/assay</span>
+    </div>
+  </div>
+</body>
+</html>
