@@ -180,6 +180,9 @@ class SetupStatus(unittest.TestCase):
     def setUp(self):
         self._orig = ta.CONFIG_PATH
         ta.CONFIG_PATH = Path(tempfile.mkdtemp()) / "analysis-config.json"
+        # The auth-probe cache is process-global; clear it so a probe result
+        # mocked in one test can't leak into the next via the TTL cache.
+        ta._clear_auth_probe_cache()
 
     def tearDown(self):
         ta.CONFIG_PATH = self._orig

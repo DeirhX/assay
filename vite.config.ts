@@ -19,6 +19,13 @@ export default defineConfig({
     sourcemap: true,
   },
   server: {
+    // Bind IPv4 loopback explicitly. Vite otherwise defaults to the IPv6
+    // loopback (::1) while the Python backend binds 127.0.0.1 (IPv4) only --
+    // that split makes the browser's localhost lookup pick the "wrong" family
+    // for one hop and stall ~2s per request on Windows before falling back.
+    // Pinning both halves to 127.0.0.1 (and opening the 127.0.0.1 URL) removes
+    // the dual-stack ambiguity entirely. Still loopback-only; never exposed.
+    host: "127.0.0.1",
     port: 5173,
     strictPort: false,
     proxy: {
