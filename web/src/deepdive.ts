@@ -507,6 +507,21 @@ async function hydrateHistory(rec) {
   slot.appendChild(renderHistory(rec));
 }
 
+// A ticker_analysis job for this symbol may already be in flight — started on
+// this page, then navigated away and back (the backend allows only one per
+// symbol). It's surfaced via /api/jobs so the deep-dive can re-attach to its
+// progress instead of falsely showing the idle "Run" state.
+async function runningAnalysisJob(symbol) {
+  try {
+    const res = await api("/api/jobs");
+    return (res.jobs || []).find(
+      (j) => j.kind === "ticker_analysis" && j.symbol === symbol &&
+             (j.state === "running" || j.state === "queued")) || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 // In-depth, on-demand analysis via the local agent CLIs (Claude -> Cursor).
 // Cheap reasoning pass over the deterministic numbers above; Perplexity Deep
 // Research stays reserved for whole-segment crawls. Shows the latest saved note
@@ -565,6 +580,17 @@ function renderAnalysisCard(rec) {
   }
 
   async function show() {
+    // Re-attach to an already-running analysis (e.g. navigated away and back) so
+    // the page keeps visualizing its progress rather than offering to start over.
+    const live = await runningAnalysisJob(sym);
+    if (live) {
+      status.classList.remove("err");
+      status.innerHTML = `<span class="spinner"></span> analysing&hellip;`;
+      body.innerHTML = "";
+      await pollDeepJob(live.id, status, async () => { await show(); }, `Analyzing ${sym}`,
+        () => renderRetry(false));
+      return;
+    }
     let a;
     try {
       a = await api("/api/analysis/" + encodeURIComponent(sym));
