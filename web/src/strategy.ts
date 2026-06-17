@@ -385,6 +385,15 @@ const RULE_LABEL = {
   trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
   avoid: "avoid", accumulate: "accumulate", hold: "hold", wait: "wait",
 };
+// Semantic tone for an action/rule token so buy- / hold- / sell-leaning cells
+// read at a glance (green / grey / amber / red) instead of as identical text.
+const TONE = {
+  accumulate: "pos", add: "pos", buy: "pos",
+  hold: "neutral", wait: "neutral",
+  reduce: "caution", trim: "caution", trim_only: "caution", do_not_add: "caution",
+  avoid: "neg", sell: "neg", exit: "neg",
+};
+const toneOf = (token) => TONE[token] || TONE[(token || "").replace("_target", "")] || "neutral";
 const bandStr = (t) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
 
 function renderProposalGate(m, panel) {
@@ -438,13 +447,16 @@ function changesTable(changes) {
   changes.forEach((c) => {
     const tr = el("tr");
     const conv = c.conviction || "";
+    const actRaw = c.action || "";
+    const act = actRaw.replace("_target", "");
+    const rule = (c.proposed_target && c.proposed_target.rule) || "";
     tr.innerHTML =
       `<td><strong>${esc(c.symbol)}</strong></td>` +
       `<td><span class="strat-conv strat-conv-${esc(conv)}">${esc(conv || "—")}</span></td>` +
-      `<td>${esc((c.action || "").replace("_target", ""))}</td>` +
-      `<td class="muted">${esc(bandStr(c.current_target))}</td>` +
-      `<td>${esc(bandStr(c.proposed_target))}</td>` +
-      `<td>${esc(RULE_LABEL[c.proposed_target && c.proposed_target.rule] || (c.proposed_target && c.proposed_target.rule) || "")}</td>` +
+      `<td>${act ? `<span class="strat-tag strat-tag-${toneOf(actRaw)}">${esc(act)}</span>` : "—"}</td>` +
+      `<td class="strat-cur">${esc(bandStr(c.current_target))}</td>` +
+      `<td><span class="strat-band">${esc(bandStr(c.proposed_target))}</span></td>` +
+      `<td>${rule ? `<span class="strat-tag strat-tag-${toneOf(rule)}">${esc(RULE_LABEL[rule] || rule)}</span>` : "—"}</td>` +
       `<td class="strat-rationale">${esc(c.rationale || "")}</td>`;
     body.appendChild(tr);
   });
