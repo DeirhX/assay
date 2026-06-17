@@ -15,7 +15,10 @@ Launches both halves of the app together: the stdlib Python API
 pwsh .cursor/skills/run-web/scripts/run-web.ps1
 ```
 
-Then open http://localhost:5173. Both halves pick up changes automatically:
+Then open http://127.0.0.1:5173 (use the IPv4 literal, **not** `localhost` —
+Vite and the backend are both pinned to IPv4 `127.0.0.1`; `localhost` can
+resolve to IPv6 `::1` first on Windows and stall ~2s per request). Both halves
+pick up changes automatically:
 
 - **Frontend** (`web/src/`, CSS): Vite HMR, instant.
 - **Backend** (`tools/*.py`): the script runs `serve.py --reload`, whose
@@ -23,9 +26,12 @@ Then open http://localhost:5173. Both halves pick up changes automatically:
   syntax-checks the file first (a broken edit keeps the last good version
   serving) and defers the restart while a Deep Research job is in flight.
 
-The script kills any stale `serve.py` / `vite` first (avoids the recurring
-port-6060 zombie), installs npm deps if `node_modules` is missing, then runs
-the backend and frontend together. `Ctrl+C` stops both.
+The script kills any stale instances first — a prior run's **supervisor**
+(`pwsh`/`powershell` still running this script and holding port 6060 via its
+`npm run dev`), plus stray `serve.py` / `vite` procs and anything bound to
+:6060/:5173 — then installs npm deps if `node_modules` is missing and runs the
+backend and frontend together. So just re-run it to take over a previous
+session; no manual `Stop-Process` needed. `Ctrl+C` stops both.
 
 ## Options
 
