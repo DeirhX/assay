@@ -642,21 +642,27 @@ h2.section { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; 
 .chart-fill-grad.muted .cf-top, .chart-fill-grad.muted .cf-bot { stop-color: var(--info); }
 .chart-dot { fill: var(--text); stroke: var(--panel); stroke-width: 2; }
 
+/* ---- Table template ------------------------------------------------------
+   The bare table/th/td selectors below are the shared template every table
+   inherits: bordered + rounded, uppercase muted headers, hover rows, right-
+   aligned `.num` cells.
+
+   Headers are deliberately NOT sticky by default. A header pinned at a fixed
+   offset paints itself over the first data row in any table that isn't a tall,
+   page-scrolling list (i.e. tables inside cards, gates and panels) — that's the
+   recurring "header offset" bug. Pinning is therefore OPT-IN: add
+   class="sticky-head" to the one or two long list tables that want it. New
+   tables need no per-table `position: static` opt-out anymore. */
 table { width: 100%; border-collapse: collapse; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius-card); overflow: hidden; margin-top: 8px; }
 th, td { padding: 9px 11px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; font-size: 13px; }
-th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; position: sticky; top: 57px; background: var(--panel); }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; background: var(--panel); }
 th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--panel-2); }
 tr:last-child td { border-bottom: 0; }
-.segment-table th,
-.history-table th {
-  position: static;
-  top: auto;
-}
-.history-table th {
-  cursor: default;
-}
+/* Opt-in pinned header, for a long page-scrolling list table only. */
+.sticky-head th { position: sticky; top: var(--topbar-h, 57px); z-index: 1; background: var(--panel); }
+.history-table th { cursor: default; }
 .history-table tbody tr { cursor: default; }
 .history-table tbody tr:hover { background: transparent; }
 .history-del-cell { text-align: right; width: 1%; white-space: nowrap; }
@@ -1878,23 +1884,55 @@ a.tlink:hover { border-bottom-style: solid; }
 .strat-head { margin-bottom: 14px; }
 .strat-start label { display: block; font-weight: 600; margin-bottom: 8px; }
 
-/* Stage progress tracker: each reached step is clickable to revisit it read-only;
-   the step being viewed is `.active`, the step the run is actually on is `.live`. */
+/* Stage progress tracker styled as a numbered wizard: ordered steps connected by
+   arrows that read left-to-right, where each reached step is a navigable tab.
+   States: numbered badge (upcoming) -> ✓ (completed) -> filled (current run
+   position, `.live`); `.active` is the step currently shown; `.clickable` is any
+   reached step; un-reached steps are visibly locked. */
 .strat-stages {
-  list-style: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 16px;
+  list-style: none; counter-reset: step;
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  gap: 10px 22px; padding: 0; margin: 0 0 16px;
 }
 .strat-stages li {
-  flex: 1 1 0; min-width: 90px; text-align: center;
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-soft);
+  counter-increment: step;
+  position: relative; flex: 1 1 0; min-width: 104px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-soft);
   background: var(--panel); color: var(--muted); font-size: 12.5px; font-weight: 600;
-  transition: border-color .12s ease, color .12s ease, background .12s ease;
+  transition: border-color .12s ease, color .12s ease, background .12s ease, transform .12s ease, box-shadow .12s ease;
 }
-.strat-stages li.active { color: var(--text); border-color: rgba(130,170,255,.6); background: var(--panel-2); }
-.strat-stages li.done { color: var(--good); border-color: rgba(107,211,138,.5); }
+/* Numbered badge -> communicates that these are ordered, successive steps. */
+.strat-stages li::before {
+  content: counter(step);
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; width: 18px; height: 18px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel-2);
+  font-size: 11px; font-weight: 800; color: var(--muted);
+}
+/* Connector arrow sitting in the gap -> each step flows into the next. */
+.strat-stages li:not(:last-child)::after {
+  content: "→"; position: absolute; right: -16px; top: 50%; transform: translateY(-50%);
+  color: var(--muted); opacity: .55; font-weight: 700; font-size: 13px; pointer-events: none;
+}
+/* Completed steps: green check + they behave like navigable tabs. */
+.strat-stages li.done { color: var(--good); border-color: rgba(107,211,138,.45); }
+.strat-stages li.done::before {
+  content: "✓"; color: #0c1322; background: var(--good); border-color: var(--good);
+}
+/* The step the run is actually on right now. */
+.strat-stages li.live { color: var(--text); border-color: rgba(130,170,255,.7); background: var(--panel-2); }
+.strat-stages li.live::before { color: #0c1322; background: var(--accent); border-color: var(--accent); }
+/* Reached steps are tabs: pointer + lift on hover. */
 .strat-stages li.clickable { cursor: pointer; }
-.strat-stages li.clickable:hover { color: var(--text); border-color: rgba(130,170,255,.6); }
-/* The run's actual position gets a subtle inset ring even while browsing history. */
-.strat-stages li.live:not(.active) { box-shadow: inset 0 0 0 1px rgba(130,170,255,.4); }
+.strat-stages li.clickable:hover { transform: translateY(-1px); color: var(--text); border-color: rgba(130,170,255,.7); }
+/* Not-yet-reached steps are visibly locked (no tab affordance). */
+.strat-stages li:not(.clickable) { opacity: .45; cursor: default; }
+/* The step currently being viewed gets the strongest cue: an inset ring. */
+.strat-stages li.active {
+  color: var(--text); border-color: rgba(130,170,255,.9); background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px rgba(130,170,255,.55);
+}
 
 /* Banner shown above a revisited (read-only) step. */
 .strat-viewing-bar {
@@ -1925,13 +1963,31 @@ a.tlink:hover { border-bottom-style: solid; }
 
 .strat-changes, .strat-plan { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
 .strat-changes th, .strat-plan th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-.strat-changes td, .strat-plan td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-.strat-rationale { color: var(--muted); max-width: 320px; }
-.strat-conv { padding: 1px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 700; background: var(--panel-2); border: 1px solid var(--border); }
-.strat-conv-high { color: var(--good); border-color: rgba(107,211,138,.5); }
-.strat-conv-medium { color: var(--text); }
-.strat-conv-low { color: var(--muted); }
-.strat-conv-avoid { color: var(--bad, #e15a50); border-color: rgba(225,90,80,.5); }
+.strat-changes td, .strat-plan td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* Subtle zebra so each row scans as a distinct record. */
+.strat-changes tbody tr:nth-child(even) td { background: rgba(255,255,255,.022); }
+.strat-rationale { color: var(--muted); max-width: 320px; white-space: normal; }
+/* Current vs proposed band: mute the "before", emphasize the "after". */
+.strat-cur { color: var(--muted); font-variant-numeric: tabular-nums; }
+.strat-band { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* Conviction pills: filled tints so high / medium / low read at a glance. */
+.strat-conv { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 800; text-transform: capitalize; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+.strat-conv-high { color: var(--good); border-color: rgba(107,211,138,.55); background: rgba(107,211,138,.12); }
+.strat-conv-medium { color: #cdd6e6; border-color: rgba(130,170,255,.4); background: rgba(130,170,255,.10); }
+.strat-conv-low { color: var(--muted); background: transparent; }
+.strat-conv-avoid { color: var(--bad, #e15a50); border-color: rgba(225,90,80,.55); background: rgba(225,90,80,.12); }
+
+/* Semantic action/rule tags: buy / hold / slow / exit leaning, color-coded. */
+.strat-tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700; text-transform: capitalize;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+}
+.strat-tag-pos { color: var(--good); border-color: rgba(107,211,138,.5); background: rgba(107,211,138,.10); }
+.strat-tag-neutral { color: var(--muted); background: transparent; }
+.strat-tag-caution { color: var(--warn); border-color: rgba(245,199,107,.45); background: rgba(245,199,107,.10); }
+.strat-tag-neg { color: var(--bad, #e15a50); border-color: rgba(225,90,80,.5); background: rgba(225,90,80,.10); }
 
 .strat-preview { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 8px; }
 
