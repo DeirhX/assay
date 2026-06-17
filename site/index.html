@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assay — weigh the metal, not the hype</title>
+  <meta name="description" content="Assay is a local-first portfolio research and rebalancing workbench that cross-checks every number across Yahoo, SEC EDGAR, and FMP before you act on it.">
+  <meta name="color-scheme" content="dark">
+
+  <!-- Open Graph / social -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Assay — weigh the metal, not the hype">
+  <meta property="og:description" content="A local-first research and rebalancing workbench that tests every number before you trust it.">
+  <meta property="og:url" content="https://deirhx.github.io/assay/">
+
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://github.com">
+  <link rel="stylesheet" href="styles.css">
+  <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- ───────────────────────── nav ───────────────────────── -->
+  <header class="nav" id="nav">
+    <a class="brand" href="#top" aria-label="Assay home">
+      <img src="favicon.svg" width="30" height="30" alt="">
+      <span class="brand-name">Assay</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#problem">Why</a>
+      <a href="#features">What you get</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#stack">Under the hood</a>
+      <a href="#start">Quickstart</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="https://github.com/DeirhX/assay" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+  </header>
+
+  <main id="main">
+    <span id="top"></span>
+
+    <!-- ───────────────────────── hero ───────────────────────── -->
+    <section class="hero">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="hero-grid" aria-hidden="true"></div>
+      <div class="hero-inner">
+        <p class="eyebrow reveal">Local-first · single-user · open source</p>
+        <h1 class="reveal">Weigh the metal,<br><span class="grad">not the hype.</span></h1>
+        <p class="lede reveal">
+          Assay is a portfolio research &amp; rebalancing workbench built on distrust.
+          Like a metallurgical assay tests whether a bar is really gold, it tests whether the
+          numbers behind a position hold up — <strong>before</strong> you act on them.
+        </p>
+        <div class="hero-actions reveal">
+          <a class="btn btn-gold" href="https://github.com/DeirhX/assay" target="_blank" rel="noopener">View the project</a>
+          <a class="btn btn-ghost" href="#start">Run it locally</a>
+        </div>
+        <div class="hero-meta reveal">
+          <span><b>Python stdlib</b> backend</span>
+          <span class="dot"></span>
+          <span><b>Vite + TypeScript</b> SPA</span>
+          <span class="dot"></span>
+          <span><b>3-source</b> cross-check</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── problem ───────────────────────── -->
+    <section class="section" id="problem">
+      <div class="section-head reveal">
+        <span class="kicker">The premise</span>
+        <h2>One bad number can quietly poison a decision.</h2>
+        <p class="section-sub">
+          Market data is messy. An impossible market cap, a stale price, a foreign filer with no
+          independent anchor — any one of them can derail a rebalance. Assay pulls the same figures
+          from multiple sources, cross-checks them, and surfaces the disagreements instead of
+          smoothing them over.
+        </p>
+      </div>
+      <div class="trust-row">
+        <div class="trust-card reveal">
+          <span class="trust-tag bad">flagged</span>
+          <div class="trust-num">$349B<span class="strike">→</span><em>$161B</em></div>
+          <p>Internally-impossible market cap caught by cross-checking share count against the filing.</p>
+        </div>
+        <div class="trust-card reveal">
+          <span class="trust-tag warn">stale</span>
+          <div class="trust-num">price&nbsp;<em>9d&nbsp;old</em></div>
+          <p>A quote that hasn't moved since last week is surfaced, not silently trusted.</p>
+        </div>
+        <div class="trust-card reveal">
+          <span class="trust-tag good">verified</span>
+          <div class="trust-num">Yahoo&nbsp;≈&nbsp;SEC</div>
+          <p>When sources agree, the number earns a pass. When they don't, you see the gap.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── features ───────────────────────── -->
+    <section class="section" id="features">
+      <div class="section-head reveal">
+        <span class="kicker">What you get</span>
+        <h2>A research desk that argues with its own data.</h2>
+      </div>
+      <div class="feature-grid">
+        <article class="feature reveal">
+          <div class="feature-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <h3>Verified numbers</h3>
+          <p>Live deep dives on any ticker — price, momentum, market cap, P/E, P/S, revenue, margins, share count — pulled from Yahoo and cross-checked against SEC EDGAR (and FMP if a key is set).</p>
+        </article>
+
+        <article class="feature reveal">
+          <div class="feature-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+          </div>
+          <h3>A standing rebalance plan</h3>
+          <p>Current NAV weights versus your target bands, with risk, tax-lot, and what-if tooling to pressure-test a trade basket before you ever place it.</p>
+        </article>
+
+        <article class="feature reveal">
+          <div class="feature-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          </div>
+          <h3>Segment &amp; peer dashboards</h3>
+          <p>Pull a whole peer universe — say, semiconductors — ranked and sortable, cross-joined against what you already own so owned-vs-cheaper-peer is obvious at a glance.</p>
+        </article>
+
+        <article class="feature reveal">
+          <div class="feature-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          </div>
+          <h3>A Deep Research pipeline</h3>
+          <p>Perplexity report capture, source extraction, a local review gate, and draft target-model proposals — none of which ever create a trade on their own.</p>
+        </article>
+
+        <article class="feature reveal">
+          <div class="feature-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 8l7-5 7 5"/><path d="M5 8v8l7 5 7-5V8"/></svg>
+          </div>
+          <h3>Facts kept apart from judgement</h3>
+          <p>Fetched numbers and your written thesis live in separate stores. Re-pulling data never clobbers your reasoning, and your reasoning never masquerades as data.</p>
+        </article>
+
+        <article class="feature reveal">
+          <div class="feature-ic" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          </div>
+          <h3>Paper-first Trade desk</h3>
+          <p>The only surface that can place orders is opt-in, off by default, and paper-first. It refuses live placement until you flip a second flag — and you confirm every order by hand.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── pipeline ───────────────────────── -->
+    <section class="section section-alt" id="pipeline">
+      <div class="section-head reveal">
+        <span class="kicker">How it flows</span>
+        <h2>From a plain-language direction to a defensible plan.</h2>
+        <p class="section-sub">
+          Type a direction. Assay drafts a segment, runs Deep Research, synthesizes target-model
+          bands, and pauses at two human approval gates before it ever shows a rebalance
+          recommendation. Research never trades.
+        </p>
+      </div>
+      <ol class="flow">
+        <li class="flow-step reveal"><span class="flow-n">1</span><h4>Draft</h4><p>Turn a theme into a candidate research segment.</p></li>
+        <li class="flow-step reveal"><span class="flow-n">2</span><h4>Segment</h4><p>Approve the tickers and sleeves. <span class="gate">Gate&nbsp;1</span></p></li>
+        <li class="flow-step reveal"><span class="flow-n">3</span><h4>Deep Research</h4><p>Capture a Perplexity report and its sources.</p></li>
+        <li class="flow-step reveal"><span class="flow-n">4</span><h4>Synthesize</h4><p>Derive target-model weight bands from the report.</p></li>
+        <li class="flow-step reveal"><span class="flow-n">5</span><h4>Review</h4><p>Local cross-check against your holdings. <span class="gate">Gate&nbsp;2</span></p></li>
+        <li class="flow-step reveal"><span class="flow-n">6</span><h4>Recommendation</h4><p>A rebalance proposal — yours to place, or not.</p></li>
+      </ol>
+    </section>
+
+    <!-- ───────────────────────── stack ───────────────────────── -->
+    <section class="section" id="stack">
+      <div class="section-head reveal">
+        <span class="kicker">Under the hood</span>
+        <h2>Boring, auditable, dependency-light.</h2>
+      </div>
+      <div class="stack-grid">
+        <div class="stack-card reveal">
+          <h3>Backend: Python stdlib only</h3>
+          <p>No Flask, no FastAPI, no pandas, no yfinance — nothing to <code>pip install</code>. It talks to Yahoo and SEC directly via <code>urllib</code> and serves on <code>http.server</code>, bound to <code>127.0.0.1</code> only.</p>
+        </div>
+        <div class="stack-card reveal">
+          <h3>Frontend: Vite + TypeScript</h3>
+          <p>A real SPA with an async job model, typed incrementally module-by-module. Built once; the Python server serves the bundle. The API, jobs, and auth stay on the backend.</p>
+        </div>
+        <div class="stack-card reveal">
+          <h3>Three opinions per number</h3>
+          <p>Yahoo for live quotes, SEC EDGAR for filing truth, optional FMP as a tiebreaker. Disagreements are flagged — share-count mismatches, impossible caps, stale prices, anchor-less foreign filers.</p>
+        </div>
+        <div class="stack-card reveal">
+          <h3>Private by construction</h3>
+          <p>Holdings live in a separate private submodule; the public repo carries no NAV, P/L, or credentials. It runs on your machine, against your data, for an audience of one.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── quickstart ───────────────────────── -->
+    <section class="section section-alt" id="start">
+      <div class="section-head reveal">
+        <span class="kicker">Quickstart</span>
+        <h2>Up and running in four lines.</h2>
+        <p class="section-sub">Python 3 and Node.js are the only prerequisites. The private holdings submodule is optional — without it the app still starts, just with empty portfolio views.</p>
+      </div>
+      <div class="code-card reveal">
+        <div class="code-head">
+          <span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span>
+          <span class="code-title">powershell</span>
+          <button class="copy-btn" data-copy="#snippet" type="button">Copy</button>
+        </div>
+<pre class="code-body"><code id="snippet">git submodule update --init                  # private holdings (optional)
+npm install &amp;&amp; npm run build                  # build the SPA once
+$env:SEC_USER_AGENT = "assay research (you@example.com)"
+py -3 tools/serve.py                          # open http://127.0.0.1:6060</code></pre>
+      </div>
+      <div class="start-links reveal">
+        <a class="btn btn-gold" href="https://github.com/DeirhX/assay" target="_blank" rel="noopener">Browse the source</a>
+        <a class="btn btn-ghost" href="https://github.com/DeirhX/assay/blob/main/README.md" target="_blank" rel="noopener">Read the README</a>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── disclaimer ───────────────────────── -->
+    <section class="section">
+      <div class="disclaimer reveal">
+        <h3>Not financial advice</h3>
+        <p>
+          Assay is for personal research and informational purposes only. It is not financial,
+          investment, tax, or legal advice, and nothing it produces is a recommendation to buy or
+          sell any security. Market data comes from third parties that may be delayed, incomplete, or
+          wrong — verify everything independently before acting. The optional Trade desk can place
+          real orders only when you explicitly enable it, preview the basket, and confirm each order;
+          you alone are responsible for every order and its outcome. Use at your own risk.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ───────────────────────── footer ───────────────────────── -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="favicon.svg" width="26" height="26" alt="">
+        <div>
+          <strong>Assay</strong>
+          <span>Weigh the metal, not the hype.</span>
+        </div>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/DeirhX/assay" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/DeirhX/assay/blob/main/README.md" target="_blank" rel="noopener">Docs</a>
+        <a href="https://github.com/DeirhX/assay/blob/main/docs/plans/auto-balance-roadmap.md" target="_blank" rel="noopener">Roadmap</a>
+        <a href="https://github.com/DeirhX/assay/issues" target="_blank" rel="noopener">Issues</a>
+      </div>
+    </div>
+    <p class="footer-fine">Open source · runs locally · single-user by design.</p>
+  </footer>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
