@@ -12,6 +12,14 @@
   <meta property="og:title" content="Assay — weigh the metal, not the hype">
   <meta property="og:description" content="A local-first research and rebalancing workbench that tests every number before you trust it.">
   <meta property="og:url" content="https://deirhx.github.io/assay/">
+  <meta property="og:image" content="https://deirhx.github.io/assay/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Assay — a local-first portfolio research and rebalancing workbench built on distrust.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Assay — weigh the metal, not the hype">
+  <meta name="twitter:description" content="A local-first research and rebalancing workbench that tests every number before you trust it.">
+  <meta name="twitter:image" content="https://deirhx.github.io/assay/og.png">
 
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://github.com">
@@ -30,6 +38,7 @@
     <nav class="nav-links" aria-label="Primary">
       <a href="#problem">Why</a>
       <a href="#features">What you get</a>
+      <a href="#screens">See it</a>
       <a href="#pipeline">Pipeline</a>
       <a href="#stack">Under the hood</a>
       <a href="#start">Quickstart</a>
@@ -71,6 +80,24 @@
           <span class="dot"></span>
           <span><b>3-source</b> cross-check</span>
         </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── showcase hero shot ───────────────────────── -->
+    <section class="showcase-hero" id="see" aria-label="Product preview">
+      <div class="stage reveal">
+        <div class="stage-glow" aria-hidden="true"></div>
+        <figure class="frame frame-tilt">
+          <div class="frame-bar">
+            <span class="fd"></span><span class="fd"></span><span class="fd"></span>
+            <span class="frame-url">127.0.0.1:6060 / Portfolio / Rebalance</span>
+            <span class="frame-badge">Privacy: on</span>
+          </div>
+          <img class="frame-img" src="screenshots/shot-rebalance.png"
+               alt="Assay rebalance planner showing each holding's drift versus its target band, minimal band-closing trade sizes, cash math, and tax-lot detail."
+               width="1440" height="900" decoding="async">
+          <figcaption class="frame-cap">The standing rebalance plan — drift vs. target bands, minimal band-closing trades, cash math, tax lots. Sensitive amounts hidden by one-click Privacy mode; the logic stays in full view.</figcaption>
+        </figure>
       </div>
     </section>
 
@@ -159,6 +186,69 @@
           <h3>Paper-first Trade desk</h3>
           <p>The only surface that can place orders is opt-in, off by default, and paper-first. It refuses live placement until you flip a second flag — and you confirm every order by hand.</p>
         </article>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── gallery ───────────────────────── -->
+    <section class="section" id="screens">
+      <div class="section-head reveal">
+        <span class="kicker">See it in action</span>
+        <h2>Eight views, one obsession: don't trust a number until it earns it.</h2>
+        <p class="section-sub">Real screenshots from the running app against a live portfolio — with Privacy mode on, so the structure shows and the balance sheet doesn't.</p>
+      </div>
+
+      <div class="show-row reveal">
+        <div class="show-copy">
+          <span class="show-tag">Ticker dossier</span>
+          <h3>Every ticker, source-stamped.</h3>
+          <p>Price, momentum, valuation, and an AI verdict with an explicit confidence level — over a row of badges showing which sources (Yahoo, SEC EDGAR, FMP) actually backed each figure, not just that a number exists.</p>
+        </div>
+        <figure class="frame">
+          <div class="frame-bar"><span class="fd"></span><span class="fd"></span><span class="fd"></span><span class="frame-url">?ticker=GEV</span><span class="frame-badge">Privacy: on</span></div>
+          <img class="frame-img" src="screenshots/shot-dossier-top.png" alt="GEV ticker dossier: verdict, source badges, and valuation read." width="1440" height="900" loading="lazy" decoding="async">
+        </figure>
+      </div>
+
+      <div class="show-row reverse reveal">
+        <div class="show-copy">
+          <span class="show-tag">Risk lens</span>
+          <h3>See the correlation you actually own.</h3>
+          <p>A full correlation heatmap, the effective number of independent bets, factor-shock stress tests, and per-name volatility — because single-name bands are blind to a book of names that all move together. <em>Hover to scroll the whole view.</em></p>
+        </div>
+        <figure class="frame frame-tall">
+          <div class="frame-bar"><span class="fd"></span><span class="fd"></span><span class="fd"></span><span class="frame-url">?view=risk</span><span class="frame-badge">Privacy: on</span></div>
+          <div class="frame-scroll"><img class="frame-img" src="screenshots/shot-risk.png" alt="Portfolio risk lens: correlation heatmap, factor-shock stress test, effective number of bets, and per-name volatility." width="1425" height="3503" loading="lazy" decoding="async"></div>
+        </figure>
+      </div>
+
+      <div class="show-row reveal">
+        <div class="show-copy">
+          <span class="show-tag">Deep Research</span>
+          <h3>Capture, review, then synthesize.</h3>
+          <p>Saved Perplexity Deep Research reports with their sources and a local review gate, organized by segment. Reports inform target-model bands — they never place a trade on their own.</p>
+        </div>
+        <figure class="frame">
+          <div class="frame-bar"><span class="fd"></span><span class="fd"></span><span class="fd"></span><span class="frame-url">?view=analyses</span><span class="frame-badge">Privacy: on</span></div>
+          <img class="frame-img" src="screenshots/shot-research.png" alt="Deep Research reports with a segment list and the report's table of contents." width="1440" height="900" loading="lazy" decoding="async">
+        </figure>
+      </div>
+
+      <div class="more-grid">
+        <figure class="frame frame-sm reveal">
+          <div class="frame-bar"><span class="fd"></span><span class="fd"></span><span class="fd"></span><span class="frame-url">Portfolio</span></div>
+          <img class="frame-img" src="screenshots/shot-portfolio.png" alt="Portfolio positions with concentration-coloured weight bars." width="1440" height="900" loading="lazy" decoding="async">
+          <figcaption class="frame-cap">Concentration at a glance — red flags single-name risk.</figcaption>
+        </figure>
+        <figure class="frame frame-sm reveal">
+          <div class="frame-bar"><span class="fd"></span><span class="fd"></span><span class="fd"></span><span class="frame-url">Strategy</span></div>
+          <img class="frame-img" src="screenshots/shot-strategy.png" alt="Strategy view: a plain-language direction starts a guided run." width="1440" height="900" loading="lazy" decoding="async">
+          <figcaption class="frame-cap">A plain-language direction kicks off the guided run.</figcaption>
+        </figure>
+        <figure class="frame frame-sm reveal">
+          <div class="frame-bar"><span class="fd"></span><span class="fd"></span><span class="fd"></span><span class="frame-url">Tickers</span></div>
+          <img class="frame-img" src="screenshots/shot-tickers.png" alt="Recently viewed tickers, each with a verdict and confidence note." width="1440" height="900" loading="lazy" decoding="async">
+          <figcaption class="frame-cap">Recently viewed tickers, each with its verdict.</figcaption>
+        </figure>
       </div>
     </section>
 
