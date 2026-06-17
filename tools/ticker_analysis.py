@@ -51,7 +51,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -348,9 +350,53 @@ def _auth_probe(pid: str, *, timeout: int = 12) -> bool | None:
     return None
 
 
+# `_auth_probe` shells out to the backend CLI (a Node process) -- ~1-1.5s each
+# on Windows. /api/setup/status is fetched on every page load (it gates the
+# initial route) and polled by the setup screen, so probing live every time
+# blocked the whole app for ~3s per request. Auth state only changes on an
+# explicit login/logout, so cache the boolean and let an explicit smoke check
+# (run_checks=True) refresh it.
+_AUTH_PROBE_TTL = 300.0  # seconds
+_auth_probe_cache: dict[str, tuple[float, bool | None]] = {}
+_auth_probe_lock = threading.Lock()
+
+
+def _auth_probe_cached(pid: str) -> bool | None:
+    now = time.monotonic()
+    with _auth_probe_lock:
+        hit = _auth_probe_cache.get(pid)
+        if hit is not None and now - hit[0] < _AUTH_PROBE_TTL:
+            return hit[1]
+    val = _auth_probe(pid)
+    with _auth_probe_lock:
+        _auth_probe_cache[pid] = (time.monotonic(), val)
+    return val
+
+
+def _auth_probe_remember(pid: str, value: bool | None) -> None:
+    """Seed the probe cache from an authoritative result (an explicit smoke
+    check), so the next page-load status read reflects it without re-spawning."""
+    with _auth_probe_lock:
+        _auth_probe_cache[pid] = (time.monotonic(), value)
+
+
+def _clear_auth_probe_cache() -> None:
+    with _auth_probe_lock:
+        _auth_probe_cache.clear()
+
+
 def setup_status(*, run_checks: bool = False) -> dict[str, Any]:
     cfg = load_config()
     available = available_backends()
+    # On the load path (no run_checks) the per-backend credential probe is the
+    # one slow step. Probe all installed backends concurrently (cached), so the
+    # cold call is one CLI launch wall-time, not the sum of them.
+    auth_map: dict[str, bool | None] = {}
+    if not run_checks:
+        installed = [pid for pid in PROVIDER_LABELS if available.get(pid)]
+        if installed:
+            with ThreadPoolExecutor(max_workers=len(installed)) as pool:
+                auth_map = dict(zip(installed, pool.map(_auth_probe_cached, installed)))
     backends = []
     for pid, label in PROVIDER_LABELS.items():
         provider = _configured_provider(pid, cfg)
@@ -365,16 +411,19 @@ def setup_status(*, run_checks: bool = False) -> dict[str, Any]:
         }
         rec["status"] = "installed" if rec["installed"] else "missing"
         if run_checks:
-            # A real smoke check is the source of truth; skip the cheap probe.
+            # A real smoke check is the source of truth; skip the cheap probe
+            # and seed the probe cache from it so the next load read is instant.
             rec["check"] = _smoke_check_backend(pid, provider)
             rec["status"] = rec["check"].get("status", rec["status"])
             if rec["check"].get("ok"):
                 rec["authenticated"] = True
+                _auth_probe_remember(pid, True)
             elif rec["check"].get("status") == "auth":
                 rec["authenticated"] = False
+                _auth_probe_remember(pid, False)
         elif rec["installed"]:
             # Cheap credential probe so load-time UI distinguishes logged-out from ready.
-            auth = _auth_probe(pid)
+            auth = auth_map.get(pid)
             rec["authenticated"] = auth
             if auth is False:
                 rec["status"] = "logged_out"

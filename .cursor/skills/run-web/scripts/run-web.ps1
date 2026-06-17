@@ -54,6 +54,20 @@ function Stop-PortOwners {
     }
 }
 function Stop-WebProcs {
+    # A stale supervisor (a previous run of THIS script) sits blocked in
+    # `npm run dev`; left alive it auto-restarts serve.py and fights the new
+    # run for the port. Kill those pwsh/powershell supervisors first -- but
+    # never the current process (or its parent shell), or we'd kill ourselves.
+    $self = $PID
+    $parent = (Get-CimInstance Win32_Process -Filter "ProcessId=$self" -ErrorAction SilentlyContinue).ParentProcessId
+    foreach ($shell in @('pwsh.exe', 'powershell.exe')) {
+        Get-CimInstance Win32_Process -Filter "Name='$shell'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like '*run-web*' -and $_.ProcessId -ne $self -and $_.ProcessId -ne $parent } |
+            ForEach-Object {
+                Write-Host "Stopping stale supervisor $shell (PID $($_.ProcessId))" -ForegroundColor DarkGray
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+    }
     foreach ($p in @(
             @{ Name = 'python.exe'; Match = '*serve.py*' },
             @{ Name = 'node.exe'; Match = '*vite*' }
@@ -110,7 +124,10 @@ if ($backend.HasExited) {
 }
 
 try {
-    Write-Host "Vite dev server -> http://localhost:5173  (proxies /api to :$ApiPort)" -ForegroundColor Green
+    # Advertise the IPv4 loopback URL, not "localhost". On Windows localhost can
+    # resolve to ::1 first; Vite is pinned to 127.0.0.1 (see vite.config.ts) to
+    # match the IPv4-only backend, so 127.0.0.1 avoids a ~2s dual-stack stall.
+    Write-Host "Vite dev server -> http://127.0.0.1:5173  (proxies /api to :$ApiPort)" -ForegroundColor Green
     Write-Host "Press Ctrl+C to stop both." -ForegroundColor DarkGray
     npm run dev
 }
