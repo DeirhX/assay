@@ -395,6 +395,14 @@ const TONE = {
 };
 const toneOf = (token) => TONE[token] || TONE[(token || "").replace("_target", "")] || "neutral";
 const bandStr = (t) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
+// Render a symbol as a deep-dive link. The global a.tlink click handler in shell
+// intercepts it and calls openTicker (which live-pulls on a miss); the href is a
+// fallback for middle-click / open-in-new-tab.
+const symLink = (sym) => {
+  if (!sym) return "—";
+  const s = esc(sym);
+  return `<a class="tlink" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(sym)}" title="Open ${s} deep-dive"><strong>${s}</strong></a>`;
+};
 
 function renderProposalGate(m, panel) {
   const proposal = m.proposal || {};
@@ -451,7 +459,7 @@ function changesTable(changes) {
     const act = actRaw.replace("_target", "");
     const rule = (c.proposed_target && c.proposed_target.rule) || "";
     tr.innerHTML =
-      `<td><strong>${esc(c.symbol)}</strong></td>` +
+      `<td>${symLink(c.symbol)}</td>` +
       `<td><span class="strat-conv strat-conv-${esc(conv)}">${esc(conv || "—")}</span></td>` +
       `<td>${act ? `<span class="strat-tag strat-tag-${toneOf(actRaw)}">${esc(act)}</span>` : "—"}</td>` +
       `<td class="strat-cur">${esc(bandStr(c.current_target))}</td>` +
