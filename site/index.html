@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Assay — weigh the metal, not the hype</title>
-  <meta name="description" content="Assay is a local-first portfolio research and rebalancing workbench that cross-checks every number across Yahoo, SEC EDGAR, and FMP before you act on it.">
+  <meta name="description" content="Assay is a local-first, private-by-design portfolio research and rebalancing workbench. It runs entirely on your machine — your holdings never leave it — and cross-checks every number across Yahoo, SEC EDGAR, and FMP before you act on it.">
   <meta name="color-scheme" content="dark">
 
   <!-- Open Graph / social -->
   <meta property="og:type" content="website">
   <meta property="og:title" content="Assay — weigh the metal, not the hype">
-  <meta property="og:description" content="A local-first research and rebalancing workbench that tests every number before you trust it.">
+  <meta property="og:description" content="A local-first, private-by-design research and rebalancing workbench. Runs entirely on your machine — your holdings never leave it — and tests every number before you trust it.">
   <meta property="og:url" content="https://deirhx.github.io/assay/">
   <meta property="og:image" content="https://deirhx.github.io/assay/og.png">
   <meta property="og:image:width" content="1200">
@@ -18,7 +18,7 @@
   <meta property="og:image:alt" content="Assay — a local-first portfolio research and rebalancing workbench built on distrust.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Assay — weigh the metal, not the hype">
-  <meta name="twitter:description" content="A local-first research and rebalancing workbench that tests every number before you trust it.">
+  <meta name="twitter:description" content="A local-first, private-by-design research and rebalancing workbench. Runs entirely on your machine — your holdings never leave it — and tests every number before you trust it.">
   <meta name="twitter:image" content="https://deirhx.github.io/assay/og.png">
 
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -41,6 +41,7 @@
       <a href="#screens">See it</a>
       <a href="#pipeline">Pipeline</a>
       <a href="#stack">Under the hood</a>
+      <a href="#privacy">Privacy</a>
       <a href="#start">Quickstart</a>
     </nav>
     <div class="nav-cta">
@@ -62,7 +63,7 @@
       <div class="hero-glow" aria-hidden="true"></div>
       <div class="hero-grid" aria-hidden="true"></div>
       <div class="hero-inner">
-        <p class="eyebrow reveal">Local-first · single-user · open source</p>
+        <p class="eyebrow reveal">Local-first · private by design · your holdings never leave your machine</p>
         <h1 class="reveal">Weigh the metal,<br><span class="grad">not the hype.</span></h1>
         <p class="lede reveal">
           Assay is a portfolio research &amp; rebalancing workbench built on distrust.
@@ -295,6 +296,37 @@
         <div class="stack-card reveal">
           <h3>Private by construction</h3>
           <p>Holdings live in a separate private submodule; the public repo carries no NAV, P/L, or credentials. It runs on your machine, against your data, for an audience of one.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── privacy ───────────────────────── -->
+    <section class="section" id="privacy">
+      <div class="section-head reveal">
+        <span class="kicker">Privacy by design</span>
+        <h2>Your holdings stay on your machine.</h2>
+        <p class="section-sub">
+          Assay is local-first and single-user. It runs on <code>127.0.0.1</code>, has no accounts and
+          no hosted backend, and never uploads your portfolio anywhere. The only things that ever leave
+          your computer are the market-data lookups for the figures you ask about.
+        </p>
+      </div>
+      <div class="stack-grid">
+        <div class="stack-card reveal">
+          <h3>Runs entirely on localhost</h3>
+          <p>The server binds to <code>127.0.0.1</code> only — no cloud, no sign-up, no third-party app server. There is no instance of your data running on anyone else's hardware.</p>
+        </div>
+        <div class="stack-card reveal">
+          <h3>Holdings never leave</h3>
+          <p>Your positions, NAV, and P/L live in a private store on your own disk — never committed, never transmitted. Re-pulling prices reads from public sources; it never sends your portfolio out.</p>
+        </div>
+        <div class="stack-card reveal">
+          <h3>No telemetry, ever</h3>
+          <p>No analytics, no tracking, no phone-home. The code is open source, dependency-light, and auditable end to end — you can read exactly what it does.</p>
+        </div>
+        <div class="stack-card reveal">
+          <h3>You control what goes out</h3>
+          <p>Outbound calls are limited to the sources you actually use: Yahoo and SEC EDGAR for quotes and filings, optional FMP, and — only if you switch them on — Perplexity and your broker. Nothing else.</p>
         </div>
       </div>
     </section>
