@@ -83,7 +83,8 @@ from store import (  # noqa: E402
 from jobs import (  # noqa: E402
     new_job as _new_job, update_job as _update_job, public as _job_public,
     claim_active as _claim_active, release_active as _release_active,
-    any_active as _any_active_deep_job,
+    any_active as _any_active_deep_job, active_count as _active_browser_count,
+    max_slots as _max_browser_slots,
 )
 
 # Selectable chart windows -> (Yahoo range, interval). Short windows use intraday
@@ -103,8 +104,14 @@ PRICE_HISTORY_RANGES: dict[str, tuple[str, str]] = {
 
 _PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
 
-# The deep-research / login / analysis job registry lives in jobs.py; the single
-# active-browser slot is jobs.claim_active / jobs.release_active.
+# The deep-research / login / analysis job registry lives in jobs.py; concurrent
+# browser runs are bounded by jobs.claim_active / jobs.release_active (a counting
+# limit, default PPLX_MAX_CONCURRENT=3), each on its own cloned Chrome profile.
+def _slots_busy_msg() -> str:
+    return (f"all {_max_browser_slots()} Perplexity browser slots are busy "
+            "— wait for a run to finish, or raise PPLX_MAX_CONCURRENT")
+
+
 JOBS_LIST_LIMIT = 100  # cap the central Task Center feed (newest first)
 
 # Dev live-reload. Off unless started with --reload. _BOOT_TOKEN is recomputed
@@ -223,6 +230,8 @@ def _setup_status(*, run_checks: bool = False) -> dict:
             "sec_user_agent": bool(os.environ.get("SEC_USER_AGENT")),
             "fmp_api_key": bool(os.environ.get("FMP_API_KEY")),
             "pplx_profile_dir": os.environ.get("PPLX_PROFILE_DIR") or str(DEFAULT_PPLX_PROFILE_DIR),
+            "pplx_max_concurrent": _max_browser_slots(),
+            "pplx_browsers_active": _active_browser_count(),
         },
     }
 
@@ -2168,7 +2177,7 @@ def _set_auth_state(logged_in: bool, note: str = "") -> None:
 def _verify_login() -> dict:
     """Synchronous, ~8s live probe that refreshes the cached login flag."""
     if not _claim_active():
-        raise RuntimeError("a deep research / login job is already running")
+        raise RuntimeError(_slots_busy_msg())
     try:
         import pplx_deep_research as worker
         res = worker.check_login()
@@ -2270,6 +2279,7 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
         return worker.run_deep_research(
             prompt, window_mode=window_mode,
             clarify_answer=_clarify_answer_for(segment), progress=progress,
+            clone_profile=True,  # run on a throwaway clone so runs can parallelize
             on_url=lambda url: _update_job(job_id, source_url=url),
         )
 
@@ -2337,7 +2347,7 @@ def _start_deep_research(body: dict) -> dict:
     if window_mode not in ("offscreen", "visible", "headless"):
         raise ValueError("window_mode must be offscreen, visible, or headless")
     if not _claim_active():
-        raise RuntimeError("a deep research / login job is already running")
+        raise RuntimeError(_slots_busy_msg())
     job = _new_job("deep_research", segment=segment, date=date, window_mode=window_mode)
     threading.Thread(target=_run_deep_job,
                      args=(job["id"], segment, date, prompt, window_mode),
@@ -2347,7 +2357,7 @@ def _start_deep_research(body: dict) -> dict:
 
 def _start_login() -> dict:
     if not _claim_active():
-        raise RuntimeError("a deep research / login job is already running")
+        raise RuntimeError(_slots_busy_msg())
     job = _new_job("login")
     threading.Thread(target=_run_login_job, args=(job["id"],), daemon=True).start()
     return _job_public(job)
@@ -2357,7 +2367,7 @@ def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
     def call(worker, progress):
         # The import URL is known up front -> surface it as the live link now.
         _update_job(job_id, source_url=url)
-        return worker.fetch_by_url(url, progress=progress)
+        return worker.fetch_by_url(url, clone_profile=True, progress=progress)
 
     def handle(res: dict) -> None:
         status = res.get("status")
@@ -2395,7 +2405,7 @@ def _start_import(body: dict) -> dict:
     if "perplexity.ai" not in url:
         raise ValueError("a perplexity.ai run URL is required")
     if not _claim_active():
-        raise RuntimeError("a deep research / login job is already running")
+        raise RuntimeError(_slots_busy_msg())
     job = _new_job("import", segment=segment, date=date)
     threading.Thread(target=_run_import_job,
                      args=(job["id"], segment, date, url),

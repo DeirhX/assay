@@ -32,11 +32,34 @@ disables the automated path and leaves the manual paste flow working.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
 PPLX_HOME = "https://www.perplexity.ai"
+
+# A Chrome user-data-dir is hard-locked to one running browser, so two runs cannot
+# share the logged-in automation profile. To run several Deep Researches at once we
+# clone the base profile into a throwaway dir per run (the clone carries cookies +
+# Local State, so it is logged in too). This lock serializes the operations that
+# touch the BASE profile directly -- login (writes it), check_login (opens it), and
+# the brief clone copy -- so a clone never copies a profile mid-write and two
+# browsers never open the base dir at once. Concurrent runs then proceed on their
+# own clones with no further coordination.
+_BASE_LOCK = threading.Lock()
+
+# Cache/scratch subtrees worth skipping when cloning: they are large, regenerated
+# on demand, and irrelevant to the logged-in session (which lives in cookies +
+# Local State). Skipping them turns a multi-hundred-MB copy into a few MB.
+_CLONE_IGNORE = shutil.ignore_patterns(
+    "Cache", "Code Cache", "GPUCache", "ShaderCache", "GrShaderCache",
+    "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "GraphiteDawnCache",
+    "Crashpad", "Crash Reports", "blob_storage", "Service Worker",
+    "component_crx_cache", "extensions_crx_cache", "*.log",
+)
 
 # Deep Research has THREE relevant states, not two:
 #   running   -- a Stop button exists (model is working)
@@ -187,6 +210,37 @@ _OPEN_LINKS_JS = """() => {
 
 def default_profile_dir() -> Path:
     return Path(os.environ.get("PPLX_PROFILE_DIR") or (Path.home() / ".cursor" / "pplx-automation-profile"))
+
+
+def clone_base_profile(base: Optional[Path] = None) -> Path:
+    """Copy the logged-in base profile into a throwaway dir and return the path
+    to the cloned profile. The caller owns the clone and must delete its parent
+    (``clone.parent``) when done -- use ``cleanup_clone`` for that.
+
+    The copy carries cookies + Local State (where Chrome keeps the DPAPI-wrapped
+    cookie key on Windows), so on the same user account the clone is logged in
+    too; caches are skipped to keep it cheap. The copy runs under ``_BASE_LOCK``
+    so it can't race a login that is rewriting the base. A missing/empty base
+    yields an empty clone -- the run will then simply report ``needs_login``.
+    """
+    base = base or default_profile_dir()
+    root = Path(tempfile.mkdtemp(prefix="pplx-run-"))
+    clone = root / "profile"
+    with _BASE_LOCK:
+        if base.exists() and any(base.iterdir()):
+            shutil.copytree(base, clone, ignore=_CLONE_IGNORE, dirs_exist_ok=True)
+            return clone
+    clone.mkdir(parents=True, exist_ok=True)
+    return clone
+
+
+def cleanup_clone(clone: Optional[Path]) -> None:
+    """Best-effort removal of a clone created by ``clone_base_profile``. Chrome
+    may briefly hold handles after close on Windows, so failures are swallowed --
+    a leftover temp dir is harmless."""
+    if not clone:
+        return
+    shutil.rmtree(clone.parent, ignore_errors=True)
 
 
 def _noop(_msg: str) -> None:
@@ -387,7 +441,10 @@ def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
 
     profile_dir = profile_dir or default_profile_dir()
     progress("Launching a visible browser for login...")
-    with sync_playwright() as pw:
+    # Login writes the base profile; hold _BASE_LOCK for the whole session so no
+    # concurrent run clones a half-written profile (clones are cheap and brief, so
+    # they just wait out the login).
+    with _BASE_LOCK, sync_playwright() as pw:
         ctx = _launch(pw, window_mode="visible", profile_dir=profile_dir)
         try:
             page = _page(ctx)
@@ -421,7 +478,9 @@ def check_login(profile_dir: Optional[Path] = None,
 
     profile_dir = profile_dir or default_profile_dir()
     progress("Checking Perplexity login...")
-    with sync_playwright() as pw:
+    # Opening the base dir takes Chrome's profile lock, so serialize against login
+    # and clone copies via _BASE_LOCK (this probe is ~8s).
+    with _BASE_LOCK, sync_playwright() as pw:
         ctx = _launch(pw, window_mode="offscreen", profile_dir=profile_dir)
         try:
             page = _page(ctx)
@@ -463,6 +522,7 @@ def _scrape(page):
 
 def fetch_by_url(url: str, *, window_mode: str = "offscreen",
                  profile_dir: Optional[Path] = None, timeout_s: int = 150,
+                 clone_profile: bool = False,
                  progress: Callable[[str], None] = _noop) -> dict:
     """Recover a COMPLETED Perplexity run by its URL. Spends no quota -- it only
     reads. This is the safety net: if a run ever finishes in Perplexity but does
@@ -478,9 +538,10 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
     # A "?sm=r" (shared-mode) suffix makes Perplexity show a login wall even to the
     # thread owner; the bare thread URL opens as ourselves. Drop the query.
     url = url.split("?")[0]
-    profile_dir = profile_dir or default_profile_dir()
+    clone = clone_base_profile() if (clone_profile and profile_dir is None) else None
+    run_profile = clone or profile_dir or default_profile_dir()
     with sync_playwright() as pw:
-        ctx = _launch(pw, window_mode=window_mode, profile_dir=profile_dir)
+        ctx = _launch(pw, window_mode=window_mode, profile_dir=run_profile)
         try:
             page = _page(ctx)
             progress("Opening the run URL...")
@@ -515,6 +576,7 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
             return {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
         finally:
             ctx.close()
+            cleanup_clone(clone)
 
 
 def _answer_clarification(page, answer: str) -> bool:
@@ -542,6 +604,7 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                       profile_dir: Optional[Path] = None, timeout_s: int = 900,
                       poll_interval_s: int = 30, dry_run: bool = False,
                       clarify_answer: Optional[str] = None, max_clarify: int = 2,
+                      clone_profile: bool = False,
                       progress: Callable[[str], None] = _noop,
                       on_url: Callable[[str], None] = _noop) -> dict:
     """Run one Deep Research query end to end.
@@ -564,10 +627,15 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
     prompt = (prompt or "").strip()
     if not prompt:
         return {"status": "error", "detail": "empty prompt"}
-    profile_dir = profile_dir or default_profile_dir()
+    # A caller that passes an explicit profile_dir gets exactly that; otherwise,
+    # when clone_profile is set, run on a throwaway clone of the logged-in base so
+    # this run can proceed alongside other concurrent runs (Chrome locks a profile
+    # to one browser). The clone is deleted in the finally below.
+    clone = clone_base_profile() if (clone_profile and profile_dir is None) else None
+    run_profile = clone or profile_dir or default_profile_dir()
 
     with sync_playwright() as pw:
-        ctx = _launch(pw, window_mode=window_mode, profile_dir=profile_dir)
+        ctx = _launch(pw, window_mode=window_mode, profile_dir=run_profile)
         try:
             page = _page(ctx)
             progress("Opening Perplexity...")
@@ -698,6 +766,7 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
             return {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
         finally:
             ctx.close()
+            cleanup_clone(clone)
 
 
 def _main(argv=None) -> int:

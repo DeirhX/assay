@@ -48,14 +48,39 @@ class Cancel(unittest.TestCase):
 
 
 class Concurrency(unittest.TestCase):
-    def test_active_slot_is_exclusive(self):
-        self.assertTrue(jobs.claim_active())
-        try:
-            self.assertFalse(jobs.claim_active())  # already held
-        finally:
+    def setUp(self):
+        # Tests must not depend on PPLX_MAX_CONCURRENT; pin a known ceiling and
+        # drain any slots a prior test leaked.
+        self._restore = jobs.max_slots()
+        while jobs.active_count():
             jobs.release_active()
-        self.assertTrue(jobs.claim_active())
+        jobs.configure_max_slots(2)
+
+    def tearDown(self):
+        while jobs.active_count():
+            jobs.release_active()
+        jobs.configure_max_slots(self._restore)
+
+    def test_claims_up_to_the_limit_then_refuses(self):
+        self.assertTrue(jobs.claim_active())   # 1/2
+        self.assertTrue(jobs.claim_active())   # 2/2
+        self.assertEqual(jobs.active_count(), 2)
+        self.assertFalse(jobs.claim_active())  # ceiling reached
+        # Freeing one slot lets exactly one more claim through.
         jobs.release_active()
+        self.assertEqual(jobs.active_count(), 1)
+        self.assertTrue(jobs.claim_active())
+        self.assertFalse(jobs.claim_active())
+
+    def test_release_never_goes_negative(self):
+        jobs.release_active()  # nothing held
+        self.assertEqual(jobs.active_count(), 0)
+        self.assertTrue(jobs.claim_active())
+
+    def test_configure_floors_at_one(self):
+        self.assertEqual(jobs.configure_max_slots(0), 1)
+        self.assertTrue(jobs.claim_active())
+        self.assertFalse(jobs.claim_active())
 
     def test_find_predicate(self):
         job = jobs.new_job("ticker_qa", symbol="FINDME")
