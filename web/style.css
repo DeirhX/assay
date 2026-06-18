@@ -1914,6 +1914,11 @@ a.tlink:hover { border-bottom-style: solid; }
 .hist-member > td { background: var(--panel-2); font-size: 12px; }
 .hist-member-sym { padding-left: 26px !important; color: var(--muted); }
 
+/* Clickable ticker in the history name column — opens the dossier. Overrides
+   the muted member-row colour so the link reads as interactive. */
+.hist-tick { color: var(--accent); cursor: pointer; }
+.hist-tick:hover { text-decoration: underline; }
+
 /* Native-currency code chip — muted, uppercase, sits beside a value. */
 .ccy {
   font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
