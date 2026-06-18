@@ -521,6 +521,49 @@ def _segment_prompt(name: str) -> dict:
     return {"segment": slug, "date": today, "prompt": prompt}
 
 
+def _ticker_deep_prompt(symbol: str) -> dict:
+    """Single-name Deep Research prompt: the expensive, on-demand counterpart to
+    the cheap per-ticker CLI analysis. Subject is one company, not a segment, so
+    the stem is namespaced ``ticker-<sym>`` and it reuses the same Perplexity
+    run/save/Q&A machinery without polluting the segment list. The FORMAT block
+    mirrors the segment prompt so the scraper's JSON guard and citation handling
+    behave identically."""
+    sym = (symbol or "").strip().upper()
+    if not _TICKER_SHAPE.match(sym):
+        raise ValueError(f"not a recognisable ticker: {symbol!r}")
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    weight = holdings_weights().get(sym)
+    prompt = (
+        f"Deep research on {sym} as a long-term investment, as of {today}.\n"
+        "Cover, with evidence: what the business does and how it earns money; the "
+        "most recent quarterly results and management guidance; valuation versus "
+        "its own history and its closest peers; competitive positioning and moat; "
+        "growth drivers and near-term catalysts; the main risks and red flags; and "
+        "an explicit bull case and bear case over the next 6-24 months.\n"
+        f"Identify {sym}'s closest public peers and compare them head-to-head; call "
+        f"out any peer that looks more attractive than {sym} on its own merits.\n"
+        "End with a clear portfolio stance \u2014 accumulate, hold, trim, or avoid "
+        "\u2014 and the specific evidence that would flip that stance.\n"
+        "Include source citations and distinguish facts from opinion. Call out which "
+        "numeric claims need deterministic verification.\n"
+        "On first mention of any public company, append its primary exchange ticker "
+        "with a $ prefix, e.g. 'ServiceNow ($NOW)'. Include a peer comparison table "
+        "with a 'Ticker' column.\n"
+        "Do not ask clarifying questions; if anything is ambiguous, state your "
+        "assumptions and proceed.\n"
+        "FORMAT: write a prose report in Markdown with section headings, paragraphs, "
+        "bullet lists, and Markdown tables. Do NOT return the answer as a JSON object "
+        "or array, and do NOT wrap the whole response in a code block. Structured "
+        "data belongs in Markdown tables, not JSON.\n"
+    )
+    if weight is not None:
+        prompt += (
+            f"\nFor context only (do not let it bias your conclusion), I currently "
+            f"hold {sym} at {weight:.2f}% of my invested book.\n"
+        )
+    return {"segment": f"ticker-{sym.lower()}", "symbol": sym, "date": today, "prompt": prompt}
+
+
 def _deep_runs() -> list[dict]:
     runs = {}
     for path in sorted(DEEP_DIR.glob("*")):
@@ -559,13 +602,25 @@ def _enrich_deep_run(rec: dict) -> None:
     segment = m.group(1) if m else stem
     date = m.group(2) if m else ""
     seg_def = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
-    title = seg_def.get("title") or segment.replace("-", " ").title()
+    # A single-name Deep Research run is namespaced `ticker-<sym>` and has no
+    # segment definition; synthesise a human title and surface the symbol so the
+    # ticker deep-dive can claim its own runs.
+    is_ticker = not seg_def and segment.startswith("ticker-")
+    symbol = segment[len("ticker-"):].upper() if is_ticker else (seg_def.get("symbol") or "")
+    if seg_def.get("title"):
+        title = seg_def["title"]
+    elif is_ticker:
+        title = f"{symbol} \u2014 deep research"
+    else:
+        title = segment.replace("-", " ").title()
     sources = _load(DEEP_DIR / f"{stem}.sources.json") or {}
     proposal = _load(DEEP_DIR / f"{stem}.target-proposal.json") or {}
     rec.update({
         "segment": segment,
         "date": date,
         "title": title,
+        "symbol": symbol,
+        "kind": "ticker" if is_ticker else "segment",
         "source_count": len(sources.get("citations") or []),
         "source_url": sources.get("source_url") or "",
         "generated_at": sources.get("extracted_at") or "",
@@ -1140,36 +1195,6 @@ def _attach_research_overlay(plan: dict) -> None:
             continue
         row["research"] = overlay
         row["research_conflict"] = _research_conflict(row.get("action"), overlay["thesis_action"])
-
-
-# Root-level static pages that are the SPA shell or the topbar landing, not
-# stand-alone analyses -- excluded from the Analyses tab's "Written reports".
-STATIC_REPORT_EXCLUDE = {"index.html", "next-steps.html"}
-
-
-def _static_reports() -> list[dict]:
-    """The hand-authored mini-site report pages (ticker deep-dives + thematic
-    reviews) served from the repo root. Discovered from disk so new ones show up
-    in the Analyses tab without touching the top menu."""
-    reports = []
-    for path in sorted(REPO_ROOT.glob("*.html")):
-        if path.name in STATIC_REPORT_EXCLUDE:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        m = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
-        stem = path.stem
-        symbol = stem[:-len("-detail")].upper() if stem.endswith("-detail") else None
-        reports.append({
-            "href": "/" + path.name,
-            "file": path.name,
-            "title": (m.group(1).strip() if m else path.name),
-            "symbol": symbol,
-            "kind": "ticker" if symbol else "thematic",
-            "modified": dt.datetime.fromtimestamp(
-                path.stat().st_mtime, dt.timezone.utc).isoformat(timespec="seconds"),
-        })
-    reports.sort(key=lambda r: (r["kind"] != "ticker", r["title"].lower()))
-    return reports
 
 
 _TICKER_SHAPE = re.compile(r"^[A-Z][A-Z0-9.]{0,5}$")
@@ -2602,7 +2627,6 @@ _GET_EXACT = {
     "/api/segments": "_get_segments",
     "/api/peer-stats": "_get_peer_stats",
     "/api/deep-runs": "_get_deep_runs",
-    "/api/reports": "_get_reports",
     "/api/error-log": "_get_error_log",
     "/api/tickers": "_get_tickers",
     "/api/ticker-index": "_get_ticker_index",
@@ -2877,9 +2901,6 @@ class Handler(BaseHTTPRequestHandler):
     def _get_deep_runs(self, path, query):
         return self._send_json({"runs": _deep_runs()})
 
-    def _get_reports(self, path, query):
-        return self._send_json({"reports": _static_reports()})
-
     def _get_tickers(self, path, query):
         return self._send_json({"tickers": _known_tickers()})
 
@@ -2929,8 +2950,11 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({"jobs": jobs.list_public()[:JOBS_LIST_LIMIT]})
 
     def _get_deep_prompt(self, path, query):
+        ticker = (query.get("ticker") or [""])[0].strip()
         name = (query.get("segment") or [""])[0]
         try:
+            if ticker:
+                return self._send_json(_ticker_deep_prompt(ticker))
             return self._send_json(_segment_prompt(name))
         except ValueError as exc:
             return self._send_error_json(400, str(exc))

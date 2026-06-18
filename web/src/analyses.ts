@@ -364,11 +364,10 @@ async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
   list.innerHTML = '<div class="hint">Loading…</div>';
-  let runs, reports, segments;
+  let runs, segments;
   try {
-    [runs, reports, segments] = await Promise.all([
+    [runs, segments] = await Promise.all([
       api("/api/deep-runs").then((d) => d.runs || []),
-      api("/api/reports").then((d) => d.reports || []).catch(() => []),
       api("/api/segments").then((d) => d.segments || []).catch(() => []),
     ]);
   } catch (e) {
@@ -456,19 +455,7 @@ async function loadAnalyses() {
     list.appendChild(el("div", "analyses-group-label", "Other runs"));
     orphanRuns.forEach((r) => list.appendChild(runRow(r)));
   }
-  if (reports.length) {
-    list.appendChild(el("div", "analyses-group-label", "Written reports"));
-    reports.forEach((rp) => {
-      const a = el("a", "analysis-row report-row");
-      a.href = rp.href;
-      const tag = rp.kind === "ticker" ? (rp.symbol || "ticker") : "thematic";
-      a.innerHTML =
-        `<div class="analysis-row-title">${esc(rp.title)} <span class="open-ext">↗</span></div>` +
-        `<div class="analysis-row-meta">${esc(tag)} · static page</div>`;
-      list.appendChild(a);
-    });
-  }
-  if (!runs.length && !reports.length && !segments.length) {
+  if (!runs.length && !segments.length) {
     list.innerHTML = '<div class="hint">No analyses or segments yet. Use “+ New analysis” to start one.</div>';
     $("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
     return;

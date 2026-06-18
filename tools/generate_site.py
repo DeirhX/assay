@@ -40,13 +40,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
 SUMMARY_MD = REPO_ROOT / "data" / "current-holdings-summary.md"
 
-# Symbols that have their own hand-authored deep-dive page, so generated tables
-# can link to them.
-DETAIL_PAGES = {
-    "AMD": "amd-detail.html", "ARM": "arm-detail.html", "SOFI": "sofi-detail.html",
-    "PYPL": "pypl-detail.html", "EEFT": "eeft-detail.html",
-}
-
 # Claim metrics surfaced on detail pages, mapped to their short fragment suffix.
 CLAIM_METRICS = {
     "price_usd": "price",
@@ -211,11 +204,17 @@ def _esc(text: object) -> str:
 
 
 def _name_cell(name: str, kind: str) -> str:
-    """Link a symbol to its deep-dive page if one exists; sleeves render plain."""
+    """Link a symbol to its systematic deep-dive in the SPA; sleeves render plain.
+
+    The old hand-authored ``<sym>-detail.html`` pages were retired in favour of
+    the data-backed deep-dive view, so every symbol now points at that instead
+    (it works for any ticker, not just the five that once had a static page)."""
     if kind == "sleeve":
         return _esc(name)
-    page = DETAIL_PAGES.get(name.upper())
-    return f'<a href="{page}">{_esc(name)}</a>' if page else _esc(name)
+    sym = (name or "").strip().upper()
+    if not sym:
+        return _esc(name)
+    return f'<a href="web/index.html?ticker={_esc(sym)}">{_esc(name)}</a>'
 
 
 def _price_per_share(holdings: dict) -> dict[str, float]:
