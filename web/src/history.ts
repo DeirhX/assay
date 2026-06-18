@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { $, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
 import { pollDeepJob } from "./errors";
+import { openTicker } from "./rebalance";
 
 // ---- portfolio history -----------------------------------------------------
 // Reconstructed from read-only Flex: the full executed-trade ledger plus the
@@ -174,6 +175,27 @@ const ccyTag = (code) => (code ? ` <span class="ccy">${esc(code)}</span>` : "");
 // nothing to expand) so expandable and plain names share the same left edge.
 const caretCell = (expandable) =>
   `<span class="hist-caret">${expandable ? "\u25B8" : ""}</span>`;
+
+// Clickable ticker that opens the dossier (cache-first, via the shared
+// rebalance opener). data-ticker carries the symbol so one per-row wiring pass
+// can find it. ``text`` lets the visible label differ from the symbol (e.g.
+// "GEN shares" links to GEN); defaults to the symbol itself.
+const tickerSpan = (sym, text = null) =>
+  `<span class="hist-tick" data-ticker="${esc(sym)}" title="Open ${esc(sym)} dossier">` +
+  `${esc(text == null ? sym : text)}</span>`;
+
+// Wire every .hist-tick inside a freshly built row to open its dossier. Stops
+// propagation so clicking the ticker in an expandable row doesn't also toggle
+// the row open/closed (the row's own click handler sits above it in bubbling).
+function wireTickers(scope) {
+  scope.querySelectorAll(".hist-tick[data-ticker]").forEach((node) => {
+    node.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const sym = node.dataset.ticker;
+      if (sym) openTicker(sym);
+    });
+  });
+}
 
 let _wired = false;
 
@@ -377,8 +399,9 @@ function sectorTable(secGroups, baseCcy) {
     const memberRows = g.groups.map((m) => {
       const mtr = el("tr", "hist-member");
       mtr.hidden = true;
-      mtr.innerHTML = `<td class="risk-pos-sym hist-member-sym">${esc(m.label)}</td>` + activityCells(m);
+      mtr.innerHTML = `<td class="risk-pos-sym hist-member-sym">${tickerSpan(m.key, m.label)}</td>` + activityCells(m);
       body.appendChild(mtr);
+      wireTickers(mtr);
       return mtr;
     });
     tr.addEventListener("click", () => {
@@ -745,17 +768,21 @@ function activityTable(groups, baseCcy) {
       const badge = g.opt_count
         ? ` <span class="hist-optbadge">${g.opt_count} opt${g.opt_count > 1 ? "s" : ""}</span>`
         : "";
-      tr.innerHTML = `<td class="risk-pos-sym">${caretCell(expandable)}${esc(g.label)}${badge}</td>` + activityCells(g);
+      tr.innerHTML = `<td class="risk-pos-sym">${caretCell(expandable)}${tickerSpan(g.key, g.label)}${badge}</td>` + activityCells(g);
       body.appendChild(tr);
+      wireTickers(tr);
       if (!expandable) return;
       const memberRows = g.members.map((m) => {
         const mtr = el("tr", "hist-member");
         mtr.hidden = true;
         // Distinguish the equity leg from contracts when both sit under one name.
-        const label = m.is_option ? contractLabel(m) : `${m.symbol} shares`;
+        // The equity leg's ticker links to its dossier; option contracts have no
+        // ticker text of their own (the parent group row already links it).
+        const labelHtml = m.is_option ? esc(contractLabel(m)) : `${tickerSpan(m.symbol)} shares`;
         mtr.innerHTML =
-          `<td class="risk-pos-sym hist-member-sym">${esc(label)}</td>` + activityCells(m);
+          `<td class="risk-pos-sym hist-member-sym">${labelHtml}</td>` + activityCells(m);
         body.appendChild(mtr);
+        wireTickers(mtr);
         return mtr;
       });
       tr.addEventListener("click", () => {
@@ -798,18 +825,21 @@ function tradeTable(trades, baseCcy) {
       const tr = el("tr");
       const buy = t.side === "BUY";
       const pnlCls = t.realized_pnl > 0 ? "good" : t.realized_pnl < 0 ? "bad" : "muted";
-      // Options: show the readable contract ("AMD 19APR24 7.5 P") not the cryptic symbol.
-      const name = t.is_option ? (t.description || t.symbol) : t.symbol;
+      // Options: show the readable contract ("AMD 19APR24 7.5 P") not the cryptic
+      // symbol, and leave it un-linked (it's a contract, not a ticker). Equities
+      // link their ticker to the dossier.
+      const nameHtml = t.is_option ? esc(t.description || t.symbol) : tickerSpan(t.symbol);
       // Price + realized P&L are NATIVE currency (per ticker); cash flow is base.
       tr.innerHTML =
         `<td>${esc(t.date)}</td>` +
         `<td class="${buy ? "good" : "bad"}">${esc(t.side)}</td>` +
-        `<td class="risk-pos-sym">${esc(name)}</td>` +
+        `<td class="risk-pos-sym">${nameHtml}</td>` +
         `<td class="num">${esc(Math.abs(Number(t.quantity)))}</td>` +
         `<td class="num">${esc(t.price)}${ccyTag(t.currency)}</td>` +
         `<td class="num">${sensitive(fmtSigned(t.base_cash_flow), "cash flow")}</td>` +
         `<td class="num ${pnlCls}">${t.realized_pnl ? sensitive(fmtSigned(t.realized_pnl), "realized pnl") + ccyTag(t.currency) : "\u2014"}</td>`;
       body.appendChild(tr);
+      wireTickers(tr);
     });
     drawPager(pager, pg, (p) => { page = p; draw(); });
   };
