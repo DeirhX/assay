@@ -9,23 +9,37 @@ state so the HTTP layer and the job runners agree on a single source of truth.
 Jobs are in-memory and vanish on restart; the durable record is the artifacts
 written to disk.
 
-Concurrency: a single ``_ACTIVE`` flag guards the Perplexity browser, which uses
-one persistent Chrome profile that cannot be opened twice and spends scarce Pro
-quota. Take it with ``claim_active`` before a browser run and drop it with
-``release_active`` after. CLI analyses deliberately do NOT take it -- they are
-independent subprocesses and may run alongside a browser run.
+Concurrency: browser runs (Perplexity Deep Research / login / import) used to be
+serialized one-at-a-time because they shared one un-clonable Chrome profile. They
+are now bounded by a counting limit instead, so several can run in parallel --
+each run gets its own throwaway clone of the logged-in profile (see
+``pplx_deep_research.clone_base_profile``), which is what lets multiple Chromiums
+coexist. Take a slot with ``claim_active`` before a browser run and drop it with
+``release_active`` after. The ceiling defaults to ``PPLX_MAX_CONCURRENT`` (3) and
+is overridable at runtime via ``configure_max_slots``. CLI analyses deliberately
+do NOT take a slot -- they are independent subprocesses and run alongside.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import os
 import threading
 import uuid
 from typing import Callable
 
+
+def _env_max_slots() -> int:
+    try:
+        return max(1, int(os.environ.get("PPLX_MAX_CONCURRENT", "3") or "3"))
+    except (TypeError, ValueError):
+        return 3
+
+
 _JOBS: dict[str, dict] = {}
 _LOCK = threading.Lock()
-_ACTIVE = {"running": False}
+# Number of browser slots currently held, and the ceiling on concurrent runs.
+_ACTIVE = {"held": 0, "max": _env_max_slots()}
 
 
 def _now() -> str:
@@ -133,22 +147,45 @@ def find(predicate: Callable[[dict], bool]) -> bool:
 
 
 def claim_active() -> bool:
-    """Take the single browser/login slot; False if it's already held."""
+    """Take one of the bounded browser slots; False if all are in use."""
     with _LOCK:
-        if _ACTIVE["running"]:
+        if _ACTIVE["held"] >= _ACTIVE["max"]:
             return False
-        _ACTIVE["running"] = True
+        _ACTIVE["held"] += 1
         return True
 
 
 def release_active() -> None:
     with _LOCK:
-        _ACTIVE["running"] = False
+        if _ACTIVE["held"] > 0:
+            _ACTIVE["held"] -= 1
+
+
+def active_count() -> int:
+    """How many browser slots are currently held."""
+    with _LOCK:
+        return _ACTIVE["held"]
+
+
+def max_slots() -> int:
+    """The ceiling on concurrent browser runs."""
+    with _LOCK:
+        return _ACTIVE["max"]
+
+
+def configure_max_slots(n: int) -> int:
+    """Set the concurrent-browser ceiling (>=1). Returns the value applied.
+
+    Lowering it does not evict slots already held; it just stops new claims
+    until enough finish. Used by the server at boot and by tests."""
+    with _LOCK:
+        _ACTIVE["max"] = max(1, int(n))
+        return _ACTIVE["max"]
 
 
 def any_active() -> bool:
-    """True if the browser slot is held or any job is queued/running."""
+    """True if any browser slot is held or any job is queued/running."""
     with _LOCK:
-        if _ACTIVE["running"]:
+        if _ACTIVE["held"] > 0:
             return True
         return any(j.get("state") in ("queued", "running") for j in _JOBS.values())
