@@ -8,14 +8,15 @@ The repository root. All page paths below are relative to it.
 
 | Page | Purpose |
 | --- | --- |
-| `next-steps.html` | Main broad rebalance execution checklist: sells, trims, buys, tax handling, ETF guidance, 1-3 month targets. |
-| `amd-detail.html` | AMD detail page: tangible AI GPU/CPU momentum, expensive valuation, hold core but trim concentration. |
-| `arm-detail.html` | ARM detail page: real AI/data-center royalty momentum, extreme valuation, do not add and trim concentration. |
-| `loser-position-recovery.html` | Normalized comparison dashboard for `SOFI`, `PYPL`, and `EEFT`. Links to the broader plan and stock detail pages. |
-| `sofi-detail.html` | SOFI detail page: keep most, trim only if cash/risk requires it. |
-| `pypl-detail.html` | PYPL detail page: trim 50-75%, keep value-turnaround stub. |
-| `eeft-detail.html` | EEFT detail page: sell first, keep at most a monitored stub. |
+| `next-steps.html` | Main broad rebalance execution checklist: sells, trims, buys, tax handling, ETF guidance, 1-3 month targets. The only remaining hand-authored landing page; symbol cells link into the SPA deep-dive. |
 | `site.css` | Shared visual system for the root static pages: tokens, navigation pills, cards, legends, tables, notes, and responsive layout. |
+
+The old per-stock `<sym>-detail.html` pages and `loser-position-recovery.html`
+were **retired**: per-ticker narrative now lives in the SPA deep-dive (live data
++ on-demand CLI analysis + on-demand single-name Deep Research), and the loser
+review became the `loser-position-recovery` research segment
+(`data/segments/loser-position-recovery.json`), runnable as a thematic Deep
+Research from the Pipeline tab.
 
 ## Data Files
 
@@ -53,18 +54,12 @@ Paths are relative to the repository root. To produce an openable `file://` link
 build it from the current workspace's absolute path rather than hardcoding a drive.
 
 - Overview plan: `next-steps.html`
-- AMD detail: `amd-detail.html`
-- ARM detail: `arm-detail.html`
-- Loser dashboard: `loser-position-recovery.html`
-- SOFI detail: `sofi-detail.html`
-- PYPL detail: `pypl-detail.html`
-- EEFT detail: `eeft-detail.html`
+- Per-ticker detail: the SPA deep-dive, `web/index.html?ticker=<SYM>` (replaces the retired `<sym>-detail.html` pages).
+- Loser review: the `loser-position-recovery` research segment in the Pipeline/Reports tabs.
 
 ## Navigation Expectations
 
-- `next-steps.html` should link to the loser-position review and each stock detail page.
-- `loser-position-recovery.html` should link to `next-steps.html`, `amd-detail.html`, `arm-detail.html`, and each loser stock detail page.
-- Each stock detail page should link back to `next-steps.html`; loser stock pages should also link back to `loser-position-recovery.html`.
+- `next-steps.html` symbol cells link into the SPA deep-dive (`web/index.html?ticker=<SYM>`), produced by `generate_site._name_cell`; the top nav also links to the deep-dive and Reports.
 - Root static pages should link to `web/index.html`; when served through `tools/serve.py`, `/web/index.html` and root-level `.html`/`.css`/`.js` assets are served through the static-file guard.
 
 ## Sensitive Data Rules

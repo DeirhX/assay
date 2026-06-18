@@ -394,6 +394,7 @@ function renderDeepDive(rec) {
   out.appendChild(card);
 
   out.appendChild(renderAnalysisCard(rec));
+  out.appendChild(renderDeepResearchCard(rec));
   out.appendChild(renderQaCard(rec));
 
   const biz = renderBusiness(rec);
@@ -523,9 +524,9 @@ async function runningAnalysisJob(symbol) {
 }
 
 // In-depth, on-demand analysis via the local agent CLIs (Claude -> Cursor).
-// Cheap reasoning pass over the deterministic numbers above; Perplexity Deep
-// Research stays reserved for whole-segment crawls. Shows the latest saved note
-// if one exists, otherwise a button to generate one.
+// The cheap tier: a reasoning pass over the deterministic numbers above, no web
+// crawl. The expensive, web-sourced tier is the Deep Research card below. Shows
+// the latest saved note if one exists, otherwise a button to generate one.
 function renderAnalysisCard(rec) {
   const sym = rec.symbol;
   const card = el("div", "card analysis-card");
@@ -645,6 +646,140 @@ function renderAnalysisCard(rec) {
     actions.appendChild(reFresh);
     actions.appendChild(exportBtn);
     body.appendChild(actions);
+  }
+
+  show();
+  return card;
+}
+
+// The expensive tier: a single-name Perplexity Deep Research crawl, run on
+// demand. It reuses the segment pipeline's run/save/Q&A machinery with a
+// `ticker-<sym>` subject, so it never spends quota unless you ask, surfaces any
+// past runs for reuse, and opens the full report (with follow-up Q&A) in the
+// Reports reader. This is the systematic replacement for the old hand-authored
+// "<sym> Detail" static pages.
+function renderDeepResearchCard(rec) {
+  const sym = rec.symbol;
+  const card = el("div", "card deepresearch-card");
+  const head = el("div", "analysis-head");
+  head.appendChild(el("h2", "section", "Deep Research"));
+  head.appendChild(el("span", "muted dr-sub", "Web-sourced \u00b7 Perplexity \u00b7 on demand"));
+  card.appendChild(head);
+
+  const status = el("div", "dd-status dr-status");
+  const body = el("div", "analysis-body");
+  card.appendChild(status);
+  card.appendChild(body);
+
+  // Strip non-alphanumerics so a dossier symbol like "TUI1.DE" matches a saved
+  // run's slug-derived symbol "TUI1-DE" without reimplementing the backend slug.
+  const norm = (s) => String(s || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const want = norm(sym);
+
+  function openRun(stem) {
+    pushNav({ view: "analyses", run: stem });
+    setActiveView("analyses");
+  }
+
+  function goLogin() {
+    pushNav({ view: "pipeline" });
+    setActiveView("pipeline");
+  }
+
+  function runRowEl(r) {
+    const btn = el("button", "dr-run-row");
+    btn.type = "button";
+    btn.title = "Open the full report and follow-up Q&A in Reports";
+    const srcs = r.source_count
+      ? ` \u00b7 ${r.source_count} source${r.source_count === 1 ? "" : "s"}` : "";
+    btn.innerHTML =
+      `<span class="dr-run-date">${esc(r.date || "saved report")}</span>` +
+      `<span class="dr-run-meta">deep research${esc(srcs)}</span>` +
+      `<span class="sx-go" aria-hidden="true">\u2197</span>`;
+    btn.addEventListener("click", () => openRun(r.stem));
+    return btn;
+  }
+
+  async function startRun() {
+    status.classList.remove("err");
+    body.innerHTML = "";
+    status.innerHTML = `<span class="spinner"></span> building prompt&hellip;`;
+    try {
+      const p = await api("/api/deep-prompt?ticker=" + encodeURIComponent(sym));
+      status.innerHTML =
+        `<span class="spinner"></span> running Deep Research for ${esc(sym)}&hellip; ` +
+        `this can take a few minutes`;
+      const job = await api("/api/deep-research/run", "POST",
+        { segment: p.segment, date: p.date, prompt: p.prompt });
+      await pollDeepJob(job.id, status, async () => { await show(); },
+        `Deep Research \u00b7 ${sym}`, async () => { await show(); });
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "deep research failed: " + e.message;
+    }
+  }
+
+  function renderIdle(loggedIn, runs) {
+    status.textContent = "";
+    status.classList.remove("err");
+    body.innerHTML = "";
+    if (runs.length) {
+      const list = el("div", "dr-runs");
+      runs.forEach((r) => list.appendChild(runRowEl(r)));
+      body.appendChild(list);
+    } else {
+      body.appendChild(el("p", "hint",
+        `No Deep Research for <strong>${esc(sym)}</strong> yet. The in-depth analysis ` +
+        `above reasons over the data on this page; this spends a Perplexity Deep ` +
+        `Research crawl for a fuller, web-sourced single-name report &mdash; a few ` +
+        `minutes, and quota-limited, so it's opt-in.`));
+    }
+    const actions = el("div", "analysis-actions");
+    if (loggedIn === false) {
+      body.appendChild(el("p", "hint muted",
+        "A logged-in Perplexity session is required to run a new one."));
+      const a = el("button", "primary", "Set up Perplexity login");
+      a.type = "button";
+      a.addEventListener("click", goLogin);
+      actions.appendChild(a);
+    } else {
+      const btn = el("button", runs.length ? "ghost" : "primary",
+        runs.length ? "\u21bb Run new Deep Research" : "Run Deep Research");
+      btn.type = "button";
+      btn.addEventListener("click", startRun);
+      actions.appendChild(btn);
+    }
+    body.appendChild(actions);
+  }
+
+  async function show() {
+    status.innerHTML = `<span class="spinner"></span> loading&hellip;`;
+    body.innerHTML = "";
+    let runs = [];
+    let loggedIn = null;
+    let live = null;
+    try {
+      const [runsRes, loginRes, jobsRes] = await Promise.all([
+        api("/api/deep-runs").then((d) => d.runs || []).catch(() => []),
+        api("/api/deep-research/login-status").catch(() => null),
+        api("/api/jobs").then((d) => d.jobs || []).catch(() => []),
+      ]);
+      runs = runsRes
+        .filter((r) => r.kind === "ticker" && norm(r.symbol) === want)
+        .sort((a, b) => (a.stem < b.stem ? 1 : -1));
+      loggedIn = loginRes ? !!loginRes.logged_in : null;
+      live = jobsRes.find((j) => j.kind === "deep_research" &&
+        (j.state === "running" || j.state === "queued") &&
+        norm(String(j.segment || "").replace(/^ticker-/, "")) === want) || null;
+    } catch (_e) { /* fall through to idle */ }
+
+    if (live) {
+      status.innerHTML = `<span class="spinner"></span> Deep Research running&hellip;`;
+      await pollDeepJob(live.id, status, async () => { await show(); },
+        `Deep Research \u00b7 ${sym}`, async () => { await show(); });
+      return;
+    }
+    renderIdle(loggedIn, runs);
   }
 
   show();

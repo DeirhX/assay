@@ -795,8 +795,36 @@ tr:last-child td { border-bottom: 0; }
 }
 .empty-state strong { color: var(--text); font-size: 15px; font-weight: 600; }
 
-.conc-summary { display: flex; gap: 20px; flex-wrap: wrap; align-items: baseline; margin: 14px 2px 4px; font-size: 14px; color: var(--muted); }
-.conc-summary strong { color: var(--text); font-size: 16px; }
+/* Portfolio headline: NAV stat tiles + escalating concentration bars. */
+.port-hero { display: grid; grid-template-columns: minmax(0,1.12fr) minmax(0,1fr); gap: 16px; margin: 16px 2px 6px; }
+@media (max-width: 760px) { .port-hero { grid-template-columns: 1fr; } }
+
+.port-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.port-stat {
+  display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 12px 13px;
+  border-radius: var(--radius-soft); background: var(--panel-2); border: 1px solid var(--border);
+}
+.ps-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.ps-value { font-size: 16px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-unit { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .03em; }
+
+.conc-card { padding: 12px 14px; border-radius: var(--radius-soft); background: var(--panel-2); border: 1px solid var(--border); }
+.conc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.conc-title { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.conc-bars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.conc-chip { display: flex; flex-direction: column; gap: 7px; }
+.cc-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.cc-label { font-size: 12px; color: var(--muted); }
+.cc-pct { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); }
+.cc-track { height: 8px; border-radius: 999px; background: rgba(255,255,255,.06); overflow: hidden; }
+.cc-fill { display: block; height: 100%; border-radius: 999px; background: var(--info); transition: width .4s ease; }
+.conc-chip.tier-bad .cc-pct { color: var(--bad); }
+.conc-chip.tier-bad .cc-fill { background: var(--bad); }
+.conc-chip.tier-warn .cc-pct { color: var(--warn); }
+.conc-chip.tier-warn .cc-fill { background: var(--warn); }
+.conc-chip.tier-info .cc-pct { color: var(--info); }
+.conc-chip.tier-info .cc-fill { background: var(--info); }
+.conc-chip.tier-small .cc-fill { background: #39414f; }
 
 .pos-list { display: flex; flex-direction: column; gap: 3px; margin-top: 12px; }
 .pos-row {
@@ -808,6 +836,14 @@ tr:last-child td { border-bottom: 0; }
 .pos-bar-track { height: 18px; background: var(--panel-2); border-radius: 6px; overflow: hidden; }
 .pos-bar { display: block; height: 100%; min-width: 2px; border-radius: 6px; background: var(--info); transition: width .25s ease; }
 .pos-w { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.pos-val { display: none; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+.pos-list.show-values .pos-row { grid-template-columns: 160px 1fr 84px 124px; }
+.pos-list.show-values .pos-val { display: block; }
+
+.pos-controls { display: flex; justify-content: flex-end; margin: 8px 2px 0; }
+/* Uses the shared .setup-toggle switch; only the weight is dialed back since
+   this is a secondary, optional control rather than a setup decision. */
+.pos-val-toggle { font-weight: 500; color: var(--muted); }
 
 .tier-core .pos-bar { background: var(--bad); }
 .tier-core .pos-sym, .tier-core .pos-w { color: var(--bad); font-weight: 800; }
@@ -830,6 +866,7 @@ tr:last-child td { border-bottom: 0; }
 }
 
 @media (max-width: 620px) { .pos-row { grid-template-columns: 110px 1fr 70px; gap: 8px; } }
+@media (max-width: 620px) { .pos-list.show-values .pos-row { grid-template-columns: 96px 1fr 58px 92px; gap: 8px; } }
 @media (max-width: 620px) { .nodata-card { --nodata-indent: 0px; } }
 
 .holdings-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px,1fr)); gap: 10px; margin-top: 14px; }
@@ -1299,6 +1336,25 @@ a.tlink:hover { border-bottom-style: solid; }
 
 .analysis-prose hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .analysis-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+/* deep research card (single-name Perplexity crawl, on demand) */
+.deepresearch-card { border-color: rgba(180,140,255,.3); }
+.deepresearch-card .dr-sub { font-size: 12px; }
+.dr-status:empty { display: none; }
+.dr-status { margin: 8px 0; font-size: 13px; color: var(--muted); }
+.dr-runs { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.dr-run-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 10px 14px; border-radius: var(--radius-soft);
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  cursor: pointer; transition: border-color .15s, background .15s, transform .05s;
+}
+.dr-run-row:hover { border-color: rgba(180,140,255,.5); background: rgba(180,140,255,.08); }
+.dr-run-row:active { transform: translateY(1px); }
+.dr-run-row .dr-run-date { font-weight: 700; font-size: 13px; flex: none; }
+.dr-run-row .dr-run-meta { color: var(--muted); font-size: 12px; flex: 1 1 auto; }
+.dr-run-row .sx-go { color: var(--accent); font-weight: 700; flex: none; opacity: .55; transition: opacity .15s; }
+.dr-run-row:hover .sx-go { opacity: 1; }
 
 /* deep-dive Q&A thread */
 .qa-collapse { margin: 4px 0 14px; }

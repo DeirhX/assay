@@ -80,6 +80,12 @@ This repo exists to not trust unverified numbers. Keep it that way:
 - **Run Deep Research pipeline**: Pipeline tab builds the prompt, saves
   `data/research/deep/<segment>-<date>.md` and `.sources.json`, then runs the
   review gate to create `.review.md` and `.target-proposal.json`.
+- **Per-ticker research is two-tier**: the deep-dive "In-depth analysis" card is
+  the cheap CLI pass over the on-page data; the "Deep Research" card runs the
+  expensive single-name Perplexity crawl on demand (subject `ticker-<sym>`, saved
+  as `data/research/deep/ticker-<sym>-<date>.md`, reusing the same run/save/Q&A
+  machinery via `/api/deep-prompt?ticker=`). It replaced the retired hand-authored
+  `<sym>-detail.html` static pages.
 - **Add a provider**: add `tools/providers/<x>.py` returning metric nodes
   (`{value, source, ...}`); wire it into `research_pull._collect(...)` and the
   preferred-source order in `METRIC_SPECS`. Add any new cross-checks in

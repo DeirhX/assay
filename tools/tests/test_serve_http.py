@@ -615,6 +615,89 @@ class PeerStats(unittest.TestCase):
         self.assertNotIn("ps", res["metrics"])
 
 
+class TickerDeepResearch(unittest.TestCase):
+    """Single-name Deep Research: the prompt builder is namespaced `ticker-<sym>`
+    and a run with no segment definition still gets a human title + symbol so the
+    deep-dive can claim it. Offline -- holdings are stubbed empty."""
+
+    def test_ticker_prompt_shape(self):
+        with mock.patch.object(serve, "holdings_weights", return_value={}):
+            rec = serve._ticker_deep_prompt("amd")
+        self.assertEqual(rec["segment"], "ticker-amd")
+        self.assertEqual(rec["symbol"], "AMD")
+        self.assertRegex(rec["date"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertIn("AMD", rec["prompt"])
+        self.assertIn("FORMAT", rec["prompt"])
+        # No holdings -> no "I currently hold" context line.
+        self.assertNotIn("currently hold", rec["prompt"])
+
+    def test_ticker_prompt_appends_held_context(self):
+        with mock.patch.object(serve, "holdings_weights", return_value={"AMD": 12.5}):
+            rec = serve._ticker_deep_prompt("AMD")
+        self.assertIn("currently hold AMD at 12.50%", rec["prompt"])
+
+    def test_ticker_prompt_rejects_non_ticker(self):
+        with mock.patch.object(serve, "holdings_weights", return_value={}):
+            with self.assertRaises(ValueError):
+                serve._ticker_deep_prompt("not a ticker!")
+
+    def test_enrich_ticker_run_without_segment_def(self):
+        rec = {"stem": "ticker-amd-2026-06-13", "files": {"report": "x"}}
+        # No data/segments/ticker-amd.json exists, so this exercises the fallback.
+        with mock.patch.object(serve, "_load", return_value={}):
+            serve._enrich_deep_run(rec)
+        self.assertEqual(rec["kind"], "ticker")
+        self.assertEqual(rec["symbol"], "AMD")
+        self.assertEqual(rec["title"], "AMD \u2014 deep research")
+        self.assertEqual(rec["segment"], "ticker-amd")
+        self.assertEqual(rec["date"], "2026-06-13")
+
+    def test_enrich_segment_run_is_not_marked_ticker(self):
+        rec = {"stem": "fintech-payments-2026-06-13", "files": {"report": "x"}}
+        with mock.patch.object(serve, "_load", return_value={}):
+            serve._enrich_deep_run(rec)
+        self.assertEqual(rec["kind"], "segment")
+        self.assertEqual(rec["symbol"], "")
+
+
+class DeepPromptEndpoint(unittest.TestCase):
+    """GET /api/deep-prompt routes a `ticker=` query to the single-name builder
+    and a `segment=` query to the segment builder; a bad segment is a clean 400."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def _get(self, path: str):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read().decode("utf-8"))
+
+    def test_ticker_query_builds_single_name_prompt(self):
+        with mock.patch.object(serve, "holdings_weights", return_value={}):
+            status, payload = self._get("/api/deep-prompt?ticker=AMD")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["segment"], "ticker-amd")
+        self.assertEqual(payload["symbol"], "AMD")
+
+    def test_unknown_segment_is_400(self):
+        status, payload = self._get("/api/deep-prompt?segment=does-not-exist")
+        self.assertEqual(status, 400)
+        self.assertIn("unknown segment", payload["error"])
+
+
 class HostGuard(unittest.TestCase):
     def test_non_loopback_host_is_refused(self):
         # The guard fires before any socket is bound, so this never serves.
