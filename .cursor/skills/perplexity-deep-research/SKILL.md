@@ -165,17 +165,21 @@ Also verify the page text indicates a Deep Research run, e.g. phrases like:
 
 If the output immediately looks like a normal search answer and does not show a deep-research workflow, treat it as a failed test. Do not save it as Deep Research output; return to the home composer and repeat mode selection from the real Search pill.
 
-**Step 7: poll for completion** with `browser_evaluate` (NOT snapshots). Deep Research runs several minutes. A run is **still going** while a Stop button exists; it's **done** when the Stop button is gone and the report/citations have rendered:
+**Step 7: poll for completion** with `browser_evaluate` (NOT snapshots). Deep Research runs several minutes. Verified against 8 saved runs, the reliable **done** markers are **"Completed N steps"** and an **"N sources"** button (both 8/8); the prose footer is split between "Prepared **by**" (5/8) and "Prepared **with**" (3/8), so match `by|with` and treat it only as a third fallback. Do **NOT** gate on the Stop button disappearing — it lingers ~30-60s into finalization and is the main source of detection lag:
 
 ```js
 () => {
   const m = document.querySelector('main');
+  const body = document.body.innerText || '';
   const stop = !!document.querySelector('button[aria-label*=stop i]');
-  return { url: location.pathname, running: stop, len: m ? m.innerText.length : 0 };
+  const done = /\bcompleted \d+ steps?\b/i.test(body)
+    || [...document.querySelectorAll('button')].some(b => /^\d+\s+sources?$/i.test((b.innerText||'').trim()))
+    || /prepared (by|with) deep research/i.test(body);
+  return { url: location.pathname, running: stop, done, len: m ? m.innerText.length : 0 };
 }
 ```
 
-Poll every ~60–90s (sleep between checks). When `running` is false and `len` is large (full report, not just the echoed prompt), scrape the answer text:
+Poll every ~10s. Accept completion as soon as `done` is true and `len` has stopped growing across two reads (the answer settled) — even if `running` is still true. Then scrape the answer text:
 
 ```js
 () => (document.querySelector('main')?.innerText || '')

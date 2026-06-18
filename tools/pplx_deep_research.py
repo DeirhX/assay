@@ -62,23 +62,36 @@ _CLONE_IGNORE = shutil.ignore_patterns(
 )
 
 # Deep Research has THREE relevant states, not two:
-#   running   -- a Stop button exists (model is working)
+#   running   -- a Stop button exists (model is working). NOTE: this button
+#                lingers for ~30-60s into finalization, so it is a LAGGING
+#                signal -- never gate completion on it alone.
 #   awaiting  -- paused on a clarifying question ("Awaiting response" + a
 #                Continue button); NOT done, NOT running. Treating this as done
 #                is how we once scraped the question instead of the report.
-#   done      -- the final report rendered ("Prepared by Deep Research" /
-#                "Completed N steps" / an "N sources" button) with no Stop.
+#   done      -- the final report rendered. Probed against 8 saved runs, the
+#                only 8/8-reliable end markers are "Completed N steps" and an
+#                "N sources" button. The prose footer is split -- 5/8 say
+#                "Prepared BY Deep Research", 3/8 "Prepared WITH Deep Research"
+#                -- so it must match by|with, and even then it is the weakest
+#                of the three; it stays as a third fallback only.
 _POLL_JS = """() => {
   const m = document.querySelector('main');
   const body = document.body.innerText || '';
   const stop = !!document.querySelector('button[aria-label*=stop i]');
   const awaiting = /awaiting response/i.test(body) || /quick clarification/i.test(body);
-  const done = /prepared by deep research/i.test(body)
-    || /\\bcompleted \\d+ steps?\\b/i.test(body)
+  const done = /\\bcompleted \\d+ steps?\\b/i.test(body)
     || [...document.querySelectorAll('button')]
-         .some(b => /^\\d+\\s+sources?$/i.test((b.innerText || '').trim()));
+         .some(b => /^\\d+\\s+sources?$/i.test((b.innerText || '').trim()))
+    || /prepared (by|with) deep research/i.test(body);
   return { running: stop, awaiting, done, len: m ? m.innerText.length : 0, url: location.pathname };
 }"""
+
+# How long to wait between completion re-checks once a positive "done" marker is
+# already showing. The old code waited a full poll interval twice (~60s) to
+# "confirm"; instead we re-read after this short delay and accept completion as
+# soon as the answer length has stopped growing, so a settled report is scraped
+# in seconds rather than a minute.
+_DONE_SETTLE_S = 4
 
 # Generic clarification reply when the caller does not supply a segment-specific
 # one. References the scope already in the original prompt.
@@ -552,6 +565,7 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
             if not _logged_in(page):
                 return {"status": "needs_login"}
             deadline = time.time() + timeout_s
+            last_len = -1
             stable = 0
             while time.time() < deadline:
                 if not _handle_captcha(page, window_mode=window_mode, progress=progress):
@@ -562,8 +576,14 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
                 if st["awaiting"] and not st["running"]:
                     return {"status": "needs_clarification", "source_url": page.url,
                             "report": page.evaluate(_REPORT_JS)}
-                if not st["running"] and st["len"] > 800 and (st["done"] or stable >= 2):
-                    break
+                # A positive completion marker wins even if a stale Stop button
+                # lingers (it can on a just-finished run); we only wait for the
+                # body length to settle. Absent any marker, fall back to "no Stop
+                # + substantial body stable across a couple reads".
+                if st["len"] > 800 and (st["done"] or (not st["running"] and stable >= 2)):
+                    if st["len"] == last_len or stable >= 2:
+                        break
+                last_len = st["len"]
                 stable = stable + 1 if (not st["running"] and st["len"] > 800) else 0
                 time.sleep(3)
             report, citations = _scrape(page)
@@ -602,7 +622,7 @@ def _answer_clarification(page, answer: str) -> bool:
 
 def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                       profile_dir: Optional[Path] = None, timeout_s: int = 900,
-                      poll_interval_s: int = 30, dry_run: bool = False,
+                      poll_interval_s: int = 10, dry_run: bool = False,
                       clarify_answer: Optional[str] = None, max_clarify: int = 2,
                       clone_profile: bool = False,
                       progress: Callable[[str], None] = _noop,
@@ -684,12 +704,12 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                     pass
 
             progress("Researching (this takes minutes)...")
-            time.sleep(8)  # let the Stop button appear before we trust "not running"
+            time.sleep(8)  # let the run state settle before we read markers
             answer = (clarify_answer or _DEFAULT_CLARIFY).strip()
             deadline = time.time() + timeout_s
-            done_seen = 0
             idle = 0
             nudges = 0
+            last_len = -1
             while time.time() < deadline:
                 if not _handle_captcha(page, window_mode=window_mode, progress=progress):
                     return {"status": "needs_captcha"}
@@ -698,23 +718,28 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                     f"running={st['running']} awaiting={st['awaiting']} "
                     f"done={st['done']} chars={st['len']}"
                 )
-                if st["running"]:
-                    done_seen = idle = 0
-                    time.sleep(poll_interval_s)
-                    continue
-                # A positive Deep Research completion marker is the ONLY thing that
-                # lets us scrape. A clarification page has none, so it can never be
-                # mistaken for a finished report (the bug we are killing).
+                # A positive completion marker ("Completed N steps" / "N sources"
+                # button / prepared-by|with footer) is the trustworthy signal, and
+                # it only appears once the run finalizes -- so we DON'T wait for the
+                # Stop button to vanish first (it lingers ~30-60s and was most of
+                # the old latency). We only confirm the answer has stopped growing
+                # (length stable across a short re-check) so we never scrape a
+                # half-rendered report. A clarification page has no such marker, so
+                # it can never be mistaken for a finished report.
                 if st["done"] and st["len"] > 800:
-                    done_seen += 1
+                    if st["len"] == last_len:
+                        break  # marker present AND text settled -> finished
+                    last_len = st["len"]
                     idle = 0
-                    if done_seen >= 2:
-                        break
+                    time.sleep(_DONE_SETTLE_S)
+                    continue
+                last_len = -1
+                if st["running"]:
+                    idle = 0
                     time.sleep(poll_interval_s)
                     continue
                 # Not running and no completion marker: paused on a clarification or
                 # stalled. Push it forward by answering; cap the attempts.
-                done_seen = 0
                 if st["awaiting"] or idle >= 2:
                     if nudges >= max_clarify:
                         progress("Clarification loop exhausted; returning partial.")
