@@ -36,12 +36,8 @@ from typing import Any, Callable
 import research_brief
 import ticker_analysis
 from store import load as _load, write_json as _write_json, safe_symbol as _safe_symbol
-from config import REPO_ROOT
-
-# Overridable for tests, mirroring review_deep_research's module-level paths.
-DATA_DIR = REPO_ROOT / "data"
-DEEP_DIR = DATA_DIR / "research" / "deep"
-TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+# Canonical layout from config; re-exported as module attrs so tests can override.
+from config import DEEP_DIR, TARGET_MODEL_JSON
 
 # Conviction -> sizing weight. Avoid carries no budget; it only ever trims.
 _POINTS = {"high": 3.0, "medium": 2.0, "low": 1.0}

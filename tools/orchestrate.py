@@ -31,11 +31,10 @@ from pathlib import Path
 from typing import Any
 
 from store import load as _load, write_json as _write_json
-from config import REPO_ROOT
+from config import DATA_DIR
 
 # Overridable so tests can point the manifest store at a temp dir, exactly like
 # review_deep_research swaps its module-level paths.
-DATA_DIR = REPO_ROOT / "data"
 STRATEGY_DIR = DATA_DIR / "research" / "strategy"
 
 # ---- states ---------------------------------------------------------------

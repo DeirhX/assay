@@ -38,11 +38,8 @@ from providers.common import (  # noqa: E402
     fmt_price,
     fmt_x,
 )
-from config import REPO_ROOT  # noqa: E402
+from config import REPO_ROOT, RESEARCH_DIR, SEGMENT_DEF_DIR, SEGMENT_OUT_DIR  # noqa: E402
 
-RESEARCH_DIR = REPO_ROOT / "data" / "research"
-SEGMENT_DEF_DIR = REPO_ROOT / "data" / "segments"
-SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 CACHE_DIR = REPO_ROOT / "data" / "cache"
 HISTORY_DIR = CACHE_DIR / "research-history"
 
