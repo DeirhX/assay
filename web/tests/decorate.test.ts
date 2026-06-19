@@ -3,7 +3,7 @@
 // the upside, and the downside at a glance.
 import { describe, expect, it } from "vitest";
 import { mdToHtml } from "../src/analyses";
-import { decorateAnalysis, decorateSources } from "../src/deepdive";
+import { decorateAnalysis, decorateSources } from "../src/deepdive/decorate";
 
 function render(md: string): HTMLElement {
   const root = document.createElement("div");
