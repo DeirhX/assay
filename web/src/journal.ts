@@ -1,8 +1,12 @@
 import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive, statTile } from "./core";
 
 // ---- decision journal + calibration ----------------------------------------
-const correctClass = (c) => (c === true ? "good" : c === false ? "bad" : "muted");
-const moveClass = (m) => (m == null ? "muted" : m > 0 ? "good" : m < 0 ? "bad" : "muted");
+const correctClass = (c: boolean | null) => (c === true ? "good" : c === false ? "bad" : "muted");
+const moveClass = (m: number | null | undefined) => (m == null ? "muted" : m > 0 ? "good" : m < 0 ? "bad" : "muted");
+
+// Form fields are inputs/selects/textareas; read their value through a typed
+// accessor so the default HTMLElement from $() doesn't choke on `.value`.
+const fieldValue = (sel: string): string => $<HTMLInputElement>(sel)?.value ?? "";
 
 async function loadJournal() {
   await apiLoad({
@@ -122,38 +126,40 @@ function initJournalControls() {
 
 async function submitEntry() {
   const status = $("#jrnl-status");
-  status.classList.remove("err");
-  const fieldVal = (sel: string) => $<HTMLInputElement>(sel)?.value ?? "";
+  if (status) status.classList.remove("err");
   const payload = {
-    symbol: fieldVal("#jrnl-symbol"),
-    action: fieldVal("#jrnl-action"),
-    size_czk: fieldVal("#jrnl-size"),
-    price: fieldVal("#jrnl-price"),
-    review_after: fieldVal("#jrnl-review"),
-    thesis: fieldVal("#jrnl-thesis"),
-    expected: fieldVal("#jrnl-expected"),
+    symbol: fieldValue("#jrnl-symbol"),
+    action: fieldValue("#jrnl-action"),
+    size_czk: fieldValue("#jrnl-size"),
+    price: fieldValue("#jrnl-price"),
+    review_after: fieldValue("#jrnl-review"),
+    thesis: fieldValue("#jrnl-thesis"),
+    expected: fieldValue("#jrnl-expected"),
   };
-  status.textContent = "Saving…";
+  if (status) status.textContent = "Saving…";
   try {
     const data = await api("/api/journal", "POST", payload);
-    status.textContent = "Logged.";
+    if (status) status.textContent = "Logged.";
     ["jrnl-symbol", "jrnl-size", "jrnl-price", "jrnl-review", "jrnl-thesis", "jrnl-expected"]
       .forEach((id) => { const elx = $<HTMLInputElement>("#" + id); if (elx) elx.value = ""; });
     renderJournal(data);
   } catch (e) {
-    status.textContent = "Could not save: " + e.message;
-    status.classList.add("err");
+    if (status) status.textContent = "Could not save: " + (e as Error).message;
+    if (status) status.classList.add("err");
   }
 }
 
 // Pre-fill the journal form from elsewhere (e.g. a simulated basket), navigating
 // to the tab via its button so we avoid importing shell (cycle-free).
-function openJournalWith(prefill) {
+function openJournalWith(prefill: Record<string, unknown>) {
   const tab = document.querySelector<HTMLElement>('.tab[data-view="journal"]');
   if (tab) tab.click();
   setTimeout(() => {
     initJournalControls();
-    const set = (id, v) => { const elx = $<HTMLInputElement>("#" + id); if (elx != null && v != null) elx.value = v; };
+    const set = (id: string, v: unknown) => {
+      const elx = $<HTMLInputElement>("#" + id);
+      if (elx != null && v != null) elx.value = String(v);
+    };
     if (prefill.symbol != null) set("jrnl-symbol", prefill.symbol);
     if (prefill.action != null) set("jrnl-action", prefill.action);
     if (prefill.size_czk != null) set("jrnl-size", prefill.size_czk);
