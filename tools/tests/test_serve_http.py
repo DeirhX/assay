@@ -20,6 +20,7 @@ import _support  # noqa: F401
 import deep_runs
 import holdings_sync
 import peer_stats
+import segments_service
 import serve
 
 
@@ -641,8 +642,8 @@ class TickerDeepResearch(unittest.TestCase):
 
     def test_segment_prompt_has_freshness_directive(self):
         seg = {"title": "Fintech & Payments", "members": [{"symbol": "PYPL"}]}
-        with mock.patch.object(serve, "_load", return_value=seg), \
-                mock.patch.object(serve, "holdings_weights", return_value={}):
+        with mock.patch.object(segments_service, "load", return_value=seg), \
+                mock.patch.object(segments_service, "holdings_weights", return_value={}):
             rec = serve._segment_prompt("fintech-payments")
         self.assertIn("FRESHNESS", rec["prompt"])
         self.assertIn("most recent close", rec["prompt"])
