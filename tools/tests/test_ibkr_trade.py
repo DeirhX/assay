@@ -11,8 +11,9 @@ import unittest
 from unittest import mock
 
 import _support  # noqa: F401
+import apierror
 import ibkr_trade as ibt
-import serve
+import trade_service
 
 
 def _env(**overrides):
@@ -149,58 +150,58 @@ class ReplyLoop(unittest.TestCase):
         self.assertIn("conid", sent)
 
 
-class ServeTradeGuards(unittest.TestCase):
+class TradeServiceGuards(unittest.TestCase):
     def setUp(self):
         ibt._conid_cache.clear()
 
     def test_basket_token_is_stable_and_account_bound(self):
-        basket = serve._normalize_basket([{"symbol": "amd", "delta_czk": 100}])
-        t1 = serve._basket_token("DU1", basket)
-        t2 = serve._basket_token("DU1", basket)
-        t3 = serve._basket_token("DU2", basket)
+        basket = trade_service._normalize_basket([{"symbol": "amd", "delta_czk": 100}])
+        t1 = trade_service._basket_token("DU1", basket)
+        t2 = trade_service._basket_token("DU1", basket)
+        t3 = trade_service._basket_token("DU2", basket)
         self.assertEqual(t1, t2)
         self.assertNotEqual(t1, t3)
 
     def test_place_refused_when_disabled(self):
-        with mock.patch.object(serve.ibkr_trade, "trading_enabled", return_value=False):
-            with self.assertRaises(serve._Forbidden):
-                serve._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
-                                    "confirm": True, "token": "x"})
+        with mock.patch.object(ibt, "trading_enabled", return_value=False):
+            with self.assertRaises(apierror.Forbidden):
+                trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                            "confirm": True, "token": "x"})
 
     def test_place_rejects_token_mismatch(self):
-        with mock.patch.object(serve.ibkr_trade, "trading_enabled", return_value=True), \
-                mock.patch.object(serve.ibkr_trade, "accounts", return_value=[{"accountId": "DU1"}]):
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]):
             with self.assertRaises(ValueError):
-                serve._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
-                                    "confirm": True, "token": "wrong"})
+                trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                            "confirm": True, "token": "wrong"})
 
     def test_place_locks_live_account(self):
-        basket = serve._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
-        token = serve._basket_token("U777", basket)
-        with mock.patch.object(serve.ibkr_trade, "trading_enabled", return_value=True), \
-                mock.patch.object(serve.ibkr_trade, "live_allowed", return_value=False), \
-                mock.patch.object(serve.ibkr_trade, "accounts", return_value=[{"accountId": "U777"}]):
-            with self.assertRaises(serve._Forbidden):
-                serve._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
-                                    "account": "U777", "confirm": True, "token": token})
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("U777", basket)
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "live_allowed", return_value=False), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "U777"}]):
+            with self.assertRaises(apierror.Forbidden):
+                trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                            "account": "U777", "confirm": True, "token": token})
 
     def test_place_requires_confirm(self):
-        with mock.patch.object(serve.ibkr_trade, "trading_enabled", return_value=True):
+        with mock.patch.object(ibt, "trading_enabled", return_value=True):
             with self.assertRaises(ValueError):
-                serve._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}], "token": "x"})
+                trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}], "token": "x"})
 
     def test_happy_path_places_on_paper(self):
-        basket = serve._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
-        token = serve._basket_token("DU1", basket)
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("DU1", basket)
         order = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
                  "orderType": "MKT", "tif": "DAY"}
-        with mock.patch.object(serve.ibkr_trade, "trading_enabled", return_value=True), \
-                mock.patch.object(serve.ibkr_trade, "accounts", return_value=[{"accountId": "DU1"}]), \
-                mock.patch.object(serve, "_prepare_trade_orders", return_value=([order], [])), \
-                mock.patch.object(serve.ibkr_trade, "place_orders",
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                mock.patch.object(ibt, "place_orders",
                                   return_value=[{"order_id": "1"}]) as place:
-            res = serve._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
-                                      "account": "DU1", "confirm": True, "token": token})
+            res = trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                              "account": "DU1", "confirm": True, "token": token})
         self.assertEqual(res["account"], "DU1")
         self.assertEqual(res["placed"], [{"order_id": "1"}])
         place.assert_called_once()
