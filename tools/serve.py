@@ -85,6 +85,42 @@ from jobs import (  # noqa: E402
     max_slots as _max_browser_slots,
 )
 
+
+# --------------------------------------------------------------------------- #
+# HTTP error vocabulary
+#
+# One small hierarchy so handlers can `raise` an outcome instead of repeating a
+# `try/except -> _send_error_json(status, str(exc))` block. The GET/POST
+# dispatchers translate any _HttpError into {"error": str(exc)} with exc.status;
+# a plain ValueError still maps to 400 (the common validation case). _Conflict
+# and _BadGateway subclass RuntimeError so the older `raise RuntimeError(...)`
+# call sites keep working and any test catching RuntimeError is unaffected.
+# --------------------------------------------------------------------------- #
+class _HttpError(Exception):
+    """Base for an error that maps to a specific HTTP status."""
+    status = 500
+
+
+class _BadRequest(_HttpError, ValueError):
+    """A client-side request problem that should map to HTTP 400, not 500."""
+    status = 400
+
+
+class _Forbidden(_HttpError):
+    """A trading guard refused the request (maps to HTTP 403)."""
+    status = 403
+
+
+class _Conflict(_HttpError, RuntimeError):
+    """The request collides with in-flight work or current state (HTTP 409)."""
+    status = 409
+
+
+class _BadGateway(_HttpError, RuntimeError):
+    """An upstream broker/service call failed (HTTP 502)."""
+    status = 502
+
+
 # Selectable chart windows -> (Yahoo range, interval). Short windows use intraday
 # bars; longer windows step to a coarser interval so we don't ship thousands of
 # daily points for a 10y view. (Yahoo has no "1w" range; 5d covers a trading week.)
@@ -826,7 +862,7 @@ def _analysis_running(symbol: str) -> bool:
 def _start_analysis(symbol: str, refresh: bool) -> dict:
     sym = _safe_symbol(symbol)
     if _analysis_running(sym):
-        raise RuntimeError(f"an analysis for {sym} is already running")
+        raise _Conflict(f"an analysis for {sym} is already running")
     # Unlike Perplexity runs, CLI analyses don't touch the shared browser, so we
     # do NOT take _claim_active -- they may run alongside a deep-research job.
     job = _new_job("ticker_analysis", symbol=sym, refresh=bool(refresh))
@@ -923,7 +959,7 @@ def _start_qa(symbol: str, question: str) -> dict:
     if not question:
         raise ValueError("empty question")
     if _qa_running(sym):
-        raise RuntimeError(f"a question for {sym} is already being answered")
+        raise _Conflict(f"a question for {sym} is already being answered")
     job = _new_job("ticker_qa", symbol=sym)
     threading.Thread(target=_run_qa_job, args=(job["id"], sym, question), daemon=True).start()
     return _job_public(job)
@@ -1036,7 +1072,7 @@ def _start_deep_qa(stem: str, question: str) -> dict:
     if not (DEEP_DIR / f"{stem}.md").exists():
         raise ValueError(f"no saved report for {stem}")
     if _deep_qa_running(stem):
-        raise RuntimeError(f"a question for {stem} is already being answered")
+        raise _Conflict(f"a question for {stem} is already being answered")
     job = _new_job("deep_qa", stem=stem)
     threading.Thread(target=_run_deep_qa_job, args=(job["id"], stem, question), daemon=True).start()
     return _job_public(job)
@@ -1418,10 +1454,6 @@ def _save_ibkr_secrets(body: dict) -> dict:
 # server-side from the token-bound basket so a tampered client payload cannot
 # place something the human never previewed.
 # --------------------------------------------------------------------------- #
-class _Forbidden(Exception):
-    """A trading guard refused the request (maps to HTTP 403)."""
-
-
 def _normalize_basket(trades) -> list[dict]:
     """Canonical, de-duplicated [{symbol, delta_czk}] used for both hashing and
     sizing. Raises ValueError on malformed input (mirrors whatif._coerce_trades
@@ -1611,7 +1643,7 @@ def _trade_preview(body: dict) -> dict:
         try:
             ibkr_preview = ibkr_trade.preview_orders(account_id, orders)
         except ibkr_trade.CPAPIError as exc:
-            raise RuntimeError(str(exc)) from exc
+            raise _BadGateway(str(exc)) from exc
 
     local = None
     holdings = _load(HOLDINGS_JSON)
@@ -1662,7 +1694,7 @@ def _trade_place(body: dict) -> dict:
     try:
         placed = ibkr_trade.place_orders(account_id, orders)
     except ibkr_trade.CPAPIError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise _BadGateway(str(exc)) from exc
     return {
         "account": account_id,
         "kind": ibkr_trade.account_kind(account_id),
@@ -1679,7 +1711,7 @@ def _trade_orders() -> dict:
     try:
         return {"orders": ibkr_trade.live_orders()}
     except ibkr_trade.CPAPIError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise _BadGateway(str(exc)) from exc
 
 
 def _trade_cancel(body: dict) -> dict:
@@ -1692,7 +1724,7 @@ def _trade_cancel(body: dict) -> dict:
     try:
         return {"cancelled": ibkr_trade.cancel_order(account_id, order_id)}
     except ibkr_trade.CPAPIError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise _BadGateway(str(exc)) from exc
 
 
 def _sync_holdings(progress=None) -> dict:
@@ -1783,7 +1815,7 @@ def _run_holdings_sync_job(job_id: str) -> None:
 
 def _start_holdings_sync() -> dict:
     if _sync_running():
-        raise RuntimeError("an IBKR sync is already running")
+        raise _Conflict("an IBKR sync is already running")
     job = _new_job("ibkr_sync")
     threading.Thread(target=_run_holdings_sync_job, args=(job["id"],), daemon=True).start()
     return _job_public(job)
@@ -1851,7 +1883,7 @@ def _run_history_sync_job(job_id: str, full: bool = False) -> None:
 
 def _start_history_sync(full: bool = False) -> dict:
     if _history_running():
-        raise RuntimeError("a portfolio-history pull is already running")
+        raise _Conflict("a portfolio-history pull is already running")
     job = _new_job("ibkr_history")
     threading.Thread(target=_run_history_sync_job, args=(job["id"], full), daemon=True).start()
     return _job_public(job)
@@ -1924,7 +1956,7 @@ def _run_sectors_job(job_id: str) -> None:
 
 def _start_sectors_sync() -> dict:
     if _sectors_running():
-        raise RuntimeError("a sector lookup is already running")
+        raise _Conflict("a sector lookup is already running")
     job = _new_job("ibkr_sectors")
     threading.Thread(target=_run_sectors_job, args=(job["id"],), daemon=True).start()
     return _job_public(job)
@@ -2198,12 +2230,12 @@ def _set_auth_state(logged_in: bool, note: str = "") -> None:
 def _verify_login() -> dict:
     """Synchronous, ~8s live probe that refreshes the cached login flag."""
     if not _claim_active():
-        raise RuntimeError(_slots_busy_msg())
+        raise _Conflict(_slots_busy_msg())
     try:
         import pplx_deep_research as worker
         res = worker.check_login()
         if res.get("status") == "error":
-            raise RuntimeError(res.get("detail") or "login check failed")
+            raise _Conflict(res.get("detail") or "login check failed")
         _set_auth_state(res.get("status") == "logged_in", "active check")
         return _get_auth_state()
     finally:
@@ -2374,7 +2406,7 @@ def _start_deep_research(body: dict) -> dict:
     if window_mode not in ("offscreen", "visible", "headless"):
         raise ValueError("window_mode must be offscreen, visible, or headless")
     if not _claim_active():
-        raise RuntimeError(_slots_busy_msg())
+        raise _Conflict(_slots_busy_msg())
     job = _new_job("deep_research", segment=segment, date=date, window_mode=window_mode)
     threading.Thread(target=_run_deep_job,
                      args=(job["id"], segment, date, prompt, window_mode),
@@ -2384,7 +2416,7 @@ def _start_deep_research(body: dict) -> dict:
 
 def _start_login() -> dict:
     if not _claim_active():
-        raise RuntimeError(_slots_busy_msg())
+        raise _Conflict(_slots_busy_msg())
     job = _new_job("login")
     threading.Thread(target=_run_login_job, args=(job["id"],), daemon=True).start()
     return _job_public(job)
@@ -2435,7 +2467,7 @@ def _start_import(body: dict) -> dict:
     if "perplexity.ai" not in url:
         raise ValueError("a perplexity.ai run URL is required")
     if not _claim_active():
-        raise RuntimeError(_slots_busy_msg())
+        raise _Conflict(_slots_busy_msg())
     job = _new_job("import", segment=segment, date=date)
     threading.Thread(target=_run_import_job,
                      args=(job["id"], segment, date, url),
@@ -2518,7 +2550,7 @@ def _approve_strategy_segment(run_id: str, definition_raw: dict | None) -> dict:
     if not run:
         raise ValueError(f"unknown strategy run {run_id}")
     if run.get("state") not in (orchestrate.AWAITING_SEGMENT, orchestrate.NEEDS_LOGIN):
-        raise RuntimeError(f"run {run_id} is not awaiting segment approval")
+        raise _Conflict(f"run {run_id} is not awaiting segment approval")
     raw = dict(definition_raw or (run.get("draft") or {}).get("definition") or {})
     raw["status"] = "approved"  # approving requires members; _validate enforces it
     definition = _validate_segment_definition(raw)
@@ -2616,7 +2648,7 @@ def _approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = Fa
     if not run:
         raise ValueError(f"unknown strategy run {run_id}")
     if run.get("state") != orchestrate.AWAITING_PROPOSAL:
-        raise RuntimeError(f"run {run_id} is not awaiting proposal approval")
+        raise _Conflict(f"run {run_id} is not awaiting proposal approval")
     seg, date = run.get("segment"), run.get("date")
     # Persist any edits made at the gate back into the proposal file the apply
     # step reads, so what the user approved is exactly what gets applied.
@@ -2643,10 +2675,6 @@ def _approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = Fa
 # Generous ceiling for JSON POST bodies (Deep Research reports run to a few
 # hundred KB); anything bigger is a bug or abuse, not a legitimate request.
 _MAX_BODY_BYTES = 5 * 1024 * 1024
-
-
-class _BadRequest(ValueError):
-    """A client-side request problem that should map to HTTP 400, not 500."""
 
 
 # --------------------------------------------------------------------------- #
@@ -2759,6 +2787,18 @@ class Handler(BaseHTTPRequestHandler):
     def _send_error_json(self, status: int, message: str):
         self._send_json({"error": message}, status=status)
 
+    def _dispatch(self, run):
+        """Invoke a route handler, mapping our HTTP-error vocabulary to a JSON
+        error envelope so individual handlers don't each repeat the try/except.
+        An _HttpError carries its own status; a bare ValueError is the common
+        validation case (400). Anything else propagates to _handle_unexpected."""
+        try:
+            return run()
+        except _HttpError as exc:
+            return self._send_error_json(exc.status, str(exc))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
     def _handle_unexpected(self, exc: Exception):
         # Single funnel for unexpected handler failures (GET and POST): log the
         # full traceback to the terminal so we can actually debug, but hand the
@@ -2849,7 +2889,7 @@ class Handler(BaseHTTPRequestHandler):
                     break
         if name is None:
             return self._send_error_json(404, "unknown endpoint")
-        return getattr(self, name)(path, query)
+        return self._dispatch(lambda: getattr(self, name)(path, query))
 
     # ---- GET handlers (one per _GET_EXACT / _GET_PREFIX entry) -------------
     def _get_livereload(self, path, query):
@@ -2914,10 +2954,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_peer_stats(self, path, query):
         sym = (query.get("symbol") or [""])[0]
-        try:
-            return self._send_json(_peer_stats(_resolve_symbol(sym)))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(_peer_stats(_resolve_symbol(sym)))
 
     def _get_strategy_runs(self, path, query):
         return self._send_json({"runs": orchestrate.list_runs()})
@@ -2966,12 +3003,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_status())
 
     def _get_trade_orders(self, path, query):
-        try:
-            return self._send_json(_trade_orders())
-        except _Forbidden as exc:
-            return self._send_error_json(403, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(502, str(exc))
+        return self._send_json(_trade_orders())
 
     def _get_login_status(self, path, query):
         return self._send_json(_get_auth_state())
@@ -2992,12 +3024,9 @@ class Handler(BaseHTTPRequestHandler):
     def _get_deep_prompt(self, path, query):
         ticker = (query.get("ticker") or [""])[0].strip()
         name = (query.get("segment") or [""])[0]
-        try:
-            if ticker:
-                return self._send_json(_ticker_deep_prompt(ticker))
-            return self._send_json(_segment_prompt(name))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        if ticker:
+            return self._send_json(_ticker_deep_prompt(ticker))
+        return self._send_json(_segment_prompt(name))
 
     def _get_deep_run(self, path, query):
         stem = _slugify(path.rsplit("/", 1)[-1])
@@ -3028,18 +3057,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_annotate_symbol_record(rec, sym, provider_sym)) if rec else self._send_error_json(404, f"no cached research for {sym}")
 
     def _get_analysis(self, path, query):
-        try:
-            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
         rec = _latest_analysis(_resolve_symbol(sym))
         return self._send_json(rec) if rec else self._send_error_json(404, f"no analysis for {sym}")
 
     def _get_qa(self, path, query):
-        try:
-            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
         return self._send_json(_load_qa(_resolve_symbol(sym)))
 
     def _get_history(self, path, query):
@@ -3074,8 +3097,6 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             return self._handle_post_api(path)
-        except _BadRequest as exc:
-            return self._send_error_json(400, str(exc))
         except Exception as exc:  # noqa: BLE001
             return self._handle_unexpected(exc)
 
@@ -3088,22 +3109,16 @@ class Handler(BaseHTTPRequestHandler):
                     break
         if name is None:
             return self._send_error_json(404, "unknown endpoint")
-        return getattr(self, name)(path)
+        return self._dispatch(lambda: getattr(self, name)(path))
 
     # ---- POST handlers (one per _POST_EXACT / _POST_PREFIX entry) ----------
     def _post_segment_draft(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_start_segment_draft(str(body.get("query") or "")))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(_start_segment_draft(str(body.get("query") or "")))
 
     def _post_strategy_start(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_start_strategy(str(body.get("direction") or "")))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(_start_strategy(str(body.get("direction") or "")))
 
     def _post_strategy_action(self, path):
         # /api/strategy/{run_id}/{action}
@@ -3112,46 +3127,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, "unknown strategy action")
         run_id, action = parts[2], parts[3]
         body = self._read_body()
-        try:
-            if action == "approve-segment":
-                return self._send_json(_approve_strategy_segment(run_id, body.get("definition")))
-            if action == "approve-proposal":
-                return self._send_json(_approve_strategy_proposal(
-                    run_id, body.get("changes"), allow_blocked=bool(body.get("allow_blocked"))))
-            return self._send_error_json(404, f"unknown strategy action {action}")
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        if action == "approve-segment":
+            return self._send_json(_approve_strategy_segment(run_id, body.get("definition")))
+        if action == "approve-proposal":
+            return self._send_json(_approve_strategy_proposal(
+                run_id, body.get("changes"), allow_blocked=bool(body.get("allow_blocked"))))
+        return self._send_error_json(404, f"unknown strategy action {action}")
 
     def _post_segment_def(self, path):
         name = _slugify(path.rsplit("/", 1)[-1])
         body = self._read_body()
-        try:
-            definition = _validate_segment_definition(body.get("definition") or body)
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        definition = _validate_segment_definition(body.get("definition") or body)
         _write_json(SEGMENT_DEF_DIR / f"{name}.json", definition)
         return self._send_json({"name": name, "definition": definition, "segments": _segments_list()})
 
     def _post_holdings_sync(self, path):
-        try:
-            return self._send_json(_start_holdings_sync())
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_holdings_sync())
 
     def _post_portfolio_history_sync(self, path):
         full = bool(self._read_body().get("full"))
-        try:
-            return self._send_json(_start_history_sync(full=full))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_history_sync(full=full))
 
     def _post_portfolio_history_sectors(self, path):
-        try:
-            return self._send_json(_start_sectors_sync())
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_sectors_sync())
 
     def _post_deep_qa(self, path):
         body = self._read_body()
@@ -3164,19 +3162,11 @@ class Handler(BaseHTTPRequestHandler):
             if _drop_qa_exchange(thread, body.get("delete")):
                 _write_json(_deep_qa_path(stem), thread)
             return self._send_json(_load_deep_qa(stem))
-        try:
-            return self._send_json(_start_deep_qa(stem, str(body.get("question") or "")))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_deep_qa(stem, str(body.get("question") or "")))
 
     def _post_deep_run_delete(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_delete_deep_run(str(body.get("stem") or "")))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(_delete_deep_run(str(body.get("stem") or "")))
 
     def _post_error_log(self, path):
         body = self._read_body()
@@ -3191,21 +3181,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(res)
 
     def _post_analyze(self, path):
-        try:
-            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
         body = self._read_body()
-        try:
-            return self._send_json(_start_analysis(_resolve_symbol(sym), bool(body.get("refresh"))))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_analysis(_resolve_symbol(sym), bool(body.get("refresh"))))
 
     def _post_qa(self, path):
-        try:
-            sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
         provider_sym = _resolve_symbol(sym)
         body = self._read_body()
         if body.get("clear"):
@@ -3216,12 +3197,7 @@ class Handler(BaseHTTPRequestHandler):
             if _drop_qa_exchange(thread, body.get("delete")):
                 _write_json(_qa_path(provider_sym), thread)
             return self._send_json(_load_qa(provider_sym))
-        try:
-            return self._send_json(_start_qa(provider_sym, str(body.get("question") or "")))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_qa(provider_sym, str(body.get("question") or "")))
 
     def _post_deep_job_cancel(self, path):
         body = self._read_body()
@@ -3257,31 +3233,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_deep_run(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_start_deep_research(body))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_deep_research(body))
 
     def _post_deep_login(self, path):
-        try:
-            return self._send_json(_start_login())
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_login())
 
     def _post_deep_import(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_start_import(body))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_start_import(body))
 
     def _post_verify_login(self, path):
-        try:
-            return self._send_json(_verify_login())
-        except RuntimeError as exc:
-            return self._send_error_json(409, str(exc))
+        return self._send_json(_verify_login())
 
     def _post_review(self, path):
         body = self._read_body()
@@ -3309,12 +3271,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_history_delete(self, path):
         body = self._read_body()
-        try:
-            sym = _safe_symbol(str(body.get("symbol") or ""))
-            provider_sym = _resolve_symbol(sym)
-            removed = research_pull.delete_history(provider_sym, str(body.get("stamp") or ""))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        sym = _safe_symbol(str(body.get("symbol") or ""))
+        provider_sym = _resolve_symbol(sym)
+        removed = research_pull.delete_history(provider_sym, str(body.get("stamp") or ""))
         return self._send_json({
             "symbol": sym,
             "removed": removed,
@@ -3342,47 +3301,20 @@ class Handler(BaseHTTPRequestHandler):
         model = _load(TARGET_MODEL_JSON)
         if not holdings or not model:
             return self._send_error_json(404, "need both a holdings snapshot and a target model")
-        try:
-            return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
 
     def _post_trade_preview(self, path):
-        try:
-            return self._send_json(_trade_preview(self._read_body()))
-        except _Forbidden as exc:
-            return self._send_error_json(403, str(exc))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(502, str(exc))
+        return self._send_json(_trade_preview(self._read_body()))
 
     def _post_trade_place(self, path):
-        try:
-            return self._send_json(_trade_place(self._read_body()))
-        except _Forbidden as exc:
-            return self._send_error_json(403, str(exc))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(502, str(exc))
+        return self._send_json(_trade_place(self._read_body()))
 
     def _post_trade_cancel(self, path):
-        try:
-            return self._send_json(_trade_cancel(self._read_body()))
-        except _Forbidden as exc:
-            return self._send_error_json(403, str(exc))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-        except RuntimeError as exc:
-            return self._send_error_json(502, str(exc))
+        return self._send_json(_trade_cancel(self._read_body()))
 
     def _post_journal(self, path):
         body = self._read_body()
-        try:
-            journal.add_entry(body)
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        journal.add_entry(body)
         entries = journal.load_entries()
         price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
         return self._send_json({
@@ -3393,10 +3325,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_journal_outcome(self, path):
         body = self._read_body()
-        try:
-            journal.record_outcome(str(body.get("id") or ""), body.get("price"), str(body.get("note") or ""))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        journal.record_outcome(str(body.get("id") or ""), body.get("price"), str(body.get("note") or ""))
         entries = journal.load_entries()
         price_map = journal.price_map_from_holdings(_load(HOLDINGS_JSON))
         return self._send_json({
@@ -3407,17 +3336,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_symbol_alias(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_save_symbol_alias(body))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(_save_symbol_alias(body))
 
     def _post_symbol_candidates(self, path):
         body = self._read_body()
-        try:
-            return self._send_json(_symbol_candidates(body))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
+        return self._send_json(_symbol_candidates(body))
 
     def _post_pull(self, path):
         try:
