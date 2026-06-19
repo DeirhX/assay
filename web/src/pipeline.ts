@@ -150,10 +150,14 @@ function setSegMode(mode) {
     note.textContent = "Pick a segment, then continue.";
   } else {
     // In "new" mode the single forward action is Approve & continue, revealed
-    // only after a draft exists -- so the footer Continue is out of the way.
+    // only after a draft exists (LLM "Draft it" or the manual template) -- so
+    // the footer Continue is out of the way. Key the editor on real JSON draft
+    // content, not a leftover slug, so a stale slug can't surface an empty
+    // editor with a live Approve button (the bug this fixes).
     cont.hidden = true;
-    note.textContent = "Draft a theme, review it, then approve to continue.";
-    $("#seg-draft-editor").hidden = !$("#pipe-slug").value.trim();
+    note.textContent = "Draft a theme or enter one manually, review it, then approve to continue.";
+    $("#seg-draft-editor").hidden = !$("#pipe-segment-json").value.trim();
+    updateSegDraftState();
   }
 }
 
@@ -218,6 +222,84 @@ function parseJsonField(sel, fallback) {
   return JSON.parse(raw);
 }
 
+// The example member's symbol in the manual template. segDraftValid() rejects
+// it, so the user must replace it with a real ticker before continuing.
+const SEG_PLACEHOLDER_SYM = "TICKER";
+
+function segSlugify(s) {
+  return String(s || "").toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+}
+
+// A minimal but structurally valid segment definition for the manual path: it
+// shows the real shape with one example member. The placeholder symbol is
+// intentionally rejected by segDraftValid() so Approve & continue stays blocked
+// until it is replaced.
+function blankSegmentDef(theme) {
+  const title = theme
+    ? theme.replace(/\s+/g, " ").trim().replace(/\b\w/g, (c) => c.toUpperCase())
+    : "New segment";
+  return {
+    title,
+    kind: "research",
+    status: "approved",
+    comment: "Manual draft — replace the example member with real tickers and refine the rationales.",
+    members: [
+      { symbol: SEG_PLACEHOLDER_SYM, rationale: "Why this company belongs in the segment." },
+    ],
+  };
+}
+
+// A draft is good enough to continue only when the slug is set and the JSON
+// parses into an object with at least one member carrying a real ticker (not
+// the manual-template placeholder). This gates the Approve & continue action so
+// you can never advance to Deep Research on an empty or skeleton segment.
+function segDraftValid() {
+  if (!$("#pipe-slug").value.trim()) return false;
+  const raw = $("#pipe-segment-json").value.trim();
+  if (!raw) return false;
+  let def;
+  try { def = JSON.parse(raw); } catch (_e) { return false; }
+  if (!def || typeof def !== "object" || Array.isArray(def)) return false;
+  const members = Array.isArray(def.members) ? def.members : [];
+  if (!members.length) return false;
+  return members.every((m) => {
+    const sym = m && typeof m.symbol === "string" ? m.symbol.trim() : "";
+    return !!sym && sym.toUpperCase() !== SEG_PLACEHOLDER_SYM;
+  });
+}
+
+function updateSegDraftState() {
+  const btn = $("#pipe-save-segment");
+  if (!btn) return;
+  const ok = segDraftValid();
+  btn.disabled = !ok;
+  btn.title = ok ? "" : "Add a valid definition with at least one real ticker before continuing.";
+}
+
+// Live-validate as the user edits either field, so the gate reflects the
+// current draft without needing a save attempt.
+$("#pipe-segment-json").addEventListener("input", updateSegDraftState);
+$("#pipe-slug").addEventListener("input", updateSegDraftState);
+
+// The manual path: reveal the editor prefilled with a minimal valid template
+// (deriving slug + title from the theme box when present) so the user can fill
+// in real tickers instead of waiting on the LLM drafter.
+$("#seg-enter-manual").addEventListener("click", () => {
+  const status = $("#pipe-segment-status");
+  status.classList.remove("err");
+  const theme = $("#pipe-query").value.trim();
+  if (!$("#pipe-slug").value.trim()) $("#pipe-slug").value = segSlugify(theme) || "new-segment";
+  if (!$("#pipe-segment-json").value.trim()) {
+    $("#pipe-segment-json").value = JSON.stringify(blankSegmentDef(theme), null, 2);
+  }
+  $("#pipe-draft-prompt-wrap").hidden = true;
+  $("#seg-draft-editor").hidden = false;
+  status.textContent = "Manual draft — replace the example ticker(s), then approve to continue.";
+  updateSegDraftState();
+  $("#pipe-segment-json").focus();
+});
+
 // Drafting is now LLM-backed and async: for a subject you don't hold (e.g.
 // "space exploration") the keyword baseline finds nothing, so the server asks
 // the analysis CLI to propose real, currently-listed tickers and we poll for
@@ -248,6 +330,7 @@ $("#pipe-draft").addEventListener("click", async () => {
       $("#pipe-draft-prompt").value = draftPrompt;
       $("#pipe-draft-prompt-wrap").hidden = !draftPrompt;
       $("#seg-draft-editor").hidden = false;
+      updateSegDraftState();
       const warn = (rec.warnings || []).join(" ");
       status.textContent = warn || `drafted ${rec.member_count || 0} names — review, then approve to continue`;
     }, `Drafting ${query}`);
@@ -262,6 +345,15 @@ $("#pipe-draft").addEventListener("click", async () => {
 $("#pipe-save-segment").addEventListener("click", async () => {
   const status = $("#pipe-segment-status");
   status.classList.remove("err");
+  // Defense in depth: the button is disabled while the draft is invalid, but
+  // re-check here so a stale enable or a programmatic click can't save an empty
+  // or placeholder-only segment.
+  if (!segDraftValid()) {
+    status.classList.add("err");
+    status.textContent = "Add a valid definition with at least one real ticker first.";
+    updateSegDraftState();
+    return;
+  }
   status.textContent = "saving segment...";
   try {
     const slug = $("#pipe-slug").value.trim();

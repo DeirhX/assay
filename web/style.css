@@ -997,6 +997,7 @@ details.collapse[open] > .collapse-head .collapse-caret { transform: rotate(90de
 
 /* gated (not loading) button: signal "blocked", not "busy" */
 #pipe-apply-proposal:disabled { cursor: not-allowed; opacity: .45; }
+#pipe-save-segment:disabled { cursor: not-allowed; opacity: .45; }
 .step-next:disabled { cursor: not-allowed; opacity: .45; }
 
 .wizard-step { display: none; margin-top: 0; }
