@@ -133,7 +133,8 @@ class BuildOrders(unittest.TestCase):
         conids = {"AMD": 222}
         pl, cl = self._lookups(prices, conids)
         # A BUY gets a limit at buy_below; a SELL would get trim_above.
-        limit = lambda sym, side: 92.0 if (sym == "AMD" and side == "BUY") else None
+        def limit(sym, side):
+            return 92.0 if (sym == "AMD" and side == "BUY") else None
         orders, _ = ibt.build_orders(
             [{"symbol": "AMD", "delta_czk": 23000}],
             price_lookup=pl, conid_lookup=cl, account_id="DU1", limit_lookup=limit)
@@ -147,7 +148,8 @@ class BuildOrders(unittest.TestCase):
         prices = {"NVDA": {"price": 130, "fx_to_base": 23.0}}
         conids = {"NVDA": 333}
         pl, cl = self._lookups(prices, conids)
-        limit = lambda sym, side: 145.0 if side == "SELL" else None
+        def limit(sym, side):
+            return 145.0 if side == "SELL" else None
         orders, _ = ibt.build_orders(
             [{"symbol": "NVDA", "delta_czk": -23000}],
             price_lookup=pl, conid_lookup=cl, account_id="DU1", limit_lookup=limit)
