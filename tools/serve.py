@@ -40,14 +40,13 @@ from config import (  # noqa: E402
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
-SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses
 # a dedicated profile so it never fights the MCP browser for the profile lock.
 DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
-from portfolio import holdings_payload, holdings_weights, provider_symbol_for, symbol_aliases  # noqa: E402
+from portfolio import holdings_payload, holdings_weights  # noqa: E402
 from providers import yahoo  # noqa: E402
 import instruments  # noqa: E402
 import research_pull  # noqa: E402
@@ -65,6 +64,11 @@ import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile math
 import price_levels  # noqa: E402  -- locked per-symbol buy-below/trim-above triggers
+from symbols import (  # noqa: E402  -- symbol resolve/alias/search (clean public names)
+    aliases as _symbol_aliases, annotate_record as _annotate_symbol_record,
+    candidates as _symbol_candidates, resolve_symbol as _resolve_symbol,
+    save_alias as _save_symbol_alias, search as _symbol_search,
+)
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
     _history_payload, _ibkr_status, _regenerate_site, _save_ibkr_secrets,
     _start_history_sync, _start_holdings_sync, _start_sectors_sync,
@@ -146,93 +150,6 @@ _CONTENT_TYPES = {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
 }
-
-
-def _symbol_aliases() -> dict[str, str]:
-    return {
-        src: dst
-        for src, dst in symbol_aliases().items()
-        if len(src) <= 16 and len(dst) <= 16
-        and re.match(r"^[A-Z0-9.=\- ]+$", src)
-        and re.match(r"^[A-Z0-9.=\- ]+$", dst)
-    }
-
-
-def _resolve_symbol(symbol: str) -> str:
-    sym = _safe_symbol(symbol)
-    return provider_symbol_for(sym, _symbol_aliases())
-
-
-def _annotate_symbol_record(rec: dict, input_symbol: str, provider_symbol: str) -> dict:
-    if input_symbol != provider_symbol:
-        rec = dict(rec)
-        rec["input_symbol"] = input_symbol
-        rec["provider_symbol"] = provider_symbol
-    # Always hand the UI a resolved instrument type, even for older cached
-    # records that predate quote_type capture (classify() falls back to
-    # symbol/profile heuristics in that case).
-    rec["instrument_type"] = instruments.classify(
-        provider_symbol,
-        quote_type=rec.get("quote_type") or rec.get("instrument_type"),
-        profile=rec.get("profile"),
-    )
-    return rec
-
-
-def _save_symbol_alias(body: dict) -> dict:
-    src = _safe_symbol(str(body.get("input_symbol") or body.get("input") or ""))
-    dst = _safe_symbol(str(body.get("provider_symbol") or body.get("provider") or ""))
-    aliases = _symbol_aliases()
-    if src == dst:
-        aliases.pop(src, None)
-    else:
-        aliases[src] = dst
-    _write_json(SYMBOL_ALIASES_JSON, aliases)
-    return {"aliases": aliases, "input_symbol": src, "provider_symbol": aliases.get(src, src)}
-
-
-def _symbol_candidates(body: dict) -> dict:
-    src = _safe_symbol(str(body.get("input_symbol") or body.get("symbol") or ""))
-    raw_candidates = body.get("candidates") or []
-    if not isinstance(raw_candidates, list):
-        raise ValueError("candidates must be a list")
-
-    seen: set[str] = set()
-    valid: list[dict[str, str]] = []
-    invalid: list[dict[str, str]] = []
-    for raw in raw_candidates[:16]:
-        try:
-            candidate = _safe_symbol(str(raw))
-        except ValueError as exc:
-            invalid.append({"symbol": str(raw), "error": str(exc)})
-            continue
-        if candidate in seen or candidate == src:
-            continue
-        seen.add(candidate)
-        try:
-            result = yahoo.chart(candidate, rng="5d", interval="1d")
-            meta = result.get("meta") or {}
-            valid.append({
-                "symbol": candidate,
-                "exchange": str(meta.get("exchangeName") or meta.get("fullExchangeName") or ""),
-                "currency": str(meta.get("currency") or ""),
-            })
-        except Exception as exc:  # noqa: BLE001 - candidate failed validation
-            invalid.append({"symbol": candidate, "error": str(exc)})
-    return {"input_symbol": src, "candidates": valid, "invalid": invalid}
-
-
-def _symbol_search(query: str, *, limit: int = 8) -> dict:
-    """Substring / company-name ticker search via Yahoo. Best-effort: a provider
-    hiccup returns an empty list rather than an error so the UI degrades cleanly."""
-    q = (query or "").strip()
-    if not q:
-        return {"query": "", "results": []}
-    try:
-        results = yahoo.search(q, limit=limit)
-    except Exception as exc:  # noqa: BLE001 - search is a nicety, never fatal
-        return {"query": q, "results": [], "error": str(exc)}
-    return {"query": q, "results": results}
 
 
 def _setup_status(*, run_checks: bool = False) -> dict:
