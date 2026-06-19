@@ -248,14 +248,17 @@ function navForView(view) {
 // active view. Kept separate from data loading so navigation logic stays legible.
 function updateChrome(active) {
   const group = VIEW_GROUP[active] || "deepdive";
-  if (lastViewByGroup[group]) lastViewByGroup[group] = active;
+  // Research has no sub-tab bar: "New run" (pipeline) is a sub-page reached via the
+  // button and left via its Back button, so the Research group header always
+  // returns to Reports rather than remembering pipeline as the last view.
+  if (lastViewByGroup[group]) lastViewByGroup[group] = (group === "research") ? "analyses" : active;
 
   document.querySelectorAll(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
   document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
 
   // The sub-tab bar only exists for groups that fan out (research, portfolio).
   const subbar = $("#subbar");
-  const groupHasSubtabs = group === "research" || group === "portfolio";
+  const groupHasSubtabs = group === "portfolio";
   if (subbar) subbar.hidden = !groupHasSubtabs;
   document.querySelectorAll(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
@@ -393,6 +396,10 @@ function initShell() {
   $("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
 
   $("#analyses-new").addEventListener("click", () => startPipeline());
+
+  // New run is a sub-page of Reports now (no sub-tab); its Back button returns there.
+  const pipeBack = $("#pipe-back");
+  if (pipeBack) pipeBack.addEventListener("click", () => goToView("analyses"));
 
   // Ticker links inside rendered reports / summaries are SPA-internal: intercept
   // and route to the deep-dive instead of a full navigation.
