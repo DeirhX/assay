@@ -23,6 +23,11 @@ paper-first **Trade desk**, which is off by default.
 - **A standing rebalance plan.** Current NAV weights against your target bands,
   with risk, tax-lot, and what-if tooling to pressure-test a basket before you
   place it.
+- **Price-level triggers.** An analysis can suggest a *buy-below* / *trim-above*
+  price; you edit and **lock** it. A locked level then gates the rebalance
+  suggestion (a buy waits until the price is actually favorable) and becomes the
+  limit price on the order the Trade desk synthesizes — a human-confirmed
+  condition, never an automatic one.
 - **Segment & peer dashboards.** A whole peer universe (e.g. semiconductors)
   ranked and cross-joined against what you already own.
 - **A Deep Research pipeline.** Perplexity report capture, source extraction, a
@@ -161,6 +166,11 @@ The desk is deliberately hard to fire by accident:
   trusted from the browser.
 - **Live (non-paper) placement stays locked** until `IBKR_ALLOW_LIVE` is also set.
   Paper accounts are recognised by their `DU` prefix.
+- **Locked price levels are human-confirmed limit triggers, not standing orders.**
+  A locked buy-below/trim-above only sets the limit price (and `GTC`) when *you*
+  stage that name and place the basket; the app never watches the market or places
+  anything on its own. The limit price is resolved server-side from the locked
+  store, so the browser can't inject one.
 
 Validate on paper before ever enabling live:
 

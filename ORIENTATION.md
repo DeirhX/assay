@@ -21,6 +21,7 @@ private data repo).
 | Rebalance validator | `tools/rebalance.py` | Compares current weights against `data/target-model.json`. |
 | Risk lens | `tools/risk.py` | Correlation, volatility, effective-bets, and factor-shock stress over held names (`GET /api/risk`). |
 | Tax-lot planner | `tools/tax_lots.py` | Czech 3-year-aware lot selection for a trim; enriches the rebalance plan (`POST /api/tax-plan`). |
+| Price-level triggers | `tools/price_levels.py`, `data/price-levels.json` (gitignored) | Human-confirmed per-symbol buy-below/trim-above levels (instrument currency). Suggested by `ticker_analysis` (`## Price levels` → `parse_price_levels` → analysis `.meta.json`), locked from the deep dive (`GET/POST /api/price-levels[/lock|/clear]`). A locked level gates the rebalance suggestion in `serve._attach_research_overlay` (blocked side → `action: "wait"` + `row.price_gate`) and becomes the order's limit price via `ibkr_trade.build_orders` `limit_lookup` (`LMT`/`GTC`, resolved server-side in `trade_service._locked_limit`). |
 | What-if simulator | `tools/whatif.py` | Recomputes post-trade weights/cash/realized-tax for a staged basket (`POST /api/whatif`). |
 | Decision journal | `tools/journal.py`, `data/journal.json` (submodule) | Append-only decisions + outcome calibration (`GET/POST /api/journal`). |
 | Portfolio history | `tools/ibkr_history.py`, `data/cache/ibkr/portfolio-history.json` (gitignored) | Full trade ledger + day-by-day NAV via windowed read-only Flex; persists once then tops up only new days (incremental by default, `--full`/`{"full":true}` to rebuild). NAV-over-time chart with trade markers in the History tab (`GET /api/portfolio-history`, `POST /api/portfolio-history/sync`). |
@@ -122,6 +123,14 @@ Flow: stage a basket in the Rebalance planner (*Simulate basket*) → it lands i
 which sizes the CZK basket into share orders via the holdings marks + a live
 CPAPI snapshot and returns IBKR's margin/commission plus a binding token) → you
 tick each order and place (`POST /api/trade/place`).
+
+Price-level interaction: a price-gated rebalance row defaults its plan amount to
+0, so it isn't staged unless you override it. When a staged name has a locked
+level, `build_orders` turns that order into a `LMT` at the level (BUY→buy_below,
+SELL→trim_above) with `GTC` — the limit price is looked up server-side from the
+store (`trade_service._locked_limit`), never sent by the browser, and the preview
+shows "LMT @ price" per line. A locked level is a human-confirmed limit trigger,
+not a standing order: nothing fills unless you stage and place it.
 
 Safety invariants (enforced in `serve.py`, tested in
 `tools/tests/test_ibkr_trade.py`):
