@@ -49,14 +49,16 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
 
-/* Primary nav: three top-level groups. */
-.groups { display: flex; gap: 6px; }
+/* Primary nav: top-level groups as underline tabs (accent underline marks the
+   active one; the bolder white label keeps it ahead of the secondary subtabs). */
+.groups { display: flex; gap: 4px; }
 .group {
-  background: transparent; color: var(--muted); border: 1px solid transparent;
-  padding: 7px 16px; border-radius: 999px; cursor: pointer; font-size: 15px; font-weight: 700;
+  background: transparent; color: var(--muted);
+  border: 0; border-bottom: 2px solid transparent;
+  padding: 7px 16px; cursor: pointer; font-size: 15px; font-weight: 700;
 }
 .group:hover { color: var(--text); }
-.group.active { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+.group.active { color: var(--text); border-bottom-color: var(--accent); }
 
 /* Persistent ticker search in the header. */
 .topsearch { display: flex; position: relative; }
@@ -91,15 +93,19 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
   border: 1px solid rgba(130,170,255,.30); border-radius: 999px; padding: 1px 7px;
 }
 
-/* Secondary nav: sub-tabs for the active group, wrapped onto its own row. */
-.subbar { flex-basis: 100%; display: flex; }
-.subtabs { display: flex; gap: 6px; padding-top: 10px; }
+/* Secondary nav: underline tabs for the active group, wrapped onto its own row.
+   The full-width divider plus the active tab's 2px underline (pulled down 1px to
+   sit on that divider) is what reads as "tabs" rather than the pill buttons the
+   primary groups use. */
+.subbar { flex-basis: 100%; display: flex; border-bottom: 1px solid var(--border); }
+.subtabs { display: flex; gap: 2px; padding-top: 10px; }
 .subtab {
-  background: transparent; color: var(--muted); border: 1px solid transparent;
-  padding: 4px 13px; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 600;
+  background: transparent; color: var(--muted);
+  border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 7px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
 }
 .subtab:hover { color: var(--text); }
-.subtab.active { color: var(--accent); background: rgba(130,170,255,.12); border-color: var(--border); }
+.subtab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* Now / Over-time toggle shared by the merged Positions views. */
 .pos-toggle { display: inline-flex; gap: 0; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }

@@ -297,21 +297,23 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         "errors": errors,
     }
 
-    if write:
+    if write and _has_usable_data(record):
         existing = _load(RESEARCH_DIR / f"{symbol}.json")
         if existing and "thesis" in existing:
             record["thesis"] = existing["thesis"]  # never clobber judgement
         _write(RESEARCH_DIR / f"{symbol}.json", record)
-        if _has_usable_data(record):
-            _write_history(symbol, record)
+        _write_history(symbol, record)
     return record
 
 
 def _has_usable_data(record: dict[str, Any]) -> bool:
     """True when the pull actually retrieved market data. A total provider
-    wipeout (no price and no metrics) is a failed analysis and must NOT be
-    persisted to the change-log history, or the deep dive fills up with rows of
-    n/a that pretend something happened."""
+    wipeout (no price and no metrics) is a failed analysis -- a typo'd or
+    delisted symbol -- and must NOT be persisted at all: not the dossier file
+    (which would otherwise pollute the ticker index / "viewed tickers" history
+    with a permanent all-n/a ghost) nor the change-log history. A pre-existing
+    good dossier is left untouched, so a transient provider outage can't clobber
+    real data with n/a."""
     price = record.get("price")
     if _val(price) is not None:
         return True

@@ -241,5 +241,47 @@ class HasUsableData(unittest.TestCase):
         self.assertFalse(rp._has_usable_data(rec))
 
 
+class NoDataPullNotPersisted(unittest.TestCase):
+    """A pull that retrieves nothing (a typo'd or delisted symbol) must not leave
+    a dossier behind: that all-n/a ghost would otherwise pollute the ticker index
+    and the "viewed tickers" recents forever. A pre-existing good dossier must
+    also survive a later empty pull (transient provider outage)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._patches = [
+            mock.patch.object(rp, "RESEARCH_DIR", self.tmp),
+            mock.patch.object(rp, "HISTORY_DIR", self.tmp / "history"),
+            mock.patch.object(rp.yahoo, "momentum", return_value={}),
+            mock.patch.object(rp.yahoo, "fundamentals", return_value=None),
+            mock.patch.object(rp.sec_edgar, "fundamentals", return_value=None),
+            mock.patch.object(rp.fmp, "enabled", return_value=False),
+            mock.patch.object(rp, "portfolio_context", return_value={}),
+            mock.patch.object(rp, "decision_label", return_value="research"),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+
+    def test_no_data_pull_writes_no_dossier(self):
+        rec = rp.pull_ticker("BOGUS")
+        self.assertFalse(rp._has_usable_data(rec))
+        self.assertFalse((self.tmp / "BOGUS.json").exists())
+        self.assertEqual(list(self.tmp.glob("*.json")), [])  # nothing in the index
+
+    def test_existing_dossier_not_clobbered_by_empty_pull(self):
+        good = {"symbol": "AMD", "name": "Advanced Micro Devices",
+                "price": {"value": 123.0, "source": "yahoo"}, "metrics": {},
+                "thesis": "core holding"}
+        rp._write(self.tmp / "AMD.json", good)
+        rp.pull_ticker("AMD")
+        kept = rp._load(self.tmp / "AMD.json")
+        self.assertEqual(kept["price"]["value"], 123.0)
+        self.assertEqual(kept["thesis"], "core holding")
+
+
 if __name__ == "__main__":
     unittest.main()
