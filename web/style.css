@@ -1350,24 +1350,77 @@ a.tlink:hover { border-bottom-style: solid; }
   border: 1px solid var(--border); border-left: 3px solid var(--accent);
   border-radius: 0 8px 8px 0; background: rgba(130,170,255,.05);
   padding: 12px 14px; margin: 6px 0 16px;
+  transition: border-left-color .18s ease, background .18s ease;
 }
+/* Once a trigger is locked the rail turns green -- a glanceable "this name is armed". */
+.price-levels.pl-is-locked { border-left-color: var(--good); background: rgba(107,211,138,.05); }
 .pl-head { display: flex; align-items: center; gap: 10px; }
 .pl-title { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
+.price-levels.pl-is-locked .pl-title { color: var(--good); }
 .pl-locked { font-size: 10px; }
-.pl-intro { margin: 6px 0 10px; }
-.pl-grid { display: flex; flex-wrap: wrap; gap: 16px; }
-.pl-field { display: flex; flex-direction: column; gap: 4px; }
-.pl-label { font-size: 12px; color: var(--muted); }
-.pl-input-row { display: flex; align-items: center; gap: 6px; }
-.pl-ccy { font-size: 12px; color: var(--muted); }
-.pl-input {
-  width: 120px; padding: 6px 8px; font-size: 14px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
+.pl-intro { margin: 6px 0 12px; }
+.pl-grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+.pl-field { display: flex; flex-direction: column; gap: 6px; }
+.pl-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
 }
-.pl-suggest { margin: 10px 0 0; }
+/* The currency + number share one rounded box that lights up on hover/focus, so
+   it reads as a single control rather than a stray label beside a bare input. */
+.pl-input-row {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 11px; transition: border-color .15s ease, box-shadow .15s ease;
+}
+.pl-input-row:hover { border-color: var(--muted); }
+.pl-input-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(130,170,255,.18); }
+.pl-ccy { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .02em; }
+.pl-input {
+  width: 84px; padding: 0; border: 0; background: transparent;
+  color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums;
+}
+.pl-input:focus { outline: none; }
+.pl-input::placeholder { color: var(--muted); opacity: .6; }
+/* Kill the native number spinners -- they crowd the value and look out of place. */
+.pl-input::-webkit-outer-spin-button,
+.pl-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.pl-input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+/* Directional tone: buy-below is accumulation (green), trim-above is a sell trigger (amber). */
+.pl-field--buy .pl-label { color: var(--good); }
+.pl-field--buy .pl-input-row:hover { border-color: rgba(107,211,138,.55); }
+.pl-field--buy .pl-input-row:focus-within { border-color: var(--good); box-shadow: 0 0 0 3px rgba(107,211,138,.18); }
+.pl-field--buy .pl-ccy { color: rgba(107,211,138,.85); }
+.pl-field--trim .pl-label { color: var(--warn); }
+.pl-field--trim .pl-input-row:hover { border-color: rgba(245,199,107,.55); }
+.pl-field--trim .pl-input-row:focus-within { border-color: var(--warn); box-shadow: 0 0 0 3px rgba(245,199,107,.18); }
+.pl-field--trim .pl-ccy { color: rgba(245,199,107,.85); }
+.pl-cmp-host { margin: 12px 0 0; }
+.pl-cmp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12.5px; line-height: 1.5; }
+.pl-cmp.muted { color: var(--muted); }
+.pl-cmp-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-weight: 700; flex: 0 0 auto;
+}
+.pl-cmp-ok { color: var(--good); }
+.pl-cmp-ok .pl-cmp-ico { background: rgba(107,211,138,.16); color: var(--good); }
+.pl-cmp-diff { color: var(--muted); }
+.pl-cmp-diff .pl-cmp-ico { background: rgba(245,199,107,.16); color: var(--warn); }
+.pl-cmp-lead { color: inherit; }
+.pl-cmp-sep { color: var(--muted); opacity: .6; }
+.pl-cmp-field { display: inline-flex; align-items: center; gap: 4px; }
+.pl-cmp-field.matched { color: var(--good); }
+.pl-cmp-field.muted { color: var(--muted); }
+.pl-cmp-tick { color: var(--good); font-weight: 700; }
+.pl-cmp-apply {
+  font: inherit; cursor: pointer; color: var(--warn);
+  background: rgba(245,199,107,.10); border: 1px solid rgba(245,199,107,.45);
+  border-radius: 999px; padding: 1px 9px; line-height: 1.4;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.pl-cmp-apply:hover { background: var(--warn); border-color: var(--warn); color: #1a1d24; }
+.pl-cmp-apply:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
 .pl-when { margin: 4px 0 0; font-size: 12px; }
-.pl-actions { margin-top: 12px; }
+.pl-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .pl-msg:empty { display: none; }
 .pl-msg { margin: 8px 0 0; }
 .pl-msg.err { color: var(--bad); }
@@ -2094,6 +2147,28 @@ a.tlink:hover { border-bottom-style: solid; }
 .strat-tag-neg { color: var(--bad, #e15a50); border-color: rgba(225,90,80,.5); background: rgba(225,90,80,.10); }
 
 .strat-preview { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 8px; }
+
+/* Sleeve rows in the compact preview: a basket of names, not a tradable ticker.
+   A tinted row + accent left rail + "sleeve" tag separates them from the single
+   tickers they're interleaved with, and the member chips spell out what's inside. */
+.strat-sleeve-row td { background: rgba(130,170,255,.05); }
+.strat-sleeve-row td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.strat-sleeve-name { display: flex; align-items: center; gap: 7px; }
+.strat-tag.sleeve { color: var(--accent); border-color: rgba(130,170,255,.5); background: rgba(130,170,255,.12); }
+.strat-tag.in-sleeve {
+  color: var(--muted); background: transparent; font-weight: 600;
+  text-transform: none; letter-spacing: 0;
+}
+.strat-mems { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.strat-mem {
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
+}
+/* A member that's also targeted on its own row: amber so the duplicate is owned. */
+.strat-mem.dup { color: var(--warn); border-color: rgba(245,199,107,.5); background: rgba(245,199,107,.10); }
+.strat-spread { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.strat-sleeve-note { margin-top: 6px; }
 
 .strat-recent { margin-top: 14px; display: grid; gap: 6px; }
 .strat-recent-item {

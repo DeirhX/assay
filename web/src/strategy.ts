@@ -584,21 +584,58 @@ function previewBlock(preview, { final = false } = {}) {
     wrap.innerHTML += `<div class="hint">Every targeted name is inside its band — no trades suggested.</div>`;
     return wrap;
   }
+  // Names that appear as their own target row anywhere in the plan (not just the
+  // actionable subset). Used to flag a sleeve member that is ALSO targeted on its
+  // own line — the overlap that otherwise reads as a double-counted ticker.
+  const targetNames = new Set(
+    (plan.rows || []).filter((r) => r.kind === "target").map((r) => r.name));
+  const hasSleeve = rows.some((r) => r.kind === "sleeve");
+
+  const nameCellHtml = (r) => {
+    if (r.kind !== "sleeve") {
+      // A standalone ticker that's also bundled inside a sleeve gets a quiet tag
+      // so the same name showing up twice in the table is explained, not magic.
+      const dup = (plan.rows || []).some(
+        (o) => o.kind === "sleeve" && (o.members || []).some((m) => m.symbol === r.name));
+      return `<strong>${esc(r.name || r.key)}</strong>` +
+        (dup ? ` <span class="strat-tag in-sleeve" title="Also part of a sleeve below — the sleeve's amount is separate from this one">in sleeve</span>` : "");
+    }
+    const members = r.members || [];
+    const mem = members.map((m) => {
+      const dup = targetNames.has(m.symbol);
+      return `<span class="strat-mem${dup ? " dup" : ""}"` +
+        (dup ? ` title="${esc(m.symbol)} is also targeted on its own row — counted there too"` : "") +
+        `>${esc(m.symbol)}</span>`;
+    }).join("");
+    return `<div class="strat-sleeve-name"><strong>${esc(r.name || r.key)}</strong>` +
+      `<span class="strat-tag sleeve" title="A basket of names governed by one combined band, not a tradable ticker">sleeve</span></div>` +
+      (members.length ? `<div class="strat-mems">${mem}</div>` : "");
+  };
+
   const tbl = el("table", "strat-plan");
   tbl.innerHTML = `<thead><tr><th>Symbol</th><th>Status</th><th>Drift</th><th>Action</th><th>Suggested</th></tr></thead>`;
   const body = el("tbody");
   rows.slice(0, 20).forEach((r) => {
-    const tr = el("tr");
+    const isSleeve = r.kind === "sleeve";
+    const tr = el("tr", isSleeve ? "strat-sleeve-row" : null);
+    const suggested = sensitive(`${fmtCZK(r.suggest_delta_czk)} ${esc(plan.currency || "")}`, "suggested trade") +
+      (isSleeve ? `<small class="strat-spread">spread across members</small>` : "");
     tr.innerHTML =
-      `<td><strong>${esc(r.name || r.key)}</strong></td>` +
+      `<td>${nameCellHtml(r)}</td>` +
       `<td>${esc(r.status)}</td>` +
       `<td>${esc(fmtSignedWeight(r.drift_pct))}</td>` +
       `<td>${esc(r.action)}</td>` +
-      `<td>${sensitive(`${fmtCZK(r.suggest_delta_czk)} ${esc(plan.currency || "")}`, "suggested trade")}</td>`;
+      `<td>${suggested}</td>`;
     body.appendChild(tr);
   });
   tbl.appendChild(body);
   wrap.appendChild(tbl);
+  if (hasSleeve) {
+    wrap.appendChild(el("p", "hint strat-sleeve-note",
+      "A sleeve is a basket of names sharing one combined target band — its suggested amount " +
+      "is for the whole group, spread across the listed members by hand, not a single trade. " +
+      "A member shown in amber is also targeted on its own row, so it's counted in both places."));
+  }
   return wrap;
 }
 
