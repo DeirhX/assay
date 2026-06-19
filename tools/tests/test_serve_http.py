@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import _support  # noqa: F401
+import holdings_sync
 import peer_stats
 import serve
 
@@ -93,7 +94,7 @@ class HoldingsSyncJob(unittest.TestCase):
                 progress("working…")
             return {"site": {"ok": True, "written": []}, "generated_at": "2026-06-13T00:00:00+00:00"}
 
-        with mock.patch.object(serve, "_sync_holdings", side_effect=fake_sync):
+        with mock.patch.object(holdings_sync, "_sync_holdings", side_effect=fake_sync):
             job = serve._start_holdings_sync()
             self.assertEqual(job["kind"], "ibkr_sync")
             pub = self._wait(job["id"])
@@ -107,7 +108,7 @@ class HoldingsSyncJob(unittest.TestCase):
             release.wait(timeout=5)
             return {"site": None, "generated_at": None}
 
-        with mock.patch.object(serve, "_sync_holdings", side_effect=blocker):
+        with mock.patch.object(holdings_sync, "_sync_holdings", side_effect=blocker):
             job = serve._start_holdings_sync()
             self._wait(job["id"], state="running")
             with self.assertRaises(RuntimeError):
@@ -116,7 +117,7 @@ class HoldingsSyncJob(unittest.TestCase):
             self._wait(job["id"])
 
     def test_sync_failure_becomes_error_state(self):
-        with mock.patch.object(serve, "_sync_holdings",
+        with mock.patch.object(holdings_sync, "_sync_holdings",
                                side_effect=ValueError("IBKR credentials not configured")):
             job = serve._start_holdings_sync()
             pub = self._wait(job["id"])
@@ -151,7 +152,7 @@ class JobsListEndpoint(unittest.TestCase):
         def fake_sync(progress=None):
             return {"site": {"ok": True, "written": []}, "generated_at": "2026-06-13T00:00:00+00:00"}
 
-        with mock.patch.object(serve, "_sync_holdings", side_effect=fake_sync):
+        with mock.patch.object(holdings_sync, "_sync_holdings", side_effect=fake_sync):
             job = serve._start_holdings_sync()
             # wait for it to settle so the result is attached
             deadline = time.time() + 4
