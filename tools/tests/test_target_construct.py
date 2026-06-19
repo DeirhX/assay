@@ -105,6 +105,20 @@ class NormalizeTargets(unittest.TestCase):
         self.assertEqual({c["symbol"] for c in changes}, {"BBB"})
 
 
+class BuildLlmPrompt(unittest.TestCase):
+    def test_research_block_is_injected(self):
+        block = "PER-NAME RESEARCH:\n- AAA: held 5% NAV; research (deep): bullish."
+        prompt = tc._build_llm_prompt("Segment essay here.", ["AAA", "BBB"], block)
+        self.assertIn(block, prompt)
+        self.assertIn("AAA, BBB", prompt)
+        self.assertIn("Segment essay here.", prompt)
+
+    def test_empty_block_keeps_prompt_clean(self):
+        prompt = tc._build_llm_prompt("Segment essay.", ["AAA"], "")
+        self.assertNotIn("PER-NAME RESEARCH", prompt)
+        self.assertIn("AAA", prompt)
+
+
 class ConstructWritesProposal(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

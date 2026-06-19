@@ -33,6 +33,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+import research_brief
 import ticker_analysis
 from store import load as _load, write_json as _write_json, safe_symbol as _safe_symbol
 
@@ -114,18 +115,19 @@ def heuristic_convictions(rows: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
-def _build_llm_prompt(report_text: str, symbols: list[str]) -> str:
+def _build_llm_prompt(report_text: str, symbols: list[str], research_block: str = "") -> str:
     body = report_text.strip()
     if len(body) > _REPORT_CHAR_LIMIT:
         body = body[:_REPORT_CHAR_LIMIT] + "\n…[truncated]"
     names = ", ".join(symbols)
-    return f"""You are sizing a research segment into portfolio convictions. Below is a Deep Research report. For each ticker in this list, judge how strongly the report supports OWNING it as a long-term position:
+    research_section = f"\n\n{research_block}" if research_block else ""
+    return f"""You are sizing a research segment into portfolio convictions. Below is a segment Deep Research report, followed (when available) by per-name research we pulled ourselves. For each ticker in this list, judge how strongly the evidence supports OWNING it as a long-term position:
 
-{names}
+{names}{research_section}
 
 Return ONLY a JSON object mapping each ticker to an object with:
-- "conviction": one of "high", "medium", "low", "avoid" ("avoid" = the report argues against owning / says trim or sell)
-- "rationale": one short sentence grounded in the report
+- "conviction": one of "high", "medium", "low", "avoid" ("avoid" = the evidence argues against owning / says trim or sell)
+- "rationale": one short sentence grounded in the report and any per-name research
 
 Do not invent tickers outside the list. Do not add prose outside the JSON.
 
@@ -135,7 +137,7 @@ REPORT:
 
 
 def llm_convictions(report_text: str, symbols: list[str], *,
-                    cfg: dict | None = None,
+                    cfg: dict | None = None, research_block: str = "",
                     progress: Callable[[str], None] | None = None,
                     cancel: Callable[[], bool] | None = None) -> dict[str, dict[str, str]]:
     """Ask the configured backend for per-name conviction. Returns {} on any
@@ -145,7 +147,7 @@ def llm_convictions(report_text: str, symbols: list[str], *,
     cfg = cfg or ticker_analysis.load_config()
     if not any(ticker_analysis.available_backends().values()):
         return {}
-    prompt = _build_llm_prompt(report_text, symbols)
+    prompt = _build_llm_prompt(report_text, symbols, research_block)
     res = ticker_analysis._run_with_fallback(prompt, cfg, progress, cancel, label="target-construct")
     if not res.get("ok"):
         return {}
@@ -185,7 +187,13 @@ def infer_convictions(rows: list[dict[str, Any]], report_text: str, *,
         for sym, conv in floor.items()
     }
     if use_llm:
-        llm = llm_convictions(report_text, symbols, cfg=cfg, progress=progress, cancel=cancel)
+        cfg = cfg or ticker_analysis.load_config()
+        # Ground the conviction read in the research we already generated -- our
+        # pulled numbers plus distilled per-ticker reports -- not just the essay.
+        research_block = research_brief.build_research_block(
+            rows, cfg, use_llm=True, progress=progress, cancel=cancel)
+        llm = llm_convictions(report_text, symbols, cfg=cfg, research_block=research_block,
+                              progress=progress, cancel=cancel)
         for sym, node in llm.items():
             result[sym] = {**node, "source": "llm"}
     return result
