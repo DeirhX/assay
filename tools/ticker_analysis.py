@@ -623,13 +623,55 @@ Interpret the multiples vs the growth. Priced for perfection, fair, or cheap? St
 2-3 tight bullets.
 
 ## What would change the thesis
-2-3 concrete, observable triggers (numbers, events) that would flip your verdict.{_sources_section(allow_web)}
+2-3 concrete, observable triggers (numbers, events) that would flip your verdict.
+
+## Price levels
+Actionable price triggers in the instrument's own trading currency — NOT forecasts. Only state a level you would genuinely want acted on: a "buy below" price at which accumulating is attractive, and/or a "trim above" price at which lightening up makes sense. If you would not gate on a side, write "none". Emit EXACTLY these two lines, each a single bare number (or "none"), nothing else on the line:
+- Buy below: <price or none>
+- Trim above: <price or none>{_sources_section(allow_web)}
 
 DATA
 ```json
 {data}
 ```
 """
+
+
+_NONE_TOKENS = ("none", "n/a", "not ", "no level", "no trigger", "tbd", "null")
+
+
+def _extract_level(report: str, label: str) -> float | None:
+    """Pull a single price after *label* (a regex like ``buy\\s+below``) out of a
+    free-text report. Tolerant of ``$``/currency symbols, thousands separators,
+    and trailing parentheticals; returns None for an explicit "none"/"n/a" or
+    when no positive number is present."""
+    m = re.search(rf"{label}\b\s*[:=]?\s*(.+)", report, re.IGNORECASE)
+    if not m:
+        return None
+    tail = m.group(1)
+    num = re.search(r"[0-9][0-9,]*(?:\.[0-9]+)?", tail)
+    head = (tail[: num.start()] if num else tail).lower()
+    if any(tok in head for tok in _NONE_TOKENS):
+        return None
+    if not num:
+        return None
+    try:
+        val = float(num.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    return val if val > 0 else None
+
+
+def parse_price_levels(report: str, currency: str = "") -> dict[str, Any]:
+    """Extract the analysis's suggested buy-below / trim-above triggers from the
+    '## Price levels' section (tolerant; works even if the model strays from the
+    exact bullet format). Currency is the instrument's trading currency, carried
+    through so the locked level and price comparisons stay in one unit."""
+    return {
+        "buy_below": _extract_level(report or "", r"buy\s+below"),
+        "trim_above": _extract_level(report or "", r"trim\s+above"),
+        "currency": (currency or "").upper(),
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -620,6 +620,10 @@ def _save_analysis_artifact(symbol: str, report: str, meta: dict) -> dict:
     sym = _safe_symbol(symbol)
     date = dt.datetime.now(dt.timezone.utc).date().isoformat()
     stem = f"{sym}-{date}"
+    # Currency comes from the dossier so suggested levels and later price
+    # comparisons all live in the instrument's own trading currency.
+    dossier = _load(RESEARCH_DIR / f"{sym}.json") or {}
+    currency = str(dossier.get("currency") or "").upper()
     info = {
         "symbol": sym,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -627,6 +631,8 @@ def _save_analysis_artifact(symbol: str, report: str, meta: dict) -> dict:
         "backend_label": meta.get("backend_label"),
         "model": meta.get("model"),
         "attempts": meta.get("attempts") or [],
+        "currency": currency,
+        "price_levels_suggested": ticker_analysis.parse_price_levels(report, currency),
     }
     _write_text(ANALYSIS_DIR / f"{stem}.md", report.strip() + "\n")
     _write_json(ANALYSIS_DIR / f"{stem}.meta.json", info)
