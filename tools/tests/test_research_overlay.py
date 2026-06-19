@@ -1,7 +1,7 @@
-"""Tests for the rebalance-planner research overlay in serve.py: the pure
-band-vs-thesis conflict classifier and the in-place row enrichment that reads the
-per-ticker dossier. Offline; serve's RESEARCH_DIR is pointed at a temp dir and
-symbol resolution is stubbed to identity so no alias file is needed."""
+"""Tests for the rebalance-planner research overlay in rebalance_overlay.py: the
+pure band-vs-thesis conflict classifier and the in-place row enrichment that reads
+the per-ticker dossier. Offline; the module's RESEARCH_DIR is pointed at a temp
+dir and symbol resolution is stubbed to identity so no alias file is needed."""
 
 from __future__ import annotations
 
@@ -12,29 +12,29 @@ from pathlib import Path
 from unittest import mock
 
 import _support  # noqa: F401
-import serve
+import rebalance_overlay
 
 
 class ResearchConflict(unittest.TestCase):
     def test_trim_against_add_like_thesis_is_conflict(self):
         for thesis in ("add", "accumulate", "buy", "build", "increase", "overweight"):
-            self.assertTrue(serve._research_conflict("trim", thesis), thesis)
+            self.assertTrue(rebalance_overlay.research_conflict("trim", thesis), thesis)
 
     def test_buy_against_trim_like_thesis_is_conflict(self):
         for thesis in ("trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"):
-            self.assertTrue(serve._research_conflict("buy", thesis), thesis)
+            self.assertTrue(rebalance_overlay.research_conflict("buy", thesis), thesis)
 
     def test_agreement_and_neutral_are_not_conflicts(self):
-        self.assertFalse(serve._research_conflict("trim", "sell"))   # both bearish
-        self.assertFalse(serve._research_conflict("buy", "accumulate"))  # both bullish
-        self.assertFalse(serve._research_conflict("trim", "hold"))   # neutral thesis
-        self.assertFalse(serve._research_conflict("review", "sell"))  # non-trade action
-        self.assertFalse(serve._research_conflict("trim", None))     # no thesis
-        self.assertFalse(serve._research_conflict("trim", ""))
-        self.assertFalse(serve._research_conflict(None, "add"))
+        self.assertFalse(rebalance_overlay.research_conflict("trim", "sell"))   # both bearish
+        self.assertFalse(rebalance_overlay.research_conflict("buy", "accumulate"))  # both bullish
+        self.assertFalse(rebalance_overlay.research_conflict("trim", "hold"))   # neutral thesis
+        self.assertFalse(rebalance_overlay.research_conflict("review", "sell"))  # non-trade action
+        self.assertFalse(rebalance_overlay.research_conflict("trim", None))     # no thesis
+        self.assertFalse(rebalance_overlay.research_conflict("trim", ""))
+        self.assertFalse(rebalance_overlay.research_conflict(None, "add"))
 
     def test_thesis_action_is_case_and_space_insensitive(self):
-        self.assertTrue(serve._research_conflict("trim", "  Accumulate "))
+        self.assertTrue(rebalance_overlay.research_conflict("trim", "  Accumulate "))
 
 
 class AttachResearchOverlay(unittest.TestCase):
@@ -44,8 +44,8 @@ class AttachResearchOverlay(unittest.TestCase):
         # Point the dossier directory at the temp dir and make symbol resolution a
         # no-op so the overlay reads <tmp>/<NAME>.json directly.
         self._patches = [
-            mock.patch.object(serve, "RESEARCH_DIR", tmp),
-            mock.patch.object(serve, "_resolve_symbol", lambda s: s),
+            mock.patch.object(rebalance_overlay, "RESEARCH_DIR", tmp),
+            mock.patch.object(rebalance_overlay, "resolve_symbol", lambda s: s),
         ]
         for p in self._patches:
             p.start()
@@ -71,7 +71,7 @@ class AttachResearchOverlay(unittest.TestCase):
             metrics={"pe_fwd": 20},  # noise that must NOT leak into the overlay
         )
         plan = {"rows": [{"kind": "target", "held": True, "name": "AAA", "action": "trim"}]}
-        serve._attach_research_overlay(plan)
+        rebalance_overlay.attach_research_overlay(plan)
         row = plan["rows"][0]
         self.assertTrue(row["research_conflict"])  # trim vs accumulate
         res = row["research"]
@@ -90,7 +90,7 @@ class AttachResearchOverlay(unittest.TestCase):
         self._write_dossier("BBB", as_of="2026-06-01T00:00:00+00:00",
                              cross_checks=[], decision="ACCUMULATE", momentum={})
         plan = {"rows": [{"kind": "target", "held": True, "name": "BBB", "action": "buy"}]}
-        serve._attach_research_overlay(plan)
+        rebalance_overlay.attach_research_overlay(plan)
         row = plan["rows"][0]
         self.assertIn("research", row)
         self.assertFalse(row["research_conflict"])
@@ -103,14 +103,14 @@ class AttachResearchOverlay(unittest.TestCase):
             {"kind": "sleeve", "held": True, "name": "CCC", "action": "trim"},
             {"kind": "target", "held": False, "name": "CCC", "action": "buy"},
         ]}
-        serve._attach_research_overlay(plan)
+        rebalance_overlay.attach_research_overlay(plan)
         for row in plan["rows"]:
             self.assertNotIn("research", row)
             self.assertNotIn("research_conflict", row)
 
     def test_missing_dossier_is_silently_skipped(self):
         plan = {"rows": [{"kind": "target", "held": True, "name": "ZZZ", "action": "trim"}]}
-        serve._attach_research_overlay(plan)  # ZZZ.json does not exist
+        rebalance_overlay.attach_research_overlay(plan)  # ZZZ.json does not exist
         self.assertNotIn("research", plan["rows"][0])
 
 
@@ -124,8 +124,8 @@ class PriceGate(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
         self._patches = [
-            mock.patch.object(serve, "RESEARCH_DIR", tmp),
-            mock.patch.object(serve, "_resolve_symbol", lambda s: s),
+            mock.patch.object(rebalance_overlay, "RESEARCH_DIR", tmp),
+            mock.patch.object(rebalance_overlay, "resolve_symbol", lambda s: s),
             mock.patch.object(price_levels, "LEVELS_JSON", tmp / "price-levels.json"),
         ]
         for p in self._patches:
@@ -144,7 +144,7 @@ class PriceGate(unittest.TestCase):
         self.price_levels.lock("AMD", buy_below=92, currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
                           "action": "buy", "suggest_delta_pct": 1.0}]}
-        serve._attach_research_overlay(plan, self._holdings("AMD", 100.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 100.0))
         row = plan["rows"][0]
         self.assertEqual(row["action"], "wait")  # 100 > 92 -> too dear, wait
         self.assertEqual(row["price_gate"]["blocked_action"], "buy")
@@ -155,7 +155,7 @@ class PriceGate(unittest.TestCase):
         self.price_levels.lock("AMD", buy_below=92, currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
                           "action": "buy", "suggest_delta_pct": 1.0}]}
-        serve._attach_research_overlay(plan, self._holdings("AMD", 90.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 90.0))
         row = plan["rows"][0]
         self.assertEqual(row["action"], "buy")  # 90 <= 92 -> favorable, untouched
         self.assertFalse(row["price_gate"]["blocks_buy"])
@@ -164,14 +164,14 @@ class PriceGate(unittest.TestCase):
         self.price_levels.lock("NVDA", trim_above=145, currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "NVDA",
                           "action": "trim", "suggest_delta_pct": -1.0}]}
-        serve._attach_research_overlay(plan, self._holdings("NVDA", 120.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("NVDA", 120.0))
         row = plan["rows"][0]
         self.assertEqual(row["action"], "wait")
         self.assertEqual(row["price_gate"]["blocked_action"], "trim")
 
     def test_no_level_means_no_gate(self):
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
-        serve._attach_research_overlay(plan, self._holdings("AMD", 100.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 100.0))
         self.assertNotIn("price_gate", plan["rows"][0])
         self.assertEqual(plan["rows"][0]["action"], "buy")
 
@@ -179,14 +179,14 @@ class PriceGate(unittest.TestCase):
         self.price_levels.lock("AMD", buy_below=92, currency="USD")
         (self.tmp / "AMD.json").write_text(json.dumps({"price": {"value": 100.0}}), encoding="utf-8")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
-        serve._attach_research_overlay(plan, {"positions": []})  # not in mark map
+        rebalance_overlay.attach_research_overlay(plan, {"positions": []})  # not in mark map
         self.assertEqual(plan["rows"][0]["action"], "wait")
         self.assertEqual(plan["rows"][0]["price_gate"]["current"], 100.0)
 
     def test_unknown_price_does_not_block(self):
         self.price_levels.lock("AMD", buy_below=92, currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
-        serve._attach_research_overlay(plan, {"positions": []})  # no mark, no dossier
+        rebalance_overlay.attach_research_overlay(plan, {"positions": []})  # no mark, no dossier
         row = plan["rows"][0]
         self.assertEqual(row["action"], "buy")  # can't confirm -> leave to the human
         self.assertFalse(row["price_gate"]["price_known"])
@@ -200,7 +200,7 @@ class PriceGate(unittest.TestCase):
             currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
                           "action": "buy", "suggest_delta_pct": 2.0, "suggest_delta_czk": 1000}]}
-        serve._attach_research_overlay(plan, self._holdings("AMD", 340.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 340.0))
         row = plan["rows"][0]
         gate = row["price_gate"]
         self.assertEqual(row["action"], "buy")  # partially live, still actionable
@@ -220,7 +220,7 @@ class PriceGate(unittest.TestCase):
             currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
                           "action": "buy", "suggest_delta_pct": 2.0}]}
-        serve._attach_research_overlay(plan, self._holdings("AMD", 300.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 300.0))
         row = plan["rows"][0]
         self.assertEqual(row["action"], "buy")
         self.assertFalse(row["price_gate"].get("partial", False))
@@ -234,7 +234,7 @@ class PriceGate(unittest.TestCase):
             currency="USD")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
                           "action": "buy", "suggest_delta_pct": 2.0}]}
-        serve._attach_research_overlay(plan, self._holdings("AMD", 380.0))
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 380.0))
         row = plan["rows"][0]
         self.assertEqual(row["action"], "wait")
         self.assertEqual(row["price_gate"]["blocked_action"], "buy")
