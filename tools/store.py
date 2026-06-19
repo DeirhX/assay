@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -70,12 +71,28 @@ def _atomic_write(path: Path, text: str) -> None:
                 fh.write(text)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp, path)
+            _replace_with_retry(tmp, path)
         finally:
             try:
                 tmp.unlink()
             except OSError:
                 pass
+
+
+def _replace_with_retry(tmp: Path, path: Path, *, attempts: int = 10) -> None:
+    """``os.replace`` is atomic, but on Windows it transiently fails with
+    PermissionError when antivirus / the indexer is still touching the freshly
+    written temp (or a just-replaced target). Our lock serializes our own
+    writers, so this only happens against the OS -- a short backed-off retry
+    rides it out instead of surfacing a spurious 500."""
+    for i in range(attempts):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(0.01 * (i + 1))
 
 
 def slugify(value: str) -> str:
