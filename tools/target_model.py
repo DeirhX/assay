@@ -17,7 +17,7 @@ import datetime as dt
 import rebalance
 import tax_lots
 from config import DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, TARGET_MODEL_JSON
-from holdings_sync import _regenerate_site
+from holdings_sync import regenerate_site
 from store import (
     load as _load, safe_symbol as _safe_symbol,
     slugify as _slugify, write_json as _write_json,
@@ -105,7 +105,7 @@ def _backup_target_model() -> str | None:
     return str(backup.relative_to(REPO_ROOT))
 
 
-def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
+def apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
     if not confirm:
         raise ValueError("confirm=true is required")
     segment = _slugify(segment)
@@ -126,11 +126,11 @@ def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_bloc
     _write_json(TARGET_MODEL_JSON, model)
     _write_json(proposal_path, proposal)
     # Keep the static plan in lockstep with the model the apply just changed.
-    site = _regenerate_site()
+    site = regenerate_site()
     return {"applied": applied, "skipped": skipped, "proposal": proposal, "backup": backup, "site": site}
 
 
-def _preview_plan_for_proposal(proposal: dict, *, allow_blocked: bool = False) -> dict:
+def preview_plan_for_proposal(proposal: dict, *, allow_blocked: bool = False) -> dict:
     """Compute the rebalance plan that WOULD result from a proposal, against a
     throwaway copy of the model -- nothing is written. Powers the Gate-2 preview
     (with the proposal's changes) and the final recommendation (empty changes,

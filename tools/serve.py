@@ -72,12 +72,15 @@ from segments_service import (  # noqa: E402  -- segment validate/prompt/list
     validate_definition as _validate_segment_definition,
 )
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
-    _history_payload, _ibkr_status, _regenerate_site, _save_ibkr_secrets,
-    _start_history_sync, _start_holdings_sync, _start_sectors_sync,
+    history_payload as _history_payload, ibkr_status as _ibkr_status,
+    regenerate_site as _regenerate_site, save_ibkr_secrets as _save_ibkr_secrets,
+    start_history_sync as _start_history_sync, start_holdings_sync as _start_holdings_sync,
+    start_sectors_sync as _start_sectors_sync,
 )
-from target_model import _apply_target_proposal  # noqa: E402  -- target-model apply
+from target_model import apply_target_proposal as _apply_target_proposal  # noqa: E402
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
-    _delete_deep_run, _deep_runs, _save_deep_artifact,
+    delete_deep_run as _delete_deep_run, deep_runs as _deep_runs,
+    save_deep_artifact as _save_deep_artifact,
 )
 from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q&A thread families
     drop_qa_exchange as _drop_qa_exchange, latest_analysis as _latest_analysis,
