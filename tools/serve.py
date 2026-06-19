@@ -34,12 +34,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (  # noqa: E402
-    ANALYSIS_DIR, DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
+    ANALYSIS_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
     SEGMENT_DEF_DIR, SEGMENT_OUT_DIR, TARGET_MODEL_JSON, WEB_DIR,
 )
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
-AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses
 # a dedicated profile so it never fights the MCP browser for the profile lock.
 DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
@@ -92,6 +91,11 @@ from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q
     start_analysis as _start_analysis, start_deep_qa as _start_deep_qa,
     start_qa as _start_qa,
 )
+from browser_jobs import (  # noqa: E402  -- Perplexity auth + deep-research/login/import jobs
+    get_auth_state as _get_auth_state, start_deep_research as _start_deep_research,
+    start_import as _start_import, start_login as _start_login,
+    verify_login as _verify_login,
+)
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_place, _trade_preview, _trade_status,
@@ -103,8 +107,7 @@ from store import (  # noqa: E402
     slugify as _slugify, safe_symbol as _safe_symbol,
 )
 from jobs import (  # noqa: E402
-    new_job as _new_job, update_job as _update_job, public as _job_public,
-    claim_active as _claim_active, release_active as _release_active,
+    new_job as _new_job, update_job as _update_job,
     any_active as _any_active_deep_job, active_count as _active_browser_count,
     max_slots as _max_browser_slots,
 )
@@ -139,11 +142,8 @@ from research_pull import PULL_LOCK as _PULL_LOCK  # noqa: E402  -- shared pull 
 # The deep-research / login / analysis job registry lives in jobs.py; concurrent
 # browser runs are bounded by jobs.claim_active / jobs.release_active (a counting
 # limit, default PPLX_MAX_CONCURRENT=3), each on its own cloned Chrome profile.
-def _slots_busy_msg() -> str:
-    return (f"all {_max_browser_slots()} Perplexity browser slots are busy "
-            "— wait for a run to finish, or raise PPLX_MAX_CONCURRENT")
-
-
+# The browser-backed services (browser_jobs.py) own the slot claims and the
+# jobs.slots_busy_msg wording; serve only reports the live counts in /setup.
 JOBS_LIST_LIMIT = 100  # cap the central Task Center feed (newest first)
 
 # Dev live-reload. Off unless started with --reload. _BOOT_TOKEN is recomputed
@@ -578,271 +578,6 @@ def _run_reloader() -> int:
         if code == 3:
             continue  # requested reload -> respawn with the new code
         return code  # clean exit or crash -> stop supervising
-
-
-def _get_auth_state() -> dict:
-    st = _load(AUTH_STATE_FILE) or {}
-    return {
-        "logged_in": bool(st.get("logged_in")),
-        "updated_at": st.get("updated_at"),
-        "note": st.get("note", ""),
-    }
-
-
-def _set_auth_state(logged_in: bool, note: str = "") -> None:
-    _write_json(AUTH_STATE_FILE, {
-        "logged_in": bool(logged_in),
-        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "note": note,
-    })
-
-
-def _verify_login() -> dict:
-    """Synchronous, ~8s live probe that refreshes the cached login flag."""
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    try:
-        import pplx_deep_research as worker
-        res = worker.check_login()
-        if res.get("status") == "error":
-            raise _Conflict(res.get("detail") or "login check failed")
-        _set_auth_state(res.get("status") == "logged_in", "active check")
-        return _get_auth_state()
-    finally:
-        _release_active()
-
-
-def _clarify_answer_for(segment: str) -> str:
-    """A concrete reply the worker can submit if Perplexity asks what is in the
-    segment, so the run finishes unattended."""
-    definition = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
-    syms = [m.get("symbol") for m in definition.get("members", []) if m.get("symbol")]
-    if syms:
-        return (
-            "My segment is exactly these tickers, treated as individual stocks: "
-            + ", ".join(syms)
-            + ". Do not ask further clarifying questions; proceed with the full "
-            "deep research now."
-        )
-    return (
-        "Use exactly the tickers and scope in my original request. Do not ask "
-        "further clarifying questions; proceed now."
-    )
-
-
-# Appended to the import-failure message of the deep-research job so a user who
-# never set Playwright up gets the install commands inline.
-_PLAYWRIGHT_INSTALL_HINT = (
-    ". Install with `py -3 -m pip install playwright` then "
-    "`py -3 -m playwright install chromium`."
-)
-
-
-def _browser_job(job_id: str, *, running_msg: str, call, handle, install_hint: str = "") -> None:
-    """Shared scaffold for the three Playwright-backed jobs (deep run, login,
-    import). It owns the boilerplate that was duplicated across all three: import
-    the worker (mapping a missing Playwright to an error), flip the job to
-    running, capture worker exceptions, and ALWAYS release the single active-job
-    slot via finally. `call(worker, progress)` performs the actual worker call
-    and returns its result dict; `handle(res)` maps that result to job state and
-    must not release the slot itself."""
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        import pplx_deep_research as worker
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error",
-                    error=f"Playwright not available: {type(exc).__name__}: {exc}{install_hint}")
-        _release_active()
-        return
-
-    _update_job(job_id, state="running", message=running_msg)
-    try:
-        res = call(worker, progress)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        _release_active()
-        return
-
-    try:
-        handle(res)
-    finally:
-        _release_active()
-
-
-def _save_run_result(job_id: str, res: dict, segment: str, date: str, *,
-                     source_url, auth_label: str, done_msg: str) -> None:
-    """Shared 'done' handling for the deep-run and import jobs: persist the
-    artifact, refresh auth state, and finish the job with a uniform result.
-    Leaves the active-slot release to the _browser_job scaffold."""
-    try:
-        artifact = _save_deep_artifact({
-            "segment": segment,
-            "date": date,
-            "report": res.get("report", ""),
-            "citations": res.get("citations", []),
-            "source_url": source_url,
-        })
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
-        return
-    _set_auth_state(True, auth_label)
-    _update_job(job_id, state="done", message=done_msg,
-                result={
-                    "source_url": source_url,
-                    "citations": res.get("citations", []),
-                    "report_chars": len(res.get("report", "")),
-                },
-                artifact=artifact)
-
-
-def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode: str) -> None:
-    def call(worker, progress):
-        return worker.run_deep_research(
-            prompt, window_mode=window_mode,
-            clarify_answer=_clarify_answer_for(segment), progress=progress,
-            clone_profile=True,  # run on a throwaway clone so runs can parallelize
-            on_url=lambda url: _update_job(job_id, source_url=url),
-            cancel=lambda: jobs.is_cancelled(job_id),
-        )
-
-    def handle(res: dict) -> None:
-        status = res.get("status")
-        if status == "done":
-            _save_run_result(job_id, res, segment, date,
-                             source_url=res.get("source_url"),
-                             auth_label="deep run", done_msg="report saved")
-        elif status == "cancelled":
-            _update_job(job_id, state="cancelled", message="cancelled")
-        elif status == "needs_login":
-            _set_auth_state(False, "run hit login wall")
-            _update_job(job_id, state="needs_login",
-                        message="Not logged in. Use 'Set up Perplexity login' once, then re-run.")
-        elif status == "needs_captcha":
-            _update_job(job_id, state="error",
-                        error=("A human-verification check (CAPTCHA) appeared and was not "
-                               "solved in time. Re-run, and when the browser window pops to "
-                               "the front, complete the check to continue."))
-        elif status == "computer_trap":
-            _update_job(job_id, state="error",
-                        error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
-        elif status == "needs_clarification":
-            _update_job(job_id, state="error",
-                        error=("Perplexity kept asking clarifying questions. Open "
-                               f"{res.get('source_url')} , answer it there, then paste "
-                               "the finished report on the Report step."))
-        elif status == "timeout":
-            url = res.get("source_url") or ""
-            detail = "Deep Research timed out before a finished report could be confirmed."
-            if url:
-                detail += f" If the Perplexity page later finishes, import this URL: {url}"
-            _update_job(job_id, state="error", error=detail)
-        else:
-            _update_job(job_id, state="error",
-                        error=res.get("detail") or f"deep research {status}")
-
-    _browser_job(job_id, running_msg="starting browser", call=call, handle=handle,
-                 install_hint=_PLAYWRIGHT_INSTALL_HINT)
-
-
-def _run_login_job(job_id: str) -> None:
-    def call(worker, progress):
-        return worker.ensure_login(progress=progress,
-                                   cancel=lambda: jobs.is_cancelled(job_id))
-
-    def handle(res: dict) -> None:
-        if res.get("status") == "logged_in":
-            _set_auth_state(True, "login window")
-            _update_job(job_id, state="done", message="Perplexity login confirmed")
-        elif res.get("status") == "cancelled":
-            _update_job(job_id, state="cancelled", message="cancelled")
-        else:
-            _update_job(job_id, state="error", message="login window timed out",
-                        error="login not completed in time")
-
-    _browser_job(job_id, running_msg="opening login window", call=call, handle=handle)
-
-
-def _start_deep_research(body: dict) -> dict:
-    segment = _slugify(str(body.get("segment") or ""))
-    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-        raise ValueError("date must be YYYY-MM-DD")
-    prompt = str(body.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("prompt is required")
-    window_mode = str(body.get("window_mode") or "offscreen")
-    if window_mode not in ("offscreen", "visible", "headless"):
-        raise ValueError("window_mode must be offscreen, visible, or headless")
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    job = _new_job("deep_research", segment=segment, date=date, window_mode=window_mode)
-    threading.Thread(target=_run_deep_job,
-                     args=(job["id"], segment, date, prompt, window_mode),
-                     daemon=True).start()
-    return _job_public(job)
-
-
-def _start_login() -> dict:
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    job = _new_job("login")
-    threading.Thread(target=_run_login_job, args=(job["id"],), daemon=True).start()
-    return _job_public(job)
-
-
-def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
-    def call(worker, progress):
-        # The import URL is known up front -> surface it as the live link now.
-        _update_job(job_id, source_url=url)
-        return worker.fetch_by_url(url, clone_profile=True, progress=progress,
-                                   cancel=lambda: jobs.is_cancelled(job_id))
-
-    def handle(res: dict) -> None:
-        status = res.get("status")
-        if status == "done":
-            _save_run_result(job_id, res, segment, date,
-                             source_url=res.get("source_url", url),
-                             auth_label="import", done_msg="imported report saved")
-        elif status == "cancelled":
-            _update_job(job_id, state="cancelled", message="cancelled")
-        elif status == "needs_login":
-            _set_auth_state(False, "import hit login wall")
-            _update_job(job_id, state="needs_login",
-                        message="Not logged in. Use 'Set up Perplexity login' once, then import.")
-        elif status == "needs_captcha":
-            _update_job(job_id, state="error",
-                        error=("A human-verification check (CAPTCHA) appeared and was not "
-                               "solved in time. Re-run the import and complete the check "
-                               "when the browser window appears."))
-        elif status == "needs_clarification":
-            _update_job(job_id, state="error",
-                        error="That run is still awaiting a clarifying answer. Answer it in "
-                              "Perplexity, wait for it to finish, then import again.")
-        else:
-            _update_job(job_id, state="error", error=res.get("detail") or f"import {status}")
-
-    _browser_job(job_id, running_msg="opening run URL", call=call, handle=handle)
-
-
-def _start_import(body: dict) -> dict:
-    segment = _slugify(str(body.get("segment") or ""))
-    if not segment:
-        raise ValueError("segment is required")
-    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-        raise ValueError("date must be YYYY-MM-DD")
-    url = str(body.get("url") or "").strip()
-    if "perplexity.ai" not in url:
-        raise ValueError("a perplexity.ai run URL is required")
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    job = _new_job("import", segment=segment, date=date)
-    threading.Thread(target=_run_import_job,
-                     args=(job["id"], segment, date, url),
-                     daemon=True).start()
-    return _job_public(job)
 
 
 # --------------------------------------------------------------------------- #

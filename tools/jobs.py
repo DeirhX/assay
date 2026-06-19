@@ -191,6 +191,14 @@ def max_slots() -> int:
         return _ACTIVE["max"]
 
 
+def slots_busy_msg() -> str:
+    """The uniform 'all browser slots are busy' Conflict message. Lives here next
+    to the slot counter so the server and every browser-backed service share one
+    wording instead of each re-deriving it from max_slots()."""
+    return (f"all {max_slots()} Perplexity browser slots are busy "
+            "— wait for a run to finish, or raise PPLX_MAX_CONCURRENT")
+
+
 def configure_max_slots(n: int) -> int:
     """Set the concurrent-browser ceiling (>=1). Returns the value applied.
 
