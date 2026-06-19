@@ -1183,6 +1183,26 @@ function chartSvg(rec, history) {
     );
   }).join("");
 
+  // Evenly spaced x-axis date labels (previously just first + last). Aim for one
+  // label per ~120px, snapped to real data points so labels line up with the
+  // plotted line. End ticks anchor inward; interior ticks center and get a faint
+  // vertical gridline to match the y-axis grid. Set() dedupes when there are
+  // fewer points than ticks.
+  const xTickCount = Math.min(Math.max(2, Math.round(innerW / 120)), points.length);
+  const xIndices = Array.from(new Set(
+    Array.from({ length: xTickCount }, (_, i) =>
+      Math.round((i / (xTickCount - 1)) * (points.length - 1))),
+  ));
+  const xAxis = xIndices.map((idx) => {
+    const xp = x(idx).toFixed(1);
+    const anchor = idx === 0 ? "start" : idx === points.length - 1 ? "end" : "middle";
+    const interior = idx > 0 && idx < points.length - 1;
+    return (
+      (interior ? `<line class="chart-grid" x1="${xp}" y1="${pad.top}" x2="${xp}" y2="${height - pad.bottom}"></line>` : "") +
+      `<text class="chart-label" x="${xp}" y="${height - 9}" text-anchor="${anchor}">${esc(dateLabel(points[idx].date))}</text>`
+    );
+  }).join("");
+
   // Vertical "mountain" gradient: saturated at the price line, fading to nothing
   // at the baseline. A flat-opacity fill (the old approach) reads as a featureless
   // slab whose top — the volatile line — smears into a band; the fade ties the
@@ -1196,8 +1216,7 @@ function chartSvg(rec, history) {
       `<line class="chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>` +
       `<line class="chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>` +
       yAxis +
-      `<text class="chart-label" x="${pad.left}" y="${height - 9}">${esc(dateLabel(first.date))}</text>` +
-      `<text class="chart-label" x="${width - pad.right}" y="${height - 9}" text-anchor="end">${esc(dateLabel(last.date))}</text>` +
+      xAxis +
       `<polygon class="chart-area" fill="url(#${fillId})" points="${area}"></polygon>` +
       `<polyline class="chart-line ${trend}" points="${line}"></polyline>` +
       `<circle class="chart-dot" cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.close).toFixed(1)}" r="3.5"></circle>` +
