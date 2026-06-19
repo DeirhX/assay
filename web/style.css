@@ -2141,6 +2141,8 @@ a.tlink:hover { border-bottom-style: solid; }
 .trade-impact { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0; font-size: 13px; }
 .trade-impact-cell { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
 .trade-warn { color: var(--bad); font-size: 12.5px; margin: 4px 0; }
+/* A limit order from a locked price trigger stands out from plain MKT lines. */
+.trade-lmt { color: var(--accent); font-weight: 700; }
 .trade-raw { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; max-height: 320px; }
 
 .trade-live-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
