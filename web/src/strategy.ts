@@ -5,7 +5,7 @@
 // pauses at two human gates before showing the rebalance recommendation. The
 // durable state lives in the run manifest; this view is a thin renderer over
 // GET /api/strategy/{run_id}, polled while a leg is running.
-import { $, api, el, esc, fmtCZK, fmtSignedWeight, sensitive } from "./core";
+import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
 // States in which a background leg is working and we should keep polling.
@@ -128,11 +128,19 @@ async function loadRecentRuns() {
   try {
     const { runs } = await api("/api/strategy/runs");
     if (!runs || !runs.length) { box.innerHTML = ""; return; }
-    box.innerHTML = `<div class="subhead">Recent runs</div>` + runs.slice(0, 6).map((r) =>
-      `<button type="button" class="strat-recent-item" data-run="${esc(r.run_id)}">` +
-        `<span class="strat-recent-dir">${esc(r.direction || "(no direction)")}</span>` +
-        `<span class="strat-recent-state">${esc(stateLabel(r.state))}</span>` +
-      `</button>`).join("");
+    box.innerHTML = `<div class="subhead">Recent runs</div>` + runs.slice(0, 6).map((r) => {
+      const age = relAge(r.updated_at || r.created_at);
+      const metaBits = [];
+      if (age) metaBits.push(esc(age));
+      if (r.segment) metaBits.push(esc(r.segment));
+      const meta = metaBits.length ? `<span class="strat-recent-meta">${metaBits.join(" · ")}</span>` : "";
+      return `<button type="button" class="strat-recent-item" data-run="${esc(r.run_id)}">` +
+        `<span class="strat-recent-main">` +
+          `<span class="strat-recent-dir">${esc(r.direction || "(no direction)")}</span>${meta}` +
+        `</span>` +
+        recentStateBadge(r.state) +
+      `</button>`;
+    }).join("");
     box.querySelectorAll(".strat-recent-item").forEach((b) => {
       b.addEventListener("click", () => { pushNav({ view: "strategy", run: b.dataset.run }); loadStrategy(); });
     });
@@ -664,6 +672,26 @@ function stateLabel(s) {
     done: "done",
     error: "failed",
   })[s] || s || "";
+}
+
+// Colour-coded lifecycle pill for the recent-runs list: green = done, red =
+// failed, amber = waiting on you, accent (with a pulsing dot) = a leg is working.
+const STATE_TONE = {
+  done: "ok",
+  error: "bad",
+  awaiting_segment_approval: "warn",
+  awaiting_proposal_approval: "warn",
+  needs_login: "warn",
+  draft_running: "run",
+  synthesis_running: "run",
+  applying: "run",
+};
+function recentStateBadge(state) {
+  const tone = STATE_TONE[state] || "muted";
+  const running = tone === "run";
+  const cls = running ? "accent" : tone;
+  const dot = running ? '<span class="strat-recent-dot"></span>' : "";
+  return `<span class="abadge ${cls} strat-recent-pill">${dot}${esc(stateLabel(state))}</span>`;
 }
 
 // All DOM wiring is deferred to initStrategy(), called once from main()'s boot,

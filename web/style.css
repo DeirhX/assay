@@ -1103,6 +1103,7 @@ a.analysis-row:hover { text-decoration: none; }
 .abadge.ok { color: var(--good); border-color: rgba(107,211,138,.4); background: rgba(107,211,138,.08); }
 .abadge.bad { color: var(--bad); border-color: rgba(255,122,122,.4); background: rgba(255,122,122,.08); }
 .abadge.accent { color: var(--accent); border-color: rgba(130,170,255,.45); background: rgba(130,170,255,.10); }
+.abadge.warn { color: var(--warn); border-color: rgba(245,199,107,.45); background: rgba(245,199,107,.10); }
 .abadge.muted { color: var(--muted); }
 
 /* Color-coded freshness chip next to sync/snapshot timestamps. A dot + "x ago",
@@ -2200,15 +2201,23 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .strat-spread { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 .strat-sleeve-note { margin-top: 6px; }
 
-.strat-recent { margin-top: 14px; display: grid; gap: 6px; }
+.strat-recent { margin-top: 14px; display: grid; gap: 7px; }
 .strat-recent-item {
-  display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
   border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
-  border-radius: 9px; padding: 8px 11px; cursor: pointer;
+  border-radius: 9px; padding: 10px 13px; cursor: pointer;
+  transition: border-color .15s, background .15s;
 }
-.strat-recent-item:hover { border-color: var(--accent); }
-.strat-recent-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.strat-recent-state { color: var(--muted); font-size: 12px; flex: none; }
+.strat-recent-item:hover { border-color: rgba(130,170,255,.55); background: var(--panel); }
+.strat-recent-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.strat-recent-dir { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strat-recent-meta { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strat-recent-pill { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.strat-recent-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  animation: strat-pulse 1.2s ease-in-out infinite;
+}
+@keyframes strat-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
 /* The calibration metrics read as a scoreboard at the bottom of the journal. */
 #view-journal .reb-stats { gap: 12px; margin-bottom: 14px; }
