@@ -26,6 +26,11 @@ WEB_DIR = REPO_ROOT / "web"
 # holdings-sync service, so it lives on the leaf to avoid an import cycle.
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 
+# Deep-research artifacts and the committed target model. Shared by the server
+# and the target-model service, so they live here for a single source of truth.
+DEEP_DIR = RESEARCH_DIR / "deep"
+TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
+
 # Two gitignored secrets files, split for historical reasons and kept as-is so
 # existing setups don't break: FMP_API_KEY at the repo root, IBKR Flex/CPAPI
 # credentials next to the tools.
