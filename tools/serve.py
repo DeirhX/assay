@@ -64,6 +64,7 @@ import target_construct  # noqa: E402  -- LLM + deterministic target-model synth
 import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile math
+import price_levels  # noqa: E402  -- locked per-symbol buy-below/trim-above triggers
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
     _history_payload, _ibkr_status, _regenerate_site, _save_ibkr_secrets,
     _start_history_sync, _start_holdings_sync, _start_sectors_sync,
@@ -1667,6 +1668,7 @@ _GET_EXACT = {
     "/api/journal": "_get_journal",
     "/api/segments": "_get_segments",
     "/api/peer-stats": "_get_peer_stats",
+    "/api/price-levels": "_get_price_levels",
     "/api/deep-runs": "_get_deep_runs",
     "/api/error-log": "_get_error_log",
     "/api/tickers": "_get_tickers",
@@ -1699,6 +1701,8 @@ _GET_PREFIX = [
 ]
 _POST_EXACT = {
     "/api/segment-draft": "_post_segment_draft",
+    "/api/price-levels/lock": "_post_price_level_lock",
+    "/api/price-levels/clear": "_post_price_level_clear",
     "/api/strategy/start": "_post_strategy_start",
     "/api/holdings/sync": "_post_holdings_sync",
     "/api/portfolio-history/sync": "_post_portfolio_history_sync",
@@ -1929,6 +1933,9 @@ class Handler(BaseHTTPRequestHandler):
         sym = (query.get("symbol") or [""])[0]
         return self._send_json(_peer_stats(_resolve_symbol(sym)))
 
+    def _get_price_levels(self, path, query):
+        return self._send_json({"levels": price_levels.load_all()})
+
     def _get_strategy_runs(self, path, query):
         return self._send_json({"runs": orchestrate.list_runs()})
 
@@ -2088,6 +2095,25 @@ class Handler(BaseHTTPRequestHandler):
     def _post_segment_draft(self, path):
         body = self._read_body()
         return self._send_json(_start_segment_draft(str(body.get("query") or "")))
+
+    def _post_price_level_lock(self, path):
+        # Keyed by provider symbol so the rebalance overlay and trade desk can
+        # look it up the same way they resolve dossier/holdings symbols.
+        body = self._read_body()
+        sym = _resolve_symbol(_safe_symbol(str(body.get("symbol") or "")))
+        entry = price_levels.lock(
+            sym,
+            buy_below=body.get("buy_below"),
+            trim_above=body.get("trim_above"),
+            currency=str(body.get("currency") or ""),
+            source=body.get("source") if isinstance(body.get("source"), dict) else None,
+        )
+        return self._send_json({"level": entry})
+
+    def _post_price_level_clear(self, path):
+        body = self._read_body()
+        sym = _resolve_symbol(_safe_symbol(str(body.get("symbol") or "")))
+        return self._send_json(price_levels.clear(sym))
 
     def _post_strategy_start(self, path):
         body = self._read_body()
