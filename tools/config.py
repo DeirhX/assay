@@ -22,6 +22,10 @@ DATA_DIR = REPO_ROOT / "data"
 RESEARCH_DIR = DATA_DIR / "research"
 WEB_DIR = REPO_ROOT / "web"
 
+# The curated, committed portfolio snapshot. Shared by the HTTP server and the
+# holdings-sync service, so it lives on the leaf to avoid an import cycle.
+HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
+
 # Two gitignored secrets files, split for historical reasons and kept as-is so
 # existing setups don't break: FMP_API_KEY at the repo root, IBKR Flex/CPAPI
 # credentials next to the tools.
