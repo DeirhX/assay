@@ -25,7 +25,7 @@ import threading
 import jobs
 from apierror import Conflict
 from config import AUTH_STATE_FILE, SEGMENT_DEF_DIR
-from deep_runs import _save_deep_artifact as save_deep_artifact
+from deep_runs import save_deep_artifact
 from jobs import (
     claim_active, new_job, public, release_active, slots_busy_msg, update_job,
 )

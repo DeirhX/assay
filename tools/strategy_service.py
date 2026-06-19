@@ -33,10 +33,7 @@ from segments_service import (
     draft_segment, merge_draft_members, segment_prompt, validate_definition,
 )
 from store import load, slugify, write_json
-from target_model import (
-    _apply_target_proposal as apply_target_proposal,
-    _preview_plan_for_proposal as preview_plan_for_proposal,
-)
+from target_model import apply_target_proposal, preview_plan_for_proposal
 
 
 def strategy_progress(run_id: str, job_id: str | None):

@@ -1,7 +1,7 @@
 """Tests for the target-proposal apply path in target_model.py: the
 modify_target merge (which used to be skipped as "unsupported action"), the
 add_target/blocked/sleeve branches of the shared model mutator, and the
-end-to-end _apply_target_proposal (backup + status + skip reasons). Offline;
+end-to-end apply_target_proposal (backup + status + skip reasons). Offline;
 the module's paths are pointed at a temp dir and site regeneration is stubbed."""
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ class ApplyTargetProposal(unittest.TestCase):
         target_model.TARGET_MODEL_BACKUP_DIR = target_model.DATA_DIR / "backups"
         target_model.DEEP_DIR.mkdir(parents=True)
         # Don't render the real static site against the temp/empty data dir.
-        self._regen = mock.patch.object(target_model, "_regenerate_site",
+        self._regen = mock.patch.object(target_model, "regenerate_site",
                                         return_value={"ok": True, "written": []})
         self._regen.start()
 
@@ -120,7 +120,7 @@ class ApplyTargetProposal(unittest.TestCase):
                  "proposed_target": {"low": 2, "high": 4, "rule": "hold"}},
             ],
         })
-        result = target_model._apply_target_proposal(self.SEG, self.DATE, True)
+        result = target_model.apply_target_proposal(self.SEG, self.DATE, True)
         self.assertEqual(sorted(result["applied"]), ["AAA", "BBB"])
         self.assertTrue(result["backup"])  # a backup path was returned
 
@@ -134,7 +134,7 @@ class ApplyTargetProposal(unittest.TestCase):
 
     def test_requires_confirm(self):
         with self.assertRaises(ValueError):
-            target_model._apply_target_proposal(self.SEG, self.DATE, False)
+            target_model.apply_target_proposal(self.SEG, self.DATE, False)
 
 
 if __name__ == "__main__":
