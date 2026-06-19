@@ -20,7 +20,6 @@ Design notes / honest caveats:
 
 from __future__ import annotations
 
-import copy
 import datetime as dt
 import json
 import os
@@ -34,14 +33,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config import DATA_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR, WEB_DIR  # noqa: E402
+from config import (  # noqa: E402
+    DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR, TARGET_MODEL_JSON, WEB_DIR,
+)
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
-DEEP_DIR = RESEARCH_DIR / "deep"
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
-TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses
@@ -69,6 +68,9 @@ from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile mat
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
     _history_payload, _ibkr_status, _regenerate_site, _save_ibkr_secrets,
     _start_history_sync, _start_holdings_sync, _start_sectors_sync,
+)
+from target_model import (  # noqa: E402  -- target-model apply + rebalance preview
+    _apply_target_proposal, _preview_plan_for_proposal,
 )
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
@@ -1043,126 +1045,6 @@ def _start_deep_qa(stem: str, question: str) -> dict:
 # Only these keys belong in a target-model entry; the synthesis engine carries
 # extra metadata (conviction, sleeve, rationale) on a change that must never be
 # written into the model itself.
-_TARGET_WRITE_KEYS = ("low", "high", "rule", "note", "structural")
-TARGET_MODEL_BACKUP_DIR = DATA_DIR / "backups"
-
-
-def _clean_target(raw: dict) -> dict:
-    return {k: raw[k] for k in _TARGET_WRITE_KEYS if k in raw}
-
-
-def _apply_changes_to_model(model: dict, changes: list, *, blocked: set) -> tuple[list, list]:
-    """Apply proposal change records onto `model` IN PLACE. Pure with respect to
-    disk so it is shared by the live apply (which then writes) and the Gate-2
-    preview (which works on a throwaway copy). Returns (applied, skipped).
-
-    Supported actions: add_target (new band), modify_target (merge onto the
-    existing band, preserving keys the proposal didn't touch), and a guarded
-    sleeve upsert. Anything else is recorded as skipped rather than silently
-    dropped, so an unexpected action is visible instead of a no-op."""
-    targets = model.setdefault("targets", {})
-    sleeves = model.setdefault("sleeves", {})
-    applied: list = []
-    skipped: list = []
-    for change in changes or []:
-        action = change.get("action")
-        if action in ("add_target", "modify_target"):
-            try:
-                sym = _safe_symbol(change.get("symbol", ""))
-            except ValueError:
-                skipped.append({"symbol": change.get("symbol"), "reason": "invalid symbol"})
-                continue
-            # Never derive a band from a ticker whose deterministic data failed an
-            # ERROR-level check (override only on an explicit allow_blocked).
-            if sym in blocked:
-                skipped.append({"symbol": sym, "reason": "blocked: ERROR-level deterministic data; resolve before applying"})
-                continue
-            pt = _clean_target(dict(change.get("proposed_target") or {}))
-            if not pt:
-                skipped.append({"symbol": sym, "reason": "missing proposed_target"})
-                continue
-            if action == "add_target":
-                if sym in targets:
-                    skipped.append({"symbol": sym, "reason": "target already exists"})
-                    continue
-                targets[sym] = pt
-            else:  # modify_target merges so structural bands / unrelated keys survive
-                cur = dict(targets.get(sym) or {})
-                cur.update(pt)
-                targets[sym] = cur
-            applied.append(sym)
-        elif action in ("add_sleeve", "modify_sleeve", "set_sleeve"):
-            name = str(change.get("sleeve") or change.get("name") or "").strip()
-            proposed = change.get("proposed_sleeve")
-            if not name or not isinstance(proposed, dict):
-                skipped.append({"symbol": name or "(sleeve)", "reason": "missing sleeve name or definition"})
-                continue
-            cur = dict(sleeves.get(name) or {})
-            cur.update(proposed)
-            sleeves[name] = cur
-            applied.append(f"[{name}]")
-        else:
-            skipped.append({"symbol": change.get("symbol"), "reason": f"unsupported action: {action}"})
-    return applied, skipped
-
-
-def _backup_target_model() -> str | None:
-    """Snapshot the current target model before mutating it, so an apply is
-    reversible. Returns the backup's repo-relative path, or None if there was
-    nothing to back up."""
-    model = _load(TARGET_MODEL_JSON)
-    if not model:
-        return None
-    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = TARGET_MODEL_BACKUP_DIR / f"target-model-{ts}.json"
-    _write_json(backup, model)
-    return str(backup.relative_to(REPO_ROOT))
-
-
-def _apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
-    if not confirm:
-        raise ValueError("confirm=true is required")
-    segment = _slugify(segment)
-    proposal_path = DEEP_DIR / f"{segment}-{date}.target-proposal.json"
-    proposal = _load(proposal_path)
-    if not proposal:
-        raise ValueError(f"proposal not found: {proposal_path.relative_to(REPO_ROOT)}")
-    model = _load(TARGET_MODEL_JSON)
-    if not model:
-        raise ValueError("target model not found")
-    blocked = set(proposal.get("blocked_symbols", [])) if not allow_blocked else set()
-    backup = _backup_target_model()
-    applied, skipped = _apply_changes_to_model(model, proposal.get("changes", []), blocked=blocked)
-    proposal["status"] = "applied" if applied else "reviewed"
-    proposal["applied_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    proposal["applied_symbols"] = applied
-    proposal["skipped"] = skipped
-    _write_json(TARGET_MODEL_JSON, model)
-    _write_json(proposal_path, proposal)
-    # Keep the static plan in lockstep with the model the apply just changed.
-    site = _regenerate_site()
-    return {"applied": applied, "skipped": skipped, "proposal": proposal, "backup": backup, "site": site}
-
-
-def _preview_plan_for_proposal(proposal: dict, *, allow_blocked: bool = False) -> dict:
-    """Compute the rebalance plan that WOULD result from a proposal, against a
-    throwaway copy of the model -- nothing is written. Powers the Gate-2 preview
-    (with the proposal's changes) and the final recommendation (empty changes,
-    i.e. the already-committed model)."""
-    model = _load(TARGET_MODEL_JSON)
-    holdings = _load(HOLDINGS_JSON)
-    if not model or not holdings:
-        return {"available": False, "reason": "need both a target model and a holdings snapshot to preview a rebalance"}
-    draft = copy.deepcopy(model)
-    blocked = set(proposal.get("blocked_symbols", [])) if not allow_blocked else set()
-    applied, skipped = _apply_changes_to_model(draft, proposal.get("changes", []), blocked=blocked)
-    try:
-        plan = tax_lots.enrich_plan(rebalance.plan(draft, holdings), holdings)
-    except Exception as exc:  # noqa: BLE001 - a bad band shouldn't kill the gate
-        return {"available": False, "reason": f"could not compute plan: {exc}"}
-    return {"available": True, "applied": applied, "skipped": skipped, "plan": plan}
-
-
 # Research-overlay classification: how a thesis verdict leans. Used only to flag
 # when the deterministic band action and the human thesis disagree -- never to
 # size a trade. Thesis actions are free text from the dossier form, so the match
