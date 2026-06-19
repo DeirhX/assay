@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import _support  # noqa: F401
+import peer_stats
 import serve
 
 
@@ -538,15 +539,15 @@ class PeerStats(unittest.TestCase):
     the data submodule."""
 
     def test_metric_value_coercion(self):
-        self.assertEqual(serve._metric_value({"metrics": {"ps": {"value": 4.5}}}, "ps"), 4.5)
-        self.assertEqual(serve._metric_value({"metrics": {"ps": 7}}, "ps"), 7.0)
-        self.assertIsNone(serve._metric_value({"metrics": {"ps": {"value": None}}}, "ps"))
-        self.assertIsNone(serve._metric_value({"metrics": {}}, "ps"))
-        self.assertIsNone(serve._metric_value({"metrics": {"ps": {"value": "x"}}}, "ps"))
+        self.assertEqual(peer_stats._metric_value({"metrics": {"ps": {"value": 4.5}}}, "ps"), 4.5)
+        self.assertEqual(peer_stats._metric_value({"metrics": {"ps": 7}}, "ps"), 7.0)
+        self.assertIsNone(peer_stats._metric_value({"metrics": {"ps": {"value": None}}}, "ps"))
+        self.assertIsNone(peer_stats._metric_value({"metrics": {}}, "ps"))
+        self.assertIsNone(peer_stats._metric_value({"metrics": {"ps": {"value": "x"}}}, "ps"))
 
     def test_no_segments_yields_empty_metrics(self):
-        with mock.patch.object(serve, "_segments_for_symbol", return_value=[]):
-            res = serve._peer_stats("ZZZ")
+        with mock.patch.object(peer_stats, "_segments_for_symbol", return_value=[]):
+            res = peer_stats._peer_stats("ZZZ")
         self.assertEqual(res["segments"], [])
         self.assertEqual(res["metrics"], {})
 
@@ -559,9 +560,9 @@ class PeerStats(unittest.TestCase):
 
         seg = [("seg1", "Segment One", ["AAA", "BBB", "CCC", "DDD", "SUB"]),
                ("seg2", "Segment Two", ["AAA", "SUB"])]  # 2 members -> pct 0/1 boundary
-        with mock.patch.object(serve, "_load", side_effect=fake_load), \
-             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
-            res = serve._peer_stats("SUB")
+        with mock.patch.object(peer_stats, "_load", side_effect=fake_load), \
+             mock.patch.object(peer_stats, "_segments_for_symbol", return_value=seg):
+            res = peer_stats._peer_stats("SUB")
         m = res["metrics"]["pe_ttm"]
         self.assertEqual(m["value"], 25.0)
         # seg1 sorted 10,20,25,30,40 -> 25 is the median -> 0.5 pctile, median 25
@@ -594,9 +595,9 @@ class PeerStats(unittest.TestCase):
 
         # roster of 6, but only 3 have research data
         seg = [("oil", "Oil majors", ["XOM", "CVX", "SUB", "COP", "EOG", "SLB"])]
-        with mock.patch.object(serve, "_load", side_effect=fake_load), \
-             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
-            res = serve._peer_stats("SUB")
+        with mock.patch.object(peer_stats, "_load", side_effect=fake_load), \
+             mock.patch.object(peer_stats, "_segments_for_symbol", return_value=seg):
+            res = peer_stats._peer_stats("SUB")
         m = res["metrics"]["market_cap_usd_b"]
         self.assertAlmostEqual(m["aggregate"]["pct"], 0.0, places=3)  # subject is smallest
         self.assertEqual(m["n"], 3)
@@ -609,9 +610,9 @@ class PeerStats(unittest.TestCase):
             return {"metrics": {"ps": {"value": 5.0}}}
 
         seg = [("solo", "Solo", ["SUB"])]  # only the subject -> not comparable
-        with mock.patch.object(serve, "_load", side_effect=fake_load), \
-             mock.patch.object(serve, "_segments_for_symbol", return_value=seg):
-            res = serve._peer_stats("SUB")
+        with mock.patch.object(peer_stats, "_load", side_effect=fake_load), \
+             mock.patch.object(peer_stats, "_segments_for_symbol", return_value=seg):
+            res = peer_stats._peer_stats("SUB")
         self.assertNotIn("ps", res["metrics"])
 
 
