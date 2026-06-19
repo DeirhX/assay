@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { createQaCard, ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
+import { ensureTickerSet, linkifyTickers, mdToHtml } from "./analyses";
 import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtShares, fmtSignedWeight, fmtWeight, fmtX, freshnessNote, instrumentBadge, pctClass, sectionCard, simpleTable, state } from "./core";
 import { pollDeepJob } from "./errors";
 import { cleanSymbol, downloadText, modelLabel, pushNav, setActiveView } from "./shell";
@@ -8,6 +8,7 @@ import { activeFraction, fairValueStale, laddersMatch, marginFromPrice, priceFro
 import { decorateAnalysis, decorateSources } from "./deepdive/decorate";
 import { renderPriceChart } from "./deepdive/price-chart";
 import { collapsibleCard, dataQualityTag, sourceLine, renderBusiness } from "./deepdive/cards";
+import { renderQaCard } from "./deepdive/qa";
 
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
@@ -1198,46 +1199,6 @@ function renderDeepResearchCard(rec) {
 
 // Token + prompt-cache accounting for a Claude Q&A turn. A non-zero "cache read"
 // means the heavy prefix (DATA + prior turns) was served from cache, not re-billed.
-function qaUsageHtml(u) {
-  if (!u || typeof u !== "object") return "";
-  const r = u.cache_read_input_tokens, w = u.cache_creation_input_tokens;
-  const inp = u.input_tokens, out = u.output_tokens;
-  if ([r, w, inp, out].every((v) => v == null)) return "";
-  const fmt = (n) => (n == null ? "0" : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n));
-  const parts = [];
-  if (r != null || w != null) {
-    const hit = (r || 0) > 0;
-    parts.push(`<span class="${hit ? "qa-cache-hit" : ""}">cache ${fmt(r)} read \u00b7 ${fmt(w)} write</span>`);
-  }
-  if (inp != null) parts.push(`${fmt(inp)} new in`);
-  if (out != null) parts.push(`${fmt(out)} out`);
-  return `<div class="qa-usage" title="Anthropic prompt-cache + token usage for this turn">${parts.join(" \u00b7 ")}</div>`;
-}
-
-// Archived, continuable Q&A about the ticker. Same cheap CLI backends as the
-// in-depth note; the whole thread is persisted server-side so it can be resumed
-// across sessions. Renders the archive, then an input to ask the next question.
-function renderQaCard(rec) {
-  const sym = rec.symbol;
-  return createQaCard({
-    title: "Ask about " + sym,
-    emptyHint:
-      "No questions yet. Ask anything about the numbers, momentum, valuation, or how it sits " +
-      "in your portfolio. The thread is archived so you can pick it up later.",
-    placeholder: `Ask a follow-up about ${sym} \u2014 grounded in the data above. Ctrl/\u2318+Enter to send.`,
-    pollLabel: `Q&A \u00b7 ${sym}`,
-    confirmMsg: `Clear the archived Q&A thread for ${sym}?`,
-    // The ticker set must be loaded before linkifyTickers runs in the thread.
-    prepare: ensureTickerSet,
-    loadThread: () => api("/api/qa/" + encodeURIComponent(sym)),
-    postQuestion: (q) => api("/api/qa/" + encodeURIComponent(sym), "POST", { question: q }),
-    clearThread: () => api("/api/qa/" + encodeURIComponent(sym), "POST", { clear: true }),
-    deleteTurn: (idx) => api("/api/qa/" + encodeURIComponent(sym), "POST", { delete: idx }),
-    turnMeta: (t) => [t.backend_label, modelLabel(t.model), t.ts ? relTime(t.ts) : null],
-    usageHtml: (t) => qaUsageHtml(t.usage),
-  });
-}
-
 // Lightweight modal to edit the CLI backend policy: which agents run, in what
 // order (= fallback order), their model override, and whether web tools are on.
 async function openAnalysisConfig() {
@@ -1457,8 +1418,6 @@ export {
   renderDeepDive,
   hydrateHistory,
   renderAnalysisCard,
-  qaUsageHtml,
-  renderQaCard,
   openAnalysisConfig,
   renderHistory,
   renderThesis,
