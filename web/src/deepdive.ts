@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { $, api, decisionClass, el, esc, fmtB, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, fmtX, freshnessNote, instrumentBadge, pctClass, sectionCard, simpleTable, state } from "./core";
+import { $, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, pctClass, sectionCard, state } from "./core";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
 import { renderPriceChart } from "./deepdive/price-chart";
@@ -7,6 +7,8 @@ import { collapsibleCard, dataQualityTag, sourceLine, renderBusiness } from "./d
 import { renderQaCard } from "./deepdive/qa";
 import { METRIC_ROWS, loadPeerStats } from "./deepdive/metrics";
 import { renderAnalysisCard, renderDeepResearchCard } from "./deepdive/analysis-card";
+import { renderHistory } from "./deepdive/history-card";
+import { renderThesis } from "./deepdive/thesis";
 
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
@@ -423,122 +425,9 @@ async function hydrateHistory(rec) {
   slot.appendChild(renderHistory(rec));
 }
 
-function renderHistory(rec) {
-  // undefined == not fetched yet (streaming in). Show the section shell with a
-  // progress bar overlaid so the rest of the dossier isn't held hostage to it.
-  if (rec.history === undefined) {
-    const card = el("div", "card section-loading");
-    card.appendChild(el("h2", "section", "Recent pulls"));
-    const body = el("div", "section-body");
-    body.appendChild(el("div", "hint", "Fetching the change log\u2026"));
-    body.appendChild(el("div", "section-overlay", `<div class="progress-bar"><span></span></div>`));
-    card.appendChild(body);
-    return card;
-  }
-  const rows = rec.history || [];
-  const meta = rows.length ? `${rows.length} snapshot${rows.length === 1 ? "" : "s"}` : "none yet";
-  const { details, body } = collapsibleCard("Recent pulls", { meta });
-  if (!rows.length) {
-    body.appendChild(el("div", "hint", "No history yet. Pull this ticker again later and this becomes a change log instead of a memory test."));
-    return details;
-  }
-  const table = simpleTable({
-    className: "history-table",
-    head: `<tr><th>As of</th><th class="num">Price</th><th class="num">Fwd P/E</th><th class="num">P/S</th><th class="num">Revenue</th><th>Trust</th><th></th></tr>`,
-    rows: rows.slice(0, 8),
-    cells: (h) =>
-      `<td>${esc(h.as_of ? new Date(h.as_of).toLocaleString() : "n/a")}</td>` +
-      `<td class="num">${esc(fmtPrice(h.price))}</td>` +
-      `<td class="num">${esc(fmtX(h.pe_fwd))}</td>` +
-      `<td class="num">${esc(fmtX(h.ps))}</td>` +
-      `<td class="num">${esc(fmtB(h.revenue_ttm_usd_b))}</td>` +
-      `<td><span class="dot ${esc(h.data_quality || "INFO")}"></span>${esc(h.data_quality || "INFO")}</td>`,
-    onRow: (tr, h) => {
-      // The delete column carries a per-row listener, so it's appended as real
-      // DOM after the string cells rather than baked into the cells() HTML.
-      const delCell = el("td", "history-del-cell");
-      if (h.stamp) {
-        const del = el("button", "history-del", "\u2715");
-        del.type = "button";
-        del.title = "Delete this snapshot";
-        del.setAttribute("aria-label", "Delete this snapshot");
-        del.addEventListener("click", () => {
-          const when = h.as_of ? new Date(h.as_of).toLocaleString() : "this";
-          if (!confirm(`Delete the ${when} snapshot for ${rec.symbol}? This cannot be undone.`)) return;
-          del.disabled = true;
-          deleteHistorySnapshot(rec, h.stamp).catch((e) => {
-            del.disabled = false;
-            alert("Delete failed: " + e.message);
-          });
-        });
-        delCell.appendChild(del);
-      }
-      tr.appendChild(delCell);
-    },
-  });
-  body.appendChild(table);
-  return details;
-}
-
-async function deleteHistorySnapshot(rec, stamp) {
-  const res = await api("/api/history/delete", "POST", { symbol: rec.symbol, stamp });
-  rec.history = res.history || [];
-  const slot = $("#dd-result [data-slot='history']");
-  if (slot) {
-    slot.innerHTML = "";
-    slot.appendChild(renderHistory(rec));
-  }
-}
-
-function renderThesis(rec) {
-  const t = rec.thesis || {};
-  const hasContent = !!(t.summary || t.action || (t.drivers || []).length || (t.downside_triggers || []).length);
-  const meta = t.as_of ? "saved " + new Date(t.as_of).toLocaleDateString() : "empty";
-  const { details: card, body } = collapsibleCard(
-    "Thesis &amp; action — your judgement (kept separate from the numbers)",
-    { meta, open: hasContent },
-  );
-  const g = el("div", "thesis-grid");
-  g.innerHTML =
-    `<div><label>Summary</label><textarea id="th-summary" rows="4" placeholder="What's the story? Momentum vs valuation.">${esc(t.summary || "")}</textarea></div>` +
-    `<div><label>Action</label><textarea id="th-action" rows="4" placeholder="Add / hold / trim / sell / wait — and sizing.">${esc(t.action || "")}</textarea></div>` +
-    `<div><label>Drivers (one per line)</label><textarea id="th-drivers" rows="4" placeholder="Real reasons it moved">${esc((t.drivers || []).join("\n"))}</textarea></div>` +
-    `<div><label>Downside triggers (one per line)</label><textarea id="th-triggers" rows="4" placeholder="What breaks the thesis">${esc((t.downside_triggers || []).join("\n"))}</textarea></div>`;
-  body.appendChild(g);
-  const actions = el("div", "thesis-actions");
-  const saveBtn = el("button", "primary", "Save thesis");
-  const note = el("span", "status", t.as_of ? "last saved " + new Date(t.as_of).toLocaleString() : "");
-  saveBtn.addEventListener("click", async () => {
-    saveBtn.disabled = true;
-    note.classList.remove("err");
-    note.textContent = "saving...";
-    try {
-      const payload = {
-        summary: $("#th-summary").value,
-        action: $("#th-action").value,
-        drivers: $("#th-drivers").value.split("\n").map((s) => s.trim()).filter(Boolean),
-        downside_triggers: $("#th-triggers").value.split("\n").map((s) => s.trim()).filter(Boolean),
-      };
-      const updated = await api("/api/thesis/" + encodeURIComponent(rec.symbol), "POST", payload);
-      note.textContent = "saved " + new Date(updated.thesis.as_of).toLocaleString();
-    } catch (e) {
-      note.textContent = "save failed: " + e.message;
-      note.classList.add("err");
-    } finally {
-      saveBtn.disabled = false;
-    }
-  });
-  actions.appendChild(saveBtn);
-  actions.appendChild(note);
-  body.appendChild(actions);
-  return card;
-}
-
 export {
   loadTickerFromCache,
   pullTicker,
   renderDeepDive,
   hydrateHistory,
-  renderHistory,
-  renderThesis,
 };
