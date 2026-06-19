@@ -954,21 +954,80 @@ def _research_overlay(provider_sym: str) -> dict | None:
     }
 
 
-def _attach_research_overlay(plan: dict) -> None:
+def _mark_price_map(holdings: dict | None) -> dict[str, dict]:
+    """symbol -> {price, currency} from the holdings snapshot's marks. The same
+    marks the plan was sized against, so the price gate compares apples to
+    apples (instrument currency)."""
+    out: dict[str, dict] = {}
+    for p in (holdings or {}).get("positions") or []:
+        sym = str(p.get("symbol") or "").strip().upper()
+        price = p.get("mark_price")
+        if sym and isinstance(price, (int, float)) and price:
+            out[sym] = {"price": float(price), "currency": (p.get("currency") or "").upper()}
+    return out
+
+
+def _gate_current_price(name: str, provider_sym: str, price_map: dict[str, dict]) -> float | None:
+    """Current instrument price for the gate: the holdings mark first (what the
+    plan was sized on), else the dossier's last spot. None when neither knows."""
+    held = price_map.get((name or "").upper())
+    if held and isinstance(held.get("price"), (int, float)):
+        return float(held["price"])
+    rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
+    if isinstance(rec, dict):
+        pv = rec.get("price")
+        if isinstance(pv, dict) and isinstance(pv.get("value"), (int, float)):
+            return float(pv["value"])
+    return None
+
+
+def _apply_price_gate(row: dict, provider_sym: str, price_map: dict[str, dict]) -> None:
+    """Attach a ``price_gate`` to a target row from its locked level (if any) and
+    the current price, and downgrade the suggested ``action`` to ``"wait"`` when
+    the level blocks that side. The weight band still decides size; this only
+    decides whether now is the price to act. No level -> nothing changes."""
+    level = price_levels.get(provider_sym)
+    if not level:
+        return
+    current = _gate_current_price(row.get("name") or "", provider_sym, price_map)
+    gate = price_levels.evaluate(level, current)
+    if not gate:
+        return
+    action = row.get("action")
+    if action == "buy" and gate["blocks_buy"]:
+        gate["blocked_action"] = "buy"
+        row["action"] = "wait"
+    elif action == "trim" and gate["blocks_trim"]:
+        gate["blocked_action"] = "trim"
+        row["action"] = "wait"
+    row["price_gate"] = gate
+
+
+def _attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
     """Enrich each held target row of a rebalance plan, in place, with a compact
-    ``research`` object + a ``research_conflict`` flag. Best-effort: a missing or
-    malformed dossier is skipped silently so the planner always renders."""
+    ``research`` object + a ``research_conflict`` flag, and a ``price_gate`` from
+    any locked price level (downgrading the action to ``"wait"`` when the price
+    isn't favorable yet). Best-effort: a missing/malformed dossier or level is
+    skipped silently so the planner always renders."""
+    price_map = _mark_price_map(holdings)
     for row in plan.get("rows") or []:
         if row.get("kind") != "target" or not row.get("held"):
             continue
         try:
-            overlay = _research_overlay(_resolve_symbol(row.get("name") or ""))
+            provider_sym = _resolve_symbol(row.get("name") or "")
+        except Exception:  # noqa: BLE001 - a bad symbol shouldn't break the plan
+            continue
+        try:
+            overlay = _research_overlay(provider_sym)
         except Exception:  # noqa: BLE001 - the overlay is optional; never break the plan
             overlay = None
-        if not overlay:
-            continue
-        row["research"] = overlay
-        row["research_conflict"] = _research_conflict(row.get("action"), overlay["thesis_action"])
+        if overlay:
+            row["research"] = overlay
+            row["research_conflict"] = _research_conflict(row.get("action"), overlay["thesis_action"])
+        try:
+            _apply_price_gate(row, provider_sym, price_map)
+        except Exception:  # noqa: BLE001 - gating is decision support, never fatal
+            pass
 
 
 _TICKER_SHAPE = re.compile(r"^[A-Z][A-Z0-9.]{0,5}$")
@@ -1911,7 +1970,7 @@ class Handler(BaseHTTPRequestHandler):
         if not holdings:
             return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
         plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
-        _attach_research_overlay(plan)
+        _attach_research_overlay(plan, holdings)
         return self._send_json(plan)
 
     def _get_risk(self, path, query):
