@@ -89,5 +89,28 @@ class Concurrency(unittest.TestCase):
                                  and j.get("state") == "running"))
 
 
+class Running(unittest.TestCase):
+    def test_matches_kind_and_extra_fields(self):
+        job = jobs.new_job("ticker_analysis", symbol="NVDA")
+        jobs.update_job(job["id"], state="running")
+        self.assertTrue(jobs.running("ticker_analysis", symbol="NVDA"))
+        # Wrong kind or wrong field value -> not a match.
+        self.assertFalse(jobs.running("ticker_qa", symbol="NVDA"))
+        self.assertFalse(jobs.running("ticker_analysis", symbol="AMD"))
+
+    def test_finished_job_is_not_running(self):
+        job = jobs.new_job("ibkr_sync")
+        jobs.update_job(job["id"], state="done")
+        self.assertFalse(jobs.running("ibkr_sync"))
+
+    def test_cancelled_job_does_not_count_as_running(self):
+        # The key shared semantic: a cancelled-but-not-yet-reaped job is being
+        # torn down, so it must not wedge new work of the same kind.
+        job = jobs.new_job("ticker_analysis", symbol="TSLA")
+        jobs.update_job(job["id"], state="running")
+        jobs.cancel_job(job["id"])
+        self.assertFalse(jobs.running("ticker_analysis", symbol="TSLA"))
+
+
 if __name__ == "__main__":
     unittest.main()

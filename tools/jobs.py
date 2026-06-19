@@ -146,6 +146,24 @@ def find(predicate: Callable[[dict], bool]) -> bool:
         return any(predicate(j) for j in _JOBS.values())
 
 
+def running(kind: str, **match) -> bool:
+    """True if a job of ``kind`` is still live (queued/running and not flagged
+    for cancellation), optionally matching extra public fields like
+    ``symbol=`` or ``stem=``.
+
+    This is the one place the "is there already an X in flight?" guard lives, so
+    every caller agrees that a cancelled-but-not-yet-reaped job no longer counts
+    as live (its slot is being released) and can't wedge new work."""
+    def predicate(j: dict) -> bool:
+        if j.get("kind") != kind or j.get("state") not in ("queued", "running"):
+            return False
+        if j.get("cancelled"):
+            return False
+        return all(j.get(k) == v for k, v in match.items())
+
+    return find(predicate)
+
+
 def claim_active() -> bool:
     """Take one of the bounded browser slots; False if all are in use."""
     with _LOCK:
