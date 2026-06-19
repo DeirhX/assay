@@ -180,6 +180,18 @@ function applyPrivacyMode(on: boolean): void {
 // _recorded so the global handler doesn't double-count what api() already logged).
 type AppError = Error & { _recorded?: unknown; status?: number };
 
+// A human-confirmed price trigger (instrument currency), as returned by
+// /api/price-levels and the lock endpoint. Either side may be null.
+interface PriceLevel {
+  symbol: string;
+  currency: string;
+  buy_below: number | null;
+  trim_above: number | null;
+  locked_at?: string;
+  status?: string;
+  source?: { kind?: string; stem?: string; suggested?: { buy_below: number | null; trim_above: number | null } };
+}
+
 // Generic so typed call sites can pin a response shape from ./api-types, e.g.
 // `await api<HoldingsPayload>("/api/holdings")`. Defaults to any, so the many
 // still-untyped (@ts-nocheck) callers are unaffected.
@@ -370,4 +382,4 @@ export {
   simpleTable,
   apiLoad,
 };
-export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts, SimpleTableOpts };
+export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts, SimpleTableOpts, PriceLevel };
