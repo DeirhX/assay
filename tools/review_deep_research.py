@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hygiene import worst_severity  # noqa: E402  -- shared severity reducer
 from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON, holdings_weights  # noqa: E402
 from store import load as load_json, write_json  # noqa: E402  -- shared forgiving JSON IO
+from config import REPO_ROOT  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
 RESEARCH_DIR = DATA_DIR / "research"

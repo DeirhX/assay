@@ -41,8 +41,8 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- shared weight/holdings layer
 import store  # noqa: E402
+from config import REPO_ROOT  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = REPO_ROOT / "data" / "cache" / "risk"
 
 TRADING_DAYS = 252

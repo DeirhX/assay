@@ -7,12 +7,11 @@ rule imply?" That is how portfolios become haunted by tiny inconsistent lies.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from store import load as load_json  # forgiving JSON read shared with the server
+from config import REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"

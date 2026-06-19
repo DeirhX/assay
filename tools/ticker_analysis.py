@@ -58,8 +58,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import errorlog
+from config import REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "data" / "analysis-config.json"
 
 # Default backend policy. Order == fallback order. A user override file at

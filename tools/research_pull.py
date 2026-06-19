@@ -38,8 +38,8 @@ from providers.common import (  # noqa: E402
     fmt_price,
     fmt_x,
 )
+from config import REPO_ROOT  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 RESEARCH_DIR = REPO_ROOT / "data" / "research"
 SEGMENT_DEF_DIR = REPO_ROOT / "data" / "segments"
 SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"

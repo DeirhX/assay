@@ -33,13 +33,11 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Any, Callable
 
-from ibkr_portfolio import load_env_file  # vendored, stdlib-only KEY=VALUE parser
+from config import TOOLS_SECRETS, read_env_file as load_env_file
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-SECRETS_FILE = SCRIPT_DIR / "secrets.env"
+SECRETS_FILE = TOOLS_SECRETS
 USER_AGENT = "assay-ibkr-trade/1.0 (+stdlib)"
 DEFAULT_GATEWAY_BASE = "https://localhost:5000/v1/api"
 

@@ -34,11 +34,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-WEB_DIR = REPO_ROOT / "web"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config import DATA_DIR, REPO_ROOT, RESEARCH_DIR, TOOLS_SECRETS, WEB_DIR  # noqa: E402
+
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
-DATA_DIR = REPO_ROOT / "data"
-RESEARCH_DIR = DATA_DIR / "research"
 DEEP_DIR = RESEARCH_DIR / "deep"
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
@@ -52,7 +51,6 @@ AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
 ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portfolio import holdings_payload, holdings_weights, provider_symbol_for, symbol_aliases  # noqa: E402
 from providers import yahoo  # noqa: E402
 import instruments  # noqa: E402
@@ -1336,7 +1334,7 @@ def _ticker_index() -> list[dict]:
 # IBKR_FLEX_QUERY_ID from the environment or a gitignored tools/secrets.env.
 IBKR_READER = Path(__file__).resolve().parent / "ibkr_portfolio.py"
 # Credentials file the reader reads (gitignored). The Settings UI writes here.
-IBKR_SECRETS = IBKR_READER.parent / "secrets.env"
+IBKR_SECRETS = TOOLS_SECRETS
 # Raw pulls + snapshots are personal data -> keep them under data/cache (gitignored
 # and inside the private submodule), never in the public working tree.
 IBKR_CACHE_DIR = DATA_DIR / "cache" / "ibkr"
@@ -3523,7 +3521,8 @@ def main() -> int:
 
 def _load_secrets_env():
     """Best-effort load of repo-root secrets.env (gitignored) for FMP_API_KEY."""
-    for key, value in _read_env_file(REPO_ROOT / "secrets.env").items():
+    from config import ROOT_SECRETS
+    for key, value in _read_env_file(ROOT_SECRETS).items():
         os.environ.setdefault(key, value)
 
 

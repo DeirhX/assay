@@ -35,8 +35,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rebalance  # noqa: E402  -- same drift/action engine the web planner uses
 from portfolio import HOLDINGS_JSON as DATA_JSON, TARGET_MODEL_JSON, holdings_weights, provider_symbol_for  # noqa: E402
+from config import REPO_ROOT  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
 SUMMARY_MD = REPO_ROOT / "data" / "current-holdings-summary.md"
 
