@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Guided "Direction -> Rebalance" flow. One screen drives a server-side
 // orchestrated run (tools/orchestrate.py): you type a direction, the server
 // drafts a segment, runs Deep Research, synthesizes target-model bands, and
@@ -98,11 +97,11 @@ async function refreshOnce(runId) {
 
 // ---- start + recents ------------------------------------------------------
 async function startRun() {
-  const dir = $("#strat-direction").value.trim();
+  const dir = $<HTMLInputElement>("#strat-direction").value.trim();
   const status = $("#strat-status");
   status.classList.remove("err");
   if (!dir) { status.classList.add("err"); status.textContent = "describe a direction first"; return; }
-  const btn = $("#strat-go");
+  const btn = $<HTMLButtonElement>("#strat-go");
   btn.disabled = true;
   status.innerHTML = `<span class="spinner"></span> starting run…`;
   try {
@@ -141,7 +140,7 @@ async function loadRecentRuns() {
         recentStateBadge(r.state) +
       `</button>`;
     }).join("");
-    box.querySelectorAll(".strat-recent-item").forEach((b) => {
+    box.querySelectorAll<HTMLElement>(".strat-recent-item").forEach((b) => {
       b.addEventListener("click", () => { pushNav({ view: "strategy", run: b.dataset.run }); loadStrategy(); });
     });
   } catch (_e) {
@@ -359,17 +358,17 @@ function renderSegmentGate(m, panel) {
       `<span class="status" id="strat-seg-status"></span>` +
     `</div>`;
   panel.appendChild(card);
-  $("#strat-seg-json").value = JSON.stringify(definition, null, 2);
+  $<HTMLTextAreaElement>("#strat-seg-json").value = JSON.stringify(definition, null, 2);
   $("#strat-approve-seg").addEventListener("click", () => approveSegment(m.run_id));
 }
 
 async function approveSegment(runId) {
   const status = $("#strat-seg-status");
-  const btn = $("#strat-approve-seg");
+  const btn = $<HTMLButtonElement>("#strat-approve-seg");
   status.classList.remove("err");
   let definition;
   try {
-    definition = JSON.parse($("#strat-seg-json").value);
+    definition = JSON.parse($<HTMLTextAreaElement>("#strat-seg-json").value);
   } catch (e) {
     status.classList.add("err");
     status.textContent = "invalid JSON: " + e.message;
@@ -456,7 +455,7 @@ function renderProposalGate(m, panel) {
   card.appendChild(actions);
 
   panel.appendChild(card);
-  $("#strat-changes-json").value = JSON.stringify(changes, null, 2);
+  $<HTMLTextAreaElement>("#strat-changes-json").value = JSON.stringify(changes, null, 2);
   $("#strat-approve-prop").addEventListener("click", () => approveProposal(m.run_id));
 }
 
@@ -491,17 +490,17 @@ function changesTable(changes) {
 
 async function approveProposal(runId) {
   const status = $("#strat-prop-status");
-  const btn = $("#strat-approve-prop");
+  const btn = $<HTMLButtonElement>("#strat-approve-prop");
   status.classList.remove("err");
   let changes;
   try {
-    changes = JSON.parse($("#strat-changes-json").value);
+    changes = JSON.parse($<HTMLTextAreaElement>("#strat-changes-json").value);
   } catch (e) {
     status.classList.add("err");
     status.textContent = "invalid changes JSON: " + e.message;
     return;
   }
-  const allowBlocked = !!($("#strat-allow-blocked") && $("#strat-allow-blocked").checked);
+  const allowBlocked = !!($<HTMLInputElement>("#strat-allow-blocked") && $<HTMLInputElement>("#strat-allow-blocked").checked);
   btn.disabled = true;
   status.innerHTML = `<span class="spinner"></span> applying…`;
   try {
@@ -706,7 +705,8 @@ function initStrategy() {
   // clicking the live step (or "Back to current step") unpins and follows along.
   const stages = $("#strat-stages");
   if (stages) stages.addEventListener("click", (e) => {
-    const li = e.target.closest ? e.target.closest("li") : null;
+    const tgt = e.target as HTMLElement;
+    const li = tgt.closest ? tgt.closest<HTMLElement>("li") : null;
     if (!li || !li.classList.contains("clickable") || !_lastM) return;
     _viewStage = li.dataset.stage === liveStage(_lastM) ? null : li.dataset.stage;
     render(_lastM);

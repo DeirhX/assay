@@ -50,7 +50,7 @@ function clearErrors() {
   renderErrorCenter();
 }
 
-function toggleErrorPanel(force) {
+function toggleErrorPanel(force?) {
   const panel = $("#error-panel");
   if (!panel) return;
   const show = force != null ? force : panel.hidden;

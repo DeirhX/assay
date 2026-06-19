@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
 import { pollDeepJob } from "./errors";
 import { openTicker } from "./rebalance";
@@ -225,7 +224,7 @@ function setupNote(st) {
       `Add a <strong>History Flex Query ID</strong> in ${link}, then pull.`;
   const go = box.querySelector("[data-go-setup]");
   if (go) go.addEventListener("click", () => {
-    document.querySelector('.tab[data-view="setup"]')?.click();
+    document.querySelector<HTMLElement>('.tab[data-view="setup"]')?.click();
   });
   return box;
 }
@@ -434,7 +433,7 @@ function sectorToolbar(h, unknownNames) {
 }
 
 async function runSectorFetch() {
-  const btn = $("#hist-sectors");
+  const btn = $<HTMLButtonElement>("#hist-sectors");
   const status = $("#hist-sectors-status");
   if (!btn || btn.disabled) return;
   btn.disabled = true;
@@ -852,7 +851,7 @@ function tradeTable(trades, baseCcy) {
 
 async function runSync(full) {
   const status = $("#hist-status");
-  const btns = [$("#hist-sync"), $("#hist-full")].filter(Boolean);
+  const btns = [$<HTMLButtonElement>("#hist-sync"), $<HTMLButtonElement>("#hist-full")].filter(Boolean);
   if (btns.some((b) => b.disabled)) return;
   const prev = btns.map((b) => b.textContent);
   btns.forEach((b) => (b.disabled = true));
