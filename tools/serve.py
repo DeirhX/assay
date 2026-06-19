@@ -482,6 +482,27 @@ def _start_segment_draft(query: str) -> dict:
     return _job_public(job)
 
 
+def _freshness_directive(today: str) -> str:
+    """Force time-sensitive numbers to be live as-of the run date.
+
+    Deep Research models otherwise quietly fall back to their training cutoff and
+    present, e.g., "1-year returns to mid-2025" in a 2026 report (numbers that are
+    a year stale and simply wrong). This directive bans that and demands an
+    as-of date on every price/return/multiple."""
+    return (
+        "FRESHNESS (critical): every time-sensitive number \u2014 share prices, "
+        "trailing returns, market caps, valuation multiples, the latest reported "
+        "quarter, and guidance \u2014 must reflect data retrieved live as of "
+        f"{today}, NOT your training data. Do NOT anchor to a prior-year "
+        "snapshot: a phrase like 'returns over ~12 months to mid-2025' in a "
+        f"report dated {today} is a failure. State the as-of date next to any "
+        f"price, return, or multiple, and that date must be within a few weeks of "
+        f"{today}; compute trailing returns ending at the most recent close. If "
+        "you cannot retrieve a current value, say so and omit it rather than "
+        "presenting a stale figure as if it were current.\n"
+    )
+
+
 def _segment_prompt(name: str) -> dict:
     slug = _slugify(name)
     definition = _load(SEGMENT_DEF_DIR / f"{slug}.json")
@@ -522,6 +543,7 @@ def _segment_prompt(name: str) -> dict:
         "block. Structured data (e.g. the comparison) belongs in Markdown tables, "
         "not JSON.\n"
     )
+    prompt += _freshness_directive(today)
     if held_lines:
         prompt += (
             "\nFor context only (do not bias coverage toward these), I currently own:\n"
@@ -565,6 +587,7 @@ def _ticker_deep_prompt(symbol: str) -> dict:
         "or array, and do NOT wrap the whole response in a code block. Structured "
         "data belongs in Markdown tables, not JSON.\n"
     )
+    prompt += _freshness_directive(today)
     if weight is not None:
         prompt += (
             f"\nFor context only (do not let it bias your conclusion), I currently "
