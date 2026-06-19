@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
+import type { SegmentSummary } from "./api-types";
 import { analyzeFromAnywhere } from "./rebalance";
 import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
@@ -8,7 +8,7 @@ async function loadSegmentList() {
   const sel = $("#segment-select");
   const pipeSel = $("#pipe-segment-select");
   try {
-    const { segments } = await api("/api/segments");
+    const { segments } = await api<{ segments: SegmentSummary[] }>("/api/segments");
     sel.innerHTML = "";
     if (pipeSel) pipeSel.innerHTML = "";
     segments.forEach((s) => {
@@ -38,19 +38,19 @@ async function loadSegmentList() {
   }
 }
 
-$("#segment-select").addEventListener("change", () => {
-  if ($("#view-segment").classList.contains("active")) {
-    pushNav({ view: "segment", segment: $("#segment-select").value }, { replace: true });
+$("#segment-select")?.addEventListener("change", () => {
+  if ($("#view-segment")?.classList.contains("active")) {
+    pushNav({ view: "segment", segment: $<HTMLSelectElement>("#segment-select")?.value }, { replace: true });
   }
 });
 
-$("#pipe-segment-select").addEventListener("change", () => {
-  if ($("#view-pipeline").classList.contains("active")) {
-    pushNav({ view: "pipeline", segment: $("#pipe-segment-select").value }, { replace: true });
+$("#pipe-segment-select")?.addEventListener("change", () => {
+  if ($("#view-pipeline")?.classList.contains("active")) {
+    pushNav({ view: "pipeline", segment: $<HTMLSelectElement>("#pipe-segment-select")?.value }, { replace: true });
   }
 });
 
-async function runSegmentPull(name, { push = true } = {}) {
+async function runSegmentPull(name: string, { push = true }: { push?: boolean } = {}) {
   const status = $("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
@@ -61,10 +61,10 @@ async function runSegmentPull(name, { push = true } = {}) {
   }
   if (push) pushNav({ view: "segment", segment: name });
   setActiveView("segment");
-  $("#segment-select").value = name;
+  $<HTMLSelectElement>("#segment-select").value = name;
   status.classList.remove("err");
   status.innerHTML = `${spinner()} Pulling every peer in "${esc(name)}" live — this takes a bit...`;
-  $("#segment-run").disabled = true;
+  $<HTMLButtonElement>("#segment-run").disabled = true;
   try {
     const rec = await api("/api/pull-segment/" + encodeURIComponent(name), "POST");
     status.textContent = `Pulled ${rec.members.length} names at ${new Date(rec.as_of).toLocaleString()}`;
@@ -72,11 +72,11 @@ async function runSegmentPull(name, { push = true } = {}) {
   } catch (e) {
     loadError(status, "Segment pull failed", e);
   } finally {
-    $("#segment-run").disabled = false;
+    $<HTMLButtonElement>("#segment-run").disabled = false;
   }
 }
 
-async function loadCachedSegment(name, { push = false } = {}) {
+async function loadCachedSegment(name: string, { push = false }: { push?: boolean } = {}) {
   const status = $("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
@@ -87,7 +87,7 @@ async function loadCachedSegment(name, { push = false } = {}) {
   }
   if (push) pushNav({ view: "segment", segment: name });
   setActiveView("segment");
-  $("#segment-select").value = name;
+  $<HTMLSelectElement>("#segment-select").value = name;
   status.classList.remove("err");
   status.textContent = "Loading cached segment...";
   try {
@@ -100,8 +100,8 @@ async function loadCachedSegment(name, { push = false } = {}) {
   }
 }
 
-$("#segment-run").addEventListener("click", () => runSegmentPull($("#segment-select").value));
-$("#segment-load").addEventListener("click", () => loadCachedSegment($("#segment-select").value, { push: true }));
+$("#segment-run")?.addEventListener("click", () => runSegmentPull($<HTMLSelectElement>("#segment-select")?.value));
+$("#segment-load")?.addEventListener("click", () => loadCachedSegment($<HTMLSelectElement>("#segment-select")?.value, { push: true }));
 
 // Seed the result area so an un-loaded Segment tab is a clear prompt, not a void.
 // Any pull/cache load replaces this; a deep-link to ?segment= loads over it.
@@ -110,7 +110,7 @@ emptyState($("#seg-result"),
   "Pick a peer universe above, then <em>Run live pull</em> (~30-60s for ~20 names) " +
   "or <em>Load cached</em> for the last saved table.");
 
-const SEG_COLS = [
+const SEG_COLS: [string, string, boolean][] = [
   ["symbol", "Symbol", false],
   ["decision", "Decision", false],
   ["research_score", "Score", true],

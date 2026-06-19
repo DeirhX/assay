@@ -1,12 +1,20 @@
-// @ts-nocheck
 import { $, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
 // Lead with the caveats so nobody mistakes a calm-market correlation for a crash.
 
-const fmtPct1 = (v) => (v == null ? "n/a" : Number(v).toFixed(1) + "%");
-const fmtNum = (v, d = 2) => (v == null ? "n/a" : Number(v).toFixed(d));
+// One row of the per-name vol/weight table (GET /api/risk -> positions[]). Not
+// in api-types.ts since the risk endpoint is local to this view.
+interface RiskPosition {
+  symbol: string;
+  weight_pct: number | null;
+  norm_weight_pct: number | null;
+  ann_vol_pct: number | null;
+}
+
+const fmtPct1 = (v: number | null | undefined) => (v == null ? "n/a" : Number(v).toFixed(1) + "%");
+const fmtNum = (v: number | null | undefined, d = 2) => (v == null ? "n/a" : Number(v).toFixed(d));
 
 // Correlation -> background. High positive correlation is the risk here, so make
 // it loud (red); near-zero is calm (neutral); negative (a real hedge) is green.
@@ -170,7 +178,7 @@ function volClass(v) {
   return "good";
 }
 
-function posTable(positions) {
+function posTable(positions: RiskPosition[]) {
   const vols = positions.map((p) => p.ann_vol_pct).filter((v) => v != null);
   const maxVol = vols.length ? Math.max(...vols) : 0;
   return simpleTable({
@@ -193,7 +201,7 @@ function posTable(positions) {
 }
 
 function initRiskControls() {
-  const sel = $("#risk-range");
+  const sel = $<HTMLSelectElement & { _wired?: boolean }>("#risk-range");
   if (sel && !sel._wired) {
     sel._wired = true;
     sel.value = _riskRange;

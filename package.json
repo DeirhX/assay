@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "typecheck:py": "mypy tools",
     "lint": "eslint web/src"
   },
   "devDependencies": {

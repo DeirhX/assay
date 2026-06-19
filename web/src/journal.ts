@@ -1,9 +1,12 @@
-// @ts-nocheck
 import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive, statTile } from "./core";
 
 // ---- decision journal + calibration ----------------------------------------
-const correctClass = (c) => (c === true ? "good" : c === false ? "bad" : "muted");
-const moveClass = (m) => (m == null ? "muted" : m > 0 ? "good" : m < 0 ? "bad" : "muted");
+const correctClass = (c: boolean | null) => (c === true ? "good" : c === false ? "bad" : "muted");
+const moveClass = (m: number | null | undefined) => (m == null ? "muted" : m > 0 ? "good" : m < 0 ? "bad" : "muted");
+
+// Form fields are inputs/selects/textareas; read their value through a typed
+// accessor so the default HTMLElement from $() doesn't choke on `.value`.
+const fieldValue = (sel: string): string => $<HTMLInputElement>(sel)?.value ?? "";
 
 async function loadJournal() {
   await apiLoad({
@@ -114,7 +117,7 @@ function entryCard(e, scored) {
 const jStat = (label, value, cls, title) => statTile(label, value, { cls, title });
 
 function initJournalControls() {
-  const add = $("#jrnl-add");
+  const add = $<HTMLElement & { _wired?: boolean }>("#jrnl-add");
   if (add && !add._wired) {
     add._wired = true;
     add.addEventListener("click", submitEntry);
@@ -123,37 +126,40 @@ function initJournalControls() {
 
 async function submitEntry() {
   const status = $("#jrnl-status");
-  status.classList.remove("err");
+  if (status) status.classList.remove("err");
   const payload = {
-    symbol: $("#jrnl-symbol").value,
-    action: $("#jrnl-action").value,
-    size_czk: $("#jrnl-size").value,
-    price: $("#jrnl-price").value,
-    review_after: $("#jrnl-review").value,
-    thesis: $("#jrnl-thesis").value,
-    expected: $("#jrnl-expected").value,
+    symbol: fieldValue("#jrnl-symbol"),
+    action: fieldValue("#jrnl-action"),
+    size_czk: fieldValue("#jrnl-size"),
+    price: fieldValue("#jrnl-price"),
+    review_after: fieldValue("#jrnl-review"),
+    thesis: fieldValue("#jrnl-thesis"),
+    expected: fieldValue("#jrnl-expected"),
   };
-  status.textContent = "Saving…";
+  if (status) status.textContent = "Saving…";
   try {
     const data = await api("/api/journal", "POST", payload);
-    status.textContent = "Logged.";
+    if (status) status.textContent = "Logged.";
     ["jrnl-symbol", "jrnl-size", "jrnl-price", "jrnl-review", "jrnl-thesis", "jrnl-expected"]
-      .forEach((id) => { const elx = $("#" + id); if (elx) elx.value = ""; });
+      .forEach((id) => { const elx = $<HTMLInputElement>("#" + id); if (elx) elx.value = ""; });
     renderJournal(data);
   } catch (e) {
-    status.textContent = "Could not save: " + e.message;
-    status.classList.add("err");
+    if (status) status.textContent = "Could not save: " + (e as Error).message;
+    if (status) status.classList.add("err");
   }
 }
 
 // Pre-fill the journal form from elsewhere (e.g. a simulated basket), navigating
 // to the tab via its button so we avoid importing shell (cycle-free).
-function openJournalWith(prefill) {
-  const tab = document.querySelector('.tab[data-view="journal"]');
+function openJournalWith(prefill: Record<string, unknown>) {
+  const tab = document.querySelector<HTMLElement>('.tab[data-view="journal"]');
   if (tab) tab.click();
   setTimeout(() => {
     initJournalControls();
-    const set = (id, v) => { const elx = $("#" + id); if (elx != null && v != null) elx.value = v; };
+    const set = (id: string, v: unknown) => {
+      const elx = $<HTMLInputElement>("#" + id);
+      if (elx != null && v != null) elx.value = String(v);
+    };
     if (prefill.symbol != null) set("jrnl-symbol", prefill.symbol);
     if (prefill.action != null) set("jrnl-action", prefill.action);
     if (prefill.size_czk != null) set("jrnl-size", prefill.size_czk);
