@@ -7,6 +7,7 @@ import { recordView, relTime, renderViewedTickers } from "./viewed";
 import { activeFraction, fairValueStale, laddersMatch, marginFromPrice, priceFromMargin, sizeSum, sortLadder } from "./ladder";
 import { decorateAnalysis, decorateSources } from "./deepdive/decorate";
 import { renderPriceChart } from "./deepdive/price-chart";
+import { collapsibleCard, dataQualityTag, sourceLine, renderBusiness } from "./deepdive/cards";
 
 // ---- deep dive ------------------------------------------------------------
 $("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
@@ -1338,58 +1339,6 @@ async function openAnalysisConfig() {
   }).catch(() => {});
 }
 
-function renderBusiness(rec) {
-  const p = rec.profile || {};
-  if (!p.summary && !p.sector && !p.industry) return null;
-
-  const card = sectionCard("Business", "biz-card");
-
-  const bits = [];
-  if (p.sector) bits.push(esc(p.sector));
-  if (p.industry) bits.push(esc(p.industry));
-  if (p.country) bits.push(esc(p.country));
-  if (p.employees) bits.push(`${Number(p.employees).toLocaleString()} employees`);
-  if (bits.length) card.appendChild(el("div", "biz-meta", bits.join(" · ")));
-  if (p.website) {
-    const host = String(p.website).replace(/^https?:\/\//, "").replace(/\/$/, "");
-    card.appendChild(el("div", "biz-meta",
-      `<a href="${esc(p.website)}" target="_blank" rel="noopener">${esc(host)} \u2197</a>`));
-  }
-
-  if (p.summary) {
-    const body = el("p", "biz-summary clamp", esc(p.summary));
-    card.appendChild(body);
-    linkifyTickers(body);
-    if (p.summary.length > 320) {
-      const toggle = el("button", "linklike biz-toggle", "Show more");
-      toggle.type = "button";
-      toggle.addEventListener("click", () => {
-        const open = body.classList.toggle("expanded");
-        toggle.textContent = open ? "Show less" : "Show more";
-      });
-      card.appendChild(toggle);
-    }
-  }
-  return card;
-}
-
-
-// A <details>-based card. `open` decides the initial state; the meta sits on the
-// summary line so a collapsed card still tells you what's inside.
-function collapsibleCard(titleHtml, { meta = "", open = false } = {}) {
-  const details = el("details", "card collapse");
-  details.open = !!open;
-  const summary = el("summary", "collapse-head");
-  summary.innerHTML =
-    `<span class="collapse-title">${titleHtml}</span>` +
-    (meta ? `<span class="collapse-meta">${meta}</span>` : "") +
-    `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
-  details.appendChild(summary);
-  const body = el("div", "collapse-body");
-  details.appendChild(body);
-  return { details, body };
-}
-
 function renderHistory(rec) {
   // undefined == not fetched yet (streaming in). Show the section shell with a
   // progress bar overlaid so the rest of the dossier isn't held hostage to it.
@@ -1457,24 +1406,6 @@ async function deleteHistorySnapshot(rec, stamp) {
   }
 }
 
-function dataQualityTag(checks) {
-  const sev = checks.some((c) => c.severity === "ERROR") ? "ERROR" : checks.some((c) => c.severity === "WARN") ? "WARN" : "INFO";
-  const txt = { ERROR: "conflicts found", WARN: "minor disagreement", INFO: "clean" }[sev];
-  return ` &nbsp;<span class="dot ${sev}"></span><span style="font-size:12px;color:var(--muted)">${txt}</span>`;
-}
-
-function sourceLine(node) {
-  const all = node.all_sources || {};
-  const keys = Object.keys(all);
-  if (keys.length <= 1) return `source: ${esc(node.source)}`;
-  // multiple sources -> show each and flag spread
-  const vals = keys.map((k) => all[k]);
-  const max = Math.max(...vals.map(Math.abs)), min = Math.min(...vals.map(Math.abs));
-  const disagree = max > 0 && (max - min) / max > 0.05;
-  const parts = keys.map((k) => `${k}:${Number(all[k]).toPrecision(4)}`).join("  ");
-  return `<span class="${disagree ? "disagree" : ""}">${esc(parts)}</span>`;
-}
-
 function renderThesis(rec) {
   const t = rec.thesis || {};
   const hasContent = !!(t.summary || t.action || (t.drivers || []).length || (t.downside_triggers || []).length);
@@ -1529,10 +1460,6 @@ export {
   qaUsageHtml,
   renderQaCard,
   openAnalysisConfig,
-  renderBusiness,
-  collapsibleCard,
   renderHistory,
-  dataQualityTag,
-  sourceLine,
   renderThesis,
 };
