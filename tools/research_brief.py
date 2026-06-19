@@ -36,12 +36,9 @@ from typing import Any, Callable
 
 import ticker_analysis
 from store import load as _load, write_json as _write_json
-from config import REPO_ROOT
+from config import DEEP_DIR, RESEARCH_DIR
 
-DATA_DIR = REPO_ROOT / "data"
-RESEARCH_DIR = DATA_DIR / "research"
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"
-DEEP_DIR = RESEARCH_DIR / "deep"
 BRIEFS_DIR = RESEARCH_DIR / "briefs"
 
 DEFAULT_BUDGET_CHARS = 6000

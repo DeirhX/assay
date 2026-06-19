@@ -10,11 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 from store import load as load_json  # forgiving JSON read shared with the server
-from config import REPO_ROOT
+from config import DATA_DIR, HOLDINGS_JSON, TARGET_MODEL_JSON
 
-DATA_DIR = REPO_ROOT / "data"
-HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
-TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 
 

@@ -31,9 +31,11 @@ HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 DEEP_DIR = RESEARCH_DIR / "deep"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 
-# Curated segment definitions (the membership lists). Referenced by the server,
-# the deep-run/peer-stats services, and the segment readers, so centralize it.
+# Curated segment definitions (the membership lists) and the generated segment
+# dossiers. Referenced by the server, the deep-run/peer-stats services, and the
+# segment readers, so centralize them.
 SEGMENT_DEF_DIR = DATA_DIR / "segments"
+SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 
 # Two gitignored secrets files, split for historical reasons and kept as-is so
 # existing setups don't break: FMP_API_KEY at the repo root, IBKR Flex/CPAPI

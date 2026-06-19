@@ -35,12 +35,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (  # noqa: E402
     DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
-    SEGMENT_DEF_DIR, TARGET_MODEL_JSON, WEB_DIR,
+    SEGMENT_DEF_DIR, SEGMENT_OUT_DIR, TARGET_MODEL_JSON, WEB_DIR,
 )
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
-SEGMENT_OUT_DIR = RESEARCH_DIR / "segments"
 SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses

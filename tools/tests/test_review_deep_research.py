@@ -90,17 +90,17 @@ class ReviewFlow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
+        data = root / "data"
         self._orig = {k: getattr(rd, k) for k in (
-            "REPO_ROOT", "DATA_DIR", "SEGMENT_DEF_DIR", "RESEARCH_DIR",
+            "REPO_ROOT", "SEGMENT_DEF_DIR", "RESEARCH_DIR",
             "DEEP_DIR", "HOLDINGS_JSON", "TARGET_MODEL_JSON",
         )}
         rd.REPO_ROOT = root
-        rd.DATA_DIR = root / "data"
-        rd.SEGMENT_DEF_DIR = rd.DATA_DIR / "segments"
-        rd.RESEARCH_DIR = rd.DATA_DIR / "research"
+        rd.SEGMENT_DEF_DIR = data / "segments"
+        rd.RESEARCH_DIR = data / "research"
         rd.DEEP_DIR = rd.RESEARCH_DIR / "deep"
-        rd.HOLDINGS_JSON = rd.DATA_DIR / "current-holdings.json"
-        rd.TARGET_MODEL_JSON = rd.DATA_DIR / "target-model.json"
+        rd.HOLDINGS_JSON = data / "current-holdings.json"
+        rd.TARGET_MODEL_JSON = data / "target-model.json"
         for d in (rd.SEGMENT_DEF_DIR, rd.RESEARCH_DIR, rd.DEEP_DIR):
             d.mkdir(parents=True)
 

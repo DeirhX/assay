@@ -32,10 +32,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hygiene import SEV_RANK, rel_diff  # noqa: E402  -- shared severity rank + rel-diff
-from config import REPO_ROOT  # noqa: E402
+from config import DATA_DIR, HOLDINGS_JSON  # noqa: E402
 
-HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
-CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
+CLAIMS_JSON = DATA_DIR / "research-claims.json"
 
 # price x shares vs stated market cap; loose because share-count methodology
 # (basic/diluted, ADR ratios) legitimately varies.
