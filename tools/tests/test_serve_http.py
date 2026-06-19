@@ -628,8 +628,20 @@ class TickerDeepResearch(unittest.TestCase):
         self.assertRegex(rec["date"], r"^\d{4}-\d{2}-\d{2}$")
         self.assertIn("AMD", rec["prompt"])
         self.assertIn("FORMAT", rec["prompt"])
+        # Freshness directive bans anchoring time-sensitive numbers to the
+        # training cutoff (the "returns to mid-2025 in a 2026 report" failure).
+        self.assertIn("FRESHNESS", rec["prompt"])
+        self.assertIn(rec["date"], rec["prompt"])
         # No holdings -> no "I currently hold" context line.
         self.assertNotIn("currently hold", rec["prompt"])
+
+    def test_segment_prompt_has_freshness_directive(self):
+        seg = {"title": "Fintech & Payments", "members": [{"symbol": "PYPL"}]}
+        with mock.patch.object(serve, "_load", return_value=seg), \
+                mock.patch.object(serve, "holdings_weights", return_value={}):
+            rec = serve._segment_prompt("fintech-payments")
+        self.assertIn("FRESHNESS", rec["prompt"])
+        self.assertIn("most recent close", rec["prompt"])
 
     def test_ticker_prompt_appends_held_context(self):
         with mock.patch.object(serve, "holdings_weights", return_value={"AMD": 12.5}):
