@@ -31,6 +31,10 @@ HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 DEEP_DIR = RESEARCH_DIR / "deep"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 
+# On-demand single-ticker CLI analyses (dated markdown + provenance sidecars).
+# Shared by the server and the analysis-jobs service.
+ANALYSIS_DIR = RESEARCH_DIR / "analysis"
+
 # Curated segment definitions (the membership lists) and the generated segment
 # dossiers. Referenced by the server, the deep-run/peer-stats services, and the
 # segment readers, so centralize them.
