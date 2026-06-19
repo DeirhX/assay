@@ -36,9 +36,9 @@ from typing import Any, Callable
 import research_brief
 import ticker_analysis
 from store import load as _load, write_json as _write_json, safe_symbol as _safe_symbol
+from config import REPO_ROOT
 
 # Overridable for tests, mirroring review_deep_research's module-level paths.
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 DEEP_DIR = DATA_DIR / "research" / "deep"
 TARGET_MODEL_JSON = DATA_DIR / "target-model.json"

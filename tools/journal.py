@@ -24,8 +24,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402
 import store  # noqa: E402
+from config import REPO_ROOT  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 JOURNAL_JSON = REPO_ROOT / "data" / "journal.json"
 
 # Directional actions can be scored against later price; the rest are context.

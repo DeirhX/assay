@@ -32,8 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hygiene import SEV_RANK, rel_diff  # noqa: E402  -- shared severity rank + rel-diff
+from config import REPO_ROOT  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 HOLDINGS_JSON = REPO_ROOT / "data" / "current-holdings.json"
 CLAIMS_JSON = REPO_ROOT / "data" / "research-claims.json"
 

@@ -30,36 +30,17 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config import TOOLS_SECRETS, read_env_file
+
 BASE = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
 SCRIPT_DIR = Path(__file__).resolve().parent
-SECRETS_FILE = SCRIPT_DIR / "secrets.env"
+SECRETS_FILE = TOOLS_SECRETS
 USER_AGENT = "ibkr_portfolio/1.0 (+stdlib)"
 
-
-# --------------------------------------------------------------------------- #
-# Config / secrets
-# --------------------------------------------------------------------------- #
-def load_env_file(path: Path) -> dict[str, str]:
-    """Minimal KEY=VALUE parser (no python-dotenv dependency).
-
-    Kept self-contained so this reader stays vendorable; the research server
-    imports this single implementation instead of re-deriving it. A missing or
-    unreadable file yields an empty dict rather than raising.
-    """
-    out: dict[str, str] = {}
-    try:
-        if not path.exists():
-            return out
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return out
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        out[key.strip()] = val.strip().strip('"').strip("'")
-    return out
+# The shared KEY=VALUE secrets parser now lives in config; keep the historical
+# name so the research server / Flex history / trade clients (and their tests)
+# can keep importing `load_env_file` from here unchanged.
+load_env_file = read_env_file
 
 
 def resolve_credentials(args: argparse.Namespace) -> tuple[str, str]:

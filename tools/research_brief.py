@@ -36,8 +36,8 @@ from typing import Any, Callable
 
 import ticker_analysis
 from store import load as _load, write_json as _write_json
+from config import REPO_ROOT
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 RESEARCH_DIR = DATA_DIR / "research"
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"
