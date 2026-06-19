@@ -57,7 +57,6 @@ import whatif  # noqa: E402
 import journal  # noqa: E402
 import jobs  # noqa: E402
 import orchestrate  # noqa: E402  -- durable state machine for the guided strategy run
-import target_construct  # noqa: E402  -- LLM + deterministic target-model synthesis
 import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile math
@@ -67,9 +66,8 @@ from symbols import (  # noqa: E402  -- symbol resolve/alias/search (clean publi
     candidates as _symbol_candidates, resolve_symbol as _resolve_symbol,
     save_alias as _save_symbol_alias, search as _symbol_search,
 )
-from segments_service import (  # noqa: E402  -- segment validate/draft/prompt/list
-    draft_segment as _draft_segment, freshness_directive as _freshness_directive,
-    merge_draft_members as _merge_draft_members,
+from segments_service import (  # noqa: E402  -- segment validate/prompt/list
+    freshness_directive as _freshness_directive,
     segment_path as _segment_path, segment_prompt as _segment_prompt,
     segments_list as _segments_list, start_draft as _start_segment_draft,
     validate_definition as _validate_segment_definition,
@@ -78,9 +76,7 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
     _history_payload, _ibkr_status, _regenerate_site, _save_ibkr_secrets,
     _start_history_sync, _start_holdings_sync, _start_sectors_sync,
 )
-from target_model import (  # noqa: E402  -- target-model apply + rebalance preview
-    _apply_target_proposal, _preview_plan_for_proposal,
-)
+from target_model import _apply_target_proposal  # noqa: E402  -- target-model apply
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
     _delete_deep_run, _deep_runs, _save_deep_artifact,
 )
@@ -96,6 +92,11 @@ from browser_jobs import (  # noqa: E402  -- Perplexity auth + deep-research/log
     start_import as _start_import, start_login as _start_login,
     verify_login as _verify_login,
 )
+from strategy_service import (  # noqa: E402  -- guided Direction->Rebalance run gates
+    approve_strategy_proposal as _approve_strategy_proposal,
+    approve_strategy_segment as _approve_strategy_segment,
+    start_strategy as _start_strategy,
+)
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_place, _trade_preview, _trade_status,
@@ -107,18 +108,17 @@ from store import (  # noqa: E402
     slugify as _slugify, safe_symbol as _safe_symbol,
 )
 from jobs import (  # noqa: E402
-    new_job as _new_job, update_job as _update_job,
     any_active as _any_active_deep_job, active_count as _active_browser_count,
     max_slots as _max_browser_slots,
 )
 
 
 # HTTP error vocabulary (apierror): handlers and the services they call `raise`
-# an outcome; _dispatch() maps each _HttpError to its .status. _Conflict is used
-# by the in-flight-work guards below; _BadRequest by _read_body; _Forbidden and
-# _BadGateway live with the trade service that raises them.
+# an outcome; _dispatch() maps each _HttpError to its .status. _BadRequest is
+# used by _read_body; the Conflict/Forbidden/BadGateway outcomes are raised by
+# the service modules that own that work, not by serve directly anymore.
 from apierror import (  # noqa: E402
-    BadRequest as _BadRequest, Conflict as _Conflict, HttpError as _HttpError,
+    BadRequest as _BadRequest, HttpError as _HttpError,
 )
 
 
@@ -578,203 +578,6 @@ def _run_reloader() -> int:
         if code == 3:
             continue  # requested reload -> respawn with the new code
         return code  # clean exit or crash -> stop supervising
-
-
-# --------------------------------------------------------------------------- #
-# Guided "Direction -> Rebalance" strategy orchestration.
-#
-# The durable state machine lives in orchestrate.py; these runners do the
-# per-leg work on daemon threads, exactly like the deep-research job runners
-# above. A run pauses at a gate by simply landing in an awaiting_* state -- no
-# thread is left blocked on a human. The synthesis leg reuses the existing deep
-# research job wholesale (login walls, clarify, auto-save) by starting it and
-# polling its sub-job to completion.
-# --------------------------------------------------------------------------- #
-def _strategy_progress(run_id: str, job_id: str | None):
-    def progress(msg: str) -> None:
-        if job_id:
-            _update_job(job_id, message=msg)
-        orchestrate.update_run(run_id, message=msg)
-    return progress
-
-
-def _run_strategy_draft(run_id: str) -> None:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        return
-    direction = run["direction"]
-    try:
-        baseline = _draft_segment(direction)
-        definition = baseline["definition"]
-        members = list(definition.get("members") or [])
-        warnings = list(baseline.get("warnings") or [])
-        backend_label = None
-        if any(ticker_analysis.available_backends().values()):
-            orchestrate.update_run(run_id, message="researching candidate tickers…")
-            llm = ticker_analysis.draft_segment_members(direction)
-            if llm.get("ok"):
-                members = _merge_draft_members(members, llm.get("members") or [])
-                backend_label = llm.get("backend_label")
-                if llm.get("title"):
-                    definition["title"] = llm["title"]
-                if llm.get("comment"):
-                    definition["comment"] = llm["comment"]
-            else:
-                warnings.append(
-                    "LLM draft failed (" + (llm.get("error") or "unknown")
-                    + "); showing keyword matches only — edit the members before approving."
-                )
-        definition["members"] = members
-        definition["sleeves"] = sorted({m["sleeve"] for m in members}) or ["other"]
-        definition["status"] = "draft"
-        orchestrate.set_state(
-            run_id, orchestrate.AWAITING_SEGMENT,
-            segment=baseline["slug"],
-            message=f"Review the drafted segment ({len(members)} names), then approve.",
-            draft={
-                "slug": baseline["slug"],
-                "definition": definition,
-                "llm_prompt": baseline["llm_prompt"],
-                "warnings": warnings,
-                "backend_label": backend_label,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        orchestrate.set_state(run_id, orchestrate.ERROR,
-                              error=f"{type(exc).__name__}: {exc}", message="drafting failed")
-
-
-def _start_strategy(direction: str) -> dict:
-    run = orchestrate.new_run(direction)
-    threading.Thread(target=_run_strategy_draft, args=(run["run_id"],), daemon=True).start()
-    return orchestrate.public(run)
-
-
-def _approve_strategy_segment(run_id: str, definition_raw: dict | None) -> dict:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        raise ValueError(f"unknown strategy run {run_id}")
-    if run.get("state") not in (orchestrate.AWAITING_SEGMENT, orchestrate.NEEDS_LOGIN):
-        raise _Conflict(f"run {run_id} is not awaiting segment approval")
-    raw = dict(definition_raw or (run.get("draft") or {}).get("definition") or {})
-    raw["status"] = "approved"  # approving requires members; _validate enforces it
-    definition = _validate_segment_definition(raw)
-    slug = run.get("segment") or _slugify(definition.get("title") or "segment")
-    _write_json(SEGMENT_DEF_DIR / f"{slug}.json", definition)
-    orchestrate.set_state(run_id, orchestrate.SYNTHESIS_RUNNING, segment=slug,
-                          message="starting synthesis…", error=None)
-    threading.Thread(target=_run_strategy_synthesis, args=(run_id,), daemon=True).start()
-    return orchestrate.public(orchestrate.load_run(run_id))
-
-
-def _run_strategy_synthesis(run_id: str) -> None:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        return
-    seg = run["segment"]
-    job = _new_job("strategy", segment=seg, run_id=run_id)
-    orchestrate.update_run(run_id, job_id=job["id"])
-    progress = _strategy_progress(run_id, job["id"])
-
-    def fail(msg: str) -> None:
-        orchestrate.set_state(run_id, orchestrate.ERROR, error=msg, message="synthesis failed")
-        _update_job(job["id"], state="error", error=msg)
-
-    try:
-        progress("building the Deep Research prompt…")
-        prompt_info = _segment_prompt(seg)
-        date = prompt_info["date"]
-        orchestrate.update_run(run_id, date=date)
-        stem = f"{seg}-{date}"
-
-        if (DEEP_DIR / f"{stem}.md").exists():
-            progress("reusing the existing Deep Research report (no quota spent)…")
-        else:
-            try:
-                sub = _start_deep_research({
-                    "segment": seg, "date": date,
-                    "prompt": prompt_info["prompt"], "window_mode": "offscreen",
-                })
-            except RuntimeError as exc:
-                return fail(str(exc))
-            sub_id = sub["id"]
-            while True:
-                time.sleep(3)
-                pub = jobs.get_public(sub_id)
-                if not pub:
-                    return fail("Deep Research job vanished")
-                if pub.get("message"):
-                    progress(pub["message"])
-                state = pub.get("state")
-                if state == "done":
-                    break
-                if state == "needs_login":
-                    orchestrate.set_state(
-                        run_id, orchestrate.NEEDS_LOGIN,
-                        message="Perplexity login required. Set it up, then resume the run.")
-                    _update_job(job["id"], state="done", message="paused for login")
-                    return
-                if state in ("error", "cancelled"):
-                    return fail(pub.get("error") or f"Deep Research {state}")
-
-        progress("pulling deterministic segment data…")
-        try:
-            with _PULL_LOCK:
-                research_pull.pull_segment(seg)
-        except Exception as exc:  # noqa: BLE001 - deterministic data is best-effort
-            progress(f"deterministic pull skipped: {exc}")
-
-        progress("running the review gate…")
-        review = review_deep_research.review(seg, date, write=True)
-        progress("synthesizing target bands…")
-        proposal = target_construct.construct(seg, date, review, progress=progress)
-        progress("computing the rebalance preview…")
-        preview = _preview_plan_for_proposal(proposal)
-
-        orchestrate.set_state(
-            run_id, orchestrate.AWAITING_PROPOSAL,
-            proposal=proposal, preview=preview,
-            review={
-                "findings": review.get("findings"),
-                "blocked_symbols": review.get("blocked_symbols"),
-                "source_summary": review.get("source_summary"),
-                "review_path": review.get("review_path"),
-            },
-            message=f"Review {len(proposal.get('changes') or [])} proposed target change(s), then approve.")
-        _update_job(job["id"], state="done", message="synthesis complete")
-    except SystemExit as exc:
-        fail(str(exc) or "missing report for this segment + date")
-    except Exception as exc:  # noqa: BLE001
-        fail(f"{type(exc).__name__}: {exc}")
-
-
-def _approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = False) -> dict:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        raise ValueError(f"unknown strategy run {run_id}")
-    if run.get("state") != orchestrate.AWAITING_PROPOSAL:
-        raise _Conflict(f"run {run_id} is not awaiting proposal approval")
-    seg, date = run.get("segment"), run.get("date")
-    # Persist any edits made at the gate back into the proposal file the apply
-    # step reads, so what the user approved is exactly what gets applied.
-    if changes is not None:
-        ppath = DEEP_DIR / f"{seg}-{date}.target-proposal.json"
-        proposal = _load(ppath) or (run.get("proposal") or {})
-        proposal["changes"] = changes
-        _write_json(ppath, proposal)
-    orchestrate.set_state(run_id, orchestrate.APPLYING, message="applying target changes…")
-    try:
-        applied = _apply_target_proposal(seg, date, True, allow_blocked=allow_blocked)
-    except Exception as exc:  # noqa: BLE001
-        orchestrate.set_state(run_id, orchestrate.ERROR,
-                              error=f"{type(exc).__name__}: {exc}", message="apply failed")
-        raise
-    # The committed model now drives the real recommendation (no further changes).
-    final = _preview_plan_for_proposal({"changes": [], "blocked_symbols": []})
-    orchestrate.set_state(
-        run_id, orchestrate.DONE, applied=applied, preview=final,
-        message=f"Applied {len(applied.get('applied') or [])} change(s). Rebalance recommendation ready.")
-    return orchestrate.public(orchestrate.load_run(run_id))
 
 
 # Generous ceiling for JSON POST bodies (Deep Research reports run to a few
