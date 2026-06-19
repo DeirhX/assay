@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, el, esc, fmtCZK, sensitive, simpleTable, state } from "./core";
 
 // ---- trade desk -----------------------------------------------------------
@@ -202,7 +201,7 @@ function renderPreview() {
   const allBtn = el("button", "ghost", "Confirm all");
   allBtn.type = "button";
   allBtn.onclick = () => {
-    table.querySelectorAll('input[type="checkbox"]').forEach((cb, i) => { cb.checked = true; confirmState[i] = true; });
+    table.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb, i) => { cb.checked = true; confirmState[i] = true; });
     refreshPlaceBtn();
   };
   placeBtn.onclick = () => doPlace(placeBtn);

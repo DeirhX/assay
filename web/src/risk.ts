@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
@@ -170,7 +169,14 @@ function volClass(v) {
   return "good";
 }
 
-function posTable(positions) {
+interface RiskPosition {
+  symbol: string;
+  weight_pct: number | null;
+  norm_weight_pct: number | null;
+  ann_vol_pct: number | null;
+}
+
+function posTable(positions: RiskPosition[]) {
   const vols = positions.map((p) => p.ann_vol_pct).filter((v) => v != null);
   const maxVol = vols.length ? Math.max(...vols) : 0;
   return simpleTable({
@@ -193,7 +199,7 @@ function posTable(positions) {
 }
 
 function initRiskControls() {
-  const sel = $("#risk-range");
+  const sel = $<HTMLSelectElement & { _wired?: boolean }>("#risk-range");
   if (sel && !sel._wired) {
     sel._wired = true;
     sel.value = _riskRange;
