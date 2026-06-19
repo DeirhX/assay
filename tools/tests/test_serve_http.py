@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 import _support  # noqa: F401
+import deep_runs
 import holdings_sync
 import peer_stats
 import serve
@@ -201,27 +202,27 @@ class DeepArtifactJsonGuard(unittest.TestCase):
     then rendered raw. _save_deep_artifact must refuse a JSON-document body."""
 
     def test_detects_bare_json_object(self):
-        self.assertTrue(serve._looks_like_json_doc('{"title": "Space", "members": []}'))
+        self.assertTrue(deep_runs._looks_like_json_doc('{"title": "Space", "members": []}'))
 
     def test_detects_bare_json_array(self):
-        self.assertTrue(serve._looks_like_json_doc('[{"symbol": "RKLB"}]'))
+        self.assertTrue(deep_runs._looks_like_json_doc('[{"symbol": "RKLB"}]'))
 
     def test_detects_fenced_json(self):
-        self.assertTrue(serve._looks_like_json_doc('```json\n{"a": 1}\n```'))
+        self.assertTrue(deep_runs._looks_like_json_doc('```json\n{"a": 1}\n```'))
 
     def test_allows_markdown_narrative(self):
         report = ("# Space Exploration\n\nRocket Lab ($RKLB) is the clearest "
                   "pure-play launch name.\n\n| Company | Ticker |\n|---|---|\n"
                   "| Rocket Lab | RKLB |\n")
-        self.assertFalse(serve._looks_like_json_doc(report))
+        self.assertFalse(deep_runs._looks_like_json_doc(report))
 
     def test_allows_prose_starting_with_brace_like_text(self):
         # Brace-led but not valid JSON -> still a narrative, must be allowed.
-        self.assertFalse(serve._looks_like_json_doc("{this is not json, just prose}"))
+        self.assertFalse(deep_runs._looks_like_json_doc("{this is not json, just prose}"))
 
     def test_save_rejects_json_report(self):
         with self.assertRaises(ValueError) as ctx:
-            serve._save_deep_artifact({
+            deep_runs._save_deep_artifact({
                 "segment": "space-exploration",
                 "date": "2026-06-13",
                 "report": '{"title": "Space", "sleeves": [], "members": []}',
@@ -339,17 +340,18 @@ class DeepRunDelete(unittest.TestCase):
     def setUp(self):
         # DEEP_DIR must sit under REPO_ROOT because _deep_runs() reports each run
         # path relative to REPO_ROOT; redirect both to a temp tree so the real
-        # data/ dir is untouched and relative_to() still resolves.
+        # data/ dir is untouched and relative_to() still resolves. The delete
+        # handler resolves these from deep_runs (where the function now lives).
         self._dir = tempfile.TemporaryDirectory()
-        self._orig_deep = serve.DEEP_DIR
-        self._orig_root = serve.REPO_ROOT
-        serve.REPO_ROOT = Path(self._dir.name)
-        serve.DEEP_DIR = serve.REPO_ROOT / "data" / "research" / "deep"
-        serve.DEEP_DIR.mkdir(parents=True)
+        self._orig_deep = deep_runs.DEEP_DIR
+        self._orig_root = deep_runs.REPO_ROOT
+        deep_runs.REPO_ROOT = Path(self._dir.name)
+        deep_runs.DEEP_DIR = deep_runs.REPO_ROOT / "data" / "research" / "deep"
+        deep_runs.DEEP_DIR.mkdir(parents=True)
 
     def tearDown(self):
-        serve.DEEP_DIR = self._orig_deep
-        serve.REPO_ROOT = self._orig_root
+        deep_runs.DEEP_DIR = self._orig_deep
+        deep_runs.REPO_ROOT = self._orig_root
         self._dir.cleanup()
 
     def _post(self, path, body):
@@ -364,7 +366,7 @@ class DeepRunDelete(unittest.TestCase):
 
     def _seed(self, stem, suffixes):
         for suffix in suffixes:
-            (serve.DEEP_DIR / f"{stem}{suffix}").write_text("x", encoding="utf-8")
+            (deep_runs.DEEP_DIR / f"{stem}{suffix}").write_text("x", encoding="utf-8")
 
     def test_delete_removes_all_artifacts(self):
         stem = "demo-segment-2026-01-02"
@@ -378,9 +380,9 @@ class DeepRunDelete(unittest.TestCase):
         self.assertEqual(payload["stem"], stem)
         self.assertEqual(
             sorted(payload["removed"]),
-            sorted([f"{stem}{s}" for s in serve._DEEP_RUN_SUFFIXES]))
-        self.assertEqual(list(serve.DEEP_DIR.glob(f"{stem}*")), [])
-        self.assertTrue((serve.DEEP_DIR / "other-segment-2026-01-02.md").exists())
+            sorted([f"{stem}{s}" for s in deep_runs._DEEP_RUN_SUFFIXES]))
+        self.assertEqual(list(deep_runs.DEEP_DIR.glob(f"{stem}*")), [])
+        self.assertTrue((deep_runs.DEEP_DIR / "other-segment-2026-01-02.md").exists())
 
     def test_delete_unknown_stem_is_400(self):
         status, payload = self._post(
@@ -658,8 +660,8 @@ class TickerDeepResearch(unittest.TestCase):
     def test_enrich_ticker_run_without_segment_def(self):
         rec = {"stem": "ticker-amd-2026-06-13", "files": {"report": "x"}}
         # No data/segments/ticker-amd.json exists, so this exercises the fallback.
-        with mock.patch.object(serve, "_load", return_value={}):
-            serve._enrich_deep_run(rec)
+        with mock.patch.object(deep_runs, "_load", return_value={}):
+            deep_runs._enrich_deep_run(rec)
         self.assertEqual(rec["kind"], "ticker")
         self.assertEqual(rec["symbol"], "AMD")
         self.assertEqual(rec["title"], "AMD \u2014 deep research")
@@ -668,8 +670,8 @@ class TickerDeepResearch(unittest.TestCase):
 
     def test_enrich_segment_run_is_not_marked_ticker(self):
         rec = {"stem": "fintech-payments-2026-06-13", "files": {"report": "x"}}
-        with mock.patch.object(serve, "_load", return_value={}):
-            serve._enrich_deep_run(rec)
+        with mock.patch.object(deep_runs, "_load", return_value={}):
+            deep_runs._enrich_deep_run(rec)
         self.assertEqual(rec["kind"], "segment")
         self.assertEqual(rec["symbol"], "")
 

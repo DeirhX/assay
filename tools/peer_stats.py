@@ -9,10 +9,8 @@ plus a cross-segment aggregate), honestly flagging thin comparison samples.
 
 from __future__ import annotations
 
-from config import DATA_DIR, RESEARCH_DIR
+from config import RESEARCH_DIR, SEGMENT_DEF_DIR
 from store import load as _load, safe_symbol as _safe_symbol
-
-SEGMENT_DEF_DIR = DATA_DIR / "segments"
 
 # Metrics compared against segment peers, mirroring the dossier's tile order.
 _PEER_METRIC_KEYS = (
