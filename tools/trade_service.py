@@ -120,10 +120,12 @@ def _parse_snapshot_price(raw) -> float | None:
 
 def _locked_limit(sym: str, side: str) -> float | None:
     """The locked limit price for a basket order's side, looked up SERVER-SIDE
-    from the price-level store (never trusted from the client): a buy-below for a
-    BUY, a trim-above for a SELL. None -> the order stays at market. The level is
-    keyed by provider symbol, so resolve the basket symbol the same way the
-    rebalance overlay does."""
+    from the price-level store (never trusted from the client): the active
+    (outermost) tranche of the buy ladder for a BUY, of the trim ladder for a
+    SELL. With one order per symbol this fills the currently-triggered size at or
+    through the market; the size grading lives in the rebalance delta, not here.
+    None -> the order stays at market. The level is keyed by provider symbol, so
+    resolve the basket symbol the same way the rebalance overlay does."""
     level = price_levels.get(provider_symbol_for(sym))
     return price_levels.limit_price_for(level, side)
 

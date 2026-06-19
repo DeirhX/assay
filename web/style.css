@@ -1375,41 +1375,74 @@ a.tlink:hover { border-bottom-style: solid; }
 .price-levels.pl-is-locked .pl-title { color: var(--good); }
 .pl-locked { font-size: 10px; }
 .pl-intro { margin: 6px 0 12px; }
-.pl-grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
-.pl-field { display: flex; flex-direction: column; gap: 6px; }
-.pl-label {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: .04em; color: var(--muted);
-}
-/* The currency + number share one rounded box that lights up on hover/focus, so
-   it reads as a single control rather than a stray label beside a bare input. */
-.pl-input-row {
-  display: inline-flex; align-items: center; gap: 7px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-  padding: 7px 11px; transition: border-color .15s ease, box-shadow .15s ease;
-}
-.pl-input-row:hover { border-color: var(--muted); }
-.pl-input-row:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(130,170,255,.18); }
-.pl-ccy { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .02em; }
+/* A bare boxed number input used across the ladder editor; native spinners
+   killed so values read cleanly. */
 .pl-input {
-  width: 84px; padding: 0; border: 0; background: transparent;
-  color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums;
+  width: 100%; min-width: 0; box-sizing: border-box;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+  padding: 6px 9px; color: var(--text); font-size: 14px;
+  font-variant-numeric: tabular-nums; transition: border-color .15s ease, box-shadow .15s ease;
 }
-.pl-input:focus { outline: none; }
-.pl-input::placeholder { color: var(--muted); opacity: .6; }
-/* Kill the native number spinners -- they crowd the value and look out of place. */
+.pl-input:hover { border-color: var(--muted); }
+.pl-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(130,170,255,.18); }
+.pl-input::placeholder { color: var(--muted); opacity: .55; }
 .pl-input::-webkit-outer-spin-button,
 .pl-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .pl-input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
-/* Directional tone: buy-below is accumulation (green), trim-above is a sell trigger (amber). */
-.pl-field--buy .pl-label { color: var(--good); }
-.pl-field--buy .pl-input-row:hover { border-color: rgba(107,211,138,.55); }
-.pl-field--buy .pl-input-row:focus-within { border-color: var(--good); box-shadow: 0 0 0 3px rgba(107,211,138,.18); }
-.pl-field--buy .pl-ccy { color: rgba(107,211,138,.85); }
-.pl-field--trim .pl-label { color: var(--warn); }
-.pl-field--trim .pl-input-row:hover { border-color: rgba(245,199,107,.55); }
-.pl-field--trim .pl-input-row:focus-within { border-color: var(--warn); box-shadow: 0 0 0 3px rgba(245,199,107,.18); }
-.pl-field--trim .pl-ccy { color: rgba(245,199,107,.85); }
+
+/* Staleness banner: locked fair value drifted from the latest analysis. */
+.pl-stale {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 12px; padding: 8px 11px; font-size: 12.5px;
+  background: rgba(245,199,107,.08); border: 1px solid rgba(245,199,107,.4);
+  border-radius: 8px; color: var(--warn);
+}
+.pl-stale-ico { font-weight: 700; }
+.pl-stale-text { color: var(--text); }
+
+/* Fair-value anchor row. */
+.pl-fair { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px; margin-bottom: 14px; }
+.pl-fv-input { width: 120px; }
+.pl-fair-hint { font-size: 12px; padding-bottom: 6px; }
+
+/* Two ladders side by side; stack on narrow screens. */
+.pl-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 720px) { .pl-cols { grid-template-columns: 1fr; } }
+.pl-side {
+  border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px;
+  background: var(--bg-soft, rgba(255,255,255,.02));
+}
+.pl-side--buy { border-top: 2px solid var(--good); }
+.pl-side--trim { border-top: 2px solid var(--warn); }
+.pl-side-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.pl-side-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.pl-side--buy .pl-side-title { color: var(--good); }
+.pl-side--trim .pl-side-title { color: var(--warn); }
+.pl-side-sum { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; font-size: 11px; }
+.pl-sum-live { color: var(--muted); }
+.pl-sum-live.on { color: var(--good); font-weight: 700; }
+.pl-sum-frac { color: var(--accent); font-weight: 700; }
+.pl-sum-size.ok { color: var(--muted); }
+.pl-sum-size.warn { color: var(--warn); }
+
+.pl-tranches { display: flex; flex-direction: column; gap: 8px; }
+.pl-tranche {
+  display: grid; grid-template-columns: 1fr 1fr 1fr auto auto; gap: 6px; align-items: end;
+}
+.pl-tr-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pl-tr-label { font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.pl-tr-dist { font-size: 10.5px; white-space: nowrap; padding-bottom: 7px; }
+.pl-tr-dist.live { color: var(--good); font-weight: 700; }
+.pl-tr-dist.pending { color: var(--muted); }
+.pl-tr-del {
+  align-self: end; margin-bottom: 3px; cursor: pointer; line-height: 1;
+  background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--muted); font-size: 14px; width: 26px; height: 30px;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.pl-tr-del:hover { border-color: var(--bad); color: var(--bad); background: rgba(229,115,115,.08); }
+.pl-add { margin-top: 10px; font-size: 12px; padding: 4px 10px; }
+.pl-side-match { margin-top: 10px; font-size: 12px; }
 .pl-cmp-host { margin: 12px 0 0; }
 .pl-cmp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12.5px; line-height: 1.5; }
 .pl-cmp.muted { color: var(--muted); }
@@ -1649,6 +1682,11 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-gate-cond { font-weight: 700; padding: 0 4px; border-radius: 4px; }
 .reb-gate-cond.good { color: var(--good); }
 .reb-gate-cond.warn { color: var(--warn); }
+/* Graded ladder state: armed (fully live), partial (some tranches), blocked. */
+.reb-gate-armed .reb-gate-label { color: var(--good); }
+.reb-gate-partial .reb-gate-label { color: var(--warn); }
+.reb-gate-blocked .reb-gate-label { color: var(--muted); }
+.reb-gate-detail { font-weight: 600; }
 /* A row gated off (price not favorable) is flagged like a softer conflict. */
 .reb-data-row.reb-gated { box-shadow: inset 3px 0 0 var(--warn); }
 .reb-cur { display: flex; flex-direction: column; gap: 1px; }

@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import errorlog
+import price_levels
 from config import REPO_ROOT
 
 CONFIG_PATH = REPO_ROOT / "data" / "analysis-config.json"
@@ -626,9 +627,10 @@ Interpret the multiples vs the growth. Priced for perfection, fair, or cheap? St
 2-3 concrete, observable triggers (numbers, events) that would flip your verdict.
 
 ## Price levels
-Actionable price triggers in the instrument's own trading currency — NOT forecasts. Only state a level you would genuinely want acted on: a "buy below" price at which accumulating is attractive, and/or a "trim above" price at which lightening up makes sense. If you would not gate on a side, write "none". Emit EXACTLY these two lines, each a single bare number (or "none"), nothing else on the line:
-- Buy below: <price or none>
-- Trim above: <price or none>{_sources_section(allow_web)}
+Valuation-anchored, actionable triggers in the instrument's own trading currency — NOT forecasts. First give your fair-value estimate. Then give an optional buy ladder and trim ladder: each tranche is a price level and a size (the fraction of a full position move to act on at that level), so you scale in as the price falls and scale out as it rises. Express each tranche by margin vs fair value (`discount_pct` for buys, `premium_pct` for trims, as decimals — 0.20 = 20%) or by an absolute `price`. Sizes on each side should sum to ~1.0. Use 1–3 tranches per side as the thesis warrants; leave a side's ladder empty (`[]`) if you would not gate it, or set `fair_value` to null if you have no anchor. Emit EXACTLY one fenced JSON block in this shape and nothing else for this section:
+```json
+{{"fair_value": 420, "buy_ladder": [{{"discount_pct": 0.15, "size_pct": 0.5}}, {{"discount_pct": 0.30, "size_pct": 0.5}}], "trim_ladder": [{{"premium_pct": 0.25, "size_pct": 1.0}}]}}
+```{_sources_section(allow_web)}
 
 DATA
 ```json
@@ -662,16 +664,47 @@ def _extract_level(report: str, label: str) -> float | None:
     return val if val > 0 else None
 
 
+def _extract_levels_block(report: str) -> dict | None:
+    """Pull the fenced JSON ladder out of the '## Price levels' section. Bounded
+    to that section (before the trailing DATA payload) so it can't accidentally
+    grab the data snapshot's own ```json block. None if absent or unparseable."""
+    start = re.search(r"##\s*Price\s+levels", report or "", re.IGNORECASE)
+    if not start:
+        return None
+    region = report[start.end():]
+    data_at = re.search(r"\n\s*DATA\b", region)
+    if data_at:
+        region = region[: data_at.start()]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", region, re.DOTALL)
+    if not fence:
+        return None
+    try:
+        data = json.loads(fence.group(1))
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def parse_price_levels(report: str, currency: str = "") -> dict[str, Any]:
-    """Extract the analysis's suggested buy-below / trim-above triggers from the
-    '## Price levels' section (tolerant; works even if the model strays from the
-    exact bullet format). Currency is the instrument's trading currency, carried
-    through so the locked level and price comparisons stay in one unit."""
-    return {
-        "buy_below": _extract_level(report or "", r"buy\s+below"),
-        "trim_above": _extract_level(report or "", r"trim\s+above"),
-        "currency": (currency or "").upper(),
-    }
+    """Extract the analysis's suggested valuation-anchored ladder from the
+    '## Price levels' section. Prefers the fenced JSON block (fair_value +
+    buy/trim ladders); falls back to the legacy two-line 'Buy below / Trim above'
+    format (read as single-tranche ladders) so older reports still parse. Always
+    returns the canonical normalized shape. Currency is the instrument's trading
+    currency, carried through so levels and price comparisons stay in one unit."""
+    block = _extract_levels_block(report or "")
+    if block is not None:
+        return price_levels.normalize_suggested(
+            fair_value=block.get("fair_value"),
+            buy_ladder=block.get("buy_ladder"),
+            trim_ladder=block.get("trim_ladder"),
+            currency=currency,
+        )
+    return price_levels.normalize_suggested(
+        buy_below=_extract_level(report or "", r"buy\s+below"),
+        trim_above=_extract_level(report or "", r"trim\s+above"),
+        currency=currency,
+    )
 
 
 # --------------------------------------------------------------------------- #

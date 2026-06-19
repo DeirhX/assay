@@ -191,6 +191,55 @@ class PriceGate(unittest.TestCase):
         self.assertEqual(row["action"], "buy")  # can't confirm -> leave to the human
         self.assertFalse(row["price_gate"]["price_known"])
 
+    def test_partial_ladder_scales_the_suggested_delta(self):
+        # Two buy tranches at 360 (50%) and 320 (50%). At 340 only the first is
+        # live, so the buy stays a buy but its delta is halved.
+        self.price_levels.lock(
+            "AMD", fair_value=400,
+            buy_ladder=[{"price": 360, "size_pct": 0.5}, {"price": 320, "size_pct": 0.5}],
+            currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 2.0, "suggest_delta_czk": 1000}]}
+        serve._attach_research_overlay(plan, self._holdings("AMD", 340.0))
+        row = plan["rows"][0]
+        gate = row["price_gate"]
+        self.assertEqual(row["action"], "buy")  # partially live, still actionable
+        self.assertTrue(gate["partial"])
+        self.assertAlmostEqual(gate["applied_fraction"], 0.5)
+        self.assertEqual(gate["full_suggest_delta_pct"], 2.0)
+        self.assertEqual(row["suggest_delta_pct"], 1.0)  # scaled by 0.5
+        self.assertEqual(row["suggest_delta_czk"], 500)
+        self.assertEqual(gate["buy_live"], 1)
+        self.assertEqual(gate["buy_total"], 2)
+        self.assertEqual(gate["next_buy"]["price"], 320.0)
+
+    def test_fully_unlocked_ladder_keeps_full_delta(self):
+        self.price_levels.lock(
+            "AMD", fair_value=400,
+            buy_ladder=[{"price": 360, "size_pct": 0.5}, {"price": 320, "size_pct": 0.5}],
+            currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 2.0}]}
+        serve._attach_research_overlay(plan, self._holdings("AMD", 300.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "buy")
+        self.assertFalse(row["price_gate"].get("partial", False))
+        self.assertEqual(row["suggest_delta_pct"], 2.0)  # unscaled
+        self.assertAlmostEqual(row["price_gate"]["applied_fraction"], 1.0)
+
+    def test_ladder_above_all_tranches_waits(self):
+        self.price_levels.lock(
+            "AMD", fair_value=400,
+            buy_ladder=[{"price": 360, "size_pct": 0.5}, {"price": 320, "size_pct": 0.5}],
+            currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 2.0}]}
+        serve._attach_research_overlay(plan, self._holdings("AMD", 380.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "wait")
+        self.assertEqual(row["price_gate"]["blocked_action"], "buy")
+        self.assertEqual(row["price_gate"]["applied_fraction"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

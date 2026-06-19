@@ -200,17 +200,32 @@ export interface DeepRun {
 }
 
 // ---- price levels (GET /api/price-levels, POST lock/clear) ----------------
-// A human-confirmed buy-below / trim-above trigger (instrument currency). Either
-// side may be null. Provenance carried in `source` for audit.
+// A human-confirmed, valuation-anchored ladder (instrument currency). A
+// fair-value anchor plus buy/trim tranche ladders; buy_below/trim_above mirror
+// the outermost tranche of each side for back-compat. A legacy single level
+// reads as a 1-tranche ladder. Provenance carried in `source` for audit.
 export interface PriceLevelSource {
   kind?: string;
   stem?: string;
-  suggested?: { buy_below: number | null; trim_above: number | null };
+  suggested?: unknown;
+}
+
+// One tranche of a ladder: a concrete price (what the gate/orders use), the
+// margin vs fair value that produced it (intent, for staleness detection), and
+// the size fraction it unlocks.
+export interface PriceTranche {
+  price: number;
+  size_pct: number;
+  discount_pct?: number | null;
+  premium_pct?: number | null;
 }
 
 export interface PriceLevel {
   symbol: string;
   currency: string;
+  fair_value?: number | null;
+  buy_ladder?: PriceTranche[];
+  trim_ladder?: PriceTranche[];
   buy_below: number | null;
   trim_above: number | null;
   locked_at?: string;
