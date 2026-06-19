@@ -35,6 +35,10 @@ TARGET_MODEL_JSON = DATA_DIR / "target-model.json"
 # Shared by the server and the analysis-jobs service.
 ANALYSIS_DIR = RESEARCH_DIR / "analysis"
 
+# Cached Perplexity login flag (gitignored). Shared by the server's setup status
+# and the browser-jobs service that refreshes it on every run.
+AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"
+
 # Curated segment definitions (the membership lists) and the generated segment
 # dossiers. Referenced by the server, the deep-run/peer-stats services, and the
 # segment readers, so centralize them.
