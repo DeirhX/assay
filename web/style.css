@@ -1338,6 +1338,34 @@ a.tlink:hover { border-bottom-style: solid; }
 .analysis-prose hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .analysis-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 
+/* Price-level triggers: an editable buy-below/trim-above block under the meta
+   bar. Framed like a "rail" so it reads as an actionable control, not prose. */
+.price-levels {
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0; background: rgba(130,170,255,.05);
+  padding: 12px 14px; margin: 6px 0 16px;
+}
+.pl-head { display: flex; align-items: center; gap: 10px; }
+.pl-title { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
+.pl-locked { font-size: 10px; }
+.pl-intro { margin: 6px 0 10px; }
+.pl-grid { display: flex; flex-wrap: wrap; gap: 16px; }
+.pl-field { display: flex; flex-direction: column; gap: 4px; }
+.pl-label { font-size: 12px; color: var(--muted); }
+.pl-input-row { display: flex; align-items: center; gap: 6px; }
+.pl-ccy { font-size: 12px; color: var(--muted); }
+.pl-input {
+  width: 120px; padding: 6px 8px; font-size: 14px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.pl-suggest { margin: 10px 0 0; }
+.pl-when { margin: 4px 0 0; font-size: 12px; }
+.pl-actions { margin-top: 12px; }
+.pl-msg:empty { display: none; }
+.pl-msg { margin: 8px 0 0; }
+.pl-msg.err { color: var(--bad); }
+
 /* deep research card (single-name Perplexity crawl, on demand) */
 .deepresearch-card { border-color: rgba(180,140,255,.3); }
 .deepresearch-card .dr-sub { font-size: 12px; }

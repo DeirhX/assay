@@ -523,6 +523,147 @@ async function runningAnalysisJob(symbol) {
   }
 }
 
+// Price-level triggers: the analysis suggests buy-below / trim-above prices;
+// the user edits and LOCKS them. Once locked, the level gates the rebalance
+// suggestion (downstream slice) and becomes the limit price on synthesized
+// orders. All in the instrument's trading currency. Editable inline under the
+// analysis so the human confirms every trigger before it can move money.
+function num(v) {
+  return typeof v === "number" && isFinite(v) ? v : null;
+}
+
+function priceLevelInput(seed) {
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.step = "any";
+  inp.min = "0";
+  inp.className = "pl-input";
+  inp.placeholder = "none";
+  if (seed != null) inp.value = String(seed);
+  return inp;
+}
+
+function priceLevelField(label, currency, input) {
+  const wrap = el("label", "pl-field");
+  wrap.appendChild(el("span", "pl-label", esc(label)));
+  const row = el("div", "pl-input-row");
+  if (currency) row.appendChild(el("span", "pl-ccy", esc(currency)));
+  row.appendChild(input);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+function priceLevelsBlock(rec, analysis, initialLocked) {
+  const sym = rec.symbol;
+  const meta = (analysis && analysis.meta) || {};
+  const suggested = meta.price_levels_suggested || {};
+  const currency = (suggested.currency || meta.currency || rec.currency || "").toUpperCase();
+  let locked = initialLocked || null;
+
+  const block = el("div", "price-levels");
+
+  function fmtLvl(v) {
+    return v == null ? "\u2014" : (currency ? currency + " " : "") + v;
+  }
+
+  function render() {
+    block.innerHTML = "";
+    const head = el("div", "pl-head");
+    head.appendChild(el("h3", "pl-title", "Price levels"));
+    if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
+    block.appendChild(head);
+    block.appendChild(el("p", "hint pl-intro",
+      "Human-confirmed triggers in the instrument's trading currency. Once locked, " +
+      "the buy-below price gates accumulation and the trim-above price gates trimming \u2014 " +
+      "each also becomes the limit price on a synthesized order. You confirm every order before it places."));
+
+    const seedBuy = locked ? num(locked.buy_below) : num(suggested.buy_below);
+    const seedTrim = locked ? num(locked.trim_above) : num(suggested.trim_above);
+    const buyIn = priceLevelInput(seedBuy);
+    const trimIn = priceLevelInput(seedTrim);
+    const grid = el("div", "pl-grid");
+    grid.appendChild(priceLevelField("Buy below", currency, buyIn));
+    grid.appendChild(priceLevelField("Trim above", currency, trimIn));
+    block.appendChild(grid);
+
+    if (num(suggested.buy_below) != null || num(suggested.trim_above) != null) {
+      block.appendChild(el("p", "hint pl-suggest",
+        `Analysis suggested \u2014 buy below ${fmtLvl(num(suggested.buy_below))} \u00b7 trim above ${fmtLvl(num(suggested.trim_above))}`));
+    } else {
+      block.appendChild(el("p", "hint pl-suggest muted", "Analysis suggested no price triggers."));
+    }
+    if (locked && locked.locked_at) {
+      block.appendChild(el("p", "muted pl-when", `Locked ${esc(relTime(locked.locked_at))}`));
+    }
+
+    const msg = el("p", "hint pl-msg", "");
+    const actions = el("div", "analysis-actions pl-actions");
+    const lockBtn = el("button", "primary", locked ? "Update lock" : "Lock in");
+    lockBtn.type = "button";
+    lockBtn.addEventListener("click", async () => {
+      const buy = buyIn.value.trim() === "" ? null : Number(buyIn.value);
+      const trim = trimIn.value.trim() === "" ? null : Number(trimIn.value);
+      if (buy == null && trim == null) {
+        msg.className = "hint pl-msg err";
+        msg.textContent = "Set at least one of buy-below / trim-above (or Clear to remove).";
+        return;
+      }
+      if (buy != null && trim != null && buy >= trim) {
+        msg.className = "hint pl-msg err";
+        msg.textContent = "Buy-below must be below trim-above.";
+        return;
+      }
+      lockBtn.disabled = true;
+      msg.className = "hint pl-msg";
+      msg.textContent = "Locking\u2026";
+      try {
+        const res = await api("/api/price-levels/lock", "POST", {
+          symbol: sym,
+          buy_below: buy,
+          trim_above: trim,
+          currency,
+          source: {
+            kind: "ticker_analysis",
+            stem: analysis && analysis.stem,
+            suggested: { buy_below: num(suggested.buy_below), trim_above: num(suggested.trim_above) },
+          },
+        });
+        locked = res.level;
+        render();
+      } catch (e) {
+        lockBtn.disabled = false;
+        msg.className = "hint pl-msg err";
+        msg.textContent = "Lock failed: " + e.message;
+      }
+    });
+    actions.appendChild(lockBtn);
+    if (locked) {
+      const clearBtn = el("button", "ghost", "Clear");
+      clearBtn.type = "button";
+      clearBtn.addEventListener("click", async () => {
+        clearBtn.disabled = true;
+        msg.className = "hint pl-msg";
+        msg.textContent = "Clearing\u2026";
+        try {
+          await api("/api/price-levels/clear", "POST", { symbol: sym });
+          locked = null;
+          render();
+        } catch (e) {
+          clearBtn.disabled = false;
+          msg.className = "hint pl-msg err";
+          msg.textContent = "Clear failed: " + e.message;
+        }
+      });
+      actions.appendChild(clearBtn);
+    }
+    block.appendChild(actions);
+    block.appendChild(msg);
+  }
+
+  render();
+  return block;
+}
+
 // In-depth, on-demand analysis via the local agent CLIs (Claude -> Cursor).
 // The cheap tier: a reasoning pass over the deterministic numbers above, no web
 // crawl. The expensive, web-sourced tier is the Deep Research card below. Shows
@@ -625,6 +766,15 @@ function renderAnalysisCard(rec) {
     linkifyTickers(prose);
     decorateAnalysis(prose);
     decorateSources(prose, rec);
+    // Price-level triggers go right under the meta bar (above the prose) so the
+    // accept/lock affordance is the first thing seen after the verdict.
+    let lockedMap;
+    try {
+      lockedMap = (await api("/api/price-levels")).levels || {};
+    } catch (_e) {
+      lockedMap = {};
+    }
+    body.insertBefore(priceLevelsBlock(rec, a, lockedMap[sym]), prose);
     const actions = el("div", "analysis-actions");
     const re = el("button", "ghost", "&#8635; Regenerate");
     re.type = "button";
