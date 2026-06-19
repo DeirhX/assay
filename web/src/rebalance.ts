@@ -65,31 +65,61 @@ function researchLine(r) {
   return line;
 }
 
-// A locked price trigger on a target row (from the deep-dive). When the price
-// isn't favorable the backend has already downgraded the action to "wait"; this
-// line says what we're waiting for ("buy <= $92, now $100"). When favorable it
-// reads as an armed trigger. Pure annotation — the band still sizes the trade.
+// A locked valuation ladder on a target row (from the deep-dive). The backend
+// has already graded the move: fully blocked rows are downgraded to "wait";
+// partially-triggered rows keep their action but with a scaled-down delta. This
+// line reads out the gate state — what's armed, how many tranches are live, the
+// active fraction, and the next trigger price. Pure annotation; the band sets
+// the target delta and the ladder decides how much of it to act on now.
 function priceGateLine(r) {
   const g = r.price_gate;
   if (!g) return null;
   const ccy = g.currency ? g.currency + " " : "";
-  const fmt = (v) => (v == null ? "?" : ccy + v);
-  const parts = [];
+  const r2 = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v);
+  const fmt = (v) => (v == null ? "?" : ccy + r2(v));
+  const pct = (f) => (f == null ? "" : Math.round(f * 100) + "%");
+
+  // Which side does this row act on? Prefer the action, then what's blocked,
+  // then whichever ladder exists.
+  const focus = (r.action === "trim" || g.blocked_action === "trim") ? "trim"
+    : (r.action === "buy" || g.blocked_action === "buy") ? "buy"
+    : (g.buy_total ? "buy" : (g.trim_total ? "trim" : null));
+
+  const conds = [];
   if (g.buy_below != null) {
     const waiting = g.blocked_action === "buy";
-    parts.push(`<span class="reb-gate-cond ${waiting ? "warn" : "good"}">buy \u2264 ${esc(fmt(g.buy_below))}</span>`);
+    conds.push(`<span class="reb-gate-cond ${waiting ? "warn" : "good"}">buy \u2264 ${esc(fmt(g.buy_below))}</span>`);
   }
   if (g.trim_above != null) {
     const waiting = g.blocked_action === "trim";
-    parts.push(`<span class="reb-gate-cond ${waiting ? "warn" : "good"}">trim \u2265 ${esc(fmt(g.trim_above))}</span>`);
+    conds.push(`<span class="reb-gate-cond ${waiting ? "warn" : "good"}">trim \u2265 ${esc(fmt(g.trim_above))}</span>`);
   }
-  if (!parts.length) return null;
-  const now = g.price_known ? `now ${esc(fmt(g.current))}` : "price unknown";
+  if (!conds.length) return null;
+
   const blocked = !!g.blocked_action;
-  const label = blocked ? "\u23f3 Waiting" : "Trigger";
-  const line = el("div", "reb-gate" + (blocked ? " reb-gate-blocked" : ""),
-    `<span class="reb-gate-label" title="Locked price trigger from the deep dive — gates this trade until the price is favorable">${label}:</span> ` +
-    parts.join(" \u00b7 ") + ` <small class="muted">(${now})</small>`);
+  const partial = !!g.partial;
+  const live = focus === "trim" ? g.trim_live : g.buy_live;
+  const total = focus === "trim" ? g.trim_total : g.buy_total;
+  const next = focus === "trim" ? g.next_trim : g.next_buy;
+  const frac = g.applied_fraction;
+
+  let label = "Armed", cls = " reb-gate-armed";
+  if (blocked) { label = "\u23f3 Waiting"; cls = " reb-gate-blocked"; }
+  else if (partial) { label = "\u25d4 Partial"; cls = " reb-gate-partial"; }
+
+  const bits = [];
+  if (total > 1) bits.push(`tranche ${live} of ${total}`);
+  if (frac != null && frac > 0 && frac < 1) bits.push(`${pct(frac)} sized`);
+  if (next && next.price != null) {
+    const sign = focus === "trim" ? "+" : "\u2212";
+    const dp = next.distance_pct != null ? ` (${sign}${Math.round(next.distance_pct * 100)}%)` : "";
+    bits.push(`next ${esc(fmt(next.price))}${dp}`);
+  }
+  const now = g.price_known ? `now ${esc(fmt(g.current))}` : "price unknown";
+  const detail = bits.length ? ` <small class="muted reb-gate-detail">${bits.join(" \u00b7 ")}</small>` : "";
+  const line = el("div", "reb-gate" + cls,
+    `<span class="reb-gate-label" title="Locked valuation ladder from the deep dive — grades this trade by how much of the ladder the price unlocks">${label}:</span> ` +
+    conds.join(" \u00b7 ") + detail + ` <small class="muted">(${now})</small>`);
   return line;
 }
 

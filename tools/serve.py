@@ -610,9 +610,16 @@ def _gate_current_price(name: str, provider_sym: str, price_map: dict[str, dict]
 
 def _apply_price_gate(row: dict, provider_sym: str, price_map: dict[str, dict]) -> None:
     """Attach a ``price_gate`` to a target row from its locked level (if any) and
-    the current price, and downgrade the suggested ``action`` to ``"wait"`` when
-    the level blocks that side. The weight band still decides size; this only
-    decides whether now is the price to act. No level -> nothing changes."""
+    the current price, and GRADE the suggested move by how much of the ladder the
+    price currently unlocks:
+
+    * fraction 0  -> nothing triggered yet: downgrade the action to ``"wait"``.
+    * 0 < f < 1   -> some tranches live: keep the action but scale the band's
+      suggested delta down to the live fraction (``full_*`` keeps the original).
+    * fraction 1  -> fully unlocked: act on the whole band-implied delta.
+
+    The weight band still sets the *target* delta; the ladder decides how much of
+    it to act on now, and at what price. No level -> nothing changes."""
     level = price_levels.get(provider_sym)
     if not level:
         return
@@ -621,12 +628,21 @@ def _apply_price_gate(row: dict, provider_sym: str, price_map: dict[str, dict]) 
     if not gate:
         return
     action = row.get("action")
-    if action == "buy" and gate["blocks_buy"]:
-        gate["blocked_action"] = "buy"
-        row["action"] = "wait"
-    elif action == "trim" and gate["blocks_trim"]:
-        gate["blocked_action"] = "trim"
-        row["action"] = "wait"
+    side = "buy" if action == "buy" else ("trim" if action == "trim" else None)
+    total = gate["buy_total"] if side == "buy" else (gate["trim_total"] if side == "trim" else 0)
+    if side and gate["price_known"] and total:
+        fraction = gate["buy_fraction"] if side == "buy" else gate["trim_fraction"]
+        gate["applied_fraction"] = fraction
+        if fraction <= 0:
+            gate["blocked_action"] = side
+            row["action"] = "wait"
+        elif fraction < 1.0:
+            gate["partial"] = True
+            for key in ("suggest_delta_pct", "suggest_delta_czk"):
+                val = row.get(key)
+                if isinstance(val, (int, float)):
+                    gate["full_" + key] = val
+                    row[key] = round(val * fraction, 2) if key.endswith("pct") else round(val * fraction)
     row["price_gate"] = gate
 
 
@@ -1772,6 +1788,9 @@ class Handler(BaseHTTPRequestHandler):
         sym = _resolve_symbol(_safe_symbol(str(body.get("symbol") or "")))
         entry = price_levels.lock(
             sym,
+            fair_value=body.get("fair_value"),
+            buy_ladder=body.get("buy_ladder"),
+            trim_ladder=body.get("trim_ladder"),
             buy_below=body.get("buy_below"),
             trim_above=body.get("trim_above"),
             currency=str(body.get("currency") or ""),
