@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { ensureTickerSet } from "./analyses";
 import { $, api, applyPrivacyMode, state } from "./core";
 import { clearErrors, recordError, refreshLoginStatus, renderErrorCenter, toggleErrorPanel } from "./errors";

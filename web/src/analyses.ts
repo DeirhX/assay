@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
 import { pollDeepJob } from "./errors";
@@ -85,7 +84,7 @@ const _EXCH_TICKER =
   /\(\s*(?:NYSE(?:\s+American)?|NASDAQ|AMEX|CBOE|OTCMKTS|OTC|TSXV?|LSE|ASX|HKEX|EURONEXT)[:\s]+([A-Z]{1,5}(?:\.[A-Z]{1,2})?)\s*\)/gi;
 
 function collectReportTickers(root) {
-  const found = new Set();
+  const found = new Set<string>();
   if (!root) return found;
   const text = root.textContent || "";
   const harvest = (re, gate) => {
@@ -214,7 +213,7 @@ function slugify(s) {
 // returns null when there are too few headings to be worth the chrome.
 function buildReportToc(body) {
   if (!body) return null;
-  const heads = Array.from(body.querySelectorAll("h2, h3, h4"))
+  const heads = (Array.from(body.querySelectorAll("h2, h3, h4")) as HTMLElement[])
     .filter((h) => (h.textContent || "").trim());
   if (heads.length < 3) return null;
   const nav = el("nav", "report-toc");
@@ -298,7 +297,7 @@ function runStateBadges(r) {
 }
 
 function markActiveAnalysis(stem) {
-  document.querySelectorAll("#analyses-list .analysis-row").forEach((row) =>
+  document.querySelectorAll<HTMLElement>("#analyses-list .analysis-row").forEach((row) =>
     row.classList.toggle("active", row.dataset.stem === stem));
 }
 
@@ -316,7 +315,7 @@ function synthBox(title, note) {
 // Jump into the Pipeline wizard at step 1, optionally pre-selecting a segment.
 // The pipeline (a gated multi-step flow) stays the single home for running
 // research; the Analyses pane is just the launchpad into it.
-function startPipeline(segment) {
+function startPipeline(segment?) {
   const seg = cleanSlug(segment || "");
   state.pipeStep = 1;
   state.segMode = "existing";
@@ -429,7 +428,7 @@ async function loadAnalyses() {
     });
   };
 
-  const runRow = (r, cls) => {
+  const runRow = (r, cls?) => {
     const row = el("button", "analysis-row" + (cls ? " " + cls : ""));
     row.dataset.stem = r.stem;
     const isSub = cls === "sub-run";
@@ -475,13 +474,13 @@ async function loadAnalyses() {
         `<div class="analysis-row-meta">${s.count} name${s.count === 1 ? "" : "s"} · ${runCount}${s.status === "draft" ? " · draft" : ""}</div>` +
         `<div class="analysis-row-badges">${cover}${moreBadges}</div>`;
       row.addEventListener("click", () => { if (latest) loadAnalysis(latest.stem); else startPipeline(s.name); });
-      const runBtn = row.querySelector(".seg-run");
+      const runBtn = row.querySelector<HTMLElement>(".seg-run");
       runBtn.addEventListener("click", (ev) => { ev.stopPropagation(); startPipeline(s.name); });
       runBtn.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); startPipeline(s.name); }
       });
       if (latest) {
-        const segDelBtn = row.querySelector(".seg-del");
+        const segDelBtn = row.querySelector<HTMLElement>(".seg-del");
         segDelBtn.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(latest.stem); });
         segDelBtn.addEventListener("keydown", (ev) => {
           if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); deleteAnalysis(latest.stem); }

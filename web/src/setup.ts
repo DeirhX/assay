@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, el, esc } from "./core";
 import { pollDeepJob } from "./errors";
 
@@ -61,7 +60,7 @@ function comboMenuHtml(id, filter) {
 // own menu — focus/caret shows the full list, typing filters it. Options are
 // read from _models lazily, so a slow Cursor list still populates once it lands.
 function wireModelCombo(id) {
-  const input = document.getElementById(`setup-${id}-model`);
+  const input = document.getElementById(`setup-${id}-model`) as HTMLInputElement | null;
   const menu = document.getElementById(`setup-combo-${id}`);
   if (!input || !menu || input.dataset.comboWired) return;
   input.dataset.comboWired = "1";
@@ -89,7 +88,7 @@ function wireModelCombo(id) {
   input.addEventListener("blur", () => setTimeout(close, 120));
   input.addEventListener("keydown", (e) => {
     if (e.key === "Escape") return close();
-    const items = [...menu.querySelectorAll(".setup-combo-item")];
+    const items = [...menu.querySelectorAll<HTMLElement>(".setup-combo-item")];
     if (menu.hidden || !items.length) return;
     const idx = items.findIndex((it) => it.classList.contains("active"));
     if (e.key === "ArrowDown") {
@@ -107,7 +106,7 @@ function wireModelCombo(id) {
 
   // mousedown (not click) so selecting fires before the input's blur closes it.
   menu.addEventListener("mousedown", (e) => {
-    const it = e.target.closest(".setup-combo-item");
+    const it = (e.target as HTMLElement).closest<HTMLElement>(".setup-combo-item");
     if (!it) return;
     e.preventDefault();
     input.value = it.dataset.val;
@@ -356,7 +355,7 @@ function errLogEntryHtml(e) {
 // Operational error log: real incidents only (backend fallbacks, unhandled
 // server errors). Lives at the foot of Setup, collapsed unless it has content.
 async function renderErrorLog(open = false) {
-  const card = document.getElementById("setup-errlog");
+  const card = document.getElementById("setup-errlog") as HTMLDetailsElement | null;
   if (!card) return;
   let entries;
   try {
@@ -551,12 +550,12 @@ function readLlmConfig() {
   return {
     providers: LLM_IDS.map((id) => ({
       id,
-      enabled: $(`#setup-${id}-enabled`).checked,
-      model: $(`#setup-${id}-model`).value.trim(),
-      extra_args: $(`#setup-${id}-extra`).value.trim().split(/\s+/).filter(Boolean),
+      enabled: $<HTMLInputElement>(`#setup-${id}-enabled`).checked,
+      model: $<HTMLInputElement>(`#setup-${id}-model`).value.trim(),
+      extra_args: $<HTMLInputElement>(`#setup-${id}-extra`).value.trim().split(/\s+/).filter(Boolean),
     })),
-    timeout_sec: Number($("#setup-timeout").value || 300),
-    allow_web: $("#setup-web").checked,
+    timeout_sec: Number($<HTMLInputElement>("#setup-timeout").value || 300),
+    allow_web: $<HTMLInputElement>("#setup-web").checked,
   };
 }
 
@@ -630,9 +629,9 @@ async function runSmokeChecks() {
 
 async function saveIbkr() {
   const status = $("#setup-ibkr-status");
-  const token = $("#setup-ibkr-token").value.trim();
-  const query_id = $("#setup-ibkr-query").value.trim();
-  const history_query_id = $("#setup-ibkr-history-query").value.trim();
+  const token = $<HTMLInputElement>("#setup-ibkr-token").value.trim();
+  const query_id = $<HTMLInputElement>("#setup-ibkr-query").value.trim();
+  const history_query_id = $<HTMLInputElement>("#setup-ibkr-history-query").value.trim();
   if (!token && !query_id && !history_query_id) {
     status.classList.add("err");
     status.textContent = "Enter a Query ID and/or token.";
@@ -651,7 +650,7 @@ async function saveIbkr() {
 }
 
 async function syncIbkr() {
-  const btn = $("#setup-sync-ibkr");
+  const btn = $<HTMLButtonElement>("#setup-sync-ibkr");
   const status = $("#setup-ibkr-sync-status");
   if (!btn || btn.disabled) return;
   status.classList.remove("err");
@@ -691,11 +690,11 @@ function wireSetup() {
   _wired = true;
   $("#setup-refresh").addEventListener("click", () => loadSetup());
   $("#setup-result").addEventListener("click", (e) => {
-    SETUP_ACTIONS[e.target?.id]?.();
+    SETUP_ACTIONS[(e.target as HTMLElement)?.id]?.();
   });
   // Dim a provider card live when its Enabled toggle flips.
   $("#setup-result").addEventListener("change", (e) => {
-    const t = e.target;
+    const t = e.target as HTMLInputElement;
     if (t && /^setup-(claude|cursor)-enabled$/.test(t.id || "")) {
       t.closest(".setup-provider")?.classList.toggle("disabled", !t.checked);
     }

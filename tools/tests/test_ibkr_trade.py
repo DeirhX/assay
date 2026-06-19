@@ -184,6 +184,20 @@ class LockedLimitLookup(unittest.TestCase):
             self.assertEqual(trade_service._locked_limit("AMD", "SELL"), 145.0)
             self.assertIsNone(trade_service._locked_limit("ZZZ", "BUY"))
 
+    def test_ladder_uses_outermost_tranche(self):
+        # A multi-tranche ladder resolves the BUY limit to the highest (first to
+        # trigger) buy price and the SELL limit to the lowest trim price.
+        import price_levels
+        level = {
+            "fair_value": 400.0,
+            "buy_ladder": [{"price": 360.0, "size_pct": 0.5}, {"price": 320.0, "size_pct": 0.5}],
+            "trim_ladder": [{"price": 500.0, "size_pct": 0.5}, {"price": 600.0, "size_pct": 0.5}],
+        }
+        with mock.patch.object(trade_service, "provider_symbol_for", lambda s: s), \
+                mock.patch.object(price_levels, "get", lambda s: level if s == "AVGO" else None):
+            self.assertEqual(trade_service._locked_limit("AVGO", "BUY"), 360.0)
+            self.assertEqual(trade_service._locked_limit("AVGO", "SELL"), 500.0)
+
 
 class ReplyLoop(unittest.TestCase):
     def test_confirms_prompts_until_accepted(self):

@@ -3,9 +3,9 @@ console propose a real ticker universe for a brand-new theme you don't hold
 (e.g. "space exploration") instead of only keyword-matching held names.
 
 Covers: the tolerant JSON extractor, ticker_analysis.draft_segment_members
-(with a stubbed backend), serve._merge_draft_members dedupe/validation, and the
-serve._run_segment_draft_job state machine across the LLM-ok, LLM-failed, and
-no-CLI paths.
+(with a stubbed backend), segments_service.merge_draft_members dedupe/validation,
+and the segments_service.run_draft_job state machine across the LLM-ok,
+LLM-failed, and no-CLI paths.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from unittest import mock
 
 import _support  # noqa: F401
 import jobs
-import serve
+import segments_service
 import ticker_analysis as ta
 
 _GOOD_JSON = (
@@ -94,7 +94,7 @@ class MergeDraftMembers(unittest.TestCase):
         baseline = [{"symbol": "NVDA", "sleeve": "compute", "rationale": "held", "confidence": "high"}]
         extra = [{"symbol": "nvda", "sleeve": "duplicate"},
                  {"symbol": "RKLB", "sleeve": "launch", "rationale": "rockets", "confidence": "medium"}]
-        out = serve._merge_draft_members(baseline, extra)
+        out = segments_service.merge_draft_members(baseline, extra)
         self.assertEqual([m["symbol"] for m in out], ["NVDA", "RKLB"])
         # Baseline entry kept its own sleeve, not the duplicate's.
         self.assertEqual(out[0]["sleeve"], "compute")
@@ -102,7 +102,7 @@ class MergeDraftMembers(unittest.TestCase):
     def test_skips_invalid_and_non_dict(self):
         extra = [{"symbol": ""}, {"symbol": "(private)"}, "not-a-dict",
                  {"symbol": "LMT", "sleeve": "Defense-Prime"}]
-        out = serve._merge_draft_members([], extra)
+        out = segments_service.merge_draft_members([], extra)
         self.assertEqual([m["symbol"] for m in out], ["LMT"])
         # Sleeve is normalized to a lowercase slug.
         self.assertEqual(out[0]["sleeve"], "defense-prime")
@@ -111,16 +111,16 @@ class MergeDraftMembers(unittest.TestCase):
 class SegmentDraftJob(unittest.TestCase):
     def _run(self, query="space exploration"):
         job = jobs.new_job("segment_draft", query=query)
-        serve._run_segment_draft_job(job["id"], query)
+        segments_service.run_draft_job(job["id"], query)
         return jobs.get_public(job["id"])
 
     def test_llm_success_merges_members(self):
         llm = {"ok": True, "members": [{"symbol": "RKLB", "sleeve": "launch"}],
                "title": "Space Exploration", "comment": "Launch + satellites.",
                "backend_label": "Claude (claude)"}
-        with mock.patch.object(serve.ticker_analysis, "available_backends",
+        with mock.patch.object(segments_service.ticker_analysis, "available_backends",
                                return_value={"claude": True, "cursor": False}), \
-             mock.patch.object(serve.ticker_analysis, "draft_segment_members",
+             mock.patch.object(segments_service.ticker_analysis, "draft_segment_members",
                                return_value=llm):
             pub = self._run()
         self.assertEqual(pub["state"], "done")
@@ -131,7 +131,7 @@ class SegmentDraftJob(unittest.TestCase):
         self.assertFalse(res["warnings"])  # clean run, nothing to warn about
 
     def test_no_cli_warns_and_falls_back(self):
-        with mock.patch.object(serve.ticker_analysis, "available_backends",
+        with mock.patch.object(segments_service.ticker_analysis, "available_backends",
                                return_value={"claude": False, "cursor": False}):
             pub = self._run()
         self.assertEqual(pub["state"], "done")
@@ -144,9 +144,9 @@ class SegmentDraftJob(unittest.TestCase):
         self.assertIn("space exploration", res["llm_prompt"].lower())
 
     def test_llm_failure_warns_but_completes(self):
-        with mock.patch.object(serve.ticker_analysis, "available_backends",
+        with mock.patch.object(segments_service.ticker_analysis, "available_backends",
                                return_value={"claude": True, "cursor": False}), \
-             mock.patch.object(serve.ticker_analysis, "draft_segment_members",
+             mock.patch.object(segments_service.ticker_analysis, "draft_segment_members",
                                return_value={"ok": False, "error": "boom"}):
             pub = self._run()
         self.assertEqual(pub["state"], "done")

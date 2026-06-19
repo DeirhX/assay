@@ -2,6 +2,10 @@
 // (defining $, el, api, ...) before any other module body runs, otherwise the
 // import cycle would hit it mid-init (TDZ on `$`). The error center registers
 // its sink here at boot instead of core importing it.
+//
+// `import type` is erased at build time, so re-exporting the API DTOs from
+// ./api-types keeps core a runtime leaf while giving one source of truth.
+import type { PriceLevel } from "./api-types";
 
 // Optional numeric inputs from JSON (often null/undefined for missing data).
 type Num = number | null | undefined;
@@ -30,6 +34,9 @@ interface AppState {
   currentAnalysis: any;
   tickerSet: Set<string>;
   stagedBasket: Array<{ symbol: string; delta_czk: number }>;
+  // Set lazily by views; absent in the initial literal.
+  pipePreselect?: string | null;
+  _autoBuilding?: boolean;
 }
 
 const state: AppState = {
@@ -179,18 +186,6 @@ function applyPrivacyMode(on: boolean): void {
 // Errors carry ad-hoc fields the rest of the app reads (status for HTTP code,
 // _recorded so the global handler doesn't double-count what api() already logged).
 type AppError = Error & { _recorded?: unknown; status?: number };
-
-// A human-confirmed price trigger (instrument currency), as returned by
-// /api/price-levels and the lock endpoint. Either side may be null.
-interface PriceLevel {
-  symbol: string;
-  currency: string;
-  buy_below: number | null;
-  trim_above: number | null;
-  locked_at?: string;
-  status?: string;
-  source?: { kind?: string; stem?: string; suggested?: { buy_below: number | null; trim_above: number | null } };
-}
 
 // Generic so typed call sites can pin a response shape from ./api-types, e.g.
 // `await api<HoldingsPayload>("/api/holdings")`. Defaults to any, so the many

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { loadAnalyses, startPipeline } from "./analyses";
 import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
@@ -108,7 +107,7 @@ function wireTickerSearch(input) {
     openTicker(sym);
   };
   const submit = () => {
-    const active = menu.hidden ? null : menu.querySelector(".topsearch-item.active");
+    const active = menu.hidden ? null : menu.querySelector<HTMLElement>(".topsearch-item.active");
     choose(active ? active.dataset.sym : input.value);
   };
 
@@ -126,7 +125,7 @@ function wireTickerSearch(input) {
   });
   // mousedown (not click) so the pick lands before the input's blur closes us.
   menu.addEventListener("mousedown", (e) => {
-    const it = e.target.closest(".topsearch-item");
+    const it = (e.target as HTMLElement).closest<HTMLElement>(".topsearch-item");
     if (!it) return;
     e.preventDefault();
     choose(it.dataset.sym);
@@ -233,11 +232,11 @@ function pushNav(partial, { replace = false } = {}) {
 }
 
 function navForView(view) {
-  const nav = { view };
-  if (view === "deepdive") nav.ticker = cleanSymbol($("#ticker-input").value);
-  if (view === "segment") nav.segment = cleanSlug($("#segment-select").value);
+  const nav: { view: string; ticker?: string; segment?: string; run?: string } = { view };
+  if (view === "deepdive") nav.ticker = cleanSymbol($<HTMLInputElement>("#ticker-input").value);
+  if (view === "segment") nav.segment = cleanSlug($<HTMLSelectElement>("#segment-select").value);
   if (view === "pipeline") {
-    nav.segment = cleanSlug($("#pipe-segment-select").value || $("#pipe-slug").value);
+    nav.segment = cleanSlug($<HTMLSelectElement>("#pipe-segment-select").value || $<HTMLInputElement>("#pipe-slug").value);
     if (state.currentDeepRun) nav.run = state.currentDeepRun;
   }
   if (view === "analyses" && state.currentAnalysis) nav.run = state.currentAnalysis;
@@ -253,19 +252,19 @@ function updateChrome(active) {
   // returns to Reports rather than remembering pipeline as the last view.
   if (lastViewByGroup[group]) lastViewByGroup[group] = (group === "research") ? "analyses" : active;
 
-  document.querySelectorAll(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
-  document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  document.querySelectorAll<HTMLElement>(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
+  document.querySelectorAll<HTMLElement>(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
 
   // The sub-tab bar only exists for groups that fan out (research, portfolio).
   const subbar = $("#subbar");
   const groupHasSubtabs = group === "portfolio";
   if (subbar) subbar.hidden = !groupHasSubtabs;
-  document.querySelectorAll(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
+  document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
-  document.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
+  document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
 
   // Positions (holdings + history) share a Now / Over-time toggle in-content.
-  document.querySelectorAll(".pos-toggle button").forEach((b) => {
+  document.querySelectorAll<HTMLElement>(".pos-toggle button").forEach((b) => {
     const isNow = b.dataset.pos === "now";
     b.classList.toggle("active", (isNow && active === "holdings") || (!isNow && active === "history"));
   });
@@ -291,17 +290,17 @@ function setActiveView(view) {
 
 function setSegmentControls(segment) {
   if (!segment) return;
-  const seg = $("#segment-select");
-  const pipe = $("#pipe-segment-select");
+  const seg = $<HTMLSelectElement>("#segment-select");
+  const pipe = $<HTMLSelectElement>("#pipe-segment-select");
   if (seg && Array.from(seg.options).some((o) => o.value === segment)) seg.value = segment;
   if (pipe && Array.from(pipe.options).some((o) => o.value === segment)) pipe.value = segment;
-  const slug = $("#pipe-slug");
+  const slug = $<HTMLInputElement>("#pipe-slug");
   if (slug && !slug.value) slug.value = segment;
 }
 
 async function restoreNav(nav) {
   const active = setActiveView(nav.view);
-  if (nav.ticker) $("#ticker-input").value = nav.ticker;
+  if (nav.ticker) $<HTMLInputElement>("#ticker-input").value = nav.ticker;
   if (nav.segment || nav.run || active === "segment" || active === "pipeline") {
     await loadSegmentList();
     setSegmentControls(nav.segment);
@@ -318,7 +317,7 @@ async function restoreNav(nav) {
   } else if (active === "deepdive") {
     await renderViewedTickers();
   }
-  if (active === "deepdive") $("#ticker-input").focus();
+  if (active === "deepdive") $<HTMLInputElement>("#ticker-input").focus();
 }
 
 // ---- tabs / app shell wiring ----------------------------------------------
@@ -334,7 +333,7 @@ function maybeShowSelChip() {
   if (!/^[A-Za-z][A-Za-z.-]{0,6}$/.test(raw)) return hideSelChip();  // ticker-shaped only
   const node = sel.anchorNode;
   const host = node && (node.nodeType === 3 ? node.parentElement : node);
-  if (!host || !host.closest(".report-doc-body, .biz-summary, .prose")) return hideSelChip();
+  if (!host || !(host as Element).closest(".report-doc-body, .biz-summary, .prose")) return hideSelChip();
   const rect = sel.getRangeAt(0).getBoundingClientRect();
   if (!rect || (!rect.width && !rect.height)) return hideSelChip();
   if (!_selChip) {
@@ -361,13 +360,13 @@ function initShell() {
   };
 
   // Direct view targets: the settings gear (.tab) and the secondary sub-tabs.
-  document.querySelectorAll(".tab, .subtab").forEach((btn) => {
+  document.querySelectorAll<HTMLElement>(".tab, .subtab").forEach((btn) => {
     btn.addEventListener("click", () => goToView(btn.dataset.view));
   });
 
   // Top-level group headers jump to wherever you last were in that group (or its
   // default on first visit), giving the three-item nav some memory.
-  document.querySelectorAll(".group").forEach((btn) => {
+  document.querySelectorAll<HTMLElement>(".group").forEach((btn) => {
     btn.addEventListener("click", () => {
       const group = btn.dataset.group;
       goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || "deepdive");
@@ -384,7 +383,8 @@ function initShell() {
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.
   document.addEventListener("click", (e) => {
-    const b = e.target.closest ? e.target.closest(".pos-toggle button") : null;
+    const tgt = e.target as HTMLElement;
+    const b = tgt.closest ? tgt.closest<HTMLElement>(".pos-toggle button") : null;
     if (!b) return;
     goToView(b.dataset.pos === "over" ? "history" : "holdings");
   });
@@ -404,7 +404,8 @@ function initShell() {
   // Ticker links inside rendered reports / summaries are SPA-internal: intercept
   // and route to the deep-dive instead of a full navigation.
   document.addEventListener("click", (e) => {
-    const a = e.target.closest ? e.target.closest("a.tlink") : null;
+    const tgt = e.target as HTMLElement;
+    const a = tgt.closest ? tgt.closest<HTMLElement>("a.tlink") : null;
     if (!a) return;
     e.preventDefault();
     if (a.dataset.ticker) openTicker(a.dataset.ticker);
@@ -414,7 +415,7 @@ function initShell() {
 
   // Publish the (variable) sticky topbar height as --topbar-h so sticky elements
   // below it (e.g. the deep-dive back bar) can pin flush without magic numbers.
-  const topbar = document.querySelector("header.topbar");
+  const topbar = document.querySelector<HTMLElement>("header.topbar");
   if (topbar) {
     const syncTopbarH = () =>
       document.documentElement.style.setProperty("--topbar-h", topbar.offsetHeight + "px");
@@ -426,11 +427,12 @@ function initShell() {
   document.addEventListener("scroll", hideSelChip, true);
   window.addEventListener("resize", hideSelChip);
   document.addEventListener("mousedown", (e) => {
-    if (_selChip && !_selChip.hidden && !(e.target.closest && e.target.closest(".sel-analyze"))) hideSelChip();
+    const tgt = e.target as HTMLElement;
+    if (_selChip && !_selChip.hidden && !(tgt.closest && tgt.closest(".sel-analyze"))) hideSelChip();
   });
 
-  $("#hold-sync").addEventListener("click", async () => {
-    const btn = $("#hold-sync");
+  $<HTMLButtonElement>("#hold-sync").addEventListener("click", async () => {
+    const btn = $<HTMLButtonElement>("#hold-sync");
     const status = $("#hold-status");
     if (btn.disabled) return;
     const prev = btn.textContent;
@@ -455,7 +457,7 @@ function initShell() {
     }
   });
 
-  const regen = $("#plan-regen");
+  const regen = $<HTMLButtonElement>("#plan-regen");
   if (regen) {
     regen.addEventListener("click", async () => {
       const status = $("#hold-status");

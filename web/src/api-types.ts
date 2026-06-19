@@ -47,12 +47,28 @@ export interface HoldingsPayload {
 
 // ---- rebalance plan (GET /api/rebalance) ----------------------------------
 export type BandStatus = "BELOW" | "IN" | "ABOVE";
-export type PlanAction = "trim" | "buy" | "review" | null;
+// "wait" is set by the research overlay when a locked price trigger blocks the
+// band's suggested side (see PriceGate / serve._apply_price_gate).
+export type PlanAction = "trim" | "buy" | "review" | "wait" | null;
 
 export interface PlanMember {
   symbol: string;
   current_pct: number;
   current_czk: number | null;
+}
+
+// Per-row price-trigger evaluation attached by the rebalance overlay when the
+// row's symbol has a locked level. `blocked_action` is set (and PlanRow.action
+// downgraded to "wait") when the current price isn't favorable for that side.
+export interface PriceGate {
+  buy_below: number | null;
+  trim_above: number | null;
+  current: number | null;
+  currency: string;
+  price_known: boolean;
+  blocks_buy: boolean;
+  blocks_trim: boolean;
+  blocked_action?: "buy" | "trim";
 }
 
 export interface PlanRow {
@@ -74,6 +90,9 @@ export interface PlanRow {
   note: string | null;
   members: PlanMember[] | null;
   interactive: boolean;
+  // Decision-support overlays (added in-place by serve._attach_research_overlay);
+  // absent on rows with no dossier / no locked level.
+  price_gate?: PriceGate | null;
 }
 
 export interface RebalancePlan {
@@ -178,6 +197,45 @@ export interface DeepRun {
   has_proposal: boolean;
   change_count: number;
   blocked_symbols: string[];
+}
+
+// ---- price levels (GET /api/price-levels, POST lock/clear) ----------------
+// A human-confirmed, valuation-anchored ladder (instrument currency). A
+// fair-value anchor plus buy/trim tranche ladders; buy_below/trim_above mirror
+// the outermost tranche of each side for back-compat. A legacy single level
+// reads as a 1-tranche ladder. Provenance carried in `source` for audit.
+export interface PriceLevelSource {
+  kind?: string;
+  stem?: string;
+  suggested?: unknown;
+}
+
+// One tranche of a ladder: a concrete price (what the gate/orders use), the
+// margin vs fair value that produced it (intent, for staleness detection), and
+// the size fraction it unlocks.
+export interface PriceTranche {
+  price: number;
+  size_pct: number;
+  discount_pct?: number | null;
+  premium_pct?: number | null;
+}
+
+export interface PriceLevel {
+  symbol: string;
+  currency: string;
+  fair_value?: number | null;
+  buy_ladder?: PriceTranche[];
+  trim_ladder?: PriceTranche[];
+  buy_below: number | null;
+  trim_above: number | null;
+  locked_at?: string;
+  status?: string;
+  source?: PriceLevelSource;
+}
+
+// GET /api/price-levels -> all locked levels keyed by provider symbol.
+export interface PriceLevelsResponse {
+  levels: Record<string, PriceLevel>;
 }
 
 // ---- error envelope (any non-2xx) -----------------------------------------
