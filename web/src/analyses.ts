@@ -262,6 +262,41 @@ function analysisBadges(r) {
   return parts.join(" ");
 }
 
+// "2026-06-18" -> "Jun 18, 2026". Falls back to the raw string on a bad/empty date.
+function fmtRunDate(d) {
+  if (!d) return "";
+  const dt = new Date(d + "T00:00:00");
+  return isNaN(dt.getTime()) ? d : dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+// A run is either a single-ticker dive or a segment study; a small leading glyph
+// lets you tell the two apart without reading the title.
+const KIND_ICON = {
+  ticker: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-5 4 4 7-8"/><path d="M16 8h5v5"/></svg>',
+  segment: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 14l9 5 9-5"/></svg>',
+};
+function kindIcon(r) {
+  const k = r.kind === "ticker" ? "ticker" : "segment";
+  const title = k === "ticker" ? "Single-ticker deep research" : "Segment deep research";
+  return `<span class="ar-kind ar-kind--${k}" title="${esc(title)}">${KIND_ICON[k]}</span>`;
+}
+
+// One coherent state read per run: a lifecycle stage chip (draft -> report ready
+// -> reviewed) plus optional proposal / blocked chips so the row's status is
+// legible at a glance, including for older nested re-runs.
+function runStateBadges(r) {
+  const parts = [];
+  const hasReport = !!(r.files && r.files.report);
+  if (r.has_review || r.change_count) parts.push('<span class="abadge ok">reviewed</span>');
+  else if (hasReport) parts.push('<span class="abadge">report ready</span>');
+  else parts.push('<span class="abadge muted">draft</span>');
+  if (r.change_count)
+    parts.push(`<span class="abadge accent">${r.change_count} change${r.change_count === 1 ? "" : "s"} proposed</span>`);
+  if (r.blocked_symbols && r.blocked_symbols.length)
+    parts.push(`<span class="abadge bad">blocked: ${esc(r.blocked_symbols.join(", "))}</span>`);
+  return parts.join(" ");
+}
+
 function markActiveAnalysis(stem) {
   document.querySelectorAll("#analyses-list .analysis-row").forEach((row) =>
     row.classList.toggle("active", row.dataset.stem === stem));
@@ -397,12 +432,21 @@ async function loadAnalyses() {
   const runRow = (r, cls) => {
     const row = el("button", "analysis-row" + (cls ? " " + cls : ""));
     row.dataset.stem = r.stem;
+    const isSub = cls === "sub-run";
     const age = relAge(r.generated_at);
-    const meta = `${esc(r.date || "")}${age ? " · " + esc(age) : ""} · ${r.source_count || 0} sources`;
-    const badges = analysisBadges(r) ? `<div class="analysis-row-badges">${analysisBadges(r)}</div>` : "";
-    row.innerHTML = cls === "sub-run"
-      ? `${delHtml}<div class="analysis-row-meta">${meta}</div>${badges}`
-      : `${delHtml}<div class="analysis-row-title">${esc(r.title || r.stem)}</div><div class="analysis-row-meta">${meta}</div>${badges}`;
+    const dateLabel = fmtRunDate(r.date) || r.date || "";
+    // A sub-run is an older run of the same segment, so its identity is its date;
+    // give it a real title ("Re-run · Jun 18, 2026") instead of a headerless meta line.
+    const title = isSub ? `Re-run · ${esc(dateLabel)}` : esc(r.title || r.stem);
+    const metaBits = [];
+    if (!isSub && dateLabel) metaBits.push(esc(dateLabel));
+    if (age) metaBits.push(esc(age));
+    metaBits.push(`${r.source_count || 0} source${r.source_count === 1 ? "" : "s"}`);
+    row.innerHTML =
+      `${delHtml}` +
+      `<div class="analysis-row-title">${kindIcon(r)}<span class="ar-title-text">${title}</span></div>` +
+      `<div class="analysis-row-meta">${metaBits.join(" · ")}</div>` +
+      `<div class="analysis-row-badges">${runStateBadges(r)}</div>`;
     row.addEventListener("click", () => loadAnalysis(r.stem));
     wireDelete(row, r.stem);
     return row;

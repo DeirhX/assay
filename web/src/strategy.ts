@@ -394,6 +394,15 @@ const TONE = {
   avoid: "neg", sell: "neg", exit: "neg",
 };
 const toneOf = (token) => TONE[token] || TONE[(token || "").replace("_target", "")] || "neutral";
+// Above its band => overweight (trim side, amber); below => underweight (buy side, green).
+const statusTone = (s) => {
+  const t = (s || "").toLowerCase();
+  if (t.includes("above")) return "caution";
+  if (t.includes("below")) return "pos";
+  return "neutral";
+};
+// Positive drift = heavy (trim side); negative = light (buy side). Same colour story.
+const driftTone = (d) => (typeof d === "number" && d > 0 ? "caution" : typeof d === "number" && d < 0 ? "pos" : "neutral");
 const bandStr = (t) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
 // Render a symbol as a deep-dive link. The global a.tlink click handler in shell
 // intercepts it and calls openTicker (which live-pulls on a miss); the href is a
@@ -597,15 +606,16 @@ function previewBlock(preview, { final = false } = {}) {
       // so the same name showing up twice in the table is explained, not magic.
       const dup = (plan.rows || []).some(
         (o) => o.kind === "sleeve" && (o.members || []).some((m) => m.symbol === r.name));
-      return `<strong>${esc(r.name || r.key)}</strong>` +
+      return symLink(r.name || r.key) +
         (dup ? ` <span class="strat-tag in-sleeve" title="Also part of a sleeve below — the sleeve's amount is separate from this one">in sleeve</span>` : "");
     }
     const members = r.members || [];
     const mem = members.map((m) => {
       const dup = targetNames.has(m.symbol);
-      return `<span class="strat-mem${dup ? " dup" : ""}"` +
-        (dup ? ` title="${esc(m.symbol)} is also targeted on its own row — counted there too"` : "") +
-        `>${esc(m.symbol)}</span>`;
+      const s = esc(m.symbol);
+      return `<a class="tlink strat-mem${dup ? " dup" : ""}" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(m.symbol)}"` +
+        ` title="${dup ? s + " is also targeted on its own row — counted there too. Click to open." : "Open " + s + " deep-dive"}"` +
+        `>${s}</a>`;
     }).join("");
     return `<div class="strat-sleeve-name"><strong>${esc(r.name || r.key)}</strong>` +
       `<span class="strat-tag sleeve" title="A basket of names governed by one combined band, not a tradable ticker">sleeve</span></div>` +
@@ -620,11 +630,15 @@ function previewBlock(preview, { final = false } = {}) {
     const tr = el("tr", isSleeve ? "strat-sleeve-row" : null);
     const suggested = sensitive(`${fmtCZK(r.suggest_delta_czk)} ${esc(plan.currency || "")}`, "suggested trade") +
       (isSleeve ? `<small class="strat-spread">spread across members</small>` : "");
+    const statusCell = r.status
+      ? `<span class="strat-tag strat-tag-${statusTone(r.status)}">${esc(r.status)}</span>` : "—";
+    const actionCell = r.action
+      ? `<span class="strat-tag strat-tag-${toneOf(r.action)}">${esc(r.action)}</span>` : "—";
     tr.innerHTML =
       `<td>${nameCellHtml(r)}</td>` +
-      `<td>${esc(r.status)}</td>` +
-      `<td>${esc(fmtSignedWeight(r.drift_pct))}</td>` +
-      `<td>${esc(r.action)}</td>` +
+      `<td>${statusCell}</td>` +
+      `<td><span class="strat-drift ${driftTone(r.drift_pct)}">${esc(fmtSignedWeight(r.drift_pct))}</span></td>` +
+      `<td>${actionCell}</td>` +
       `<td>${suggested}</td>`;
     body.appendChild(tr);
   });
