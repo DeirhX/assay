@@ -22,6 +22,7 @@ import argparse
 import datetime as dt
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,11 @@ from config import REPO_ROOT, RESEARCH_DIR, SEGMENT_DEF_DIR, SEGMENT_OUT_DIR  # 
 
 CACHE_DIR = REPO_ROOT / "data" / "cache"
 HISTORY_DIR = CACHE_DIR / "research-history"
+
+# Serialize outbound pulls so we stay polite to the free data sources. Lives here
+# (the puller's own module) so the HTTP server and the analysis-jobs service that
+# both kick off pulls share one lock instead of racing each other.
+PULL_LOCK = threading.Lock()
 
 # (metric key, preferred source order, formatter)
 METRIC_SPECS: list[tuple[str, list[str], Any]] = [

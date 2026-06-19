@@ -34,12 +34,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (  # noqa: E402
-    DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
+    ANALYSIS_DIR, DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
     SEGMENT_DEF_DIR, SEGMENT_OUT_DIR, TARGET_MODEL_JSON, WEB_DIR,
 )
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
-ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses
 # a dedicated profile so it never fights the MCP browser for the profile lock.
@@ -86,6 +85,13 @@ from target_model import (  # noqa: E402  -- target-model apply + rebalance prev
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
     _delete_deep_run, _deep_runs, _save_deep_artifact,
 )
+from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q&A thread families
+    drop_qa_exchange as _drop_qa_exchange, latest_analysis as _latest_analysis,
+    load_deep_qa as _load_deep_qa, load_qa as _load_qa,
+    deep_qa_path as _deep_qa_path, qa_path as _qa_path,
+    start_analysis as _start_analysis, start_deep_qa as _start_deep_qa,
+    start_qa as _start_qa,
+)
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_place, _trade_preview, _trade_status,
@@ -93,7 +99,7 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
 from store import (  # noqa: E402
-    load as _load, write_json as _write_json, write_text as _write_text,
+    load as _load, write_json as _write_json,
     slugify as _slugify, safe_symbol as _safe_symbol,
 )
 from jobs import (  # noqa: E402
@@ -128,7 +134,7 @@ PRICE_HISTORY_RANGES: dict[str, tuple[str, str]] = {
     "max": ("max", "1mo"),
 }
 
-_PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
+from research_pull import PULL_LOCK as _PULL_LOCK  # noqa: E402  -- shared pull lock
 
 # The deep-research / login / analysis job registry lives in jobs.py; concurrent
 # browser runs are bounded by jobs.claim_active / jobs.release_active (a counting
@@ -236,301 +242,6 @@ def _ticker_deep_prompt(symbol: str) -> dict:
             f"hold {sym} at {weight:.2f}% of my invested book.\n"
         )
     return {"segment": f"ticker-{sym.lower()}", "symbol": sym, "date": today, "prompt": prompt}
-
-
-# --------------------------------------------------------------------------- #
-# On-demand single-ticker analysis (cheap CLI tier: Claude -> Cursor fallback)
-# --------------------------------------------------------------------------- #
-def _save_analysis_artifact(symbol: str, report: str, meta: dict) -> dict:
-    """Persist a CLI analysis as dated markdown + a sidecar of provenance, so it
-    survives restarts and can be shown next to the dossier."""
-    sym = _safe_symbol(symbol)
-    date = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    stem = f"{sym}-{date}"
-    # Currency comes from the dossier so suggested levels and later price
-    # comparisons all live in the instrument's own trading currency.
-    dossier = _load(RESEARCH_DIR / f"{sym}.json") or {}
-    currency = str(dossier.get("currency") or "").upper()
-    info = {
-        "symbol": sym,
-        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "backend": meta.get("backend"),
-        "backend_label": meta.get("backend_label"),
-        "model": meta.get("model"),
-        "attempts": meta.get("attempts") or [],
-        "currency": currency,
-        "price_levels_suggested": ticker_analysis.parse_price_levels(report, currency),
-    }
-    _write_text(ANALYSIS_DIR / f"{stem}.md", report.strip() + "\n")
-    _write_json(ANALYSIS_DIR / f"{stem}.meta.json", info)
-    return {"stem": stem, "meta": info}
-
-
-def _latest_analysis(symbol: str) -> dict | None:
-    """Most recent saved analysis for a symbol (markdown + provenance), or None."""
-    sym = _safe_symbol(symbol)
-    md = sorted(ANALYSIS_DIR.glob(f"{sym}-*.md"), reverse=True)
-    if not md:
-        return None
-    path = md[0]
-    meta = _load(path.with_name(path.stem + ".meta.json")) or {}
-    return {
-        "symbol": sym,
-        "stem": path.stem,
-        "report": path.read_text(encoding="utf-8"),
-        "meta": meta,
-    }
-
-
-def _run_analysis_job(job_id: str, symbol: str, refresh: bool) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        sym = _safe_symbol(symbol)
-        rec = _load(RESEARCH_DIR / f"{sym}.json")
-        if rec is None or refresh:
-            progress("pulling fresh deterministic data…")
-            with _PULL_LOCK:
-                rec = research_pull.pull_ticker(sym)
-        _update_job(job_id, state="running", message="analysing…")
-        result = ticker_analysis.analyze(rec, progress=progress)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        return
-
-    if not result.get("ok"):
-        _update_job(job_id, state="error",
-                    error=result.get("error") or "all analysis backends failed")
-        return
-    try:
-        saved = _save_analysis_artifact(sym, result["report"], result)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"analysis produced but not saved: {type(exc).__name__}: {exc}")
-        return
-    _update_job(job_id, state="done", message=f"analysed via {result.get('backend_label')}",
-                result={
-                    "symbol": sym,
-                    "backend": result.get("backend"),
-                    "backend_label": result.get("backend_label"),
-                    "model": result.get("model"),
-                    "report_chars": len(result["report"]),
-                },
-                artifact=saved)
-
-
-# At most one analysis per symbol in flight; the CLIs are cheap but not free.
-def _analysis_running(symbol: str) -> bool:
-    return jobs.running("ticker_analysis", symbol=symbol)
-
-
-def _start_analysis(symbol: str, refresh: bool) -> dict:
-    sym = _safe_symbol(symbol)
-    if _analysis_running(sym):
-        raise _Conflict(f"an analysis for {sym} is already running")
-    # Unlike Perplexity runs, CLI analyses don't touch the shared browser, so we
-    # do NOT take _claim_active -- they may run alongside a deep-research job.
-    job = _new_job("ticker_analysis", symbol=sym, refresh=bool(refresh))
-    threading.Thread(target=_run_analysis_job,
-                     args=(job["id"], sym, bool(refresh)), daemon=True).start()
-    return _job_public(job)
-
-
-# --------------------------------------------------------------------------- #
-# Deep-dive Q&A: archived, continuable follow-up threads per ticker. Stored next
-# to the analyses (gitignored cache) so they survive restarts and can be resumed.
-# --------------------------------------------------------------------------- #
-def _qa_path(symbol: str) -> Path:
-    return ANALYSIS_DIR / f"{_safe_symbol(symbol)}.qa.json"
-
-
-def _load_qa(symbol: str) -> dict:
-    sym = _safe_symbol(symbol)
-    data = _load(_qa_path(sym))
-    if not isinstance(data, dict):
-        return {"symbol": sym, "turns": []}
-    data.setdefault("symbol", sym)
-    if not isinstance(data.get("turns"), list):
-        data["turns"] = []
-    return data
-
-
-def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        sym = _safe_symbol(symbol)
-        rec = _load(RESEARCH_DIR / f"{sym}.json")
-        if rec is None:
-            progress("pulling deterministic data…")
-            with _PULL_LOCK:
-                rec = research_pull.pull_ticker(sym)
-        thread = _load_qa(sym)
-        latest = _latest_analysis(sym)
-        note = latest.get("report") if latest else None
-        _update_job(job_id, state="running", message="thinking…")
-        result = ticker_analysis.ask(rec, thread.get("turns") or [], question,
-                                     note=note, session=thread.get("session"), progress=progress,
-                                     cancel=lambda: jobs.is_cancelled(job_id))
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        return
-
-    # Cancelled mid-flight: the subprocess was killed and the answer discarded;
-    # leave the archived thread untouched so the user can ask something else.
-    if result.get("cancelled") or jobs.is_cancelled(job_id):
-        _update_job(job_id, state="cancelled", message="cancelled")
-        return
-
-    if not result.get("ok"):
-        _update_job(job_id, state="error", error=result.get("error") or "all Q&A backends failed")
-        return
-
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    thread.setdefault("created_at", now)
-    thread["updated_at"] = now
-    # Track the resumable session at thread level. A non-session provider (Cursor)
-    # returns no session, so this resets to None -- the next Claude turn then
-    # opens a fresh session seeded with the full history, keeping context correct.
-    thread["session"] = result.get("session")
-    thread["turns"].append({"role": "user", "text": question, "ts": now})
-    thread["turns"].append({
-        "role": "assistant", "text": result["report"], "ts": now,
-        "backend": result.get("backend"), "backend_label": result.get("backend_label"),
-        "model": result.get("model"), "usage": result.get("usage") or {},
-    })
-    try:
-        _write_json(_qa_path(sym), thread)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"answer produced but not saved: {type(exc).__name__}: {exc}")
-        return
-    _update_job(job_id, state="done", message=f"answered via {result.get('backend_label')}",
-                result={"symbol": sym, "turns": len(thread["turns"])})
-
-
-def _qa_running(symbol: str) -> bool:
-    return jobs.running("ticker_qa", symbol=symbol)
-
-
-def _start_qa(symbol: str, question: str) -> dict:
-    sym = _safe_symbol(symbol)
-    question = (question or "").strip()
-    if not question:
-        raise ValueError("empty question")
-    if _qa_running(sym):
-        raise _Conflict(f"a question for {sym} is already being answered")
-    job = _new_job("ticker_qa", symbol=sym)
-    threading.Thread(target=_run_qa_job, args=(job["id"], sym, question), daemon=True).start()
-    return _job_public(job)
-
-
-# --------------------------------------------------------------------------- #
-# Deep-research Q&A: continuable follow-up threads about a saved run, grounded
-# in the report markdown + its citations. Stored next to the run artifacts.
-# --------------------------------------------------------------------------- #
-def _deep_qa_path(stem: str) -> Path:
-    return DEEP_DIR / f"{_slugify(stem)}.qa.json"
-
-
-def _load_deep_qa(stem: str) -> dict:
-    stem = _slugify(stem)
-    data = _load(_deep_qa_path(stem))
-    if not isinstance(data, dict):
-        return {"stem": stem, "turns": []}
-    data.setdefault("stem", stem)
-    if not isinstance(data.get("turns"), list):
-        data["turns"] = []
-    return data
-
-
-def _drop_qa_exchange(thread: dict, index) -> bool:
-    """Remove the user turn at *index* plus the assistant reply that follows it.
-
-    Returns True if anything was removed. Any resumable provider session is
-    dropped so the next turn reseeds from the trimmed history -- otherwise the
-    session would still carry the deleted exchange and contradict what we show.
-    """
-    turns = thread.get("turns")
-    if not isinstance(turns, list):
-        return False
-    try:
-        i = int(index)
-    except (TypeError, ValueError):
-        return False
-    if i < 0 or i >= len(turns) or turns[i].get("role") != "user":
-        return False
-    end = i + 1
-    if end < len(turns) and turns[end].get("role") == "assistant":
-        end += 1
-    del turns[i:end]
-    thread.pop("session", None)
-    return True
-
-
-def _run_deep_qa_job(job_id: str, stem: str, question: str) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        report_path = DEEP_DIR / f"{stem}.md"
-        if not report_path.exists():
-            _update_job(job_id, state="error", error=f"no saved report for {stem}")
-            return
-        document = report_path.read_text(encoding="utf-8")
-        sources = _load(DEEP_DIR / f"{stem}.sources.json") or {}
-        citations = sources.get("citations") or []
-        title = (_load(DEEP_DIR / f"{stem}.target-proposal.json") or {}).get("title") or stem
-        thread = _load_deep_qa(stem)
-        _update_job(job_id, state="running", message="thinking…")
-        result = ticker_analysis.ask_about_doc(
-            title, document, citations, thread.get("turns") or [], question,
-            progress=progress, cancel=lambda: jobs.is_cancelled(job_id))
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        return
-
-    if result.get("cancelled") or jobs.is_cancelled(job_id):
-        _update_job(job_id, state="cancelled", message="cancelled")
-        return
-    if not result.get("ok"):
-        _update_job(job_id, state="error", error=result.get("error") or "all Q&A backends failed")
-        return
-
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    thread.setdefault("created_at", now)
-    thread["updated_at"] = now
-    thread["turns"].append({"role": "user", "text": question, "ts": now})
-    thread["turns"].append({
-        "role": "assistant", "text": result["report"], "ts": now,
-        "backend": result.get("backend"), "backend_label": result.get("backend_label"),
-        "model": result.get("model"), "usage": result.get("usage") or {},
-    })
-    try:
-        _write_json(_deep_qa_path(stem), thread)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"answer produced but not saved: {type(exc).__name__}: {exc}")
-        return
-    _update_job(job_id, state="done", message=f"answered via {result.get('backend_label')}",
-                result={"stem": stem, "turns": len(thread["turns"])})
-
-
-def _deep_qa_running(stem: str) -> bool:
-    return jobs.running("deep_qa", stem=stem)
-
-
-def _start_deep_qa(stem: str, question: str) -> dict:
-    stem = _slugify(stem)
-    question = (question or "").strip()
-    if not question:
-        raise ValueError("empty question")
-    if not (DEEP_DIR / f"{stem}.md").exists():
-        raise ValueError(f"no saved report for {stem}")
-    if _deep_qa_running(stem):
-        raise _Conflict(f"a question for {stem} is already being answered")
-    job = _new_job("deep_qa", stem=stem)
-    threading.Thread(target=_run_deep_qa_job, args=(job["id"], stem, question), daemon=True).start()
-    return _job_public(job)
 
 
 # Only these keys belong in a target-model entry; the synthesis engine carries
