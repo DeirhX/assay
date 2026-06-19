@@ -2304,6 +2304,7 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
             clarify_answer=_clarify_answer_for(segment), progress=progress,
             clone_profile=True,  # run on a throwaway clone so runs can parallelize
             on_url=lambda url: _update_job(job_id, source_url=url),
+            cancel=lambda: jobs.is_cancelled(job_id),
         )
 
     def handle(res: dict) -> None:
@@ -2312,6 +2313,8 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
             _save_run_result(job_id, res, segment, date,
                              source_url=res.get("source_url"),
                              auth_label="deep run", done_msg="report saved")
+        elif status == "cancelled":
+            _update_job(job_id, state="cancelled", message="cancelled")
         elif status == "needs_login":
             _set_auth_state(False, "run hit login wall")
             _update_job(job_id, state="needs_login",
@@ -2345,12 +2348,15 @@ def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode
 
 def _run_login_job(job_id: str) -> None:
     def call(worker, progress):
-        return worker.ensure_login(progress=progress)
+        return worker.ensure_login(progress=progress,
+                                   cancel=lambda: jobs.is_cancelled(job_id))
 
     def handle(res: dict) -> None:
         if res.get("status") == "logged_in":
             _set_auth_state(True, "login window")
             _update_job(job_id, state="done", message="Perplexity login confirmed")
+        elif res.get("status") == "cancelled":
+            _update_job(job_id, state="cancelled", message="cancelled")
         else:
             _update_job(job_id, state="error", message="login window timed out",
                         error="login not completed in time")
@@ -2390,7 +2396,8 @@ def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
     def call(worker, progress):
         # The import URL is known up front -> surface it as the live link now.
         _update_job(job_id, source_url=url)
-        return worker.fetch_by_url(url, clone_profile=True, progress=progress)
+        return worker.fetch_by_url(url, clone_profile=True, progress=progress,
+                                   cancel=lambda: jobs.is_cancelled(job_id))
 
     def handle(res: dict) -> None:
         status = res.get("status")
@@ -2398,6 +2405,8 @@ def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
             _save_run_result(job_id, res, segment, date,
                              source_url=res.get("source_url", url),
                              auth_label="import", done_msg="imported report saved")
+        elif status == "cancelled":
+            _update_job(job_id, state="cancelled", message="cancelled")
         elif status == "needs_login":
             _set_auth_state(False, "import hit login wall")
             _update_job(job_id, state="needs_login",

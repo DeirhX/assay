@@ -260,6 +260,13 @@ def _noop(_msg: str) -> None:
     pass
 
 
+def _never() -> bool:
+    """Default cancellation check: nothing is ever cancelled. Callers (the job
+    runners) pass a real predicate bound to the job's cancel flag so a cancelled
+    run tears down promptly and frees its concurrency slot."""
+    return False
+
+
 def _launch(pw, *, window_mode: str, profile_dir: Path):
     """Launch a persistent (logged-in) context.
 
@@ -444,12 +451,16 @@ def _handle_captcha(page, *, window_mode: str, progress: Callable[[str], None],
 
 
 def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
-                 progress: Callable[[str], None] = _noop) -> dict:
+                 progress: Callable[[str], None] = _noop,
+                 cancel: Callable[[], bool] = _never) -> dict:
     """Open a VISIBLE window and wait for the user to complete Perplexity login.
 
-    Returns {"status": "logged_in"|"timeout"}. The session persists in the
-    profile dir, so subsequent off-screen runs reuse it.
+    Returns {"status": "logged_in"|"timeout"|"cancelled"}. The session persists
+    in the profile dir, so subsequent off-screen runs reuse it.
     """
+    if cancel():
+        return {"status": "cancelled"}
+
     from playwright.sync_api import sync_playwright
 
     profile_dir = profile_dir or default_profile_dir()
@@ -471,6 +482,8 @@ def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
             progress("Complete the Perplexity login in the opened window...")
             deadline = time.time() + timeout_s
             while time.time() < deadline:
+                if cancel():
+                    return {"status": "cancelled"}
                 if _logged_in(page):
                     progress("Login detected.")
                     return {"status": "logged_in"}
@@ -536,18 +549,22 @@ def _scrape(page):
 def fetch_by_url(url: str, *, window_mode: str = "offscreen",
                  profile_dir: Optional[Path] = None, timeout_s: int = 150,
                  clone_profile: bool = False,
-                 progress: Callable[[str], None] = _noop) -> dict:
+                 progress: Callable[[str], None] = _noop,
+                 cancel: Callable[[], bool] = _never) -> dict:
     """Recover a COMPLETED Perplexity run by its URL. Spends no quota -- it only
     reads. This is the safety net: if a run ever finishes in Perplexity but does
     not make it back (pause, timeout, disconnect), the result is never lost.
 
-    Returns {"status": "done"|"needs_login"|"needs_clarification"|"error", ...}.
+    Returns {"status": "done"|"needs_login"|"needs_clarification"|"cancelled"|"error", ...}.
     """
-    from playwright.sync_api import sync_playwright
-
     url = (url or "").strip()
     if "perplexity.ai" not in url:
         return {"status": "error", "detail": "not a perplexity.ai URL"}
+    if cancel():
+        return {"status": "cancelled"}
+
+    from playwright.sync_api import sync_playwright
+
     # A "?sm=r" (shared-mode) suffix makes Perplexity show a login wall even to the
     # thread owner; the bare thread URL opens as ourselves. Drop the query.
     url = url.split("?")[0]
@@ -568,6 +585,8 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
             last_len = -1
             stable = 0
             while time.time() < deadline:
+                if cancel():
+                    return {"status": "cancelled"}
                 if not _handle_captcha(page, window_mode=window_mode, progress=progress):
                     return {"status": "needs_captcha"}
                 st = page.evaluate(_POLL_JS)
@@ -626,7 +645,8 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                       clarify_answer: Optional[str] = None, max_clarify: int = 2,
                       clone_profile: bool = False,
                       progress: Callable[[str], None] = _noop,
-                      on_url: Callable[[str], None] = _noop) -> dict:
+                      on_url: Callable[[str], None] = _noop,
+                      cancel: Callable[[], bool] = _never) -> dict:
     """Run one Deep Research query end to end.
 
     If Perplexity pauses on a clarifying question, the worker auto-answers with
@@ -640,13 +660,19 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
       {"status": "needs_clarification", "source_url", "report"}  # gave up answering
       {"status": "mode_failed", "detail"}
       {"status": "timeout"}
+      {"status": "cancelled"}   # the job was cancelled before/while running
       {"status": "error", "detail"}
     """
-    from playwright.sync_api import sync_playwright
-
     prompt = (prompt or "").strip()
     if not prompt:
         return {"status": "error", "detail": "empty prompt"}
+    # Bail before launching a browser if the job was already cancelled (keeps the
+    # check importable without Playwright, so it's unit-testable).
+    if cancel():
+        return {"status": "cancelled"}
+
+    from playwright.sync_api import sync_playwright
+
     # A caller that passes an explicit profile_dir gets exactly that; otherwise,
     # when clone_profile is set, run on a throwaway clone of the logged-in base so
     # this run can proceed alongside other concurrent runs (Chrome locks a profile
@@ -711,6 +737,8 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
             nudges = 0
             last_len = -1
             while time.time() < deadline:
+                if cancel():
+                    return {"status": "cancelled"}
                 if not _handle_captcha(page, window_mode=window_mode, progress=progress):
                     return {"status": "needs_captcha"}
                 st = page.evaluate(_POLL_JS)
