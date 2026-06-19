@@ -17,9 +17,10 @@ import hashlib
 import json
 
 import ibkr_trade
+import price_levels
 import whatif
 from apierror import BadGateway as _BadGateway, Forbidden as _Forbidden
-from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON
+from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON, provider_symbol_for
 from store import load as _load
 
 
@@ -117,6 +118,16 @@ def _parse_snapshot_price(raw) -> float | None:
         return None
 
 
+def _locked_limit(sym: str, side: str) -> float | None:
+    """The locked limit price for a basket order's side, looked up SERVER-SIDE
+    from the price-level store (never trusted from the client): a buy-below for a
+    BUY, a trim-above for a SELL. None -> the order stays at market. The level is
+    keyed by provider symbol, so resolve the basket symbol the same way the
+    rebalance overlay does."""
+    level = price_levels.get(provider_symbol_for(sym))
+    return price_levels.limit_price_for(level, side)
+
+
 def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
     """Translate a token-bound CZK basket into CPAPI order dicts, server-side.
     Resolves conids, prices held names from the snapshot and unheld names from a
@@ -153,6 +164,7 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         conid_lookup=lambda s: conids.get(s),
         account_id=account_id,
         coid_prefix="assay-" + _basket_token(account_id, basket),
+        limit_lookup=_locked_limit,
     )
     return orders, warnings + skip_warnings
 

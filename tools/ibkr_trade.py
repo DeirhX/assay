@@ -285,13 +285,20 @@ def build_orders(
     order_type: str = "MKT",
     tif: str = "DAY",
     coid_prefix: str = "assay",
+    limit_lookup: Callable[[str, str], float | None] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Translate a CZK basket ([{symbol, delta_czk}]) into CPAPI order dicts.
 
     ``price_lookup(symbol)`` returns {price, fx_to_base} (instrument-currency
     price + that currency's rate to base), or None when unknown. ``conid_lookup``
     resolves the contract id. Returns (orders, warnings); symbols that cannot be
-    priced or resolved are skipped and explained in warnings -- never guessed."""
+    priced or resolved are skipped and explained in warnings -- never guessed.
+
+    ``limit_lookup(symbol, side)`` is the optional price-trigger hook: when it
+    returns a positive price for an order's side (a locked buy-below for a BUY, a
+    trim-above for a SELL), that order becomes a LIMIT at that price with
+    time-in-force GTC (a limit may not fill the same day). The limit price is in
+    the instrument's own currency, matching ``price_lookup`` -- never converted."""
     orders: list[dict] = []
     warnings: list[str] = []
     for trade in basket:
@@ -315,15 +322,22 @@ def build_orders(
         if qty == 0:
             warnings.append(f"{sym}: rounds to 0 shares at the current price, skipped")
             continue
-        orders.append({
+        side = "BUY" if qty > 0 else "SELL"
+        order = {
             "symbol": sym,  # for display/audit only; stripped before sending to CPAPI
             "conid": int(conid),
             "orderType": order_type,
-            "side": "BUY" if qty > 0 else "SELL",
+            "side": side,
             "quantity": abs(qty),
             "tif": tif,
             "cOID": f"{coid_prefix}-{sym}-{abs(qty)}",
-        })
+        }
+        limit = limit_lookup(sym, side) if limit_lookup else None
+        if isinstance(limit, (int, float)) and limit > 0:
+            order["orderType"] = "LMT"
+            order["price"] = round(float(limit), 4)
+            order["tif"] = "GTC"
+        orders.append(order)
     return orders, warnings
 
 

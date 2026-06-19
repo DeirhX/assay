@@ -128,6 +128,60 @@ class BuildOrders(unittest.TestCase):
         self.assertEqual(orders, [])
         self.assertEqual(len(warns), 3)
 
+    def test_buy_limit_uses_buy_below_and_gtc(self):
+        prices = {"AMD": {"price": 100, "fx_to_base": 23.0}}
+        conids = {"AMD": 222}
+        pl, cl = self._lookups(prices, conids)
+        # A BUY gets a limit at buy_below; a SELL would get trim_above.
+        limit = lambda sym, side: 92.0 if (sym == "AMD" and side == "BUY") else None
+        orders, _ = ibt.build_orders(
+            [{"symbol": "AMD", "delta_czk": 23000}],
+            price_lookup=pl, conid_lookup=cl, account_id="DU1", limit_lookup=limit)
+        o = orders[0]
+        self.assertEqual(o["orderType"], "LMT")
+        self.assertEqual(o["price"], 92.0)
+        self.assertEqual(o["tif"], "GTC")
+        self.assertEqual(o["side"], "BUY")
+
+    def test_sell_limit_uses_trim_above(self):
+        prices = {"NVDA": {"price": 130, "fx_to_base": 23.0}}
+        conids = {"NVDA": 333}
+        pl, cl = self._lookups(prices, conids)
+        limit = lambda sym, side: 145.0 if side == "SELL" else None
+        orders, _ = ibt.build_orders(
+            [{"symbol": "NVDA", "delta_czk": -23000}],
+            price_lookup=pl, conid_lookup=cl, account_id="DU1", limit_lookup=limit)
+        o = orders[0]
+        self.assertEqual((o["side"], o["orderType"], o["price"], o["tif"]),
+                         ("SELL", "LMT", 145.0, "GTC"))
+
+    def test_no_limit_stays_market(self):
+        prices = {"AMD": {"price": 100, "fx_to_base": 23.0}}
+        conids = {"AMD": 222}
+        pl, cl = self._lookups(prices, conids)
+        orders, _ = ibt.build_orders(
+            [{"symbol": "AMD", "delta_czk": 23000}],
+            price_lookup=pl, conid_lookup=cl, account_id="DU1",
+            limit_lookup=lambda sym, side: None)
+        o = orders[0]
+        self.assertEqual(o["orderType"], "MKT")
+        self.assertNotIn("price", o)
+        self.assertEqual(o["tif"], "DAY")
+
+
+class LockedLimitLookup(unittest.TestCase):
+    """trade_service._locked_limit resolves the basket symbol to a provider
+    symbol and reads the locked level server-side (never from the client)."""
+
+    def test_buy_and_sell_sides(self):
+        import price_levels
+        level = {"buy_below": 92.0, "trim_above": 145.0}
+        with mock.patch.object(trade_service, "provider_symbol_for", lambda s: s), \
+                mock.patch.object(price_levels, "get", lambda s: level if s == "AMD" else None):
+            self.assertEqual(trade_service._locked_limit("AMD", "BUY"), 92.0)
+            self.assertEqual(trade_service._locked_limit("AMD", "SELL"), 145.0)
+            self.assertIsNone(trade_service._locked_limit("ZZZ", "BUY"))
+
 
 class ReplyLoop(unittest.TestCase):
     def test_confirms_prompts_until_accepted(self):

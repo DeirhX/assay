@@ -186,7 +186,7 @@ function renderPreview() {
       `<td>${esc(o.symbol || o.conid)}</td>` +
       `<td>${sideTag(o.side)}</td>` +
       `<td class="num">${esc(o.quantity)}</td>` +
-      `<td>${esc(o.orderType)} / ${esc(o.tif)}</td>` +
+      `<td>${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} / ${esc(o.tif)}</td>` +
       `<td class="muted">${esc(o.conid)}</td>`);
     tbody.appendChild(tr);
   });
