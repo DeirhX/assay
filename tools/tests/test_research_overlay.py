@@ -114,5 +114,83 @@ class AttachResearchOverlay(unittest.TestCase):
         self.assertNotIn("research", plan["rows"][0])
 
 
+class PriceGate(unittest.TestCase):
+    """The locked-level gate on rebalance rows: a blocking level downgrades the
+    suggested action to 'wait'; a favorable price leaves it alone."""
+
+    def setUp(self):
+        import price_levels
+        self.price_levels = price_levels
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self._patches = [
+            mock.patch.object(serve, "RESEARCH_DIR", tmp),
+            mock.patch.object(serve, "_resolve_symbol", lambda s: s),
+            mock.patch.object(price_levels, "LEVELS_JSON", tmp / "price-levels.json"),
+        ]
+        for p in self._patches:
+            p.start()
+        self.tmp = tmp
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        self._tmp.cleanup()
+
+    def _holdings(self, sym, mark):
+        return {"positions": [{"symbol": sym, "mark_price": mark, "currency": "USD"}]}
+
+    def test_buy_blocked_when_price_above_buy_below(self):
+        self.price_levels.lock("AMD", buy_below=92, currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 1.0}]}
+        serve._attach_research_overlay(plan, self._holdings("AMD", 100.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "wait")  # 100 > 92 -> too dear, wait
+        self.assertEqual(row["price_gate"]["blocked_action"], "buy")
+        self.assertTrue(row["price_gate"]["blocks_buy"])
+        self.assertEqual(row["price_gate"]["current"], 100.0)
+
+    def test_buy_allowed_when_price_at_or_below(self):
+        self.price_levels.lock("AMD", buy_below=92, currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 1.0}]}
+        serve._attach_research_overlay(plan, self._holdings("AMD", 90.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "buy")  # 90 <= 92 -> favorable, untouched
+        self.assertFalse(row["price_gate"]["blocks_buy"])
+
+    def test_trim_blocked_when_price_below_trim_above(self):
+        self.price_levels.lock("NVDA", trim_above=145, currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "NVDA",
+                          "action": "trim", "suggest_delta_pct": -1.0}]}
+        serve._attach_research_overlay(plan, self._holdings("NVDA", 120.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "wait")
+        self.assertEqual(row["price_gate"]["blocked_action"], "trim")
+
+    def test_no_level_means_no_gate(self):
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
+        serve._attach_research_overlay(plan, self._holdings("AMD", 100.0))
+        self.assertNotIn("price_gate", plan["rows"][0])
+        self.assertEqual(plan["rows"][0]["action"], "buy")
+
+    def test_dossier_price_fallback_when_unheld_in_map(self):
+        self.price_levels.lock("AMD", buy_below=92, currency="USD")
+        (self.tmp / "AMD.json").write_text(json.dumps({"price": {"value": 100.0}}), encoding="utf-8")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
+        serve._attach_research_overlay(plan, {"positions": []})  # not in mark map
+        self.assertEqual(plan["rows"][0]["action"], "wait")
+        self.assertEqual(plan["rows"][0]["price_gate"]["current"], 100.0)
+
+    def test_unknown_price_does_not_block(self):
+        self.price_levels.lock("AMD", buy_below=92, currency="USD")
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
+        serve._attach_research_overlay(plan, {"positions": []})  # no mark, no dossier
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "buy")  # can't confirm -> leave to the human
+        self.assertFalse(row["price_gate"]["price_known"])
+
+
 if __name__ == "__main__":
     unittest.main()

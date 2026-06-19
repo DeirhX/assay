@@ -1568,6 +1568,14 @@ a.tlink:hover { border-bottom-style: solid; }
 /* The conflict flag doubles as a button that escalates into the strategy flow. */
 .reb-conflict-chip { cursor: pointer; font-family: inherit; line-height: 1.4; }
 .reb-conflict-chip:hover { background: rgba(255,122,122,.18); }
+/* Locked price trigger annotation under a target name. */
+.reb-gate { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; font-size: 11px; }
+.reb-gate-label { color: var(--muted); font-weight: 700; }
+.reb-gate-cond { font-weight: 700; padding: 0 4px; border-radius: 4px; }
+.reb-gate-cond.good { color: var(--good); }
+.reb-gate-cond.warn { color: var(--warn); }
+/* A row gated off (price not favorable) is flagged like a softer conflict. */
+.reb-data-row.reb-gated { box-shadow: inset 3px 0 0 var(--warn); }
 .reb-cur { display: flex; flex-direction: column; gap: 1px; }
 .reb-cur small, .reb-member small, .reb-untargeted-row small { color: var(--muted); font-size: 11.5px; }
 .reb-band { color: var(--muted); white-space: nowrap; }

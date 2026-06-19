@@ -66,6 +66,34 @@ function researchLine(r) {
   return line;
 }
 
+// A locked price trigger on a target row (from the deep-dive). When the price
+// isn't favorable the backend has already downgraded the action to "wait"; this
+// line says what we're waiting for ("buy <= $92, now $100"). When favorable it
+// reads as an armed trigger. Pure annotation — the band still sizes the trade.
+function priceGateLine(r) {
+  const g = r.price_gate;
+  if (!g) return null;
+  const ccy = g.currency ? g.currency + " " : "";
+  const fmt = (v) => (v == null ? "?" : ccy + v);
+  const parts = [];
+  if (g.buy_below != null) {
+    const waiting = g.blocked_action === "buy";
+    parts.push(`<span class="reb-gate-cond ${waiting ? "warn" : "good"}">buy \u2264 ${esc(fmt(g.buy_below))}</span>`);
+  }
+  if (g.trim_above != null) {
+    const waiting = g.blocked_action === "trim";
+    parts.push(`<span class="reb-gate-cond ${waiting ? "warn" : "good"}">trim \u2265 ${esc(fmt(g.trim_above))}</span>`);
+  }
+  if (!parts.length) return null;
+  const now = g.price_known ? `now ${esc(fmt(g.current))}` : "price unknown";
+  const blocked = !!g.blocked_action;
+  const label = blocked ? "\u23f3 Waiting" : "Trigger";
+  const line = el("div", "reb-gate" + (blocked ? " reb-gate-blocked" : ""),
+    `<span class="reb-gate-label" title="Locked price trigger from the deep dive — gates this trade until the price is favorable">${label}:</span> ` +
+    parts.join(" \u00b7 ") + ` <small class="muted">(${now})</small>`);
+  return line;
+}
+
 // Take an unresolved planner conflict into the guided "Direction -> Rebalance"
 // flow, pre-filling a direction that names the disagreement. Phase 1 stays
 // read-only: this only navigates + seeds the input; the human still drives every
@@ -150,6 +178,11 @@ function renderRebalance(plan) {
       nameCell.appendChild(research);
       if (r.research_conflict) row.classList.add("reb-conflict");
     }
+    const gate = priceGateLine(r);
+    if (gate) {
+      nameCell.appendChild(gate);
+      if (r.price_gate && r.price_gate.blocked_action) row.classList.add("reb-gated");
+    }
 
     const curCell = el("div", "reb-c reb-cur",
       `<span>${r.current_pct.toFixed(2)}%</span>` +
@@ -170,9 +203,11 @@ function renderRebalance(plan) {
       input.type = "number";
       input.step = "0.1";
       input.value = String(rebDefaultDelta(r));
-      input.title = r.action
-        ? `suggested ${fmtSignedWeight(r.suggest_delta_pct)} to reach the band edge`
-        : "in band — no action suggested";
+      input.title = r.action === "wait"
+        ? `gated by a price trigger — would ${r.suggest_delta_pct >= 0 ? "buy" : "trim"} ${fmtSignedWeight(r.suggest_delta_pct)} on the band; type an amount to override the trigger`
+        : r.action
+          ? `suggested ${fmtSignedWeight(r.suggest_delta_pct)} to reach the band edge`
+          : "in band — no action suggested";
       wrap.appendChild(input);
       wrap.appendChild(el("span", "reb-unit", "%"));
       planCell.appendChild(wrap);
