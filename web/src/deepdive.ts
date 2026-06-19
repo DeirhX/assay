@@ -543,8 +543,8 @@ function priceLevelInput(seed) {
   return inp;
 }
 
-function priceLevelField(label, currency, input) {
-  const wrap = el("label", "pl-field");
+function priceLevelField(label, currency, input, tone) {
+  const wrap = el("label", "pl-field" + (tone ? " pl-field--" + tone : ""));
   wrap.appendChild(el("span", "pl-label", esc(label)));
   const row = el("div", "pl-input-row");
   if (currency) row.appendChild(el("span", "pl-ccy", esc(currency)));
@@ -568,6 +568,7 @@ function priceLevelsBlock(rec, analysis, initialLocked) {
 
   function render() {
     block.innerHTML = "";
+    block.classList.toggle("pl-is-locked", !!locked);
     const head = el("div", "pl-head");
     head.appendChild(el("h3", "pl-title", "Price levels"));
     if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
@@ -582,16 +583,65 @@ function priceLevelsBlock(rec, analysis, initialLocked) {
     const buyIn = priceLevelInput(seedBuy);
     const trimIn = priceLevelInput(seedTrim);
     const grid = el("div", "pl-grid");
-    grid.appendChild(priceLevelField("Buy below", currency, buyIn));
-    grid.appendChild(priceLevelField("Trim above", currency, trimIn));
+    grid.appendChild(priceLevelField("Buy below", currency, buyIn, "buy"));
+    grid.appendChild(priceLevelField("Trim above", currency, trimIn, "trim"));
     block.appendChild(grid);
 
-    if (num(suggested.buy_below) != null || num(suggested.trim_above) != null) {
-      block.appendChild(el("p", "hint pl-suggest",
-        `Analysis suggested \u2014 buy below ${fmtLvl(num(suggested.buy_below))} \u00b7 trim above ${fmtLvl(num(suggested.trim_above))}`));
-    } else {
-      block.appendChild(el("p", "hint pl-suggest muted", "Analysis suggested no price triggers."));
+    const sBuy = num(suggested.buy_below);
+    const sTrim = num(suggested.trim_above);
+    const cmpHost = el("div", "pl-cmp-host");
+    const eqLvl = (a, b) => (a == null && b == null) || (a != null && b != null && a === b);
+    const curLvl = (inp) => (inp.value.trim() === "" ? null : Number(inp.value));
+    function fieldChip(label, sVal, matched, input) {
+      const chip = el("span", "pl-cmp-field");
+      if (sVal == null) {
+        chip.classList.add("muted");
+        chip.textContent = `${label} \u2014`;
+      } else if (matched) {
+        chip.classList.add("matched");
+        chip.appendChild(el("span", "pl-cmp-tick", "\u2713"));
+        chip.appendChild(document.createTextNode(` ${label} ${fmtLvl(sVal)}`));
+      } else {
+        chip.appendChild(document.createTextNode(`${label} `));
+        const btn = el("button", "pl-cmp-apply", fmtLvl(sVal));
+        btn.type = "button";
+        btn.title = `Use the suggested ${label} (${fmtLvl(sVal)})`;
+        btn.addEventListener("click", () => { input.value = String(sVal); updateCmp(); });
+        chip.appendChild(btn);
+      }
+      return chip;
     }
+    function suggestLine() {
+      const line = el("div", "pl-cmp");
+      if (sBuy == null && sTrim == null) {
+        line.classList.add("muted");
+        line.textContent = "Analysis suggested no price triggers.";
+        return line;
+      }
+      const matchBuy = eqLvl(curLvl(buyIn), sBuy);
+      const matchTrim = eqLvl(curLvl(trimIn), sTrim);
+      if (matchBuy && matchTrim) {
+        line.classList.add("pl-cmp-ok");
+        line.appendChild(el("span", "pl-cmp-ico", "\u2713"));
+        line.appendChild(el("span", "pl-cmp-lead", "Your levels match the analysis suggestion."));
+        return line;
+      }
+      line.classList.add("pl-cmp-diff");
+      line.appendChild(el("span", "pl-cmp-ico", "\u2260"));
+      line.appendChild(el("span", "pl-cmp-lead", "Differs from analysis \u2014 suggested:"));
+      line.appendChild(fieldChip("buy below", sBuy, matchBuy, buyIn));
+      line.appendChild(el("span", "pl-cmp-sep", "\u00b7"));
+      line.appendChild(fieldChip("trim above", sTrim, matchTrim, trimIn));
+      return line;
+    }
+    function updateCmp() {
+      cmpHost.innerHTML = "";
+      cmpHost.appendChild(suggestLine());
+    }
+    buyIn.addEventListener("input", updateCmp);
+    trimIn.addEventListener("input", updateCmp);
+    updateCmp();
+    block.appendChild(cmpHost);
     if (locked && locked.locked_at) {
       block.appendChild(el("p", "muted pl-when", `Locked ${esc(relTime(locked.locked_at))}`));
     }
