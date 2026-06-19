@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, el, esc, relAge, sectionCard, setErrorSink, state } from "./core";
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
 import { pushNav } from "./shell";
@@ -15,7 +14,7 @@ const errorLog = []; // newest last: { id, source, message, detail, time, count 
 const ERROR_LOG_MAX = 50;
 let _errorSeq = 0;
 
-function recordError(source, message, opts = {}) {
+function recordError(source, message, opts: { detail?: string } = {}) {
   const msg = String(message || "unknown error").trim();
   if (!msg) return null;
   const now = Date.now();
@@ -123,7 +122,7 @@ function linkifyHtml(text) {
 
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
-async function pollDeepJob(jobId, statusEl, onDone, label, onFail) {
+async function pollDeepJob(jobId, statusEl, onDone, label?, onFail?) {
   // The global Task Center poller (tasks.ts) owns the pill/panel now; just nudge
   // it so this freshly-started job shows up promptly. This loop keeps driving the
   // per-view status line + onDone refresh for whoever started the job.
@@ -200,8 +199,8 @@ function renderNeedsLogin(statusEl, message) {
 async function runDeepResearch(status) {
   status.classList.remove("err");
   const segment = pipeSegment();
-  const date = $("#pipe-date").value.trim() || undefined;
-  const prompt = $("#pipe-prompt").value.trim();
+  const date = $<HTMLInputElement>("#pipe-date").value.trim() || undefined;
+  const prompt = $<HTMLTextAreaElement>("#pipe-prompt").value.trim();
   if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
   if (!state.pplxLoggedIn) {
     setPipeStep(2);
@@ -241,16 +240,16 @@ $("#pipe-run-deep-report").addEventListener("click", () => runDeepResearch($("#p
 $("#rep-paste-manual").addEventListener("click", () => {
   state.repManual = true;
   setRepMode("current");
-  const r = $("#pipe-report");
+  const r = $<HTMLTextAreaElement>("#pipe-report");
   if (r) r.focus();
 });
 
 $("#pipe-import").addEventListener("click", async () => {
   const status = $("#pipe-import-status");
   status.classList.remove("err");
-  const url = $("#pipe-import-url").value.trim();
+  const url = $<HTMLInputElement>("#pipe-import-url").value.trim();
   const segment = pipeSegment();
-  const date = $("#pipe-date").value.trim() || undefined;
+  const date = $<HTMLInputElement>("#pipe-date").value.trim() || undefined;
   if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
   if (!url) { status.classList.add("err"); status.textContent = "paste a Perplexity run URL"; return; }
   status.innerHTML = `<span class="spinner"></span> pulling the finished run (off-screen browser)...`;
@@ -323,9 +322,9 @@ $("#pipe-save-report").addEventListener("click", async () => {
   try {
     const rec = await api("/api/deep-research/save", "POST", {
       segment: pipeSegment(),
-      date: $("#pipe-date").value.trim(),
-      source_url: $("#pipe-source-url").value.trim(),
-      report: $("#pipe-report").value,
+      date: $<HTMLInputElement>("#pipe-date").value.trim(),
+      source_url: $<HTMLInputElement>("#pipe-source-url").value.trim(),
+      report: $<HTMLTextAreaElement>("#pipe-report").value,
       citations: parseJsonField("#pipe-sources", []),
     });
     status.textContent = `saved ${rec.stem} — continuing to Review`;
@@ -346,7 +345,7 @@ $("#pipe-run-review").addEventListener("click", async () => {
   status.textContent = "running review gate...";
   try {
     const segment = pipeSegment();
-    const date = $("#pipe-date").value.trim();
+    const date = $<HTMLInputElement>("#pipe-date").value.trim();
     const rec = await api("/api/deep-research/review", "POST", { segment, date });
     state.currentDeepRun = `${segment}-${date}`;
     pushNav({ view: "pipeline", segment, run: state.currentDeepRun });
@@ -397,15 +396,15 @@ async function loadDeepRun(stem, { push = true } = {}) {
   state.savedRuns.add(stem);
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
-    $("#pipe-segment-select").value = m[1];
-    $("#pipe-date").value = m[2];
+    $<HTMLSelectElement>("#pipe-segment-select").value = m[1];
+    $<HTMLInputElement>("#pipe-date").value = m[2];
     if (push) pushNav({ view: "pipeline", segment: m[1], run: stem });
   } else if (push) {
     pushNav({ view: "pipeline", run: stem });
   }
-  if (rec.report) $("#pipe-report").value = rec.report;
-  if (rec.sources) $("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
-  if (rec.sources && rec.sources.source_url) $("#pipe-source-url").value = rec.sources.source_url;
+  if (rec.report) $<HTMLTextAreaElement>("#pipe-report").value = rec.report;
+  if (rec.sources) $<HTMLTextAreaElement>("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
+  if (rec.sources && rec.sources.source_url) $<HTMLInputElement>("#pipe-source-url").value = rec.sources.source_url;
   if (rec.markdown || rec.review || rec.proposal) renderReviewGate({
     markdown: rec.review || "",
     proposal: rec.proposal || { changes: [], warnings: [] },
@@ -435,7 +434,7 @@ function renderPipeReport() {
   const box = document.getElementById("pipe-report-view");
   if (!box) return;
   const stem = state.currentDeepRun;
-  const raw = ($("#pipe-report")?.value || "").trim();
+  const raw = ($<HTMLTextAreaElement>("#pipe-report")?.value || "").trim();
   if (!raw) { box.hidden = true; box.innerHTML = ""; return; }
   box.hidden = false;
   box.innerHTML = "";
@@ -521,18 +520,18 @@ function renderReviewGate(rec) {
   // Surface the actual report on this step: running the review gate alone doesn't
   // fill the Step 3 field, so without this the analyst lands here with nothing to
   // read but the gate's verdict. The review payload carries the report text.
-  if (rec.report && $("#pipe-report")) $("#pipe-report").value = rec.report;
+  if (rec.report && $<HTMLTextAreaElement>("#pipe-report")) $<HTMLTextAreaElement>("#pipe-report").value = rec.report;
   renderPipeReport();
   // Apply only becomes available once the review produced a change we're allowed
   // to apply -- i.e. at least one proposed symbol that isn't data-blocked.
-  const applyBtn = $("#pipe-apply-proposal");
+  const applyBtn = $<HTMLButtonElement>("#pipe-apply-proposal");
   if (applyBtn) applyBtn.disabled = !applicable.length;
 }
 
 $("#pipe-apply-proposal").addEventListener("click", async () => {
   const status = $("#pipe-apply-status");
   const segment = pipeSegment();
-  const date = ($("#pipe-date").value || "").trim();
+  const date = ($<HTMLInputElement>("#pipe-date").value || "").trim();
   if (!segment || !date) {
     status.textContent = "run the review gate first";
     status.classList.add("err");

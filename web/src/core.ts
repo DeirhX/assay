@@ -34,6 +34,9 @@ interface AppState {
   currentAnalysis: any;
   tickerSet: Set<string>;
   stagedBasket: Array<{ symbol: string; delta_czk: number }>;
+  // Set lazily by views; absent in the initial literal.
+  pipePreselect?: string | null;
+  _autoBuilding?: boolean;
 }
 
 const state: AppState = {

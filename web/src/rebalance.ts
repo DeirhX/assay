@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, sensitive, simpleTable, state, statTile } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
@@ -107,7 +106,7 @@ function escalateToStrategy(r) {
     (res.thesis_summary ? ` ${res.thesis_summary}` : "");
   pushNav({ view: "strategy" });
   setActiveView("strategy");
-  const input = $("#strat-direction");
+  const input = $<HTMLInputElement>("#strat-direction");
   if (input) { input.value = hint; input.focus(); }
 }
 
@@ -356,7 +355,7 @@ function renderRebalance(plan) {
     };
   }
 
-  const simBtn = $("#reb-simulate");
+  const simBtn = $<HTMLButtonElement>("#reb-simulate");
   if (simBtn) {
     simBtn.onclick = async () => {
       const trades = [];
@@ -424,7 +423,7 @@ function renderWhatif(wf) {
     className: "whatif-table",
     head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr>`,
     rows: wf.trades,
-    cells: (t) => {
+    cells: (t: { symbol: string; delta_czk: number }) => {
       const ar = afterRows[t.symbol];
       const before = (wf.before_status && wf.before_status[t.symbol]) || "\u2014";
       return `<td>${esc(t.symbol)}</td>` +
@@ -519,7 +518,7 @@ function analyzeFromAnywhere(sym) {
   if (!ticker) return;
   pushNav({ view: "deepdive", ticker });
   setActiveView("deepdive");
-  $("#ticker-input").value = ticker;
+  $<HTMLInputElement>("#ticker-input").value = ticker;
   pullTicker(ticker, { push: false });
 }
 
@@ -531,7 +530,7 @@ async function openTicker(sym) {
   if (!ticker) return;
   pushNav({ view: "deepdive", ticker });
   setActiveView("deepdive");
-  $("#ticker-input").value = ticker;
+  $<HTMLInputElement>("#ticker-input").value = ticker;
   const status = $("#dd-status");
   status.classList.remove("err");
   status.textContent = `Loading ${ticker}…`;
