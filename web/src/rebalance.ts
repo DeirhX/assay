@@ -57,9 +57,9 @@ function researchLine(r) {
   // which owns the human-gated path to actually change the target model.
   if (r.research_conflict) {
     const chip = el("button", "chip bad reb-conflict-chip",
-      "conflict \u2192 strategy");
+      "conflict \u2192 planner");
     chip.type = "button";
-    chip.title = "The suggested trade and your saved thesis disagree — open the strategy flow to reassess this name";
+    chip.title = "The suggested trade and your saved thesis disagree — open the Planner to reassess this name";
     chip.addEventListener("click", (e) => { e.stopPropagation(); escalateToStrategy(r); });
     line.appendChild(chip);
   }
