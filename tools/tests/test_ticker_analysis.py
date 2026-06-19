@@ -339,5 +339,39 @@ class FallbackErrorLogging(unittest.TestCase):
         self.assertEqual(levels.count("warning"), 2)  # each attempt
 
 
+class ParsePriceLevels(unittest.TestCase):
+    def test_strict_bullets(self):
+        report = ("## Price levels\n- Buy below: $92\n- Trim above: $145\n")
+        out = ta.parse_price_levels(report, "USD")
+        self.assertEqual(out, {"buy_below": 92.0, "trim_above": 145.0, "currency": "USD"})
+
+    def test_none_and_na(self):
+        report = "- Buy below: none\n- Trim above: N/A\n"
+        out = ta.parse_price_levels(report, "usd")
+        self.assertIsNone(out["buy_below"])
+        self.assertIsNone(out["trim_above"])
+        self.assertEqual(out["currency"], "USD")
+
+    def test_thousands_and_decimals(self):
+        report = "Buy below: $1,234.50\nTrim above: 2,000\n"
+        out = ta.parse_price_levels(report)
+        self.assertEqual(out["buy_below"], 1234.50)
+        self.assertEqual(out["trim_above"], 2000.0)
+
+    def test_trailing_parenthetical_and_em_dash(self):
+        report = "- Buy below — $80 (about 12% under spot)\n- Trim above: none\n"
+        out = ta.parse_price_levels(report)
+        self.assertEqual(out["buy_below"], 80.0)
+        self.assertIsNone(out["trim_above"])
+
+    def test_none_word_before_a_later_number_still_reads_none(self):
+        report = "- Buy below: none, though $50 was the old floor\n"
+        self.assertIsNone(ta.parse_price_levels(report)["buy_below"])
+
+    def test_missing_section_is_all_none(self):
+        out = ta.parse_price_levels("## Verdict\nHold.\n")
+        self.assertEqual(out, {"buy_below": None, "trim_above": None, "currency": ""})
+
+
 if __name__ == "__main__":
     unittest.main()
