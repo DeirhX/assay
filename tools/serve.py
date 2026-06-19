@@ -852,11 +852,7 @@ def _run_analysis_job(job_id: str, symbol: str, refresh: bool) -> None:
 
 # At most one analysis per symbol in flight; the CLIs are cheap but not free.
 def _analysis_running(symbol: str) -> bool:
-    return jobs.find(
-        lambda j: j.get("kind") == "ticker_analysis"
-        and j.get("symbol") == symbol
-        and j.get("state") in ("queued", "running")
-    )
+    return jobs.running("ticker_analysis", symbol=symbol)
 
 
 def _start_analysis(symbol: str, refresh: bool) -> dict:
@@ -945,12 +941,7 @@ def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
 
 
 def _qa_running(symbol: str) -> bool:
-    return jobs.find(
-        lambda j: j.get("kind") == "ticker_qa"
-        and j.get("symbol") == symbol
-        and j.get("state") in ("queued", "running")
-        and not j.get("cancelled")
-    )
+    return jobs.running("ticker_qa", symbol=symbol)
 
 
 def _start_qa(symbol: str, question: str) -> dict:
@@ -1056,12 +1047,7 @@ def _run_deep_qa_job(job_id: str, stem: str, question: str) -> None:
 
 
 def _deep_qa_running(stem: str) -> bool:
-    return jobs.find(
-        lambda j: j.get("kind") == "deep_qa"
-        and j.get("stem") == stem
-        and j.get("state") in ("queued", "running")
-        and not j.get("cancelled")
-    )
+    return jobs.running("deep_qa", stem=stem)
 
 
 def _start_deep_qa(stem: str, question: str) -> dict:
@@ -1789,11 +1775,7 @@ def _sync_holdings(progress=None) -> dict:
 # as "active" for the reload watcher. One sync at a time -- the Flex pull hits a
 # shared cache dir and there is no point racing two.
 def _sync_running() -> bool:
-    return jobs.find(
-        lambda j: j.get("kind") == "ibkr_sync"
-        and j.get("state") in ("queued", "running")
-        and not j.get("cancelled")
-    )
+    return jobs.running("ibkr_sync")
 
 
 def _run_holdings_sync_job(job_id: str) -> None:
@@ -1850,11 +1832,7 @@ def _sync_history(progress=None, *, full: bool = False) -> dict:
 
 
 def _history_running() -> bool:
-    return jobs.find(
-        lambda j: j.get("kind") == "ibkr_history"
-        and j.get("state") in ("queued", "running")
-        and not j.get("cancelled")
-    )
+    return jobs.running("ibkr_history")
 
 
 def _run_history_sync_job(job_id: str, full: bool = False) -> None:
@@ -1920,11 +1898,7 @@ def _history_payload() -> dict | None:
 
 
 def _sectors_running() -> bool:
-    return jobs.find(
-        lambda j: j.get("kind") == "ibkr_sectors"
-        and j.get("state") in ("queued", "running")
-        and not j.get("cancelled")
-    )
+    return jobs.running("ibkr_sectors")
 
 
 def _run_sectors_job(job_id: str) -> None:
