@@ -31,8 +31,12 @@ export function mdToHtml(md: string | null | undefined): string {
       const tickerCols = new Set(
         head.map((h, i) => (/^(ticker|symbol|tickers?|symbols?)$/i.test(h.trim()) ? i : -1)).filter((i) => i >= 0),
       );
+      // Link a Ticker/Symbol cell that looks like a symbol: a letter-led US base
+      // (optionally exchange-qualified) or a foreign exchange-qualified symbol
+      // with a possibly-numeric base (000660.KS). Still rejects junk like "N/A".
+      const tickerShape = /^(?:[A-Za-z]{1,5}(?:\.[A-Za-z]{1,3})?|[A-Za-z0-9]{1,6}\.[A-Za-z]{1,3})$/;
       const cell = (c: string, ci: number) =>
-        (tickerCols.has(ci) && /^[A-Za-z][A-Za-z0-9.]{0,5}$/.test(c.trim()))
+        (tickerCols.has(ci) && tickerShape.test(c.trim()))
           ? `<td>${tickerAnchorHtml(c.trim())}</td>`
           : `<td>${inline(c)}</td>`;
       let html = '<table class="md-tbl"><thead><tr>' + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead>";
