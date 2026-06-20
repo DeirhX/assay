@@ -1,5 +1,5 @@
 import { $, api, el, esc } from "./core";
-import { detectStance } from "./deepdive";
+import { detectStance } from "./deepdive/decorate";
 import { openTicker } from "./rebalance";
 import { cleanSymbol } from "./shell";
 

@@ -22,7 +22,7 @@ from store import (
 )
 
 
-def _deep_runs() -> list[dict]:
+def deep_runs() -> list[dict]:
     runs = {}
     for path in sorted(DEEP_DIR.glob("*")):
         if not path.is_file():
@@ -111,7 +111,7 @@ def _looks_like_json_doc(text: str) -> bool:
         return False
 
 
-def _save_deep_artifact(body: dict) -> dict:
+def save_deep_artifact(body: dict) -> dict:
     segment = _slugify(str(body.get("segment") or ""))
     date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
@@ -150,7 +150,7 @@ def _save_deep_artifact(body: dict) -> dict:
 _DEEP_RUN_SUFFIXES = (".md", ".sources.json", ".review.md", ".target-proposal.json", ".qa.json")
 
 
-def _delete_deep_run(stem: str) -> dict:
+def delete_deep_run(stem: str) -> dict:
     """Remove a saved Deep Research run and all of its sidecar artifacts. Raises
     ValueError if the stem is empty or nothing on disk matches it."""
     if not (stem or "").strip():
@@ -164,4 +164,4 @@ def _delete_deep_run(stem: str) -> dict:
             removed.append(path.name)
     if not removed:
         raise ValueError(f"unknown run {stem}")
-    return {"stem": stem, "removed": removed, "runs": _deep_runs()}
+    return {"stem": stem, "removed": removed, "runs": deep_runs()}

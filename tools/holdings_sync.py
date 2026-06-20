@@ -5,7 +5,8 @@ Extracted from serve.py. All read-only against IBKR Flex: it shells out to the
 vendored ibkr_portfolio.py reader (the Flex query cannot trade) and caches the
 results. Each long pull runs as a registered background job (jobs.py) so it
 survives navigation and surfaces in the global task pill. The HTTP layer keeps
-only thin handlers that call the _start_* / _*_payload helpers here.
+only thin handlers that call the start_* / *_payload helpers here. Public names
+are underscore-free; serve.py imports them aliased to its private call sites.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ IBKR_SECRETS = TOOLS_SECRETS
 IBKR_CACHE_DIR = DATA_DIR / "cache" / "ibkr"
 
 
-def _ibkr_status() -> dict:
+def ibkr_status() -> dict:
     """Whether IBKR Flex credentials are configured. The token is NEVER echoed;
     the query id is returned so the form can prefill it (useless without the
     token). Placeholders (<...>) and blanks count as unset, matching the reader."""
@@ -69,7 +70,7 @@ def _ibkr_status() -> dict:
     }
 
 
-def _save_ibkr_secrets(body: dict) -> dict:
+def save_ibkr_secrets(body: dict) -> dict:
     """Upsert IBKR Flex credentials into the gitignored tools/secrets.env and the
     live process env. Blank fields are left untouched, so the query id can be
     updated without re-pasting the token. Returns the (token-free) status."""
@@ -103,7 +104,7 @@ def _save_ibkr_secrets(body: dict) -> dict:
         if key not in known and val:
             lines.append(f"{key}={val}")
     IBKR_SECRETS.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return _ibkr_status()
+    return ibkr_status()
 
 
 def _sync_holdings(progress=None) -> dict:
@@ -159,7 +160,7 @@ def _sync_holdings(progress=None) -> dict:
     # hiccup must not fail the sync itself.
     _p("regenerating plan pages…")
     payload = holdings_payload()
-    payload["site"] = _regenerate_site()
+    payload["site"] = regenerate_site()
     return payload
 
 
@@ -188,7 +189,7 @@ def _run_holdings_sync_job(job_id: str) -> None:
                 result={"site": payload.get("site"), "generated_at": payload.get("generated_at")})
 
 
-def _start_holdings_sync() -> dict:
+def start_holdings_sync() -> dict:
     if _sync_running():
         raise _Conflict("an IBKR sync is already running")
     job = _new_job("ibkr_sync")
@@ -214,7 +215,7 @@ def _sync_history(progress=None, *, full: bool = False) -> dict:
     since it was last covered and merges them in (usually a single Flex request).
     ``full=True`` forces a complete rebuild back to inception. Returns the payload."""
     token, query_id = ibkr_history.resolve_history_credentials()
-    existing = None if full else _history_payload()
+    existing = None if full else history_payload()
     if existing:
         payload = ibkr_history.extend_history(existing, token, query_id, progress=progress)
     else:
@@ -252,7 +253,7 @@ def _run_history_sync_job(job_id: str, full: bool = False) -> None:
                         "to_date": payload.get("to_date")})
 
 
-def _start_history_sync(full: bool = False) -> dict:
+def start_history_sync(full: bool = False) -> dict:
     if _history_running():
         raise _Conflict("a portfolio-history pull is already running")
     job = _new_job("ibkr_history")
@@ -281,7 +282,7 @@ def _attach_sectors(payload: dict | None) -> dict | None:
     return payload
 
 
-def _history_payload() -> dict | None:
+def history_payload() -> dict | None:
     """The cached normalized history, or None if it hasn't been pulled yet.
 
     Enriched on read so caches written before the grouping/currency fields
@@ -321,7 +322,7 @@ def _run_sectors_job(job_id: str) -> None:
     _update_job(job_id, state="done", message=msg, result=stats)
 
 
-def _start_sectors_sync() -> dict:
+def start_sectors_sync() -> dict:
     if _sectors_running():
         raise _Conflict("a sector lookup is already running")
     job = _new_job("ibkr_sectors")
@@ -329,7 +330,7 @@ def _start_sectors_sync() -> dict:
     return _job_public(job)
 
 
-def _regenerate_site() -> dict:
+def regenerate_site() -> dict:
     """Re-render the derived report pages from the current data snapshot. Wraps
     generate_site.regenerate() so a failure degrades gracefully into the payload
     instead of raising."""

@@ -200,7 +200,7 @@ class JobsListEndpoint(unittest.TestCase):
 class DeepArtifactJsonGuard(unittest.TestCase):
     """A Deep Research report is narrative markdown. A bad scrape/paste once
     stored a JSON segment-universe blob as the `.md`, which the Analyses view
-    then rendered raw. _save_deep_artifact must refuse a JSON-document body."""
+    then rendered raw. save_deep_artifact must refuse a JSON-document body."""
 
     def test_detects_bare_json_object(self):
         self.assertTrue(deep_runs._looks_like_json_doc('{"title": "Space", "members": []}'))
@@ -223,7 +223,7 @@ class DeepArtifactJsonGuard(unittest.TestCase):
 
     def test_save_rejects_json_report(self):
         with self.assertRaises(ValueError) as ctx:
-            deep_runs._save_deep_artifact({
+            deep_runs.save_deep_artifact({
                 "segment": "space-exploration",
                 "date": "2026-06-13",
                 "report": '{"title": "Space", "sleeves": [], "members": []}',
@@ -339,7 +339,7 @@ class DeepRunDelete(unittest.TestCase):
         cls.thread.join(timeout=5)
 
     def setUp(self):
-        # DEEP_DIR must sit under REPO_ROOT because _deep_runs() reports each run
+        # DEEP_DIR must sit under REPO_ROOT because deep_runs() reports each run
         # path relative to REPO_ROOT; redirect both to a temp tree so the real
         # data/ dir is untouched and relative_to() still resolves. The delete
         # handler resolves these from deep_runs (where the function now lives).

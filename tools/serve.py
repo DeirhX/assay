@@ -34,13 +34,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (  # noqa: E402
-    DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
+    ANALYSIS_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
     SEGMENT_DEF_DIR, SEGMENT_OUT_DIR, TARGET_MODEL_JSON, WEB_DIR,
 )
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
-ANALYSIS_DIR = RESEARCH_DIR / "analysis"  # on-demand single-ticker CLI analyses
-AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"  # gitignored
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses
 # a dedicated profile so it never fights the MCP browser for the profile lock.
 DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
@@ -59,8 +57,6 @@ import whatif  # noqa: E402
 import journal  # noqa: E402
 import jobs  # noqa: E402
 import orchestrate  # noqa: E402  -- durable state machine for the guided strategy run
-import target_construct  # noqa: E402  -- LLM + deterministic target-model synthesis
-import hygiene  # noqa: E402  -- shared worst_severity for the research overlay
 import errorlog  # noqa: E402
 from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile math
 import price_levels  # noqa: E402  -- locked per-symbol buy-below/trim-above triggers
@@ -69,22 +65,42 @@ from symbols import (  # noqa: E402  -- symbol resolve/alias/search (clean publi
     candidates as _symbol_candidates, resolve_symbol as _resolve_symbol,
     save_alias as _save_symbol_alias, search as _symbol_search,
 )
-from segments_service import (  # noqa: E402  -- segment validate/draft/prompt/list
-    draft_segment as _draft_segment, freshness_directive as _freshness_directive,
-    merge_draft_members as _merge_draft_members,
+from segments_service import (  # noqa: E402  -- segment validate/prompt/list
+    freshness_directive as _freshness_directive,
     segment_path as _segment_path, segment_prompt as _segment_prompt,
     segments_list as _segments_list, start_draft as _start_segment_draft,
     validate_definition as _validate_segment_definition,
 )
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
-    _history_payload, _ibkr_status, _regenerate_site, _save_ibkr_secrets,
-    _start_history_sync, _start_holdings_sync, _start_sectors_sync,
+    history_payload as _history_payload, ibkr_status as _ibkr_status,
+    regenerate_site as _regenerate_site, save_ibkr_secrets as _save_ibkr_secrets,
+    start_history_sync as _start_history_sync, start_holdings_sync as _start_holdings_sync,
+    start_sectors_sync as _start_sectors_sync,
 )
-from target_model import (  # noqa: E402  -- target-model apply + rebalance preview
-    _apply_target_proposal, _preview_plan_for_proposal,
-)
+from target_model import apply_target_proposal as _apply_target_proposal  # noqa: E402
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
-    _delete_deep_run, _deep_runs, _save_deep_artifact,
+    delete_deep_run as _delete_deep_run, deep_runs as _deep_runs,
+    save_deep_artifact as _save_deep_artifact,
+)
+from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q&A thread families
+    drop_qa_exchange as _drop_qa_exchange, latest_analysis as _latest_analysis,
+    load_deep_qa as _load_deep_qa, load_qa as _load_qa,
+    deep_qa_path as _deep_qa_path, qa_path as _qa_path,
+    start_analysis as _start_analysis, start_deep_qa as _start_deep_qa,
+    start_qa as _start_qa,
+)
+from browser_jobs import (  # noqa: E402  -- Perplexity auth + deep-research/login/import jobs
+    get_auth_state as _get_auth_state, start_deep_research as _start_deep_research,
+    start_import as _start_import, start_login as _start_login,
+    verify_login as _verify_login,
+)
+from strategy_service import (  # noqa: E402  -- guided Direction->Rebalance run gates
+    approve_strategy_proposal as _approve_strategy_proposal,
+    approve_strategy_segment as _approve_strategy_segment,
+    start_strategy as _start_strategy,
+)
+from rebalance_overlay import (  # noqa: E402  -- research overlay + price gate on plan rows
+    attach_research_overlay as _attach_research_overlay,
 )
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
@@ -93,23 +109,21 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
 from store import (  # noqa: E402
-    load as _load, write_json as _write_json, write_text as _write_text,
+    load as _load, write_json as _write_json,
     slugify as _slugify, safe_symbol as _safe_symbol,
 )
 from jobs import (  # noqa: E402
-    new_job as _new_job, update_job as _update_job, public as _job_public,
-    claim_active as _claim_active, release_active as _release_active,
     any_active as _any_active_deep_job, active_count as _active_browser_count,
     max_slots as _max_browser_slots,
 )
 
 
 # HTTP error vocabulary (apierror): handlers and the services they call `raise`
-# an outcome; _dispatch() maps each _HttpError to its .status. _Conflict is used
-# by the in-flight-work guards below; _BadRequest by _read_body; _Forbidden and
-# _BadGateway live with the trade service that raises them.
+# an outcome; _dispatch() maps each _HttpError to its .status. _BadRequest is
+# used by _read_body; the Conflict/Forbidden/BadGateway outcomes are raised by
+# the service modules that own that work, not by serve directly anymore.
 from apierror import (  # noqa: E402
-    BadRequest as _BadRequest, Conflict as _Conflict, HttpError as _HttpError,
+    BadRequest as _BadRequest, HttpError as _HttpError,
 )
 
 
@@ -128,16 +142,13 @@ PRICE_HISTORY_RANGES: dict[str, tuple[str, str]] = {
     "max": ("max", "1mo"),
 }
 
-_PULL_LOCK = threading.Lock()  # serialize outbound pulls; be polite to sources
+from research_pull import PULL_LOCK as _PULL_LOCK  # noqa: E402  -- shared pull lock
 
 # The deep-research / login / analysis job registry lives in jobs.py; concurrent
 # browser runs are bounded by jobs.claim_active / jobs.release_active (a counting
 # limit, default PPLX_MAX_CONCURRENT=3), each on its own cloned Chrome profile.
-def _slots_busy_msg() -> str:
-    return (f"all {_max_browser_slots()} Perplexity browser slots are busy "
-            "— wait for a run to finish, or raise PPLX_MAX_CONCURRENT")
-
-
+# The browser-backed services (browser_jobs.py) own the slot claims and the
+# jobs.slots_busy_msg wording; serve only reports the live counts in /setup.
 JOBS_LIST_LIMIT = 100  # cap the central Task Center feed (newest first)
 
 # Dev live-reload. Off unless started with --reload. _BOOT_TOKEN is recomputed
@@ -238,439 +249,6 @@ def _ticker_deep_prompt(symbol: str) -> dict:
     return {"segment": f"ticker-{sym.lower()}", "symbol": sym, "date": today, "prompt": prompt}
 
 
-# --------------------------------------------------------------------------- #
-# On-demand single-ticker analysis (cheap CLI tier: Claude -> Cursor fallback)
-# --------------------------------------------------------------------------- #
-def _save_analysis_artifact(symbol: str, report: str, meta: dict) -> dict:
-    """Persist a CLI analysis as dated markdown + a sidecar of provenance, so it
-    survives restarts and can be shown next to the dossier."""
-    sym = _safe_symbol(symbol)
-    date = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    stem = f"{sym}-{date}"
-    # Currency comes from the dossier so suggested levels and later price
-    # comparisons all live in the instrument's own trading currency.
-    dossier = _load(RESEARCH_DIR / f"{sym}.json") or {}
-    currency = str(dossier.get("currency") or "").upper()
-    info = {
-        "symbol": sym,
-        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "backend": meta.get("backend"),
-        "backend_label": meta.get("backend_label"),
-        "model": meta.get("model"),
-        "attempts": meta.get("attempts") or [],
-        "currency": currency,
-        "price_levels_suggested": ticker_analysis.parse_price_levels(report, currency),
-    }
-    _write_text(ANALYSIS_DIR / f"{stem}.md", report.strip() + "\n")
-    _write_json(ANALYSIS_DIR / f"{stem}.meta.json", info)
-    return {"stem": stem, "meta": info}
-
-
-def _latest_analysis(symbol: str) -> dict | None:
-    """Most recent saved analysis for a symbol (markdown + provenance), or None."""
-    sym = _safe_symbol(symbol)
-    md = sorted(ANALYSIS_DIR.glob(f"{sym}-*.md"), reverse=True)
-    if not md:
-        return None
-    path = md[0]
-    meta = _load(path.with_name(path.stem + ".meta.json")) or {}
-    return {
-        "symbol": sym,
-        "stem": path.stem,
-        "report": path.read_text(encoding="utf-8"),
-        "meta": meta,
-    }
-
-
-def _run_analysis_job(job_id: str, symbol: str, refresh: bool) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        sym = _safe_symbol(symbol)
-        rec = _load(RESEARCH_DIR / f"{sym}.json")
-        if rec is None or refresh:
-            progress("pulling fresh deterministic data…")
-            with _PULL_LOCK:
-                rec = research_pull.pull_ticker(sym)
-        _update_job(job_id, state="running", message="analysing…")
-        result = ticker_analysis.analyze(rec, progress=progress)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        return
-
-    if not result.get("ok"):
-        _update_job(job_id, state="error",
-                    error=result.get("error") or "all analysis backends failed")
-        return
-    try:
-        saved = _save_analysis_artifact(sym, result["report"], result)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"analysis produced but not saved: {type(exc).__name__}: {exc}")
-        return
-    _update_job(job_id, state="done", message=f"analysed via {result.get('backend_label')}",
-                result={
-                    "symbol": sym,
-                    "backend": result.get("backend"),
-                    "backend_label": result.get("backend_label"),
-                    "model": result.get("model"),
-                    "report_chars": len(result["report"]),
-                },
-                artifact=saved)
-
-
-# At most one analysis per symbol in flight; the CLIs are cheap but not free.
-def _analysis_running(symbol: str) -> bool:
-    return jobs.running("ticker_analysis", symbol=symbol)
-
-
-def _start_analysis(symbol: str, refresh: bool) -> dict:
-    sym = _safe_symbol(symbol)
-    if _analysis_running(sym):
-        raise _Conflict(f"an analysis for {sym} is already running")
-    # Unlike Perplexity runs, CLI analyses don't touch the shared browser, so we
-    # do NOT take _claim_active -- they may run alongside a deep-research job.
-    job = _new_job("ticker_analysis", symbol=sym, refresh=bool(refresh))
-    threading.Thread(target=_run_analysis_job,
-                     args=(job["id"], sym, bool(refresh)), daemon=True).start()
-    return _job_public(job)
-
-
-# --------------------------------------------------------------------------- #
-# Deep-dive Q&A: archived, continuable follow-up threads per ticker. Stored next
-# to the analyses (gitignored cache) so they survive restarts and can be resumed.
-# --------------------------------------------------------------------------- #
-def _qa_path(symbol: str) -> Path:
-    return ANALYSIS_DIR / f"{_safe_symbol(symbol)}.qa.json"
-
-
-def _load_qa(symbol: str) -> dict:
-    sym = _safe_symbol(symbol)
-    data = _load(_qa_path(sym))
-    if not isinstance(data, dict):
-        return {"symbol": sym, "turns": []}
-    data.setdefault("symbol", sym)
-    if not isinstance(data.get("turns"), list):
-        data["turns"] = []
-    return data
-
-
-def _run_qa_job(job_id: str, symbol: str, question: str) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        sym = _safe_symbol(symbol)
-        rec = _load(RESEARCH_DIR / f"{sym}.json")
-        if rec is None:
-            progress("pulling deterministic data…")
-            with _PULL_LOCK:
-                rec = research_pull.pull_ticker(sym)
-        thread = _load_qa(sym)
-        latest = _latest_analysis(sym)
-        note = latest.get("report") if latest else None
-        _update_job(job_id, state="running", message="thinking…")
-        result = ticker_analysis.ask(rec, thread.get("turns") or [], question,
-                                     note=note, session=thread.get("session"), progress=progress,
-                                     cancel=lambda: jobs.is_cancelled(job_id))
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        return
-
-    # Cancelled mid-flight: the subprocess was killed and the answer discarded;
-    # leave the archived thread untouched so the user can ask something else.
-    if result.get("cancelled") or jobs.is_cancelled(job_id):
-        _update_job(job_id, state="cancelled", message="cancelled")
-        return
-
-    if not result.get("ok"):
-        _update_job(job_id, state="error", error=result.get("error") or "all Q&A backends failed")
-        return
-
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    thread.setdefault("created_at", now)
-    thread["updated_at"] = now
-    # Track the resumable session at thread level. A non-session provider (Cursor)
-    # returns no session, so this resets to None -- the next Claude turn then
-    # opens a fresh session seeded with the full history, keeping context correct.
-    thread["session"] = result.get("session")
-    thread["turns"].append({"role": "user", "text": question, "ts": now})
-    thread["turns"].append({
-        "role": "assistant", "text": result["report"], "ts": now,
-        "backend": result.get("backend"), "backend_label": result.get("backend_label"),
-        "model": result.get("model"), "usage": result.get("usage") or {},
-    })
-    try:
-        _write_json(_qa_path(sym), thread)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"answer produced but not saved: {type(exc).__name__}: {exc}")
-        return
-    _update_job(job_id, state="done", message=f"answered via {result.get('backend_label')}",
-                result={"symbol": sym, "turns": len(thread["turns"])})
-
-
-def _qa_running(symbol: str) -> bool:
-    return jobs.running("ticker_qa", symbol=symbol)
-
-
-def _start_qa(symbol: str, question: str) -> dict:
-    sym = _safe_symbol(symbol)
-    question = (question or "").strip()
-    if not question:
-        raise ValueError("empty question")
-    if _qa_running(sym):
-        raise _Conflict(f"a question for {sym} is already being answered")
-    job = _new_job("ticker_qa", symbol=sym)
-    threading.Thread(target=_run_qa_job, args=(job["id"], sym, question), daemon=True).start()
-    return _job_public(job)
-
-
-# --------------------------------------------------------------------------- #
-# Deep-research Q&A: continuable follow-up threads about a saved run, grounded
-# in the report markdown + its citations. Stored next to the run artifacts.
-# --------------------------------------------------------------------------- #
-def _deep_qa_path(stem: str) -> Path:
-    return DEEP_DIR / f"{_slugify(stem)}.qa.json"
-
-
-def _load_deep_qa(stem: str) -> dict:
-    stem = _slugify(stem)
-    data = _load(_deep_qa_path(stem))
-    if not isinstance(data, dict):
-        return {"stem": stem, "turns": []}
-    data.setdefault("stem", stem)
-    if not isinstance(data.get("turns"), list):
-        data["turns"] = []
-    return data
-
-
-def _drop_qa_exchange(thread: dict, index) -> bool:
-    """Remove the user turn at *index* plus the assistant reply that follows it.
-
-    Returns True if anything was removed. Any resumable provider session is
-    dropped so the next turn reseeds from the trimmed history -- otherwise the
-    session would still carry the deleted exchange and contradict what we show.
-    """
-    turns = thread.get("turns")
-    if not isinstance(turns, list):
-        return False
-    try:
-        i = int(index)
-    except (TypeError, ValueError):
-        return False
-    if i < 0 or i >= len(turns) or turns[i].get("role") != "user":
-        return False
-    end = i + 1
-    if end < len(turns) and turns[end].get("role") == "assistant":
-        end += 1
-    del turns[i:end]
-    thread.pop("session", None)
-    return True
-
-
-def _run_deep_qa_job(job_id: str, stem: str, question: str) -> None:
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        report_path = DEEP_DIR / f"{stem}.md"
-        if not report_path.exists():
-            _update_job(job_id, state="error", error=f"no saved report for {stem}")
-            return
-        document = report_path.read_text(encoding="utf-8")
-        sources = _load(DEEP_DIR / f"{stem}.sources.json") or {}
-        citations = sources.get("citations") or []
-        title = (_load(DEEP_DIR / f"{stem}.target-proposal.json") or {}).get("title") or stem
-        thread = _load_deep_qa(stem)
-        _update_job(job_id, state="running", message="thinking…")
-        result = ticker_analysis.ask_about_doc(
-            title, document, citations, thread.get("turns") or [], question,
-            progress=progress, cancel=lambda: jobs.is_cancelled(job_id))
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        return
-
-    if result.get("cancelled") or jobs.is_cancelled(job_id):
-        _update_job(job_id, state="cancelled", message="cancelled")
-        return
-    if not result.get("ok"):
-        _update_job(job_id, state="error", error=result.get("error") or "all Q&A backends failed")
-        return
-
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    thread.setdefault("created_at", now)
-    thread["updated_at"] = now
-    thread["turns"].append({"role": "user", "text": question, "ts": now})
-    thread["turns"].append({
-        "role": "assistant", "text": result["report"], "ts": now,
-        "backend": result.get("backend"), "backend_label": result.get("backend_label"),
-        "model": result.get("model"), "usage": result.get("usage") or {},
-    })
-    try:
-        _write_json(_deep_qa_path(stem), thread)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"answer produced but not saved: {type(exc).__name__}: {exc}")
-        return
-    _update_job(job_id, state="done", message=f"answered via {result.get('backend_label')}",
-                result={"stem": stem, "turns": len(thread["turns"])})
-
-
-def _deep_qa_running(stem: str) -> bool:
-    return jobs.running("deep_qa", stem=stem)
-
-
-def _start_deep_qa(stem: str, question: str) -> dict:
-    stem = _slugify(stem)
-    question = (question or "").strip()
-    if not question:
-        raise ValueError("empty question")
-    if not (DEEP_DIR / f"{stem}.md").exists():
-        raise ValueError(f"no saved report for {stem}")
-    if _deep_qa_running(stem):
-        raise _Conflict(f"a question for {stem} is already being answered")
-    job = _new_job("deep_qa", stem=stem)
-    threading.Thread(target=_run_deep_qa_job, args=(job["id"], stem, question), daemon=True).start()
-    return _job_public(job)
-
-
-# Only these keys belong in a target-model entry; the synthesis engine carries
-# extra metadata (conviction, sleeve, rationale) on a change that must never be
-# written into the model itself.
-# Research-overlay classification: how a thesis verdict leans. Used only to flag
-# when the deterministic band action and the human thesis disagree -- never to
-# size a trade. Thesis actions are free text from the dossier form, so the match
-# is loose and lowercased.
-_THESIS_ADD_LIKE = {"add", "accumulate", "buy", "build", "increase", "overweight"}
-_THESIS_TRIM_LIKE = {"trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"}
-
-
-def _research_conflict(row_action: str | None, thesis_action: str | None) -> bool:
-    """True when the band's suggested action and the thesis verdict point opposite
-    ways: trimming a name the thesis wants more of, or buying one it wants less
-    of. Anything else (no thesis, agreement, a neutral hold/wait) is not a
-    conflict."""
-    ta = (thesis_action or "").lower().strip()
-    if not ta:
-        return False
-    if row_action == "trim" and ta in _THESIS_ADD_LIKE:
-        return True
-    if row_action == "buy" and ta in _THESIS_TRIM_LIKE:
-        return True
-    return False
-
-
-def _research_overlay(provider_sym: str) -> dict | None:
-    """Compact, independent research context for one rebalance row, read from the
-    per-ticker dossier. Returns None when there's no dossier so the row reads as
-    'no signal'. Nothing here feeds the trade math -- it is decision support
-    only. ``research_score`` is deliberately omitted (it is segment-only, not on
-    per-ticker files)."""
-    rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
-    if not isinstance(rec, dict):
-        return None
-    thesis = rec.get("thesis") if isinstance(rec.get("thesis"), dict) else {}
-    momentum = rec.get("momentum") if isinstance(rec.get("momentum"), dict) else {}
-    return {
-        "as_of": rec.get("as_of"),
-        "data_quality": hygiene.worst_severity(rec.get("cross_checks") or []),
-        "decision": rec.get("decision"),
-        "momentum_3m_pct": momentum.get("chg_3m_pct"),
-        "thesis_action": (thesis.get("action") or "").strip() or None,
-        "thesis_summary": (thesis.get("summary") or "").strip() or None,
-        "thesis_as_of": thesis.get("as_of"),
-    }
-
-
-def _mark_price_map(holdings: dict | None) -> dict[str, dict]:
-    """symbol -> {price, currency} from the holdings snapshot's marks. The same
-    marks the plan was sized against, so the price gate compares apples to
-    apples (instrument currency)."""
-    out: dict[str, dict] = {}
-    for p in (holdings or {}).get("positions") or []:
-        sym = str(p.get("symbol") or "").strip().upper()
-        price = p.get("mark_price")
-        if sym and isinstance(price, (int, float)) and price:
-            out[sym] = {"price": float(price), "currency": (p.get("currency") or "").upper()}
-    return out
-
-
-def _gate_current_price(name: str, provider_sym: str, price_map: dict[str, dict]) -> float | None:
-    """Current instrument price for the gate: the holdings mark first (what the
-    plan was sized on), else the dossier's last spot. None when neither knows."""
-    held = price_map.get((name or "").upper())
-    if held and isinstance(held.get("price"), (int, float)):
-        return float(held["price"])
-    rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
-    if isinstance(rec, dict):
-        pv = rec.get("price")
-        if isinstance(pv, dict) and isinstance(pv.get("value"), (int, float)):
-            return float(pv["value"])
-    return None
-
-
-def _apply_price_gate(row: dict, provider_sym: str, price_map: dict[str, dict]) -> None:
-    """Attach a ``price_gate`` to a target row from its locked level (if any) and
-    the current price, and GRADE the suggested move by how much of the ladder the
-    price currently unlocks:
-
-    * fraction 0  -> nothing triggered yet: downgrade the action to ``"wait"``.
-    * 0 < f < 1   -> some tranches live: keep the action but scale the band's
-      suggested delta down to the live fraction (``full_*`` keeps the original).
-    * fraction 1  -> fully unlocked: act on the whole band-implied delta.
-
-    The weight band still sets the *target* delta; the ladder decides how much of
-    it to act on now, and at what price. No level -> nothing changes."""
-    level = price_levels.get(provider_sym)
-    if not level:
-        return
-    current = _gate_current_price(row.get("name") or "", provider_sym, price_map)
-    gate = price_levels.evaluate(level, current)
-    if not gate:
-        return
-    action = row.get("action")
-    side = "buy" if action == "buy" else ("trim" if action == "trim" else None)
-    total = gate["buy_total"] if side == "buy" else (gate["trim_total"] if side == "trim" else 0)
-    if side and gate["price_known"] and total:
-        fraction = gate["buy_fraction"] if side == "buy" else gate["trim_fraction"]
-        gate["applied_fraction"] = fraction
-        if fraction <= 0:
-            gate["blocked_action"] = side
-            row["action"] = "wait"
-        elif fraction < 1.0:
-            gate["partial"] = True
-            for key in ("suggest_delta_pct", "suggest_delta_czk"):
-                val = row.get(key)
-                if isinstance(val, (int, float)):
-                    gate["full_" + key] = val
-                    row[key] = round(val * fraction, 2) if key.endswith("pct") else round(val * fraction)
-    row["price_gate"] = gate
-
-
-def _attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
-    """Enrich each held target row of a rebalance plan, in place, with a compact
-    ``research`` object + a ``research_conflict`` flag, and a ``price_gate`` from
-    any locked price level (downgrading the action to ``"wait"`` when the price
-    isn't favorable yet). Best-effort: a missing/malformed dossier or level is
-    skipped silently so the planner always renders."""
-    price_map = _mark_price_map(holdings)
-    for row in plan.get("rows") or []:
-        if row.get("kind") != "target" or not row.get("held"):
-            continue
-        try:
-            provider_sym = _resolve_symbol(row.get("name") or "")
-        except Exception:  # noqa: BLE001 - a bad symbol shouldn't break the plan
-            continue
-        try:
-            overlay = _research_overlay(provider_sym)
-        except Exception:  # noqa: BLE001 - the overlay is optional; never break the plan
-            overlay = None
-        if overlay:
-            row["research"] = overlay
-            row["research_conflict"] = _research_conflict(row.get("action"), overlay["thesis_action"])
-        try:
-            _apply_price_gate(row, provider_sym, price_map)
-        except Exception:  # noqa: BLE001 - gating is decision support, never fatal
-            pass
 
 
 _TICKER_SHAPE = re.compile(r"^[A-Z][A-Z0-9.]{0,5}$")
@@ -867,468 +445,6 @@ def _run_reloader() -> int:
         if code == 3:
             continue  # requested reload -> respawn with the new code
         return code  # clean exit or crash -> stop supervising
-
-
-def _get_auth_state() -> dict:
-    st = _load(AUTH_STATE_FILE) or {}
-    return {
-        "logged_in": bool(st.get("logged_in")),
-        "updated_at": st.get("updated_at"),
-        "note": st.get("note", ""),
-    }
-
-
-def _set_auth_state(logged_in: bool, note: str = "") -> None:
-    _write_json(AUTH_STATE_FILE, {
-        "logged_in": bool(logged_in),
-        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "note": note,
-    })
-
-
-def _verify_login() -> dict:
-    """Synchronous, ~8s live probe that refreshes the cached login flag."""
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    try:
-        import pplx_deep_research as worker
-        res = worker.check_login()
-        if res.get("status") == "error":
-            raise _Conflict(res.get("detail") or "login check failed")
-        _set_auth_state(res.get("status") == "logged_in", "active check")
-        return _get_auth_state()
-    finally:
-        _release_active()
-
-
-def _clarify_answer_for(segment: str) -> str:
-    """A concrete reply the worker can submit if Perplexity asks what is in the
-    segment, so the run finishes unattended."""
-    definition = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
-    syms = [m.get("symbol") for m in definition.get("members", []) if m.get("symbol")]
-    if syms:
-        return (
-            "My segment is exactly these tickers, treated as individual stocks: "
-            + ", ".join(syms)
-            + ". Do not ask further clarifying questions; proceed with the full "
-            "deep research now."
-        )
-    return (
-        "Use exactly the tickers and scope in my original request. Do not ask "
-        "further clarifying questions; proceed now."
-    )
-
-
-# Appended to the import-failure message of the deep-research job so a user who
-# never set Playwright up gets the install commands inline.
-_PLAYWRIGHT_INSTALL_HINT = (
-    ". Install with `py -3 -m pip install playwright` then "
-    "`py -3 -m playwright install chromium`."
-)
-
-
-def _browser_job(job_id: str, *, running_msg: str, call, handle, install_hint: str = "") -> None:
-    """Shared scaffold for the three Playwright-backed jobs (deep run, login,
-    import). It owns the boilerplate that was duplicated across all three: import
-    the worker (mapping a missing Playwright to an error), flip the job to
-    running, capture worker exceptions, and ALWAYS release the single active-job
-    slot via finally. `call(worker, progress)` performs the actual worker call
-    and returns its result dict; `handle(res)` maps that result to job state and
-    must not release the slot itself."""
-    def progress(msg: str) -> None:
-        _update_job(job_id, message=msg)
-
-    try:
-        import pplx_deep_research as worker
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error",
-                    error=f"Playwright not available: {type(exc).__name__}: {exc}{install_hint}")
-        _release_active()
-        return
-
-    _update_job(job_id, state="running", message=running_msg)
-    try:
-        res = call(worker, progress)
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
-        _release_active()
-        return
-
-    try:
-        handle(res)
-    finally:
-        _release_active()
-
-
-def _save_run_result(job_id: str, res: dict, segment: str, date: str, *,
-                     source_url, auth_label: str, done_msg: str) -> None:
-    """Shared 'done' handling for the deep-run and import jobs: persist the
-    artifact, refresh auth state, and finish the job with a uniform result.
-    Leaves the active-slot release to the _browser_job scaffold."""
-    try:
-        artifact = _save_deep_artifact({
-            "segment": segment,
-            "date": date,
-            "report": res.get("report", ""),
-            "citations": res.get("citations", []),
-            "source_url": source_url,
-        })
-    except Exception as exc:  # noqa: BLE001
-        _update_job(job_id, state="error", error=f"saved nothing: {type(exc).__name__}: {exc}")
-        return
-    _set_auth_state(True, auth_label)
-    _update_job(job_id, state="done", message=done_msg,
-                result={
-                    "source_url": source_url,
-                    "citations": res.get("citations", []),
-                    "report_chars": len(res.get("report", "")),
-                },
-                artifact=artifact)
-
-
-def _run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode: str) -> None:
-    def call(worker, progress):
-        return worker.run_deep_research(
-            prompt, window_mode=window_mode,
-            clarify_answer=_clarify_answer_for(segment), progress=progress,
-            clone_profile=True,  # run on a throwaway clone so runs can parallelize
-            on_url=lambda url: _update_job(job_id, source_url=url),
-            cancel=lambda: jobs.is_cancelled(job_id),
-        )
-
-    def handle(res: dict) -> None:
-        status = res.get("status")
-        if status == "done":
-            _save_run_result(job_id, res, segment, date,
-                             source_url=res.get("source_url"),
-                             auth_label="deep run", done_msg="report saved")
-        elif status == "cancelled":
-            _update_job(job_id, state="cancelled", message="cancelled")
-        elif status == "needs_login":
-            _set_auth_state(False, "run hit login wall")
-            _update_job(job_id, state="needs_login",
-                        message="Not logged in. Use 'Set up Perplexity login' once, then re-run.")
-        elif status == "needs_captcha":
-            _update_job(job_id, state="error",
-                        error=("A human-verification check (CAPTCHA) appeared and was not "
-                               "solved in time. Re-run, and when the browser window pops to "
-                               "the front, complete the check to continue."))
-        elif status == "computer_trap":
-            _update_job(job_id, state="error",
-                        error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
-        elif status == "needs_clarification":
-            _update_job(job_id, state="error",
-                        error=("Perplexity kept asking clarifying questions. Open "
-                               f"{res.get('source_url')} , answer it there, then paste "
-                               "the finished report on the Report step."))
-        elif status == "timeout":
-            url = res.get("source_url") or ""
-            detail = "Deep Research timed out before a finished report could be confirmed."
-            if url:
-                detail += f" If the Perplexity page later finishes, import this URL: {url}"
-            _update_job(job_id, state="error", error=detail)
-        else:
-            _update_job(job_id, state="error",
-                        error=res.get("detail") or f"deep research {status}")
-
-    _browser_job(job_id, running_msg="starting browser", call=call, handle=handle,
-                 install_hint=_PLAYWRIGHT_INSTALL_HINT)
-
-
-def _run_login_job(job_id: str) -> None:
-    def call(worker, progress):
-        return worker.ensure_login(progress=progress,
-                                   cancel=lambda: jobs.is_cancelled(job_id))
-
-    def handle(res: dict) -> None:
-        if res.get("status") == "logged_in":
-            _set_auth_state(True, "login window")
-            _update_job(job_id, state="done", message="Perplexity login confirmed")
-        elif res.get("status") == "cancelled":
-            _update_job(job_id, state="cancelled", message="cancelled")
-        else:
-            _update_job(job_id, state="error", message="login window timed out",
-                        error="login not completed in time")
-
-    _browser_job(job_id, running_msg="opening login window", call=call, handle=handle)
-
-
-def _start_deep_research(body: dict) -> dict:
-    segment = _slugify(str(body.get("segment") or ""))
-    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-        raise ValueError("date must be YYYY-MM-DD")
-    prompt = str(body.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("prompt is required")
-    window_mode = str(body.get("window_mode") or "offscreen")
-    if window_mode not in ("offscreen", "visible", "headless"):
-        raise ValueError("window_mode must be offscreen, visible, or headless")
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    job = _new_job("deep_research", segment=segment, date=date, window_mode=window_mode)
-    threading.Thread(target=_run_deep_job,
-                     args=(job["id"], segment, date, prompt, window_mode),
-                     daemon=True).start()
-    return _job_public(job)
-
-
-def _start_login() -> dict:
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    job = _new_job("login")
-    threading.Thread(target=_run_login_job, args=(job["id"],), daemon=True).start()
-    return _job_public(job)
-
-
-def _run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
-    def call(worker, progress):
-        # The import URL is known up front -> surface it as the live link now.
-        _update_job(job_id, source_url=url)
-        return worker.fetch_by_url(url, clone_profile=True, progress=progress,
-                                   cancel=lambda: jobs.is_cancelled(job_id))
-
-    def handle(res: dict) -> None:
-        status = res.get("status")
-        if status == "done":
-            _save_run_result(job_id, res, segment, date,
-                             source_url=res.get("source_url", url),
-                             auth_label="import", done_msg="imported report saved")
-        elif status == "cancelled":
-            _update_job(job_id, state="cancelled", message="cancelled")
-        elif status == "needs_login":
-            _set_auth_state(False, "import hit login wall")
-            _update_job(job_id, state="needs_login",
-                        message="Not logged in. Use 'Set up Perplexity login' once, then import.")
-        elif status == "needs_captcha":
-            _update_job(job_id, state="error",
-                        error=("A human-verification check (CAPTCHA) appeared and was not "
-                               "solved in time. Re-run the import and complete the check "
-                               "when the browser window appears."))
-        elif status == "needs_clarification":
-            _update_job(job_id, state="error",
-                        error="That run is still awaiting a clarifying answer. Answer it in "
-                              "Perplexity, wait for it to finish, then import again.")
-        else:
-            _update_job(job_id, state="error", error=res.get("detail") or f"import {status}")
-
-    _browser_job(job_id, running_msg="opening run URL", call=call, handle=handle)
-
-
-def _start_import(body: dict) -> dict:
-    segment = _slugify(str(body.get("segment") or ""))
-    if not segment:
-        raise ValueError("segment is required")
-    date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-        raise ValueError("date must be YYYY-MM-DD")
-    url = str(body.get("url") or "").strip()
-    if "perplexity.ai" not in url:
-        raise ValueError("a perplexity.ai run URL is required")
-    if not _claim_active():
-        raise _Conflict(_slots_busy_msg())
-    job = _new_job("import", segment=segment, date=date)
-    threading.Thread(target=_run_import_job,
-                     args=(job["id"], segment, date, url),
-                     daemon=True).start()
-    return _job_public(job)
-
-
-# --------------------------------------------------------------------------- #
-# Guided "Direction -> Rebalance" strategy orchestration.
-#
-# The durable state machine lives in orchestrate.py; these runners do the
-# per-leg work on daemon threads, exactly like the deep-research job runners
-# above. A run pauses at a gate by simply landing in an awaiting_* state -- no
-# thread is left blocked on a human. The synthesis leg reuses the existing deep
-# research job wholesale (login walls, clarify, auto-save) by starting it and
-# polling its sub-job to completion.
-# --------------------------------------------------------------------------- #
-def _strategy_progress(run_id: str, job_id: str | None):
-    def progress(msg: str) -> None:
-        if job_id:
-            _update_job(job_id, message=msg)
-        orchestrate.update_run(run_id, message=msg)
-    return progress
-
-
-def _run_strategy_draft(run_id: str) -> None:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        return
-    direction = run["direction"]
-    try:
-        baseline = _draft_segment(direction)
-        definition = baseline["definition"]
-        members = list(definition.get("members") or [])
-        warnings = list(baseline.get("warnings") or [])
-        backend_label = None
-        if any(ticker_analysis.available_backends().values()):
-            orchestrate.update_run(run_id, message="researching candidate tickers…")
-            llm = ticker_analysis.draft_segment_members(direction)
-            if llm.get("ok"):
-                members = _merge_draft_members(members, llm.get("members") or [])
-                backend_label = llm.get("backend_label")
-                if llm.get("title"):
-                    definition["title"] = llm["title"]
-                if llm.get("comment"):
-                    definition["comment"] = llm["comment"]
-            else:
-                warnings.append(
-                    "LLM draft failed (" + (llm.get("error") or "unknown")
-                    + "); showing keyword matches only — edit the members before approving."
-                )
-        definition["members"] = members
-        definition["sleeves"] = sorted({m["sleeve"] for m in members}) or ["other"]
-        definition["status"] = "draft"
-        orchestrate.set_state(
-            run_id, orchestrate.AWAITING_SEGMENT,
-            segment=baseline["slug"],
-            message=f"Review the drafted segment ({len(members)} names), then approve.",
-            draft={
-                "slug": baseline["slug"],
-                "definition": definition,
-                "llm_prompt": baseline["llm_prompt"],
-                "warnings": warnings,
-                "backend_label": backend_label,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        orchestrate.set_state(run_id, orchestrate.ERROR,
-                              error=f"{type(exc).__name__}: {exc}", message="drafting failed")
-
-
-def _start_strategy(direction: str) -> dict:
-    run = orchestrate.new_run(direction)
-    threading.Thread(target=_run_strategy_draft, args=(run["run_id"],), daemon=True).start()
-    return orchestrate.public(run)
-
-
-def _approve_strategy_segment(run_id: str, definition_raw: dict | None) -> dict:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        raise ValueError(f"unknown strategy run {run_id}")
-    if run.get("state") not in (orchestrate.AWAITING_SEGMENT, orchestrate.NEEDS_LOGIN):
-        raise _Conflict(f"run {run_id} is not awaiting segment approval")
-    raw = dict(definition_raw or (run.get("draft") or {}).get("definition") or {})
-    raw["status"] = "approved"  # approving requires members; _validate enforces it
-    definition = _validate_segment_definition(raw)
-    slug = run.get("segment") or _slugify(definition.get("title") or "segment")
-    _write_json(SEGMENT_DEF_DIR / f"{slug}.json", definition)
-    orchestrate.set_state(run_id, orchestrate.SYNTHESIS_RUNNING, segment=slug,
-                          message="starting synthesis…", error=None)
-    threading.Thread(target=_run_strategy_synthesis, args=(run_id,), daemon=True).start()
-    return orchestrate.public(orchestrate.load_run(run_id))
-
-
-def _run_strategy_synthesis(run_id: str) -> None:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        return
-    seg = run["segment"]
-    job = _new_job("strategy", segment=seg, run_id=run_id)
-    orchestrate.update_run(run_id, job_id=job["id"])
-    progress = _strategy_progress(run_id, job["id"])
-
-    def fail(msg: str) -> None:
-        orchestrate.set_state(run_id, orchestrate.ERROR, error=msg, message="synthesis failed")
-        _update_job(job["id"], state="error", error=msg)
-
-    try:
-        progress("building the Deep Research prompt…")
-        prompt_info = _segment_prompt(seg)
-        date = prompt_info["date"]
-        orchestrate.update_run(run_id, date=date)
-        stem = f"{seg}-{date}"
-
-        if (DEEP_DIR / f"{stem}.md").exists():
-            progress("reusing the existing Deep Research report (no quota spent)…")
-        else:
-            try:
-                sub = _start_deep_research({
-                    "segment": seg, "date": date,
-                    "prompt": prompt_info["prompt"], "window_mode": "offscreen",
-                })
-            except RuntimeError as exc:
-                return fail(str(exc))
-            sub_id = sub["id"]
-            while True:
-                time.sleep(3)
-                pub = jobs.get_public(sub_id)
-                if not pub:
-                    return fail("Deep Research job vanished")
-                if pub.get("message"):
-                    progress(pub["message"])
-                state = pub.get("state")
-                if state == "done":
-                    break
-                if state == "needs_login":
-                    orchestrate.set_state(
-                        run_id, orchestrate.NEEDS_LOGIN,
-                        message="Perplexity login required. Set it up, then resume the run.")
-                    _update_job(job["id"], state="done", message="paused for login")
-                    return
-                if state in ("error", "cancelled"):
-                    return fail(pub.get("error") or f"Deep Research {state}")
-
-        progress("pulling deterministic segment data…")
-        try:
-            with _PULL_LOCK:
-                research_pull.pull_segment(seg)
-        except Exception as exc:  # noqa: BLE001 - deterministic data is best-effort
-            progress(f"deterministic pull skipped: {exc}")
-
-        progress("running the review gate…")
-        review = review_deep_research.review(seg, date, write=True)
-        progress("synthesizing target bands…")
-        proposal = target_construct.construct(seg, date, review, progress=progress)
-        progress("computing the rebalance preview…")
-        preview = _preview_plan_for_proposal(proposal)
-
-        orchestrate.set_state(
-            run_id, orchestrate.AWAITING_PROPOSAL,
-            proposal=proposal, preview=preview,
-            review={
-                "findings": review.get("findings"),
-                "blocked_symbols": review.get("blocked_symbols"),
-                "source_summary": review.get("source_summary"),
-                "review_path": review.get("review_path"),
-            },
-            message=f"Review {len(proposal.get('changes') or [])} proposed target change(s), then approve.")
-        _update_job(job["id"], state="done", message="synthesis complete")
-    except SystemExit as exc:
-        fail(str(exc) or "missing report for this segment + date")
-    except Exception as exc:  # noqa: BLE001
-        fail(f"{type(exc).__name__}: {exc}")
-
-
-def _approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = False) -> dict:
-    run = orchestrate.load_run(run_id)
-    if not run:
-        raise ValueError(f"unknown strategy run {run_id}")
-    if run.get("state") != orchestrate.AWAITING_PROPOSAL:
-        raise _Conflict(f"run {run_id} is not awaiting proposal approval")
-    seg, date = run.get("segment"), run.get("date")
-    # Persist any edits made at the gate back into the proposal file the apply
-    # step reads, so what the user approved is exactly what gets applied.
-    if changes is not None:
-        ppath = DEEP_DIR / f"{seg}-{date}.target-proposal.json"
-        proposal = _load(ppath) or (run.get("proposal") or {})
-        proposal["changes"] = changes
-        _write_json(ppath, proposal)
-    orchestrate.set_state(run_id, orchestrate.APPLYING, message="applying target changes…")
-    try:
-        applied = _apply_target_proposal(seg, date, True, allow_blocked=allow_blocked)
-    except Exception as exc:  # noqa: BLE001
-        orchestrate.set_state(run_id, orchestrate.ERROR,
-                              error=f"{type(exc).__name__}: {exc}", message="apply failed")
-        raise
-    # The committed model now drives the real recommendation (no further changes).
-    final = _preview_plan_for_proposal({"changes": [], "blocked_symbols": []})
-    orchestrate.set_state(
-        run_id, orchestrate.DONE, applied=applied, preview=final,
-        message=f"Applied {len(applied.get('applied') or [])} change(s). Rebalance recommendation ready.")
-    return orchestrate.public(orchestrate.load_run(run_id))
 
 
 # Generous ceiling for JSON POST bodies (Deep Research reports run to a few
