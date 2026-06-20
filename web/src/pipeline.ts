@@ -1,3 +1,4 @@
+import type { Job } from "./api-types";
 import { $, api, esc, state } from "./core";
 import { loadDeepRun, refreshDeepRuns, refreshLoginStatus, pollDeepJob, renderPipeReport } from "./errors";
 import { loadSegmentList, renderSegment } from "./segment";
@@ -32,14 +33,14 @@ function pipeUnlockedMax() {
   return 1;
 }
 
-function pipeLockReason(n) {
+function pipeLockReason(n: number) {
   if (n >= 4) return "Save or import a report for this segment + date first — the review gate has nothing to read otherwise.";
   if (n >= 2) return "Choose or approve a segment on Step 1 first.";
   return "";
 }
 
-let _pipeLockTimer = null;
-function showPipeLock(n) {
+let _pipeLockTimer: ReturnType<typeof setTimeout> | null = null;
+function showPipeLock(n: number) {
   const note = $("#pipe-lock-note");
   if (!note) return;
   note.textContent = pipeLockReason(n);
@@ -48,7 +49,7 @@ function showPipeLock(n) {
   _pipeLockTimer = setTimeout(() => { note.hidden = true; }, 4500);
 }
 
-function setPipeStep(n, { silent = false } = {}) {
+function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
   n = Math.max(1, Math.min(4, Number(n) || 1));
   const max = pipeUnlockedMax();
   if (n > max) {
@@ -135,7 +136,7 @@ async function loadPipeline() {
 
 // Step 1 shows exactly one path at a time: an approved-segment dropdown, or a
 // new-segment drafter that only reveals its editor + approve action after a draft.
-function setSegMode(mode) {
+function setSegMode(mode: string) {
   mode = mode === "new" ? "new" : "existing";
   state.segMode = mode;
   $("#seg-pane-existing").hidden = mode !== "existing";
@@ -165,7 +166,7 @@ $("#seg-mode-new").addEventListener("click", () => setSegMode("new"));
 
 // Step 3 is one-lane too: review the report this run produced (or paste one you
 // ran yourself), OR import an existing run. Never both at once.
-function setRepMode(mode) {
+function setRepMode(mode: string) {
   mode = mode === "import" ? "import" : "current";
   state.repMode = mode;
   $("#rep-pane-current").hidden = mode !== "current";
@@ -215,7 +216,7 @@ function pipeSegment() {
   return $<HTMLSelectElement>("#pipe-segment-select").value || $<HTMLInputElement>("#pipe-slug").value.trim();
 }
 
-function parseJsonField(sel, fallback) {
+function parseJsonField(sel: string, fallback: unknown) {
   const raw = $<HTMLTextAreaElement>(sel).value.trim();
   if (!raw) return fallback;
   return JSON.parse(raw);
@@ -225,7 +226,7 @@ function parseJsonField(sel, fallback) {
 // it, so the user must replace it with a real ticker before continuing.
 const SEG_PLACEHOLDER_SYM = "TICKER";
 
-function segSlugify(s) {
+function segSlugify(s: string) {
   return String(s || "").toLowerCase().trim()
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 }
@@ -234,9 +235,9 @@ function segSlugify(s) {
 // shows the real shape with one example member. The placeholder symbol is
 // intentionally rejected by segDraftValid() so Approve & continue stays blocked
 // until it is replaced.
-function blankSegmentDef(theme) {
+function blankSegmentDef(theme: string) {
   const title = theme
-    ? theme.replace(/\s+/g, " ").trim().replace(/\b\w/g, (c) => c.toUpperCase())
+    ? theme.replace(/\s+/g, " ").trim().replace(/\b\w/g, (c: string) => c.toUpperCase())
     : "New segment";
   return {
     title,
@@ -262,7 +263,7 @@ function segDraftValid() {
   if (!def || typeof def !== "object" || Array.isArray(def)) return false;
   const members = Array.isArray(def.members) ? def.members : [];
   if (!members.length) return false;
-  return members.every((m) => {
+  return members.every((m: { symbol?: unknown }) => {
     const sym = m && typeof m.symbol === "string" ? m.symbol.trim() : "";
     return !!sym && sym.toUpperCase() !== SEG_PLACEHOLDER_SYM;
   });
@@ -318,8 +319,8 @@ $("#pipe-draft").addEventListener("click", async () => {
   status.innerHTML = `<span class="spinner"></span> researching candidate tickers...`;
   try {
     const job = await api("/api/segment-draft", "POST", { query });
-    await pollDeepJob(job.id, status, async (done) => {
-      const rec = done.result || {};
+    await pollDeepJob(job.id, status, async (done: Job) => {
+      const rec = (done.result || {}) as Record<string, any>;
       $<HTMLInputElement>("#pipe-slug").value = rec.slug || "";
       $<HTMLTextAreaElement>("#pipe-segment-json").value = JSON.stringify(rec.definition || {}, null, 2);
       // The draft prompt asks an LLM for structured JSON members; it is NOT the
@@ -383,7 +384,7 @@ function updateStep2Actions() {
 // Most recent saved run for `seg` that actually has a report on disk. Stems are
 // `${seg}-YYYY-MM-DD`; the date check stops a segment like "ai" from matching
 // "ai-software-...". Lexical desc sort on the stem orders by date newest-first.
-function latestReportForSegment(seg) {
+function latestReportForSegment(seg: string | null | undefined) {
   if (!seg) return null;
   const prefix = seg + "-";
   const matches = (state.deepRuns || [])

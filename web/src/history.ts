@@ -1,8 +1,8 @@
 import { $, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
 import { pollDeepJob } from "./errors";
-import { groupActivity, groupBySector } from "./history/data";
+import { groupActivity, groupBySector, type ActivityRow, type Trade } from "./history/data";
 import { ccyTag, fmtMoney, fmtSigned } from "./history/format";
-import { legend, navChart } from "./history/nav-chart";
+import { legend, navChart, type NavPoint } from "./history/nav-chart";
 import { activityTable, sectorTable, tradeTable } from "./history/tables";
 
 // ---- portfolio history -----------------------------------------------------
@@ -11,12 +11,40 @@ import { activityTable, sectorTable, tradeTable } from "./history/tables";
 // with every buy/sell marked — because that's the thing single snapshots can't
 // show: the shape of the journey, not just where it ended.
 
+// Cheap credential probe (/api/ibkr/status) used to guide setup before a pull.
+interface IbkrStatus {
+  history_configured?: boolean;
+  token_set?: boolean;
+  [key: string]: unknown;
+}
+
+interface HistorySummary {
+  n_trades?: number;
+  n_nav_points?: number;
+  windows?: number;
+  by_symbol?: ActivityRow[];
+  realized_pnl_total?: number | null;
+}
+
+// /api/portfolio-history: the reconstructed ledger + daily NAV series.
+interface HistoryPayload {
+  summary?: HistorySummary;
+  account?: string | null;
+  from_date?: string | null;
+  to_date?: string | null;
+  base_currency?: string | null;
+  generated_at?: string | null;
+  sectors_updated_at?: string | null;
+  nav_series?: NavPoint[];
+  trades?: Trade[];
+}
+
 let _wired = false;
 
 // Cheap, token-free credential check so we can guide setup *before* a pull fails.
-async function fetchIbkrStatus() {
+async function fetchIbkrStatus(): Promise<IbkrStatus | null> {
   try {
-    return await api("/api/ibkr/status");
+    return await api<IbkrStatus>("/api/ibkr/status");
   } catch {
     return null; // a missing status endpoint must never block showing the cache
   }
@@ -25,7 +53,7 @@ async function fetchIbkrStatus() {
 // A banner shown when the dedicated history Flex query isn't configured yet.
 // History needs its own Activity query (Trades + NAV in Base); the positions
 // query the Holdings tab uses lacks those sections, so a pull would just error.
-function setupNote(st) {
+function setupNote(st: IbkrStatus | null) {
   if (!st || st.history_configured) return null;
   const box = el("div", "hist-note");
   const link =
@@ -52,7 +80,7 @@ async function loadHistory() {
   out.innerHTML = "";
   const readyP = fetchIbkrStatus(); // in parallel; tolerant of failure
   try {
-    const h = await api("/api/portfolio-history");
+    const h = await api<HistoryPayload>("/api/portfolio-history");
     status.textContent = "";
     renderHistory(h);
     const note = setupNote(await readyP);
@@ -70,7 +98,7 @@ async function loadHistory() {
   }
 }
 
-function emptyState(st) {
+function emptyState(st: IbkrStatus | null) {
   const box = el("div", "hist-empty");
   const note = setupNote(st);
   if (note) box.appendChild(note);
@@ -84,7 +112,7 @@ function emptyState(st) {
   return box;
 }
 
-function renderHistory(h) {
+function renderHistory(h: HistoryPayload) {
   const out = $("#hist-result");
   out.innerHTML = "";
   const s = h.summary || {};
@@ -161,7 +189,7 @@ function renderHistory(h) {
 
 // Collapsible section: the heading is a <summary> so a long page can be folded
 // down to just the parts you care about. Open by default.
-function section(title, bodyNode, hint, open = true) {
+function section(title: string, bodyNode: HTMLElement, hint?: string, open = true) {
   const d = el("details", "risk-section hist-section");
   d.open = open;
   const sum = el("summary", "hist-section-sum");
@@ -174,7 +202,7 @@ function section(title, bodyNode, hint, open = true) {
 
 // Toolbar above the sector table: how fresh the sector map is + a button to
 // resolve the still-unknown names from Yahoo (a background job).
-function sectorToolbar(h, unknownNames) {
+function sectorToolbar(h: HistoryPayload, unknownNames: number) {
   const bar = el("div", "hist-sectools");
   const fresh = h.sectors_updated_at
     ? `sectors ${freshnessNote(h.sectors_updated_at) || esc(fmtStamp(h.sectors_updated_at))}`
@@ -204,7 +232,7 @@ async function runSectorFetch() {
     const job = await api("/api/portfolio-history/sectors", "POST", {});
     await pollDeepJob(job.id, status, async (done) => {
       await loadHistory();
-      const r = done.result || {};
+      const r = (done.result || {}) as Record<string, any>;
       status.textContent = `Done — resolved ${r.resolved ?? 0} new, ${r.unresolved ?? 0} still unknown.`;
     }, "sector lookup");
   } catch (e) {
@@ -216,13 +244,13 @@ async function runSectorFetch() {
   }
 }
 
-function statCards(h) {
+function statCards(h: HistoryPayload) {
   const s = h.summary || {};
   const bcy = h.base_currency || "";
   const series = h.nav_series || [];
   const latest = series.length ? series[series.length - 1].nav : null;
   const first = series.length ? series[0].nav : null;
-  const change = latest != null && first != null ? latest - first : null;
+  const change = latest != null && first != null ? Number(latest) - Number(first) : null;
   const wrap = el("div", "risk-stats");
   // NAV, change and the realized total are all base-currency figures.
   wrap.appendChild(card("Latest NAV", sensitive(fmtMoney(latest), "net asset value") + ccyTag(bcy)));
@@ -236,7 +264,7 @@ function statCards(h) {
   return wrap;
 }
 
-function card(label, valueHtml, cls = "muted") {
+function card(label: string, valueHtml: string, cls = "muted") {
   const c = el("div", "risk-stat");
   c.innerHTML =
     `<span class="risk-stat-k">${esc(label)}</span>` +
@@ -244,7 +272,7 @@ function card(label, valueHtml, cls = "muted") {
   return c;
 }
 
-async function runSync(full) {
+async function runSync(full: boolean) {
   const status = $("#hist-status");
   const btns = [$<HTMLButtonElement>("#hist-sync"), $<HTMLButtonElement>("#hist-full")].filter(Boolean);
   if (btns.some((b) => b.disabled)) return;
@@ -260,7 +288,7 @@ async function runSync(full) {
     const job = await api("/api/portfolio-history/sync", "POST", { full });
     await pollDeepJob(job.id, status, async (done) => {
       await loadHistory();
-      const r = (done.result && done.result.summary) || {};
+      const r = ((done.result as Record<string, any>)?.summary || {}) as Record<string, any>;
       const u = r.update;
       status.textContent = u
         ? `Done — +${u.new_trades} trades, +${u.new_nav_points} NAV points since the last pull.`

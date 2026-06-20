@@ -1,3 +1,4 @@
+import type { SegmentSummary } from "./api-types";
 import { $, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
 import { ensureTickerSet, linkifyTickers } from "./analyses/linkify";
@@ -15,7 +16,49 @@ export { createQaCard } from "./analyses/qa-card";
 
 // ---- analyses -------------------------------------------------------------
 
-function analysisBadges(r) {
+// A saved Deep Research run as the list/reader read it. Mirrors DeepRun from
+// api-types but adds `kind` (ticker vs segment) and keeps every field the row
+// renderer touches optional, since older nested re-runs are sparser.
+interface AnalysisRun {
+  stem: string;
+  segment: string;
+  date?: string;
+  title?: string;
+  kind?: string;
+  source_count?: number;
+  generated_at?: string;
+  has_review?: boolean;
+  has_proposal?: boolean;
+  change_count?: number;
+  blocked_symbols?: string[];
+  files?: Record<string, string>;
+}
+
+// One extracted source in a run's citation list.
+interface Citation {
+  href?: string;
+  label?: string;
+}
+
+// A report saved as a structured segment document rather than narrative markdown.
+interface StructuredSleeve {
+  name?: string;
+  description?: string;
+}
+interface StructuredMember {
+  symbol?: string;
+  sleeve?: string;
+  confidence?: unknown;
+  rationale?: string;
+}
+interface StructuredDoc {
+  title?: string;
+  comment?: string;
+  sleeves?: StructuredSleeve[];
+  members?: StructuredMember[];
+}
+
+function analysisBadges(r: AnalysisRun) {
   const parts = [];
   if (r.has_review) parts.push('<span class="abadge ok">reviewed</span>');
   if (r.change_count) parts.push(`<span class="abadge">${r.change_count} proposed</span>`);
@@ -25,7 +68,7 @@ function analysisBadges(r) {
 }
 
 // "2026-06-18" -> "Jun 18, 2026". Falls back to the raw string on a bad/empty date.
-function fmtRunDate(d) {
+function fmtRunDate(d: string | null | undefined) {
   if (!d) return "";
   const dt = new Date(d + "T00:00:00");
   return isNaN(dt.getTime()) ? d : dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
@@ -37,7 +80,7 @@ const KIND_ICON = {
   ticker: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-5 4 4 7-8"/><path d="M16 8h5v5"/></svg>',
   segment: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 14l9 5 9-5"/></svg>',
 };
-function kindIcon(r) {
+function kindIcon(r: AnalysisRun) {
   const k = r.kind === "ticker" ? "ticker" : "segment";
   const title = k === "ticker" ? "Single-ticker deep research" : "Segment deep research";
   return `<span class="ar-kind ar-kind--${k}" title="${esc(title)}">${KIND_ICON[k]}</span>`;
@@ -46,7 +89,7 @@ function kindIcon(r) {
 // One coherent state read per run: a lifecycle stage chip (draft -> report ready
 // -> reviewed) plus optional proposal / blocked chips so the row's status is
 // legible at a glance, including for older nested re-runs.
-function runStateBadges(r) {
+function runStateBadges(r: AnalysisRun) {
   const parts = [];
   const hasReport = !!(r.files && r.files.report);
   if (r.has_review || r.change_count) parts.push('<span class="abadge ok">reviewed</span>');
@@ -59,14 +102,14 @@ function runStateBadges(r) {
   return parts.join(" ");
 }
 
-function markActiveAnalysis(stem) {
+function markActiveAnalysis(stem: string) {
   document.querySelectorAll<HTMLElement>("#analyses-list .analysis-row").forEach((row) =>
     row.classList.toggle("active", row.dataset.stem === stem));
 }
 
 // A labelled card for the parts the console synthesizes on top of the raw run
 // (prompt, review gate, citations) -- visually distinct from the report itself.
-function synthBox(title, note) {
+function synthBox(title: string, note?: string) {
   const box = el("section", "synth-box");
   box.innerHTML =
     `<div class="synth-box-head"><span class="synth-box-title">${esc(title)}</span>` +
@@ -78,7 +121,7 @@ function synthBox(title, note) {
 // Jump into the Pipeline wizard at step 1, optionally pre-selecting a segment.
 // The pipeline (a gated multi-step flow) stays the single home for running
 // research; the Analyses pane is just the launchpad into it.
-function startPipeline(segment?) {
+function startPipeline(segment?: string) {
   const seg = cleanSlug(segment || "");
   state.pipeStep = 1;
   state.segMode = "existing";
@@ -90,12 +133,12 @@ function startPipeline(segment?) {
 
 // Open a saved run in this (the canonical) reader from anywhere else in the app
 // -- e.g. the Pipeline routes here instead of rendering the report a second time.
-function openRunInAnalyses(stem) {
+function openRunInAnalyses(stem: string) {
   pushNav({ view: "analyses", run: cleanSlug(stem) });
   setActiveView("analyses");
 }
 
-function fmtConfidence(c) {
+function fmtConfidence(c: unknown) {
   if (c == null || c === "") return "";
   if (typeof c === "number") return c <= 1 ? Math.round(c * 100) + "%" : String(c);
   return String(c);
@@ -105,8 +148,8 @@ function fmtConfidence(c) {
 // saved as JSON rather than narrative markdown. Rendering that through mdToHtml
 // is an unreadable JSON wall, so detect and lay it out as a table. Returns null
 // when the text isn't such a document (the caller falls back to markdown).
-function renderStructuredReport(raw) {
-  let data;
+function renderStructuredReport(raw: string) {
+  let data: StructuredDoc;
   try { data = JSON.parse(raw); } catch { return null; }
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   if (!data.members && !data.sleeves && !data.comment) return null;
@@ -141,7 +184,7 @@ function renderStructuredReport(raw) {
 // Delete a saved Deep Research run (its report, sidecars, and Q&A archive) after
 // confirmation, then refresh the list. If the deleted run was open in the reader,
 // loadAnalyses re-renders it to the next run (or an empty state).
-async function deleteAnalysis(stem) {
+async function deleteAnalysis(stem: string) {
   if (!stem) return;
   if (!confirm(
     "Delete this Deep Research analysis?\n\n" +
@@ -161,11 +204,12 @@ async function loadAnalyses() {
   const list = $("#analyses-list");
   if (!list) return;
   list.innerHTML = '<div class="hint">Loading…</div>';
-  let runs, segments;
+  let runs: AnalysisRun[];
+  let segments: SegmentSummary[];
   try {
     [runs, segments] = await Promise.all([
-      api("/api/deep-runs").then((d) => d.runs || []),
-      api("/api/segments").then((d) => d.segments || []).catch(() => []),
+      api<{ runs?: AnalysisRun[] }>("/api/deep-runs").then((d) => d.runs || []),
+      api<{ segments?: SegmentSummary[] }>("/api/segments").then((d) => d.segments || []).catch((): SegmentSummary[] => []),
     ]);
   } catch (e) {
     list.innerHTML = `<div class="status err">could not load analyses: ${esc(e.message)}</div>`;
@@ -175,23 +219,23 @@ async function loadAnalyses() {
 
   // Group runs under their segment so each segment shows once (no more duplicate
   // Segments + Deep Research lists). Runs arrive newest-first, so [0] is latest.
-  const runsBySeg = {};
+  const runsBySeg: Record<string, AnalysisRun[]> = {};
   runs.forEach((r) => { (runsBySeg[r.segment] = runsBySeg[r.segment] || []).push(r); });
   const knownSegs = new Set(segments.map((s) => s.name));
 
   list.innerHTML = "";
 
   const delHtml = `<span class="analysis-row-del" role="button" tabindex="0" title="Delete this analysis" aria-label="Delete this analysis">\u00d7</span>`;
-  const wireDelete = (row, stem) => {
+  const wireDelete = (row: HTMLElement, stem: string) => {
     const del = row.querySelector(".analysis-row-del");
     if (!del) return;
     del.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(stem); });
-    del.addEventListener("keydown", (ev) => {
+    del.addEventListener("keydown", (ev: KeyboardEvent) => {
       if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); deleteAnalysis(stem); }
     });
   };
 
-  const runRow = (r, cls?) => {
+  const runRow = (r: AnalysisRun, cls?: string) => {
     const row = el("button", "analysis-row" + (cls ? " " + cls : ""));
     row.dataset.stem = r.stem;
     const isSub = cls === "sub-run";
@@ -277,7 +321,7 @@ async function loadAnalyses() {
   }
 }
 
-async function loadAnalysis(stem, { push = true } = {}) {
+async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = {}) {
   const reader = $("#analyses-reader");
   if (!reader) return;
   await ensureTickerSet();
@@ -363,7 +407,7 @@ async function loadAnalysis(stem, { push = true } = {}) {
   if (citations.length) {
     const box = synthBox(`Sources (${citations.length})`, "Citations extracted from the run");
     const ul = el("ol", "cite-list");
-    citations.forEach((c) => {
+    citations.forEach((c: Citation) => {
       const li = el("li", "cite");
       let host = c.href || "";
       try { host = new URL(c.href).hostname.replace(/^www\./, ""); } catch { /* not a URL: keep raw href */ }

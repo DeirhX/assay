@@ -313,9 +313,9 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     let live: Job | null = null;
     try {
       const [runsRes, loginRes, jobsRes] = await Promise.all([
-        api("/api/deep-runs").then((d) => d.runs || []).catch(() => []),
-        api("/api/deep-research/login-status").catch(() => null),
-        api("/api/jobs").then((d) => d.jobs || []).catch(() => []),
+        api<{ runs?: DeepRun[] }>("/api/deep-runs").then((d) => d.runs || []).catch((): DeepRun[] => []),
+        api<{ logged_in?: boolean } | null>("/api/deep-research/login-status").catch((): { logged_in?: boolean } | null => null),
+        api<{ jobs?: Job[] }>("/api/jobs").then((d) => d.jobs || []).catch((): Job[] => []),
       ]);
       runs = runsRes
         .filter((r: DeepRun) => r.kind === "ticker" && norm(r.symbol) === want)

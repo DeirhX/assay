@@ -127,7 +127,34 @@ const SEG_COLS: [string, string, boolean][] = [
   ["pct_below_52w_high", "vs 52wH", true],
 ];
 
-function renderSegment(rec) {
+// A peer-comparison row: the named metric columns the table renders, plus an
+// index signature so the click-to-sort can read an arbitrary column key.
+interface SegMember {
+  symbol: string;
+  data_quality?: string;
+  decision?: string;
+  research_score?: number | null;
+  sleeve?: string;
+  owned_pct_nav?: number | null;
+  price?: number | null;
+  market_cap_usd_b?: number | null;
+  pe_fwd?: number | null;
+  ps?: number | null;
+  rev_growth_yoy_pct?: number | null;
+  gross_margin_pct?: number | null;
+  chg_3m_pct?: number | null;
+  chg_12m_pct?: number | null;
+  pct_below_52w_high?: number | null;
+  [key: string]: unknown;
+}
+
+interface SegmentRec {
+  title: string;
+  members: SegMember[];
+  [key: string]: unknown;
+}
+
+function renderSegment(rec: SegmentRec) {
   state.lastSegment = rec;
   const out = $("#seg-result");
   out.innerHTML = "";
@@ -150,14 +177,14 @@ function renderSegment(rec) {
   table.appendChild(thead);
 
   const tbody = el("tbody");
-  const rows = rec.members.slice().sort((a, b) => {
+  const rows = rec.members.slice().sort((a: SegMember, b: SegMember) => {
     const k = state.segSort.key, d = state.segSort.dir;
     const av = a[k], bv = b[k];
     if (typeof av === "string" || typeof bv === "string") return d * String(av ?? "").localeCompare(String(bv ?? ""));
     if (av == null) return 1; if (bv == null) return -1;
-    return d * (av - bv);
+    return d * (Number(av) - Number(bv));
   });
-  rows.forEach((m) => {
+  rows.forEach((m: SegMember) => {
     const tr = el("tr");
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
