@@ -1,6 +1,5 @@
 import { $, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
-import { pollDeepJob } from "./errors";
 import { ensureTickerSet, linkifyTickers } from "./analyses/linkify";
 import { buildReportToc, mdToHtml } from "./analyses/markdown";
 
@@ -11,6 +10,8 @@ export {
   collectReportTickers, linkifyTextNode, linkifyTickers,
 } from "./analyses/linkify";
 export { mdToHtml, slugify, buildReportToc } from "./analyses/markdown";
+import { renderDeepQaCard } from "./analyses/qa-card";
+export { createQaCard } from "./analyses/qa-card";
 
 // ---- analyses -------------------------------------------------------------
 
@@ -387,225 +388,10 @@ async function loadAnalysis(stem, { push = true } = {}) {
   reader.scrollTop = 0;
 }
 
-// Continuable follow-up Q&A about a Deep Research run. The thread is archived
-// server-side (next to the run artifacts) so it survives reloads. Mirrors the
-// per-ticker Q&A card but grounds the model in the report + its citations.
-// Shared archive-and-continue Q&A card used by both the per-ticker dossier and
-// the Deep Research reader. The shell (collapsible thread, ask/cancel form,
-// background-job polling, clear-with-confirm) is identical; callers pass the copy
-// and the three endpoints the turns live behind, plus optional per-turn meta,
-// token-usage HTML, and a pre-render hook (e.g. loading the ticker set).
-function createQaCard(opts) {
-  const card = el("div", "card qa-card");
-  const head = el("div", "analysis-head");
-  head.appendChild(el("h2", "section", esc(opts.title)));
-  const clearBtn = el("button", "ghost", "Clear thread");
-  clearBtn.type = "button";
-  clearBtn.title = "Discard the archived Q&A and start fresh";
-  head.appendChild(clearBtn);
-  card.appendChild(head);
-
-  const emptyHint = el("p", "hint", opts.emptyHint);
-  const threadWrap = el("details", "qa-collapse");
-  threadWrap.open = true;
-  const threadSummary = el("summary", "qa-collapse-head collapse-head");
-  const thread = el("div", "qa-thread");
-  threadWrap.appendChild(threadSummary);
-  threadWrap.appendChild(thread);
-  const status = el("div", "dd-status analysis-status");
-  const form = el("div", "qa-form");
-  const input = el("textarea", "qa-input");
-  input.rows = 2;
-  input.placeholder = opts.placeholder;
-  const askBtn = el("button", "primary", "Ask");
-  askBtn.type = "button";
-  form.appendChild(input);
-  form.appendChild(askBtn);
-  card.appendChild(emptyHint);
-  card.appendChild(threadWrap);
-  card.appendChild(form);
-  card.appendChild(status);
-
-  // Each exchange (a question + its answer) renders as its own collapsible
-  // <details> so answers can be expanded/collapsed individually and deleted one
-  // at a time. The summary holds the question; the answer lives in the body.
-  function renderExchange(question, answer, userIdx) {
-    const ex = el("details", "qa-exchange");
-    ex.open = true;
-    const sum = el("summary", "qa-exchange-head");
-    sum.innerHTML =
-      `<span class="qa-caret" aria-hidden="true">\u203a</span>` +
-      `<span class="qa-q-text">${esc(question.text)}</span>`;
-    const del = el("button", "qa-del", "\u00d7");
-    del.type = "button";
-    del.title = "Delete this question and its answer";
-    del.setAttribute("aria-label", "Delete this question and its answer");
-    del.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      deleteExchange(userIdx);
-    });
-    sum.appendChild(del);
-    ex.appendChild(sum);
-
-    const bodyWrap = el("div", "qa-exchange-body");
-    if (answer) {
-      const meta = (opts.turnMeta ? opts.turnMeta(answer) : []).filter(Boolean).map(esc).join(" \u00b7 ");
-      bodyWrap.appendChild(el("div", "qa-role", "Analyst" + (meta ? ` <span class="muted">${meta}</span>` : "")));
-      const prose = el("div", "prose qa-prose");
-      prose.innerHTML = mdToHtml(answer.text || "");
-      linkifyTickers(prose);
-      bodyWrap.appendChild(prose);
-      const usage = opts.usageHtml ? opts.usageHtml(answer) : "";
-      if (usage) bodyWrap.insertAdjacentHTML("beforeend", usage);
-    } else {
-      bodyWrap.appendChild(el("div", "hint", "No answer was recorded \u2014 the question may have failed or been cancelled."));
-    }
-    ex.appendChild(bodyWrap);
-    return ex;
-  }
-
-  function renderThread(turns) {
-    thread.innerHTML = "";
-    if (!turns.length) {
-      clearBtn.hidden = true;
-      emptyHint.hidden = false;
-      threadWrap.hidden = true;
-      return;
-    }
-    clearBtn.hidden = false;
-    emptyHint.hidden = true;
-    threadWrap.hidden = false;
-    const exchanges = turns.filter((t) => t.role === "user").length;
-    threadSummary.innerHTML =
-      `<span class="collapse-title">Conversation history</span>` +
-      `<span class="collapse-meta">${exchanges} question${exchanges === 1 ? "" : "s"}</span>` +
-      `<span class="collapse-caret" aria-hidden="true">\u203a</span>`;
-    // Pair each user turn with the assistant turn that follows it. The user
-    // turn's index in the full array is the stable handle the server deletes by.
-    for (let i = 0; i < turns.length; i++) {
-      if (turns[i].role !== "user") continue;
-      const answer = (i + 1 < turns.length && turns[i + 1].role === "assistant") ? turns[i + 1] : null;
-      thread.appendChild(renderExchange(turns[i], answer, i));
-    }
-  }
-
-  async function deleteExchange(userIdx) {
-    if (!opts.deleteTurn) return;
-    if (!confirm("Delete this question and its answer?")) return;
-    status.classList.remove("err");
-    try {
-      const data = await opts.deleteTurn(userIdx);
-      renderThread(data.turns || []);
-    } catch (e) {
-      status.classList.add("err");
-      status.textContent = "delete failed: " + e.message;
-    }
-  }
-
-  async function load() {
-    let data;
-    try { data = await opts.loadThread(); }
-    catch (_e) { data = { turns: [] }; }
-    if (opts.prepare) await opts.prepare();
-    renderThread(data.turns || []);
-  }
-
-  let currentJobId = null;
-  let busy = false;
-
-  function setBusy(on) {
-    busy = on;
-    if (on) {
-      askBtn.textContent = "Cancel";
-      askBtn.classList.remove("primary");
-      askBtn.classList.add("ghost");
-      askBtn.title = "Stop this question and ask something else";
-    } else {
-      askBtn.textContent = "Ask";
-      askBtn.classList.add("primary");
-      askBtn.classList.remove("ghost");
-      askBtn.title = "";
-      currentJobId = null;
-    }
-  }
-
-  async function ask() {
-    if (busy) return;
-    const q = input.value.trim();
-    if (!q) return;
-    setBusy(true);
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> thinking&hellip;`;
-    try {
-      const start = await opts.postQuestion(q);
-      currentJobId = start.id;
-      await pollDeepJob(start.id, status, async () => {
-        status.textContent = "";
-        input.value = "";
-        await load();
-      }, opts.pollLabel);
-    } catch (e) {
-      status.classList.add("err");
-      status.textContent = "question failed: " + e.message;
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Cancel the in-flight question (kills the CLI subprocess server-side). The
-  // poll loop observes the cancelled state on its next tick and winds down,
-  // re-enabling the Ask button so a different question can be asked.
-  async function cancelAsk() {
-    if (!currentJobId) return;
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> cancelling&hellip;`;
-    try {
-      await api("/api/deep-job/cancel", "POST", { id: currentJobId });
-    } catch (_e) { /* poll loop still winds the job down */ }
-  }
-
-  askBtn.addEventListener("click", () => (busy ? cancelAsk() : ask()));
-  input.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); if (!busy) ask(); }
-  });
-  clearBtn.addEventListener("click", async () => {
-    if (!confirm(opts.confirmMsg)) return;
-    try {
-      const data = await opts.clearThread();
-      renderThread(data.turns || []);
-    } catch (e) {
-      status.classList.add("err");
-      status.textContent = "clear failed: " + e.message;
-    }
-  });
-
-  load();
-  return card;
-}
-
-function renderDeepQaCard(stem, title) {
-  return createQaCard({
-    title: "Ask about this report",
-    emptyHint:
-      "No questions yet. Ask anything about the report \u2014 a company's positioning, a claim worth " +
-      "verifying, or how a name fits your portfolio. The thread is archived so you can pick it up later.",
-    placeholder: `Ask a follow-up about "${title}" \u2014 grounded in the report above. Ctrl/\u2318+Enter to send.`,
-    pollLabel: `Q&A \u00b7 ${stem}`,
-    confirmMsg: "Clear the archived Q&A thread for this report?",
-    loadThread: () => api("/api/deep-qa?stem=" + encodeURIComponent(stem)),
-    postQuestion: (q) => api("/api/deep-qa", "POST", { stem, question: q }),
-    clearThread: () => api("/api/deep-qa", "POST", { stem, clear: true }),
-    deleteTurn: (idx) => api("/api/deep-qa", "POST", { stem, delete: idx }),
-    turnMeta: (t) => [t.backend_label, t.ts ? relAge(t.ts) : null],
-  });
-}
-
 export {
   analysisBadges,
   markActiveAnalysis,
   synthBox,
-  createQaCard,
   startPipeline,
   openRunInAnalyses,
   loadAnalyses,
