@@ -28,9 +28,11 @@ from store import (
 TARGET_MODEL_BACKUP_DIR = DATA_DIR / "backups"
 
 # The only band keys an apply is allowed to write; anything else in a proposed
-# target (conviction, sleeve hints, ...) is stripped so the model schema can't
-# silently widen.
-_TARGET_WRITE_KEYS = ("low", "high", "rule", "note", "structural")
+# target (conviction hints, rationale, ...) is stripped so the model schema can't
+# silently widen. ``sleeve`` is allowed through so a normalized allocation-sleeve
+# tag survives the apply -- it's a taxonomy label the segment pipeline now maps
+# to a model sleeve key (see sleeve_aliases), not free-form metadata.
+_TARGET_WRITE_KEYS = ("low", "high", "rule", "note", "structural", "sleeve")
 
 
 def _clean_target(raw: dict) -> dict:
@@ -43,16 +45,40 @@ def _apply_changes_to_model(model: dict, changes: list, *, blocked: set) -> tupl
     preview (which works on a throwaway copy). Returns (applied, skipped).
 
     Supported actions: add_target (new band), modify_target (merge onto the
-    existing band, preserving keys the proposal didn't touch), and a guarded
-    sleeve upsert. Anything else is recorded as skipped rather than silently
-    dropped, so an unexpected action is visible instead of a no-op."""
+    existing band, preserving keys the proposal didn't touch), remove_target
+    (drop a name entirely), a guarded sleeve upsert, and drop_sleeve/zero_sleeve
+    (remove a sleeve or collapse it to a 0-0 avoid band). Anything else is
+    recorded as skipped rather than silently dropped, so an unexpected action is
+    visible instead of a no-op."""
     targets = model.setdefault("targets", {})
     sleeves = model.setdefault("sleeves", {})
     applied: list = []
     skipped: list = []
     for change in changes or []:
         action = change.get("action")
-        if action in ("add_target", "modify_target"):
+        if action == "remove_target":
+            try:
+                sym = _safe_symbol(change.get("symbol", ""))
+            except ValueError:
+                skipped.append({"symbol": change.get("symbol"), "reason": "invalid symbol"})
+                continue
+            if targets.pop(sym, None) is None:
+                skipped.append({"symbol": sym, "reason": "no such target to remove"})
+                continue
+            applied.append(f"-{sym}")
+        elif action in ("drop_sleeve", "zero_sleeve"):
+            name = str(change.get("sleeve") or change.get("name") or "").strip()
+            if not name or name not in sleeves:
+                skipped.append({"symbol": f"[{name}]", "reason": "no such sleeve"})
+                continue
+            if action == "drop_sleeve":
+                sleeves.pop(name, None)
+            else:  # zero_sleeve keeps the membership but parks the band at avoid 0-0
+                cur = dict(sleeves.get(name) or {})
+                cur.update({"low": 0.0, "high": 0.0, "rule": "avoid"})
+                sleeves[name] = cur
+            applied.append(f"[{name}]")
+        elif action in ("add_target", "modify_target"):
             try:
                 sym = _safe_symbol(change.get("symbol", ""))
             except ValueError:

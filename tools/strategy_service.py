@@ -23,17 +23,27 @@ import orchestrate
 import research_pull
 import review_deep_research
 import target_construct
+import target_staging
 import ticker_analysis
 from apierror import Conflict
 from browser_jobs import start_deep_research
-from config import DEEP_DIR, SEGMENT_DEF_DIR
+from config import DEEP_DIR, HOLDINGS_JSON, SEGMENT_DEF_DIR
 from jobs import new_job, update_job
 from research_pull import PULL_LOCK
 from segments_service import (
     draft_segment, merge_draft_members, segment_prompt, validate_definition,
 )
 from store import load, slugify, write_json
-from target_model import apply_target_proposal, preview_plan_for_proposal
+from target_model import preview_plan_for_proposal
+
+# Direction verbs that mean "remove this exposure" -> construct may propose
+# outright drops (remove_target) for avoid-rated held, unpinned names.
+_DROP_VERBS = ("drop", "remove", "exit", "sell out of", "cut", "eliminate")
+
+
+def _is_drop_direction(direction: str) -> bool:
+    text = (direction or "").strip().lower()
+    return any(text.startswith(v) for v in _DROP_VERBS)
 
 
 def strategy_progress(run_id: str, job_id: str | None):
@@ -173,7 +183,11 @@ def run_strategy_synthesis(run_id: str) -> None:
         progress("running the review gate…")
         review = review_deep_research.review(seg, date, write=True)
         progress("synthesizing target bands…")
-        proposal = target_construct.construct(seg, date, review, progress=progress)
+        holdings = load(HOLDINGS_JSON)
+        proposal = target_construct.construct(
+            seg, date, review, progress=progress,
+            holdings=holdings if isinstance(holdings, dict) else None,
+            drop_mode=_is_drop_direction(run.get("direction") or ""))
         progress("computing the rebalance preview…")
         preview = preview_plan_for_proposal(proposal)
 
@@ -195,29 +209,33 @@ def run_strategy_synthesis(run_id: str) -> None:
 
 
 def approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = False) -> dict:
+    """Approving no longer writes the live model -- it STAGES the run's changes
+    into the shared working draft so multiple runs compose into one portfolio the
+    user reviews and commits once. Edits made at the gate are persisted back to
+    the proposal file for the record, then staged."""
     run = orchestrate.load_run(run_id)
     if not run:
         raise ValueError(f"unknown strategy run {run_id}")
     if run.get("state") != orchestrate.AWAITING_PROPOSAL:
         raise Conflict(f"run {run_id} is not awaiting proposal approval")
     seg, date = run.get("segment"), run.get("date")
-    # Persist any edits made at the gate back into the proposal file the apply
-    # step reads, so what the user approved is exactly what gets applied.
     if changes is not None:
         ppath = DEEP_DIR / f"{seg}-{date}.target-proposal.json"
         proposal = load(ppath) or (run.get("proposal") or {})
         proposal["changes"] = changes
         write_json(ppath, proposal)
-    orchestrate.set_state(run_id, orchestrate.APPLYING, message="applying target changes…")
     try:
-        applied = apply_target_proposal(seg, date, True, allow_blocked=allow_blocked)
+        staged = target_staging.stage_proposal(
+            seg, date, changes=changes, run_id=run_id, source="strategy",
+            allow_blocked=allow_blocked)
     except Exception as exc:  # noqa: BLE001
         orchestrate.set_state(run_id, orchestrate.ERROR,
-                              error=f"{type(exc).__name__}: {exc}", message="apply failed")
+                              error=f"{type(exc).__name__}: {exc}", message="staging failed")
         raise
-    # The committed model now drives the real recommendation (no further changes).
-    final = preview_plan_for_proposal({"changes": [], "blocked_symbols": []})
+    diff = target_staging.diff_staged_vs_live()
+    n = len(staged.get("applied") or [])
     orchestrate.set_state(
-        run_id, orchestrate.DONE, applied=applied, preview=final,
-        message=f"Applied {len(applied.get('applied') or [])} change(s). Rebalance recommendation ready.")
+        run_id, orchestrate.STAGED, staged=staged, preview=diff,
+        message=(f"Staged {n} change(s) into the working draft. "
+                 f"Review the draft ({diff['counts']['total']} pending) and commit."))
     return orchestrate.public(orchestrate.load_run(run_id))

@@ -77,7 +77,7 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
     start_history_sync as _start_history_sync, start_holdings_sync as _start_holdings_sync,
     start_sectors_sync as _start_sectors_sync,
 )
-from target_model import apply_target_proposal as _apply_target_proposal  # noqa: E402
+import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
     delete_deep_run as _delete_deep_run, deep_runs as _deep_runs,
     save_deep_artifact as _save_deep_artifact,
@@ -488,6 +488,7 @@ _GET_EXACT = {
     "/api/symbol-aliases": "_get_symbol_aliases",
     "/api/symbol-search": "_get_symbol_search",
     "/api/strategy/runs": "_get_strategy_runs",
+    "/api/staging": "_get_staging",
 }
 _GET_PREFIX = [
     ("/api/strategy/", "_get_strategy"),
@@ -523,6 +524,9 @@ _POST_EXACT = {
     "/api/deep-research/verify-login": "_post_verify_login",
     "/api/deep-research/review": "_post_review",
     "/api/target-proposal/apply": "_post_proposal_apply",
+    "/api/staging/commit": "_post_staging_commit",
+    "/api/staging/discard": "_post_staging_discard",
+    "/api/staging/edit": "_post_staging_edit",
     "/api/history/delete": "_post_history_delete",
     "/api/tax-plan": "_post_tax_plan",
     "/api/whatif": "_post_whatif",
@@ -707,6 +711,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
         plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
         _attach_research_overlay(plan, holdings)
+        # Provenance + working-draft flag so the planner can badge each band's
+        # source (legacy/stale vs research-derived vs pinned) and show a banner
+        # when uncommitted changes are sitting in the working draft.
+        plan["provenance"] = model.get("provenance") or {}
+        plan["staged"] = {"has_draft": target_staging.has_draft(),
+                          "pending": target_staging.diff_staged_vs_live()["counts"]["total"]
+                          if target_staging.has_draft() else 0}
         return self._send_json(plan)
 
     def _get_risk(self, path, query):
@@ -739,6 +750,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_strategy_runs(self, path, query):
         return self._send_json({"runs": orchestrate.list_runs()})
+
+    def _get_staging(self, path, query):
+        return self._send_json(target_staging.diff_staged_vs_live())
 
     def _get_strategy(self, path, query):
         run_id = path.rsplit("/", 1)[-1]
@@ -1064,13 +1078,49 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(400, str(exc) or "missing report for this segment + date")
 
     def _post_proposal_apply(self, path):
+        # Now stages into the working draft instead of writing the live model;
+        # the user reviews and commits the draft once. The endpoint name is kept
+        # for the Pipeline UI's existing call site.
         body = self._read_body()
-        return self._send_json(_apply_target_proposal(
+        staged = target_staging.stage_proposal(
             str(body.get("segment") or ""),
             str(body.get("date") or ""),
-            bool(body.get("confirm")),
+            source="pipeline",
             allow_blocked=bool(body.get("allow_blocked")),
-        ))
+        )
+        return self._send_json({**staged, "staging": target_staging.diff_staged_vs_live()})
+
+    def _post_staging_commit(self, path):
+        body = self._read_body()
+        return self._send_json(target_staging.commit_staged(bool(body.get("confirm"))))
+
+    def _post_staging_discard(self, path):
+        return self._send_json(target_staging.discard_staged())
+
+    def _post_staging_edit(self, path):
+        """Manual edits to the working draft and pin management. ``op`` selects:
+        edit (stage one change), revert (restore a key to live), pin / unpin
+        (standing conviction on the live model)."""
+        body = self._read_body()
+        op = str(body.get("op") or "edit")
+        if op == "revert":
+            return self._send_json(target_staging.revert_key(str(body.get("key") or "")))
+        if op == "pin":
+            return self._send_json({"pin": target_staging.set_pin(
+                str(body.get("key") or ""),
+                stance=str(body.get("stance") or "hold"),
+                floor_pct=body.get("floor_pct"),
+                ceiling_pct=body.get("ceiling_pct"),
+                rationale=str(body.get("rationale") or ""),
+            )})
+        if op == "unpin":
+            return self._send_json(target_staging.clear_pin(str(body.get("key") or "")))
+        change = body.get("change")
+        if not isinstance(change, dict):
+            return self._send_error_json(400, "edit requires a 'change' object")
+        return self._send_json(target_staging.stage_changes(
+            [change], source="manual",
+            allow_drop_pinned=bool(body.get("allow_drop_pinned"))))
 
     def _post_history_delete(self, path):
         body = self._read_body()

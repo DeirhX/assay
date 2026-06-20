@@ -82,6 +82,28 @@ class NormalizeTargets(unittest.TestCase):
         self.assertLessEqual(buy_mid, 20.0 + 1e-6)
         self.assertLessEqual(meta["sized_midpoint_total_pct"], 20.0 + 1e-6)
 
+    def test_avoid_held_trims_toward_existing_band_not_half_weight(self):
+        # An avoid-rated name that already has a sized band should trim toward
+        # that band (matching the analyst's stated target), not to a blunt
+        # half-current-weight cut that contradicts the rationale.
+        rows = [_row("AMD", held=15.3)]
+        convictions = self._convictions({"AMD": "avoid"})
+        model = {"targets": {"AMD": {"low": 10, "high": 12, "rule": "trim_only"}}}
+        changes, _ = tc.normalize_targets(convictions, rows, model, segment_budget_pct=20.0)
+        pt = {c["symbol"]: c for c in changes}["AMD"]["proposed_target"]
+        self.assertEqual(pt["rule"], "trim_only")
+        self.assertEqual(pt["low"], 10.0)
+        self.assertEqual(pt["high"], 12.0)  # NOT 15.3 * 0.5 = 7.7
+
+    def test_avoid_held_without_prior_target_falls_back_to_half_weight(self):
+        rows = [_row("ZZZ", held=15.3)]
+        convictions = self._convictions({"ZZZ": "avoid"})
+        changes, _ = tc.normalize_targets(convictions, rows, {}, segment_budget_pct=20.0)
+        pt = {c["symbol"]: c for c in changes}["ZZZ"]["proposed_target"]
+        self.assertEqual(pt["rule"], "trim_only")
+        self.assertEqual(pt["low"], 0.0)
+        self.assertEqual(pt["high"], 7.7)  # 15.3 * 0.5, rounded
+
     def test_per_name_cap_binds(self):
         rows = [_row("AAA")]
         convictions = self._convictions({"AAA": "high"})
@@ -103,6 +125,66 @@ class NormalizeTargets(unittest.TestCase):
         changes, _ = tc.normalize_targets(convictions, rows, {}, blocked={"AAA"},
                                           segment_budget_pct=10.0)
         self.assertEqual({c["symbol"] for c in changes}, {"BBB"})
+
+    def test_pin_floor_anchors_band(self):
+        # A pinned floor raises the band's low even if the budget would size it
+        # smaller -- the pin is the sizing anchor, not just the transient band.
+        rows = [_row("TSM", held=2.0)]
+        convictions = self._convictions({"TSM": "low"})  # would size tiny
+        model = {"targets": {}, "provenance": {
+            "TSM": {"source": "user-pin", "locked": True, "stance": "accumulate", "floor_pct": 3.0}}}
+        changes, meta = tc.normalize_targets(convictions, rows, model, segment_budget_pct=5.0)
+        pt = {c["symbol"]: c for c in changes}["TSM"]["proposed_target"]
+        self.assertGreaterEqual(pt["low"], 3.0 - 1e-9)
+        self.assertEqual(meta["pinned_count"], 1)
+
+    def test_avoid_on_pinned_name_challenges_but_does_not_drop(self):
+        rows = [_row("TSM", held=6.0)]
+        convictions = self._convictions({"TSM": "avoid"})
+        model = {"targets": {"TSM": {"low": 6, "high": 8, "rule": "accumulate"}},
+                 "provenance": {"TSM": {"source": "user-pin", "locked": True,
+                                        "stance": "accumulate", "floor_pct": 3.0}}}
+        changes, meta = tc.normalize_targets(convictions, rows, model,
+                                             segment_budget_pct=20.0, drop_mode=True)
+        ch = {c["symbol"]: c for c in changes}["TSM"]
+        self.assertNotEqual(ch["action"], "remove_target")  # never auto-dropped
+        self.assertTrue(ch.get("challenges_pin"))
+        self.assertIn("TSM", meta["challenges_pins"])
+
+    def test_drop_mode_removes_unpinned_avoid_held(self):
+        rows = [_row("XYZ", held=4.0)]
+        convictions = self._convictions({"XYZ": "avoid"})
+        changes, _ = tc.normalize_targets(convictions, rows, {}, segment_budget_pct=20.0,
+                                          drop_mode=True)
+        ch = {c["symbol"]: c for c in changes}["XYZ"]
+        self.assertEqual(ch["action"], "remove_target")
+
+    def test_sleeve_label_is_normalized(self):
+        # "compute" maps to "semis-compute" in data/sleeve-aliases.json; the
+        # normalized tag rides on the proposed band so the apply persists it.
+        rows = [_row("NVDA", sleeve="compute")]
+        convictions = self._convictions({"NVDA": "high"})
+        changes, _ = tc.normalize_targets(convictions, rows, {}, segment_budget_pct=20.0)
+        ch = changes[0]
+        self.assertEqual(ch["sleeve"], "semis-compute")
+        self.assertEqual(ch["proposed_target"]["sleeve"], "semis-compute")
+        self.assertFalse(ch["sleeve_unknown"])
+
+    def test_unknown_sleeve_is_flagged(self):
+        rows = [_row("NVDA", sleeve="totally-made-up")]
+        convictions = self._convictions({"NVDA": "high"})
+        changes, _ = tc.normalize_targets(convictions, rows, {}, segment_budget_pct=20.0)
+        self.assertTrue(changes[0]["sleeve_unknown"])
+
+    def test_book_reconciliation_flags_over_allocation(self):
+        rows = [_row("AAA")]
+        convictions = self._convictions({"AAA": "high"})
+        model = {"targets": {"BIG": {"low": 90, "high": 100, "rule": "hold"}},
+                 "cash_target_pct": 5.0}
+        holdings = {"positions": [{"symbol": "AAA", "base_market_value": 100.0}]}
+        _changes, meta = tc.normalize_targets(convictions, rows, model,
+                                              segment_budget_pct=20.0, holdings=holdings)
+        self.assertTrue(meta["book_reconciliation"]["over_allocated"])
 
 
 class BuildLlmPrompt(unittest.TestCase):

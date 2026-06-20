@@ -2305,3 +2305,54 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 
 .trade-live-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
 .trade-live-status { color: var(--muted); }
+
+/* ---- working draft (staging) ---- */
+.stage-section { margin: 18px 0; }
+.stage-section .subhead { margin-bottom: 10px; }
+.stage-recon-tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+.stage-recon .stat-tile { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 10px 14px; min-width: 140px; }
+.stage-recon .stat-label { color: var(--muted); font-size: 12px; }
+.stage-recon .stat-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+.stage-recon-bad .stat-value { color: var(--bad); }
+.stage-warn { color: var(--bad); margin-top: 10px; font-size: 13px; }
+.stage-untargeted { margin-top: 10px; font-size: 13px; }
+.stage-funding { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.stage-pins { display: flex; flex-wrap: wrap; gap: 8px; }
+.stage-findings { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.stage-finding { font-size: 13px; color: var(--muted); }
+.stage-rows { display: flex; flex-direction: column; gap: 8px; }
+.stage-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;
+  background: var(--panel); border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius-soft); padding: 10px 14px; }
+.stage-row.stage-added { border-left-color: var(--good); }
+.stage-row.stage-modified { border-left-color: var(--warn); }
+.stage-row.stage-removed { border-left-color: var(--bad); }
+.stage-row-main { min-width: 0; flex: 1 1 auto; }
+.stage-key { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stage-kind { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.stage-bands { margin-top: 6px; font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.stage-before { color: var(--muted); text-decoration: line-through; }
+.stage-arrow { color: var(--muted); }
+.stage-after { font-weight: 600; }
+.stage-prov { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.stage-prior { margin-top: 2px; color: var(--warn); font-size: 12px; }
+.stage-row-actions { flex-shrink: 0; }
+
+.reb-staged-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  background: rgba(245,199,107,.10); border: 1px solid rgba(245,199,107,.4); border-radius: var(--radius-soft);
+  padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
+.reb-prov { font-size: 11px; padding: 1px 7px; margin-left: 6px; }
+.reb-prov-good { color: var(--good); border-color: rgba(107,211,138,.5); }
+.reb-prov-warn { color: var(--warn); border-color: rgba(245,199,107,.5); }
+.reb-prov-muted { color: var(--muted); }
+
+/* ---- conviction pin block (deep dive) ---- */
+.pin-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 14px 16px; margin: 14px 0; }
+.pin-head { display: flex; align-items: center; gap: 10px; }
+.pin-title { font-weight: 700; }
+.pin-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 6px 0 10px; }
+.pin-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.pin-controls select, .pin-controls input, .pin-rationale { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; height: 34px; padding: 0 10px; }
+.pin-controls input { width: 90px; }
+.pin-rationale { width: 100%; margin-bottom: 10px; }
+.pin-actions { display: flex; align-items: center; gap: 10px; }
+.pin-status { color: var(--muted); font-size: 12px; }

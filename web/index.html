@@ -30,6 +30,7 @@
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
+        <button class="subtab" data-view="working-draft" type="button" role="tab">Working draft</button>
         <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
         <button class="subtab" data-view="journal" type="button" role="tab">Journal</button>
@@ -363,6 +364,22 @@
       <div id="reb-summary"></div>
       <div id="reb-whatif"></div>
       <div id="reb-result"></div>
+    </section>
+
+    <!-- WORKING DRAFT (staging) -->
+    <section class="view" id="view-working-draft">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Working draft</h2>
+          <p class="hint">Uncommitted target-model changes staged from strategy runs and manual edits. Review the whole-book diff, accept or revert each change, then commit once — that single write becomes your live portfolio (with a reversible backup). Pinned names are anchored: a run can challenge them, but never drops them silently.</p>
+        </div>
+        <div class="reb-head-actions">
+          <button class="primary" id="stage-commit" type="button" title="Promote the working draft to the live target model">Commit to portfolio</button>
+          <button class="ghost" id="stage-discard" type="button" title="Throw away the working draft; the live model is unchanged">Discard draft</button>
+        </div>
+      </div>
+      <div class="status" id="stage-status"></div>
+      <div id="stage-body"></div>
     </section>
 
     <!-- TRADE -->
