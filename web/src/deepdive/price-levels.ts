@@ -287,13 +287,61 @@ export function priceLevelsBlock(
     return { col, sum, matchHost };
   }
 
-  function render() {
-    block.innerHTML = "";
-    block.classList.toggle("pl-is-locked", !!locked);
-    const head = el("div", "pl-head");
-    head.appendChild(el("h3", "pl-title", "Price levels"));
-    if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
-    block.appendChild(head);
+  // Disclosure: the common case is one "buy below" / "trim above" price, so that
+  // is the default. The fair-value anchor, per-tranche sizes, margin%, the
+  // live/sized stats and multi-tranche laddering all live behind "Advanced".
+  // Reveal it up front only when the seeded levels are actually non-trivial, so
+  // we never silently hide real configuration.
+  function ladderNonTrivial(): boolean {
+    if (buyRows.length > 1 || trimRows.length > 1) return true;
+    return [...buyRows, ...trimRows].some((r) => r.size != null && Math.abs(r.size - 1) > 0.001);
+  }
+  let advanced = ladderNonTrivial();
+
+  // A lone "buy below" / "trim above" price bound to rows[0], created or dropped
+  // as the field fills or clears. Size stays implicit (the backend splits a lone
+  // tranche to 100%) and margin is irrelevant for a one-tranche side, so neither
+  // is asked for here. The live/away dot reuses updateDistances().
+  function simpleSide(side: Side, rows: Row[]): HTMLElement {
+    const wrap = el("div", "pl-simple-side pl-side--" + side);
+    const field = el("label", "pl-tr-field");
+    field.appendChild(el("span", "pl-tr-label",
+      (side === "buy" ? "Buy below" : "Trim above") + (currency ? " (" + currency + ")" : "")));
+    const input = numInput("pl-input pl-simple-input",
+      rows.length && rows[0].price != null ? r2(rows[0].price) : null, "price");
+    const dist = el("span", "pl-tr-dist", "");
+    input.addEventListener("input", () => {
+      const v = input.value.trim() === "" ? null : Number(input.value);
+      if (v == null || !isFinite(v)) rows.length = 0;
+      else if (!rows.length) rows.push({ price: v, size: null, margin: null });
+      else { rows[0].price = v; rows[0].margin = null; }
+      if (rows.length) rows[0]._distEl = dist;
+      updateDistances();
+    });
+    if (rows.length) rows[0]._distEl = dist;
+    field.appendChild(input);
+    wrap.appendChild(field);
+    wrap.appendChild(dist);
+    return wrap;
+  }
+
+  function renderSimpleBody() {
+    summaryHosts = null;
+    block.appendChild(el("p", "hint pl-intro",
+      "Buy unlocks at or below your price, trim at or above. Locking gates the rebalance on the " +
+      "live price; you confirm every order before it places."));
+    const cols = el("div", "pl-simple");
+    cols.appendChild(simpleSide("buy", buyRows));
+    cols.appendChild(simpleSide("trim", trimRows));
+    block.appendChild(cols);
+    const notes: string[] = [];
+    if (fairValue != null) notes.push(`fair value ${fmtLvl(fairValue)}`);
+    if (spot != null) notes.push(`spot ${fmtLvl(spot)}`);
+    if (notes.length) block.appendChild(el("p", "muted pl-simple-note", notes.join("  \u00b7  ")));
+    updateDistances();
+  }
+
+  function renderAdvancedBody() {
     block.appendChild(el("p", "hint pl-intro",
       "A valuation-anchored ladder in the instrument's trading currency. Set a fair value, then " +
       "buy/trim tranches \u2014 each a price (or a margin vs fair value) and a size. Once locked, the " +
@@ -343,7 +391,9 @@ export function priceLevelsBlock(
 
     summaryHosts = { buySum: buyCol.sum, trimSum: trimCol.sum, buyMatch: buyCol.matchHost, trimMatch: trimCol.matchHost };
     sync();
+  }
 
+  function renderFooter() {
     if (locked && locked.locked_at) {
       block.appendChild(el("p", "muted pl-when", `Locked ${esc(relTime(locked.locked_at))}`));
     }
@@ -382,6 +432,7 @@ export function priceLevelsBlock(
           await api("/api/price-levels/clear", "POST", { symbol: sym });
           locked = null;
           seedFrom(suggested);
+          advanced = ladderNonTrivial();
           render();
         } catch (e) {
           clearBtn.disabled = false;
@@ -393,6 +444,27 @@ export function priceLevelsBlock(
     }
     block.appendChild(actions);
     block.appendChild(msg);
+  }
+
+  function render() {
+    block.innerHTML = "";
+    block.classList.toggle("pl-is-locked", !!locked);
+    block.classList.toggle("pl-advanced", advanced);
+    const head = el("div", "pl-head");
+    head.appendChild(el("h3", "pl-title", "Price levels"));
+    if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
+    const toggle = el("button", "ghost pl-adv-toggle", advanced ? "Simpler" : "Advanced\u2026");
+    toggle.type = "button";
+    toggle.title = advanced
+      ? "Hide the fair-value anchor, sizes and multi-tranche ladder"
+      : "Show the fair-value anchor, per-tranche sizes and multi-tranche laddering";
+    toggle.addEventListener("click", () => { advanced = !advanced; render(); });
+    head.appendChild(toggle);
+    block.appendChild(head);
+
+    if (advanced) renderAdvancedBody();
+    else renderSimpleBody();
+    renderFooter();
   }
 
   function buildLockPayload(): LockPayload {
