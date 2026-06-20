@@ -1375,6 +1375,24 @@ a.tlink:hover { border-bottom-style: solid; }
 .price-levels.pl-is-locked .pl-title { color: var(--good); }
 .pl-locked { font-size: 10px; }
 .pl-intro { margin: 6px 0 12px; }
+
+/* Advanced toggle: a quiet text button pinned to the right of the header, so the
+   default stays a two-field "buy below / trim above" and the full ladder is opt-in. */
+.pl-adv-toggle { margin-left: auto; font-size: 11px; padding: 3px 9px; flex: none; }
+
+/* Simplified default view: one price per side, side by side. */
+.pl-simple { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 720px) { .pl-simple { grid-template-columns: 1fr; } }
+.pl-simple-side {
+  display: flex; align-items: flex-end; gap: 10px;
+  border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px;
+  background: var(--bg-soft, rgba(255,255,255,.02));
+}
+.pl-simple-side.pl-side--buy { border-top: 2px solid var(--good); }
+.pl-simple-side.pl-side--trim { border-top: 2px solid var(--warn); }
+.pl-simple-side .pl-tr-field { flex: 1 1 auto; }
+.pl-simple-input { width: 100%; }
+.pl-simple-note { margin: 10px 0 0; font-size: 12px; }
 /* A bare boxed number input used across the ladder editor; native spinners
    killed so values read cleanly. */
 .pl-input {

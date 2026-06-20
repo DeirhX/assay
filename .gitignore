@@ -14,6 +14,11 @@ __pycache__/
 node_modules/
 web/dist/
 .vite/
+# Playwright e2e artifacts (reports, traces, downloaded browsers cache)
+test-results/
+playwright-report/
+blob-report/
+.playwright/
 _commitmsg.txt
 _prbody.txt
 
