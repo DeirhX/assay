@@ -16,9 +16,50 @@ interface RiskPosition {
 const fmtPct1 = (v: number | null | undefined) => (v == null ? "n/a" : Number(v).toFixed(1) + "%");
 const fmtNum = (v: number | null | undefined, d = 2) => (v == null ? "n/a" : Number(v).toFixed(d));
 
+interface RiskMetrics {
+  n_names?: number;
+  effective_bets?: number | null;
+  covariance_share_pct?: number | null;
+  portfolio_vol_pct?: number | null;
+  weighted_avg_vol_pct?: number | null;
+  avg_pairwise_corr?: number | null;
+}
+
+interface StressContribution {
+  symbol?: string;
+  beta?: number | null;
+  impact_pct?: number | null;
+}
+
+interface StressScenario {
+  label?: string;
+  factor?: string;
+  shock_pct?: number;
+  nav_impact_pct?: number | null;
+  measurable?: boolean;
+  note?: string;
+  contributions?: StressContribution[];
+}
+
+type CorrMatrix = Record<string, Record<string, number | null>>;
+
+// GET /api/risk: correlation-aware portfolio risk lens. Local to this view.
+interface RiskPayload {
+  metrics?: RiskMetrics;
+  caveats?: string[];
+  range?: string;
+  n_obs?: number;
+  as_of?: string | null;
+  snapshot?: string | null;
+  source?: string;
+  stress?: StressScenario[];
+  correlation?: { symbols?: string[]; matrix?: CorrMatrix };
+  positions?: RiskPosition[];
+}
+
 // Correlation -> background. High positive correlation is the risk here, so make
 // it loud (red); near-zero is calm (neutral); negative (a real hedge) is green.
-function corrColor(c) {
+function corrColor(c: number | null) {
   if (c == null) return "transparent";
   if (c >= 0) return `rgba(220, 80, 70, ${(0.12 + 0.78 * Math.min(1, c)).toFixed(3)})`;
   return `rgba(70, 170, 110, ${(0.12 + 0.78 * Math.min(1, -c)).toFixed(3)})`;
@@ -37,7 +78,7 @@ async function loadRisk() {
   });
 }
 
-function renderRisk(r) {
+function renderRisk(r: RiskPayload) {
   const out = $("#risk-result");
   out.innerHTML = "";
   const m = r.metrics || {};
@@ -113,9 +154,10 @@ function renderRisk(r) {
   }
 }
 
-const statCard = (label, value, cls, title) => statTile(label, value, { cls, title, family: "risk-stat" });
+const statCard = (label: string, value: string, cls?: string, title?: string) =>
+  statTile(label, value, { cls, title, family: "risk-stat" });
 
-function stressCard(s) {
+function stressCard(s: StressScenario) {
   const card = el("div", "risk-stress");
   const head = el("div", "risk-stress-head");
   const impactCls = s.nav_impact_pct == null ? "muted" : s.nav_impact_pct <= -15 ? "bad" : s.nav_impact_pct < 0 ? "warn" : "good";
@@ -144,7 +186,7 @@ function stressCard(s) {
   return card;
 }
 
-function heatmap(syms, matrix) {
+function heatmap(syms: string[], matrix: CorrMatrix) {
   const wrap = el("div", "risk-heatmap-wrap");
   const grid = el("div", "risk-heatmap");
   // Cap cell width (so a small book doesn't get absurd squares) but let columns
@@ -170,7 +212,7 @@ function heatmap(syms, matrix) {
 
 // Annualized single-name vol -> severity. Lower is calmer (green); the loud end
 // is what concentration risk looks like name-by-name.
-function volClass(v) {
+function volClass(v: number | null | undefined) {
   if (v == null) return "muted";
   if (v >= 60) return "bad";
   if (v >= 40) return "warn";

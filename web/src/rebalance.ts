@@ -4,26 +4,121 @@ import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 
 // ---- rebalance planner -----------------------------------------------------
-const REB_RULE_LABEL = {
+
+// Independent research context attached to a plan row (decision support only).
+interface ResearchInfo {
+  data_quality?: string;
+  thesis_action?: string;
+  thesis_summary?: string;
+  momentum_3m_pct?: number;
+  as_of?: string | null;
+}
+
+interface GateTranche {
+  price?: number | null;
+  distance_pct?: number | null;
+}
+
+// A locked valuation ladder overlaid on a row; richer than api-types PriceGate
+// because the planner reads the tranche/fraction internals too.
+interface RebPriceGate {
+  currency?: string;
+  buy_below?: number | null;
+  trim_above?: number | null;
+  blocked_action?: "buy" | "trim";
+  buy_total?: number;
+  trim_total?: number;
+  buy_live?: number;
+  trim_live?: number;
+  next_buy?: GateTranche | null;
+  next_trim?: GateTranche | null;
+  applied_fraction?: number | null;
+  partial?: boolean;
+  price_known?: boolean;
+  current?: number | null;
+}
+
+interface TaxLot {
+  bucket?: string;
+  open_datetime?: string;
+  days_to_exempt?: number | null;
+  proceeds?: number | null;
+  gain?: number;
+}
+
+interface TaxInfo {
+  has_lots?: boolean;
+  lots?: TaxLot[];
+  totals?: Record<string, any>;
+  raised?: number | null;
+  currency?: string;
+  n_lots_used?: number;
+  requested?: number | null;
+  shortfall?: number;
+}
+
+interface RebMember {
+  symbol?: string;
+  current_pct: number;
+  current_czk?: number | null;
+}
+
+// One plan row as the planner renders it: the band math plus the overlays.
+interface RebRow {
+  name: string;
+  kind?: string;
+  rule?: string;
+  held?: boolean;
+  action?: string | null;
+  status?: string;
+  current_pct: number;
+  current_czk?: number | null;
+  low: number;
+  high: number;
+  suggest_delta_pct: number;
+  note?: string | null;
+  interactive?: boolean;
+  members?: RebMember[];
+  research?: ResearchInfo | null;
+  research_conflict?: boolean;
+  price_gate?: RebPriceGate | null;
+  tax?: TaxInfo | null;
+}
+
+interface RebPlan {
+  nav?: number | null;
+  invested?: number;
+  currency?: string;
+  snapshot?: string | null;
+  as_of?: string | null;
+  cash_target_pct?: number;
+  funding_order?: string[];
+  rows?: RebRow[];
+  untargeted?: RebMember[];
+  untargeted_pct?: number;
+}
+
+const REB_RULE_LABEL: Record<string, string> = {
   trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
   avoid: "avoid", accumulate: "accumulate", hold: "hold", wait: "wait",
 };
-const rebStatusClass = (s) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
-const rebActionClass = (a) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
+const rebStatusClass = (s: string | null | undefined) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
+const rebActionClass = (a: string | null | undefined) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
 // Weights are percent of the invested book, so size money off invested value
 // (not NAV) — that keeps a row's CZK equal to its actual market value.
-const pctToCzk = (pct, base) => (typeof base === "number" && pct != null ? Math.round((pct / 100) * base) : null);
+const pctToCzk = (pct: number | null | undefined, base: number | null | undefined) =>
+  (typeof base === "number" && pct != null ? Math.round((pct / 100) * base) : null);
 // Default planned amount: prefill the minimal band-closing trade only for clear
 // trim/buy actions. "review" (accumulate over ceiling) and untargeted names are
 // judgement calls, so they start at zero — the human decides.
-const rebDefaultDelta = (r) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
+const rebDefaultDelta = (r: Pick<RebRow, "action" | "suggest_delta_pct">) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
 
 // Thesis verdict (free text from the dossier form) -> visual lean. Mirrors the
 // backend's _research_conflict buckets so the chip color and the conflict flag
 // never tell different stories.
 const THESIS_ADD_LIKE = new Set(["add", "accumulate", "buy", "build", "increase", "overweight"]);
 const THESIS_TRIM_LIKE = new Set(["trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"]);
-const thesisLean = (a) => {
+const thesisLean = (a: string | null | undefined) => {
   const k = String(a || "").toLowerCase().trim();
   return THESIS_ADD_LIKE.has(k) ? "good" : THESIS_TRIM_LIKE.has(k) ? "bad" : "muted";
 };
@@ -32,12 +127,13 @@ const thesisLean = (a) => {
 // data-trust dot, the thesis verdict, 3-month momentum, and report freshness.
 // Pure decision support — it never changes the trade math. Returns null when the
 // row carries no dossier so the name reads as "no signal".
-function researchLine(r) {
+function researchLine(r: RebRow) {
   const res = r.research;
   if (!res) return null;
   const bits = [];
   const dq = res.data_quality || "INFO";
-  const dqTitle = { ERROR: "data conflicts", WARN: "minor data disagreement", INFO: "data looks clean" }[dq] || dq;
+  const dqLabels: Record<string, string> = { ERROR: "data conflicts", WARN: "minor data disagreement", INFO: "data looks clean" };
+  const dqTitle = dqLabels[dq] || dq;
   bits.push(`<span class="dot ${esc(dq)}" title="Data trust: ${esc(dqTitle)}"></span>`);
   if (res.thesis_action) {
     bits.push(`<span class="chip ${thesisLean(res.thesis_action)} reb-thesis-chip" title="Your saved thesis verdict">${esc(res.thesis_action)}</span>`);
@@ -71,13 +167,13 @@ function researchLine(r) {
 // line reads out the gate state — what's armed, how many tranches are live, the
 // active fraction, and the next trigger price. Pure annotation; the band sets
 // the target delta and the ladder decides how much of it to act on now.
-function priceGateLine(r) {
+function priceGateLine(r: RebRow) {
   const g = r.price_gate;
   if (!g) return null;
   const ccy = g.currency ? g.currency + " " : "";
-  const r2 = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v);
-  const fmt = (v) => (v == null ? "?" : ccy + r2(v));
-  const pct = (f) => (f == null ? "" : Math.round(f * 100) + "%");
+  const r2 = (v: number | null | undefined) => (typeof v === "number" ? Math.round(v * 100) / 100 : v);
+  const fmt = (v: number | null | undefined) => (v == null ? "?" : ccy + r2(v));
+  const pct = (f: number | null | undefined) => (f == null ? "" : Math.round(f * 100) + "%");
 
   // Which side does this row act on? Prefer the action, then what's blocked,
   // then whichever ladder exists.
@@ -127,7 +223,7 @@ function priceGateLine(r) {
 // flow, pre-filling a direction that names the disagreement. Phase 1 stays
 // read-only: this only navigates + seeds the input; the human still drives every
 // gate of the strategy run that follows.
-function escalateToStrategy(r) {
+function escalateToStrategy(r: RebRow) {
   const res = r.research || {};
   const sym = cleanSymbol(r.name) || r.name;
   const verb = r.action === "trim" ? "trimming" : r.action === "buy" ? "adding to" : "rebalancing";
@@ -151,7 +247,7 @@ async function loadRebalance() {
   });
 }
 
-function renderRebalance(plan) {
+function renderRebalance(plan: RebPlan) {
   const summary = $("#reb-summary");
   const out = $("#reb-result");
   const nav = plan.nav;
@@ -176,9 +272,18 @@ function renderRebalance(plan) {
     `<div class="reb-stat"><span class="reb-stat-k">Target bands closed</span><span class="reb-stat-v" id="reb-stat-closed">—</span></div>` +
     `</div>`;
 
-  const cells = []; // live-updated derived references, one per interactive row
+  // Live-updated derived references, one per interactive row.
+  interface RowCell {
+    r: RebRow;
+    input: HTMLInputElement;
+    czk: HTMLElement;
+    projPct: HTMLElement;
+    projBand: HTMLElement;
+    row: HTMLElement;
+  }
+  const cells: RowCell[] = [];
 
-  const headRow = (title) => {
+  const headRow = (title: string) => {
     const h = el("div", "reb-row reb-head-row");
     h.innerHTML =
       `<div class="reb-c reb-name">${esc(title)}</div>` +
@@ -190,7 +295,7 @@ function renderRebalance(plan) {
     return h;
   };
 
-  const buildRow = (r) => {
+  const buildRow = (r: RebRow) => {
     const row = el("div", "reb-row reb-data-row");
     const sym = el("span", "reb-sym", esc(r.name));
     if (r.kind === "target" && r.held) {
@@ -388,7 +493,7 @@ function renderRebalance(plan) {
   const simBtn = $<HTMLButtonElement>("#reb-simulate");
   if (simBtn) {
     simBtn.onclick = async () => {
-      const trades = [];
+      const trades: WhatifTrade[] = [];
       cells.forEach(({ r, input }) => {
         const d = parseFloat(input.value);
         if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
@@ -421,9 +526,33 @@ function renderRebalance(plan) {
 }
 
 // ---- what-if "after" panel -------------------------------------------------
-const whatifStat = (label, valueHtml, cls) => statTile(label, valueHtml, { cls, html: true });
+interface WhatifSummary {
+  bands_in_before?: number;
+  bands_in_after?: number;
+  bands_total?: number;
+  net_cash_czk?: number;
+  realized_taxable_gain_czk?: number;
+}
 
-function renderWhatif(wf) {
+interface WhatifTrade {
+  symbol: string;
+  delta_czk: number;
+}
+
+interface Whatif {
+  summary?: WhatifSummary;
+  currency?: string;
+  trades?: WhatifTrade[];
+  cash?: { after?: number | null } | null;
+  after?: { rows?: RebRow[] } | null;
+  before_status?: Record<string, string>;
+  tax?: { totals?: Record<string, any> } | null;
+  caveats?: string[];
+}
+
+const whatifStat = (label: string, valueHtml: string, cls?: string) => statTile(label, valueHtml, { cls, html: true });
+
+function renderWhatif(wf: Whatif) {
   const box = $("#reb-whatif");
   box.innerHTML = "";
   const s = wf.summary || {};
@@ -447,7 +576,7 @@ function renderWhatif(wf) {
     s.realized_taxable_gain_czk > 0 ? "warn" : "good"));
   card.appendChild(stats);
 
-  const afterRows = {};
+  const afterRows: Record<string, RebRow> = {};
   ((wf.after && wf.after.rows) || []).forEach((r) => { if (r.kind === "target") afterRows[r.name] = r; });
   card.appendChild(simpleTable({
     className: "whatif-table",
@@ -478,7 +607,7 @@ function renderWhatif(wf) {
   const logBtn = el("button", "ghost", "Log to journal");
   logBtn.type = "button";
   logBtn.addEventListener("click", () => {
-    const trade = (wf.trades && wf.trades[0]) || {};
+    const trade: Partial<WhatifTrade> = (wf.trades && wf.trades[0]) || {};
     const summary = (wf.trades || [])
       .map((t) => `${t.symbol} ${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`)
       .join(", ");
@@ -497,14 +626,14 @@ function renderWhatif(wf) {
 }
 
 // ---- tax-lot breakdown (Czech 3-year aware) --------------------------------
-const TAX_BUCKET = {
+const TAX_BUCKET: Record<string, { label: string; cls: string }> = {
   exempt_gain: { label: "exempt gain", cls: "good" },
   taxable_loss: { label: "harvest loss", cls: "warn" },
   exempt_loss: { label: "exempt loss", cls: "muted" },
   taxable_gain: { label: "taxable gain", cls: "bad" },
 };
 
-function taxDetails(r) {
+function taxDetails(r: RebRow) {
   const t = r.tax;
   if (!t || !t.has_lots || !t.lots || !t.lots.length) return null;
   const tot = t.totals || {};
@@ -543,7 +672,7 @@ function taxDetails(r) {
   return det;
 }
 
-function analyzeFromAnywhere(sym) {
+function analyzeFromAnywhere(sym: string | null | undefined) {
   const ticker = cleanSymbol(sym);
   if (!ticker) return;
   pushNav({ view: "deepdive", ticker });
@@ -555,7 +684,7 @@ function analyzeFromAnywhere(sym) {
 // Cache-first open for in-report ticker links: show what we already have
 // instantly, and only hit the network (live pull) when there's no cached
 // dossier. Browsing a report shouldn't trigger a slow pull per click.
-async function openTicker(sym) {
+async function openTicker(sym: string | null | undefined) {
   const ticker = cleanSymbol(sym);
   if (!ticker) return;
   pushNav({ view: "deepdive", ticker });

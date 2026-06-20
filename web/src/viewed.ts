@@ -19,18 +19,24 @@ interface ViewedRow {
   verdict?: string;
 }
 
-function getViewedMap() {
+// Browser-local recents: { SYM: { ts, name } }, persisted in localStorage.
+interface ViewedEntry {
+  ts: string;
+  name: string;
+}
+
+function getViewedMap(): Record<string, ViewedEntry> {
   try { return JSON.parse(localStorage.getItem(VIEWED_KEY) || "{}"); } catch (_e) { return {}; }
 }
-function recordView(sym, name) {
+function recordView(sym: string, name?: string) {
   sym = cleanSymbol(sym);
   if (!sym) return;
   const m = getViewedMap();
   m[sym] = { ts: new Date().toISOString(), name: name || (m[sym] && m[sym].name) || "" };
   try { localStorage.setItem(VIEWED_KEY, JSON.stringify(m)); } catch (_e) { /* private mode */ }
 }
-function relTime(iso) {
-  const t = Date.parse(iso);
+function relTime(iso: string | number | null | undefined): string {
+  const t = Date.parse(String(iso ?? ""));
   if (!t) return "";
   const s = (Date.now() - t) / 1000;
   if (s < 60) return "just now";
@@ -61,8 +67,8 @@ async function renderViewedTickers() {
   card.appendChild(listWrap);
   out.appendChild(card);
 
-  let server = [];
-  try { server = (await api("/api/ticker-index")).tickers || []; } catch (_e) { /* offline: local only */ }
+  let server: ViewedRow[] = [];
+  try { server = (await api<{ tickers?: ViewedRow[] }>("/api/ticker-index")).tickers || []; } catch (_e) { /* offline: local only */ }
   const viewed = getViewedMap();
   const bySym: Record<string, ViewedRow> = {};
   server.forEach((r) => { bySym[r.symbol] = { ...r }; });
@@ -72,7 +78,7 @@ async function renderViewedTickers() {
     if (!row.name && viewed[sym].name) row.name = viewed[sym].name;
   });
   const rows = Object.values(bySym);
-  const timeOf = (r) => r.last_viewed || r.analyzed_at || r.as_of || "";
+  const timeOf = (r: ViewedRow) => r.last_viewed || r.analyzed_at || r.as_of || "";
   if (_viewedSort === "name") rows.sort((a, b) => a.symbol.localeCompare(b.symbol));
   else rows.sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
 

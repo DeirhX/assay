@@ -82,7 +82,7 @@ function tickerMenuHtml(rows: any[]) {
     `</div>`).join("");
 }
 
-function wireTickerSearch(input) {
+function wireTickerSearch(input: HTMLInputElement) {
   const menu = $("#top-ticker-menu");
   if (!menu) return;
 
@@ -94,7 +94,7 @@ function wireTickerSearch(input) {
   };
   const close = () => { menu.hidden = true; input.setAttribute("aria-expanded", "false"); };
   const items = () => [...menu.querySelectorAll(".topsearch-item")];
-  const setActive = (its, idx) => {
+  const setActive = (its: Element[], idx: number) => {
     its.forEach((it) => it.classList.remove("active"));
     if (idx >= 0 && its[idx]) { its[idx].classList.add("active"); its[idx].scrollIntoView({ block: "nearest" }); }
   };
@@ -142,7 +142,7 @@ const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses"
 // research flow (reached via the pipeline's deterministic pull or a segment row)
 // rather than being a destination of its own. `setup` (the gear) sits outside
 // the group bar entirely.
-const VIEW_GROUP = {
+const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
@@ -151,27 +151,35 @@ const VIEW_GROUP = {
 };
 // Which sub-tab lights up for a given view. Holdings + History are merged behind
 // one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
-const VIEW_SUBTAB = {
+const VIEW_SUBTAB: Record<string, string> = {
   analyses: "analyses", pipeline: "pipeline",
   holdings: "positions", history: "positions", rebalance: "rebalance", trade: "trade", risk: "risk", journal: "journal",
 };
-const GROUP_DEFAULT = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const lastViewByGroup: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
 
-const cleanSymbol = (raw) => (raw || "").trim().toUpperCase();
-const cleanSlug = (raw) => (raw || "").trim();
+const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
+const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
 // Segment names are server slugs: lowercase alphanumerics + hyphens. Guards
 // against junk (e.g. a "Failed to fetch" error string) being used as a segment.
-const isSegmentSlug = (s) => /^[a-z0-9][a-z0-9-]*$/.test(s || "");
+const isSegmentSlug = (s: string | null | undefined) => /^[a-z0-9][a-z0-9-]*$/.test(s || "");
 
 // Always surface which model produced an output. When no model was pinned the
 // backend used its own default, which we can't name precisely, so say so.
-const modelLabel = (m) => (m && m !== "(default)" ? m : "default model");
+const modelLabel = (m: string | null | undefined) => (m && m !== "(default)" ? m : "default model");
+
+// A resolved location: the flat view plus its optional target identifiers.
+interface NavState {
+  view?: string;
+  ticker?: string;
+  segment?: string;
+  run?: string;
+}
 
 // Trigger a client-side download of text content as a file.
-function downloadText(filename, text) {
+function downloadText(filename: string, text: string) {
   const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = el("a");
@@ -207,7 +215,7 @@ function navFromUrl() {
   };
 }
 
-function urlForNav(nav) {
+function urlForNav(nav: NavState) {
   const url = new URL(window.location.href);
   url.search = "";
   url.hash = "";
@@ -218,7 +226,7 @@ function urlForNav(nav) {
   return url;
 }
 
-function pushNav(partial, { replace = false } = {}) {
+function pushNav(partial: Partial<NavState>, { replace = false }: { replace?: boolean } = {}) {
   const next = {
     ...navFromUrl(),
     ticker: "",
@@ -231,7 +239,7 @@ function pushNav(partial, { replace = false } = {}) {
   return next;
 }
 
-function navForView(view) {
+function navForView(view: string) {
   const nav: { view: string; ticker?: string; segment?: string; run?: string } = { view };
   if (view === "deepdive") nav.ticker = cleanSymbol($<HTMLInputElement>("#ticker-input").value);
   if (view === "segment") nav.segment = cleanSlug($<HTMLSelectElement>("#segment-select").value);
@@ -245,7 +253,7 @@ function navForView(view) {
 
 // Sync the header chrome (group buttons, sub-tab bar, positions toggle) to the
 // active view. Kept separate from data loading so navigation logic stays legible.
-function updateChrome(active) {
+function updateChrome(active: string) {
   const group = VIEW_GROUP[active] || "deepdive";
   // Research has no sub-tab bar: "New run" (pipeline) is a sub-page reached via the
   // button and left via its Back button, so the Research group header always
@@ -270,7 +278,7 @@ function updateChrome(active) {
   });
 }
 
-function setActiveView(view) {
+function setActiveView(view: string) {
   const active = VIEWS.has(view) ? view : "deepdive";
   updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
@@ -288,7 +296,7 @@ function setActiveView(view) {
   return active;
 }
 
-function setSegmentControls(segment) {
+function setSegmentControls(segment: string | null | undefined) {
   if (!segment) return;
   const seg = $<HTMLSelectElement>("#segment-select");
   const pipe = $<HTMLSelectElement>("#pipe-segment-select");
@@ -298,8 +306,8 @@ function setSegmentControls(segment) {
   if (slug && !slug.value) slug.value = segment;
 }
 
-async function restoreNav(nav) {
-  const active = setActiveView(nav.view);
+async function restoreNav(nav: NavState) {
+  const active = setActiveView(nav.view ?? "deepdive");
   if (nav.ticker) $<HTMLInputElement>("#ticker-input").value = nav.ticker;
   if (nav.segment || nav.run || active === "segment" || active === "pipeline") {
     await loadSegmentList();
@@ -324,7 +332,7 @@ async function restoreNav(nav) {
 // Select-to-analyze: highlighting a ticker-shaped token in a report/summary pops
 // a chip to open it -- the escape hatch for symbols we never auto-linked and have
 // no data for. The user asserts it's a ticker; openTicker live-pulls on a miss.
-let _selChip = null;
+let _selChip: HTMLButtonElement | null = null;
 function hideSelChip() { if (_selChip) _selChip.hidden = true; }
 function maybeShowSelChip() {
   const sel = window.getSelection();
@@ -354,7 +362,7 @@ function maybeShowSelChip() {
 // run at import time: the core<->errors<->shell import cycle can evaluate shell
 // before core's `$`/`el`/`api` consts are initialized, throwing a TDZ error.
 function initShell() {
-  const goToView = (view) => {
+  const goToView = (view: string) => {
     pushNav(navForView(view));
     restoreNav(navFromUrl());
   };
@@ -374,7 +382,7 @@ function initShell() {
   });
 
   // Persistent header search with autocomplete over tickers we already have.
-  const topTicker = $("#top-ticker");
+  const topTicker = $<HTMLInputElement>("#top-ticker");
   if (topTicker) wireTickerSearch(topTicker);
 
   // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
@@ -446,7 +454,7 @@ function initShell() {
       const job = await api("/api/holdings/sync", "POST", {});
       await pollDeepJob(job.id, status, async (done) => {
         await loadHoldings();
-        status.textContent = "Synced. " + planMsg(done.result && done.result.site);
+        status.textContent = "Synced. " + planMsg((done.result as Record<string, any>)?.site);
       }, "IBKR sync");
     } catch (e) {
       status.textContent = "Sync failed: " + e.message;
@@ -479,8 +487,16 @@ function initShell() {
   }
 }
 
+// One generate_site.regenerate() result.
+interface SiteRegen {
+  ok?: boolean;
+  error?: string;
+  written?: string[];
+  has_model?: boolean;
+}
+
 // Human-readable summary of a generate_site.regenerate() result.
-function planMsg(site) {
+function planMsg(site: SiteRegen | null | undefined) {
   if (!site) return "Plan not regenerated.";
   if (site.ok === false) return "Plan not regenerated: " + (site.error || "unknown error");
   const n = (site.written || []).length;

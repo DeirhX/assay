@@ -30,7 +30,7 @@ async function loadHoldings() {
       .sort((a, b) => (b.percent_of_nav || 0) - (a.percent_of_nav || 0));
     const weights = rows.map((p) => p.percent_of_nav || 0);
     const maxW = Math.max(1e-6, ...weights);
-    const cum = (n) => weights.slice(0, n).reduce((s, w) => s + w, 0);
+    const cum = (n: number) => weights.slice(0, n).reduce((s, w) => s + w, 0);
 
     out.appendChild(portfolioHero(h, rows.length, cum));
     // Legend goes above the list: with 40+ positions it was below the fold, so

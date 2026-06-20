@@ -1,3 +1,4 @@
+import type { DeepRun, Job } from "./api-types";
 import { $, api, el, esc, relAge, sectionCard, setErrorSink, state } from "./core";
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
 import { pushNav } from "./shell";
@@ -10,11 +11,21 @@ import { kickTaskPoll } from "./tasks";
 // listing each error with source, time, and a dismiss action. Sources funnel
 // in from api() (network/5xx), failed background jobs, and the global
 // unhandledrejection/error handlers.
-const errorLog = []; // newest last: { id, source, message, detail, time, count }
+// One collapsed failure in the error center; `count` bumps on rapid duplicates.
+interface ErrorEntry {
+  id: string;
+  source: string;
+  message: string;
+  detail: string;
+  time: number;
+  count: number;
+}
+
+const errorLog: ErrorEntry[] = []; // newest last
 const ERROR_LOG_MAX = 50;
 let _errorSeq = 0;
 
-function recordError(source, message, opts: { detail?: string } = {}) {
+function recordError(source: string, message: string, opts: { detail?: string } = {}) {
   const msg = String(message || "unknown error").trim();
   if (!msg) return null;
   const now = Date.now();
@@ -39,7 +50,7 @@ function recordError(source, message, opts: { detail?: string } = {}) {
 // (keeps core a dependency-free leaf -- see core.ts).
 setErrorSink(recordError);
 
-function dismissError(id) {
+function dismissError(id: string) {
   const i = errorLog.findIndex((e) => e.id === id);
   if (i >= 0) errorLog.splice(i, 1);
   renderErrorCenter();
@@ -50,7 +61,7 @@ function clearErrors() {
   renderErrorCenter();
 }
 
-function toggleErrorPanel(force?) {
+function toggleErrorPanel(force?: boolean) {
   const panel = $("#error-panel");
   if (!panel) return;
   const show = force != null ? force : panel.hidden;
@@ -60,7 +71,7 @@ function toggleErrorPanel(force?) {
   if (show) renderErrorCenter();
 }
 
-const ERROR_SOURCE_LABEL = { api: "Server", network: "Network", task: "Task", js: "App" };
+const ERROR_SOURCE_LABEL: Record<string, string> = { api: "Server", network: "Network", task: "Task", js: "App" };
 
 function renderErrorCenter() {
   const btn = $("#error-indicator");
@@ -100,12 +111,12 @@ function renderErrorCenter() {
 // clarifying question here" stall) which was previously dropped into
 // textContent as dead plain text. Everything except the URL is escaped, so
 // this stays XSS-safe.
-function linkifyHtml(text) {
+function linkifyHtml(text: unknown) {
   const s = String(text == null ? "" : text);
   const re = /(https?:\/\/[^\s<>]+)/g;
   let out = "";
   let last = 0;
-  let m;
+  let m: RegExpExecArray | null;
   while ((m = re.exec(s)) !== null) {
     out += esc(s.slice(last, m.index));
     let url = m[1];
@@ -122,7 +133,13 @@ function linkifyHtml(text) {
 
 // `label` is optional: pass it for LLM jobs that should surface in the global
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
-async function pollDeepJob(jobId, statusEl, onDone, label?, onFail?) {
+async function pollDeepJob(
+  jobId: string,
+  statusEl: HTMLElement,
+  onDone: (job: Job) => unknown,
+  label?: string,
+  onFail?: (msg: string) => void,
+) {
   // The global Task Center poller (tasks.ts) owns the pill/panel now; just nudge
   // it so this freshly-started job shows up promptly. This loop keeps driving the
   // per-view status line + onDone refresh for whoever started the job.
@@ -183,7 +200,7 @@ async function pollDeepJob(jobId, statusEl, onDone, label?, onFail?) {
 // Render a "not logged in" run/import outcome as an actionable prompt: the
 // message plus a real "Set up Perplexity login" button that opens the login
 // window in place. After it succeeds, refreshLoginStatus reopens the prompt.
-function renderNeedsLogin(statusEl, message) {
+function renderNeedsLogin(statusEl: HTMLElement, message?: string | null) {
   statusEl.classList.remove("err");
   statusEl.innerHTML = "";
   statusEl.appendChild(document.createTextNode((message || "Not logged in.") + " "));
@@ -196,7 +213,7 @@ function renderNeedsLogin(statusEl, message) {
 // Shared by the Step 2 run button and the Step 3 "Run Deep Research" action.
 // Login and prompt are prerequisites that live on Step 2, so if either is
 // missing we bounce the user back there instead of failing in place.
-async function runDeepResearch(status) {
+async function runDeepResearch(status: HTMLElement) {
   status.classList.remove("err");
   const segment = pipeSegment();
   const date = $<HTMLInputElement>("#pipe-date").value.trim() || undefined;
@@ -220,7 +237,7 @@ async function runDeepResearch(status) {
     const job = await api("/api/deep-research/run", "POST", { segment, date, prompt });
     await pollDeepJob(job.id, status, async (done) => {
       const stem = (done.artifact && done.artifact.stem) || `${segment}-${done.date || date}`;
-      const r = done.result || {};
+      const r = (done.result || {}) as Record<string, any>;
       const n = (r.citations && r.citations.length) || 0;
       status.textContent = `done: ${stem} - ${r.report_chars || 0} chars, ${n} sources. Review the saved report below.`;
       await refreshDeepRuns();
@@ -257,7 +274,7 @@ $("#pipe-import").addEventListener("click", async () => {
     const job = await api("/api/deep-research/import", "POST", { segment, date, url });
     await pollDeepJob(job.id, status, async (done) => {
       const stem = (done.artifact && done.artifact.stem) || `${segment}-${done.date || date}`;
-      const r = done.result || {};
+      const r = (done.result || {}) as Record<string, any>;
       const n = (r.citations && r.citations.length) || 0;
       status.textContent = `imported: ${stem} - ${r.report_chars || 0} chars, ${n} sources.`;
       await refreshDeepRuns();
@@ -282,7 +299,7 @@ async function refreshLoginStatus() {
   return state.pplxLoggedIn;
 }
 
-async function runPplxLogin(statusEl) {
+async function runPplxLogin(statusEl: HTMLElement) {
   statusEl.classList.remove("err");
   statusEl.innerHTML = `<span class="spinner"></span> opening a visible login window...`;
   try {
@@ -364,7 +381,7 @@ async function refreshDeepRuns() {
   const out = $("#pipe-runs");
   if (!out) return;
   try {
-    const { runs } = await api("/api/deep-runs");
+    const { runs } = await api<{ runs: DeepRun[] }>("/api/deep-runs");
     state.deepRuns = runs || [];
     state.savedRuns = new Set(state.deepRuns.map((r) => r.stem));
     refreshPipeLocks();
@@ -385,7 +402,7 @@ async function refreshDeepRuns() {
   }
 }
 
-async function loadDeepRun(stem, { push = true } = {}) {
+async function loadDeepRun(stem: string, { push = true }: { push?: boolean } = {}) {
   const rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   state.currentDeepRun = stem;
   state.repManual = false;
@@ -418,7 +435,7 @@ async function loadDeepRun(stem, { push = true } = {}) {
 
 // Data-quality / source-strength -> tag color. Most rows are "INFO" (neutral);
 // only escalate color when the gate flags something worth a second look.
-function reviewTagClass(v) {
+function reviewTagClass(v: unknown) {
   const s = String(v).toLowerCase();
   if (s.includes("block") || s.includes("bad") || s.includes("conflict")) return "bad";
   if (s.includes("warn") || s.includes("weak")) return "warn";
@@ -451,21 +468,61 @@ function renderPipeReport() {
   }
 }
 
-function renderReviewGate(rec) {
+// The review-gate payload (/api/deep-research/review or a loaded run). Loose by
+// nature -- the gate evolves -- so most fields are optional and nested findings
+// carry only what the table reads.
+interface ReviewFinding {
+  level?: string;
+  message?: string;
+}
+
+interface ReviewRow {
+  symbol?: string;
+  report_action?: string;
+  target_rule?: string;
+  data_quality?: string;
+  conflict?: string;
+}
+
+interface ReviewChange {
+  symbol?: string;
+  [key: string]: unknown;
+}
+
+interface ReviewProposal {
+  changes?: ReviewChange[];
+  blocked_symbols?: string[];
+  findings?: ReviewFinding[];
+  warnings?: string[];
+}
+
+interface ReviewGate {
+  source_summary?: { buckets?: Record<string, number> } | null;
+  findings?: ReviewFinding[] | null;
+  proposal?: ReviewProposal | null;
+  warnings?: string[];
+  rows?: ReviewRow[];
+  blocked_symbols?: string[];
+  markdown?: string;
+  report?: string;
+  review?: string;
+}
+
+function renderReviewGate(rec: ReviewGate) {
   const out = $("#pipe-review-output");
   out.innerHTML = "";
   const card = sectionCard("Review gate output");
   if (rec.source_summary) {
-    const b = rec.source_summary.buckets || {};
+    const b: Record<string, number> = rec.source_summary.buckets || {};
     card.appendChild(el("div", "badges",
       Object.keys(b).map((k) => `<span class="badge ${k === "weak" && b[k] ? "off" : "on"}">${esc(k)}: ${b[k]}</span>`).join("")));
   }
   const findings = rec.findings || (rec.proposal && rec.proposal.findings) || null;
   if (findings && findings.length) {
-    const cls = { BLOCK: "ERROR", WARN: "WARN", FYI: "INFO" };
+    const cls: Record<string, string> = { BLOCK: "ERROR", WARN: "WARN", FYI: "INFO" };
     const checks = el("div", "checks");
     findings.forEach((f) => checks.appendChild(
-      el("div", `check ${cls[f.level] || "INFO"}`, `<span class="sev">${esc(f.level)}</span><span>${esc(f.message)}</span>`)));
+      el("div", `check ${cls[f.level || ""] || "INFO"}`, `<span class="sev">${esc(f.level)}</span><span>${esc(f.message)}</span>`)));
     card.appendChild(checks);
   } else if (rec.warnings && rec.warnings.length) {
     const checks = el("div", "checks");
@@ -491,10 +548,10 @@ function renderReviewGate(rec) {
       }).join("") + "</tbody>";
     card.appendChild(table);
   }
-  const proposal = rec.proposal || {};
+  const proposal: ReviewProposal = rec.proposal || {};
   const changes = proposal.changes || [];
   const blocked = rec.blocked_symbols || proposal.blocked_symbols || [];
-  const applicable = changes.filter((c) => !blocked.includes(c.symbol));
+  const applicable = changes.filter((c) => !blocked.includes(c.symbol || ""));
   const noMembers = !(rec.rows && rec.rows.length);
   card.appendChild(el("h2", "section", "Target-model proposal"));
   if (changes.length) {
