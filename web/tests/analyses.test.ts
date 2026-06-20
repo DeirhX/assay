@@ -188,6 +188,13 @@ describe("collectReportTickers", () => {
     expect(got.has("1000")).toBe(false);
   });
 
+  it("collects an exchange-qualified numeric symbol but not a suffix-less one", () => {
+    const got = collect("<p>Samsung (KOSPI: 005930.KS) and SK hynix (KRX: 000660).</p>");
+    expect(got.has("005930.KS")).toBe(true);
+    // Bare "000660" (no .KS) would not resolve, so it must not be harvested.
+    expect(got.has("000660")).toBe(false);
+  });
+
   it("includes symbols from already-rendered Ticker-column anchors", () => {
     const html = mdToHtml("| Ticker | Note |\n| --- | --- |\n| BWXT | reactors |");
     const got = collect(html);
