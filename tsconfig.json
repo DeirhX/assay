@@ -15,18 +15,15 @@
     "forceConsistentCasingInFileNames": true,
 
     // Tightening is staged, not flipped wholesale. Every web/src module is now
-    // typed (no @ts-nocheck) and dead-code-free, so noUnusedLocals is on. The
-    // remaining two flags are large, genuinely-typed efforts -- NOT a quick pass:
-    //   - noImplicitAny: ~390 errors, almost all untyped params in the legacy
-    //     views (strategy/setup/rebalance/shell/trade...). Doing it honestly
-    //     means authoring each view's data-model interfaces; annotating them all
-    //     `any` would silence the compiler while adding zero safety. Tackle it
-    //     per-file, the same way @ts-nocheck was peeled off in Phase A.
-    //   - strict (strictNullChecks et al.): ~900 errors total -- another ~510
-    //     null-safety decisions on top of the above. Enable once noImplicitAny
-    //     lands so the null work isn't fighting `any` noise at the same time.
+    // typed (no @ts-nocheck), dead-code-free (noUnusedLocals), and free of
+    // implicit `any` (noImplicitAny) -- the ~390 untyped params in the legacy
+    // views (strategy/setup/rebalance/shell/trade...) were given honest
+    // data-model interfaces per-file rather than blanket `any` annotations.
+    //
+    // The remaining stage is full `strict` (strictNullChecks et al.): ~510
+    // null-safety decisions. Enable it next now that the `any` noise is gone.
     "strict": false,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
     "noUnusedLocals": true,
     "allowJs": true,
     "checkJs": false

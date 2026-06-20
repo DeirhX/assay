@@ -7,40 +7,168 @@
 import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
+// ---- manifest shapes (GET /api/strategy/{run_id}) -------------------------
+// A target band, with the rule token that produced it.
+interface Band {
+  low?: number | null;
+  high?: number | null;
+  rule?: string;
+}
+
+// One drafted segment member (Gate 1) / Deep Research candidate.
+interface SegMember {
+  symbol?: string;
+  confidence?: string;
+  sleeve?: string;
+  rationale?: string;
+}
+
+interface SegmentDef {
+  members?: SegMember[];
+  comment?: string;
+  [key: string]: unknown;
+}
+
+// One synthesized target-model change (Gate 2).
+interface Change {
+  symbol?: string;
+  conviction?: string;
+  action?: string;
+  current_target?: Band;
+  proposed_target?: Band;
+  rationale?: string;
+}
+
+interface ConstructMeta {
+  segment_budget_pct?: number | string;
+  sized_midpoint_total_pct?: number | string;
+}
+
+interface Proposal {
+  changes?: Change[];
+  blocked_symbols?: string[];
+  construct_meta?: ConstructMeta;
+}
+
+interface PlanMember {
+  symbol?: string;
+}
+
+// One row of the compact rebalance preview (a target name or a sleeve basket).
+interface PlanRow {
+  kind?: string;
+  name?: string;
+  key?: string;
+  action?: string;
+  status?: string;
+  drift_pct?: number | null;
+  suggest_delta_czk?: number | null;
+  members?: PlanMember[];
+}
+
+interface Plan {
+  rows?: PlanRow[];
+  invested?: number | null;
+  currency?: string;
+  cash_target_pct?: number | string | null;
+}
+
+interface Preview {
+  available?: boolean;
+  reason?: string;
+  plan?: Plan;
+  counts?: { total?: number | string };
+}
+
+interface SkippedName {
+  symbol?: string;
+  reason?: string;
+}
+
+interface Applied {
+  applied?: string[];
+  skipped?: SkippedName[];
+  backup?: string;
+}
+
+// Result of staging a proposal into the shared working draft (the "staged" state).
+interface Staged {
+  applied?: string[];
+  skipped?: SkippedName[];
+}
+
+interface Review {
+  blocked_symbols?: string[];
+  source_summary?: unknown;
+  findings?: unknown;
+}
+
+interface Draft {
+  definition?: SegmentDef;
+  warnings?: string[];
+}
+
+// The run manifest — the single object every renderer reads from.
+interface Manifest {
+  run_id?: string;
+  state: string;
+  message?: string;
+  error?: string;
+  segment?: string;
+  date?: string;
+  draft?: Draft;
+  review?: Review | null;
+  proposal?: Proposal;
+  preview?: Preview;
+  applied?: Applied;
+  staged?: Staged;
+}
+
+// A summary row in the recent-runs list (GET /api/strategy/runs).
+interface RunSummary {
+  run_id: string;
+  state?: string;
+  direction?: string;
+  segment?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // States in which a background leg is working and we should keep polling.
 const RUNNING = new Set(["draft_running", "synthesis_running", "applying"]);
 // Progress-tracker stages, in order, mapped from the manifest state.
 const STAGE_ORDER = ["draft", "segment", "research", "synthesize", "review", "done"];
-const STATE_STAGE = {
+const STATE_STAGE: Record<string, string> = {
   draft_running: "draft",
   awaiting_segment_approval: "segment",
   synthesis_running: "synthesize",
   needs_login: "research",
   awaiting_proposal_approval: "review",
   applying: "review",
+  staged: "done",
   done: "done",
   error: "draft",
 };
 
-let _activeRunId = null;
-let _pollTimer = null;
+let _activeRunId: string | null = null;
+let _pollTimer: ReturnType<typeof setTimeout> | null = null;
 // The user can revisit any step the run has already reached. `_viewStage` pins a
 // past step for read-only viewing; null means "follow the live step" (the one the
 // run is actually working on or parked at). `_lastM` caches the last manifest so
 // a stepper click can re-render instantly without re-fetching.
-let _viewStage = null;
-let _lastM = null;
+let _viewStage: string | null = null;
+let _lastM: Manifest | null = null;
 
-const STAGE_TITLE = {
+const STAGE_TITLE: Record<string, string> = {
   draft: "Draft", segment: "Segment", research: "Research",
   synthesize: "Synthesize", review: "Review", done: "Recommendation",
 };
 
 // The stage the run is currently on, derived from its state.
-const liveStage = (m) => STATE_STAGE[m.state] || "draft";
+const liveStage = (m: Manifest) => STATE_STAGE[m.state] || "draft";
 // Stages the user may click into: everything up to and including the live one.
 // (Nothing is revisitable while errored — the run never produced those steps.)
-function reachedStages(m) {
+function reachedStages(m: Manifest) {
   if (m.state === "error") return [];
   const liveIdx = STAGE_ORDER.indexOf(liveStage(m));
   return STAGE_ORDER.slice(0, Math.max(0, liveIdx) + 1);
@@ -75,16 +203,16 @@ function stopPolling() {
   if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
 }
 
-function schedulePoll(runId) {
+function schedulePoll(runId: string) {
   stopPolling();
   _pollTimer = setTimeout(() => refreshOnce(runId), 3000);
 }
 
-async function refreshOnce(runId) {
+async function refreshOnce(runId: string) {
   if (_activeRunId !== runId) return;  // navigated away
-  let m;
+  let m: Manifest;
   try {
-    m = await api("/api/strategy/" + encodeURIComponent(runId));
+    m = await api<Manifest>("/api/strategy/" + encodeURIComponent(runId));
   } catch (e) {
     renderError("Lost the run: " + e.message);
     return;
@@ -125,11 +253,11 @@ async function loadRecentRuns() {
   const box = $("#strat-recent");
   if (!box) return;
   try {
-    const { runs } = await api("/api/strategy/runs");
+    const { runs } = await api<{ runs?: RunSummary[] }>("/api/strategy/runs");
     if (!runs || !runs.length) { box.innerHTML = ""; return; }
     box.innerHTML = `<div class="subhead">Recent runs</div>` + runs.slice(0, 6).map((r) => {
       const age = relAge(r.updated_at || r.created_at);
-      const metaBits = [];
+      const metaBits: string[] = [];
       if (age) metaBits.push(esc(age));
       if (r.segment) metaBits.push(esc(r.segment));
       const meta = metaBits.length ? `<span class="strat-recent-meta">${metaBits.join(" · ")}</span>` : "";
@@ -149,7 +277,7 @@ async function loadRecentRuns() {
 }
 
 // ---- render dispatch ------------------------------------------------------
-function render(m) {
+function render(m: Manifest) {
   _lastM = m;
   renderStages(m);
   const panel = $("#strat-panel");
@@ -165,16 +293,17 @@ function render(m) {
 }
 
 // The live step keeps its full interactive treatment (gate / spinner / done).
-function renderLiveStage(m, panel) {
+function renderLiveStage(m: Manifest, panel: HTMLElement) {
   if (m.state === "awaiting_segment_approval") return renderSegmentGate(m, panel);
   if (m.state === "awaiting_proposal_approval") return renderProposalGate(m, panel);
   if (m.state === "needs_login") return renderNeedsLogin(m, panel);
+  if (m.state === "staged") return renderStaged(m, panel);
   if (m.state === "done") return renderDone(m, panel);
   // Any running state: a spinner with the live message.
   renderLoading(m.message || m.state);
 }
 
-function renderStages(m) {
+function renderStages(m: Manifest) {
   const wrap = $("#strat-stages");
   if (!wrap) return;
   wrap.hidden = false;
@@ -197,16 +326,17 @@ function renderStages(m) {
 // ---- revisiting completed steps -------------------------------------------
 // A reached-but-not-live step renders read-only from the persisted manifest, with
 // a banner that jumps back to wherever the run actually is.
-function renderPastStage(m, stage, panel) {
-  const renderer = {
+function renderPastStage(m: Manifest, stage: string, panel: HTMLElement) {
+  const renderer = (({
     draft: renderDraftStep, segment: renderSegmentStep, research: renderResearchStep,
     synthesize: renderSynthesizeStep, review: renderReviewStep, done: renderDone,
-  }[stage] || renderLoading;
+  }) as Record<string, (m: Manifest, panel: HTMLElement) => void>)[stage]
+    || ((mm: Manifest) => renderLoading(mm.message || mm.state));
   renderer(m, panel);
   panel.insertBefore(viewingBar(m, stage), panel.firstChild);
 }
 
-function viewingBar(m, stage) {
+function viewingBar(m: Manifest, stage: string) {
   const bar = el("div", "strat-viewing-bar");
   bar.innerHTML = `<span>Viewing the <strong>${esc(STAGE_TITLE[stage] || "completed")}</strong> step (read-only).</span>`;
   const btn = el("button", "ghost", `Back to current step: ${esc(STAGE_TITLE[liveStage(m)] || "")} →`);
@@ -216,13 +346,13 @@ function viewingBar(m, stage) {
   return bar;
 }
 
-function memberTable(definition) {
+function memberTable(definition: SegmentDef) {
   const members = (definition && definition.members) || [];
   const tbl = el("table", "strat-changes");
   tbl.innerHTML = `<thead><tr><th>Symbol</th><th>Conviction</th><th>Sleeve</th><th>Rationale</th></tr></thead>`;
   const body = el("tbody");
   if (!members.length) body.innerHTML = `<tr><td colspan="4" class="muted">No members recorded.</td></tr>`;
-  members.forEach((mem) => {
+  members.forEach((mem: SegMember) => {
     const conf = mem.confidence || "";
     const tr = el("tr");
     tr.innerHTML =
@@ -236,8 +366,8 @@ function memberTable(definition) {
   return tbl;
 }
 
-function renderDraftStep(m, panel) {
-  const def = (m.draft && m.draft.definition) || {};
+function renderDraftStep(m: Manifest, panel: HTMLElement) {
+  const def: SegmentDef = (m.draft && m.draft.definition) || {};
   const warnings = ((m.draft && m.draft.warnings) || []).join(" ");
   const n = (def.members || []).length;
   panel.innerHTML = "";
@@ -250,8 +380,8 @@ function renderDraftStep(m, panel) {
   panel.appendChild(card);
 }
 
-function renderSegmentStep(m, panel) {
-  const def = (m.draft && m.draft.definition) || {};
+function renderSegmentStep(m: Manifest, panel: HTMLElement) {
+  const def: SegmentDef = (m.draft && m.draft.definition) || {};
   panel.innerHTML = "";
   const card = el("div", "card strat-gate");
   card.innerHTML =
@@ -263,8 +393,8 @@ function renderSegmentStep(m, panel) {
   card.querySelector("textarea").value = JSON.stringify(def, null, 2);
 }
 
-function renderResearchStep(m, panel) {
-  const review = m.review || {};
+function renderResearchStep(m: Manifest, panel: HTMLElement) {
+  const review: Review = m.review || {};
   const blocked = review.blocked_symbols || [];
   const ready = m.review != null;
   panel.innerHTML = "";
@@ -295,9 +425,9 @@ function renderResearchStep(m, panel) {
   panel.appendChild(card);
 }
 
-function renderSynthesizeStep(m, panel) {
-  const proposal = m.proposal || {};
-  const meta = proposal.construct_meta || {};
+function renderSynthesizeStep(m: Manifest, panel: HTMLElement) {
+  const proposal: Proposal = m.proposal || {};
+  const meta: ConstructMeta = proposal.construct_meta || {};
   const changes = proposal.changes || [];
   panel.innerHTML = "";
   const card = el("div", "card strat-gate");
@@ -310,8 +440,8 @@ function renderSynthesizeStep(m, panel) {
   panel.appendChild(card);
 }
 
-function renderReviewStep(m, panel) {
-  const proposal = m.proposal || {};
+function renderReviewStep(m: Manifest, panel: HTMLElement) {
+  const proposal: Proposal = m.proposal || {};
   const changes = proposal.changes || [];
   panel.innerHTML = "";
   const card = el("div", "card strat-gate");
@@ -323,12 +453,12 @@ function renderReviewStep(m, panel) {
   panel.appendChild(card);
 }
 
-function renderLoading(msg) {
+function renderLoading(msg: string) {
   $("#strat-panel").innerHTML =
     `<div class="card strat-running"><span class="spinner"></span> ${esc(msg || "working…")}</div>`;
 }
 
-function renderError(msg) {
+function renderError(msg: string) {
   const panel = $("#strat-panel");
   panel.innerHTML =
     `<div class="card strat-error"><strong>Run failed.</strong> <span>${esc(msg)}</span></div>`;
@@ -341,9 +471,9 @@ function renderError(msg) {
 }
 
 // ---- gate 1: approve the drafted segment ----------------------------------
-function renderSegmentGate(m, panel) {
-  const draft = m.draft || {};
-  const definition = draft.definition || {};
+function renderSegmentGate(m: Manifest, panel: HTMLElement) {
+  const draft: Draft = m.draft || {};
+  const definition: SegmentDef = draft.definition || {};
   const warnings = (draft.warnings || []).join(" ");
   panel.innerHTML = "";
   const card = el("div", "card strat-gate");
@@ -362,7 +492,7 @@ function renderSegmentGate(m, panel) {
   $("#strat-approve-seg").addEventListener("click", () => approveSegment(m.run_id));
 }
 
-async function approveSegment(runId) {
+async function approveSegment(runId: string) {
   const status = $("#strat-seg-status");
   const btn = $<HTMLButtonElement>("#strat-approve-seg");
   status.classList.remove("err");
@@ -388,49 +518,49 @@ async function approveSegment(runId) {
 }
 
 // ---- gate 2: approve the synthesized target changes -----------------------
-const RULE_LABEL = {
+const RULE_LABEL: Record<string, string> = {
   trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
   avoid: "avoid", accumulate: "accumulate", hold: "hold", wait: "wait",
 };
 // Semantic tone for an action/rule token so buy- / hold- / sell-leaning cells
 // read at a glance (green / grey / amber / red) instead of as identical text.
-const TONE = {
+const TONE: Record<string, string> = {
   accumulate: "pos", add: "pos", buy: "pos",
   hold: "neutral", wait: "neutral",
   reduce: "caution", trim: "caution", trim_only: "caution", do_not_add: "caution",
   avoid: "neg", sell: "neg", exit: "neg",
 };
-const toneOf = (token) => TONE[token] || TONE[(token || "").replace("_target", "")] || "neutral";
+const toneOf = (token: string | null | undefined) => TONE[token || ""] || TONE[(token || "").replace("_target", "")] || "neutral";
 // Above its band => overweight (trim side, amber); below => underweight (buy side, green).
-const statusTone = (s) => {
+const statusTone = (s: string | null | undefined) => {
   const t = (s || "").toLowerCase();
   if (t.includes("above")) return "caution";
   if (t.includes("below")) return "pos";
   return "neutral";
 };
 // Positive drift = heavy (trim side); negative = light (buy side). Same colour story.
-const driftTone = (d) => (typeof d === "number" && d > 0 ? "caution" : typeof d === "number" && d < 0 ? "pos" : "neutral");
-const bandStr = (t) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
+const driftTone = (d: number | null | undefined) => (typeof d === "number" && d > 0 ? "caution" : typeof d === "number" && d < 0 ? "pos" : "neutral");
+const bandStr = (t: Band | null | undefined) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
 // Render a symbol as a deep-dive link. The global a.tlink click handler in shell
 // intercepts it and calls openTicker (which live-pulls on a miss); the href is a
 // fallback for middle-click / open-in-new-tab.
-const symLink = (sym) => {
+const symLink = (sym: string | null | undefined) => {
   if (!sym) return "—";
   const s = esc(sym);
   return `<a class="tlink" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(sym)}" title="Open ${s} deep-dive"><strong>${s}</strong></a>`;
 };
 
-function renderProposalGate(m, panel) {
-  const proposal = m.proposal || {};
+function renderProposalGate(m: Manifest, panel: HTMLElement) {
+  const proposal: Proposal = m.proposal || {};
   const changes = proposal.changes || [];
   const blocked = proposal.blocked_symbols || [];
   panel.innerHTML = "";
   const card = el("div", "card strat-gate");
-  const meta = proposal.construct_meta || {};
+  const meta: ConstructMeta = proposal.construct_meta || {};
   card.innerHTML =
     `<h3>Gate 2 · Approve target-model changes</h3>` +
     `<p class="hint">Synthesized bands for ${changes.length} name(s). Budget ${esc(meta.segment_budget_pct ?? "?")}% of book, ` +
-    `sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%. Review each band before approving — applying writes target-model.json (a backup is kept).</p>` +
+    `sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%. Review each band before approving — this STAGES the changes into the working draft (it does not write your live portfolio; you commit the draft later).</p>` +
     (blocked.length ? `<div class="strat-warn">Blocked (ERROR-level data, skipped): ${blocked.map(esc).join(", ")}</div>` : "");
 
   card.appendChild(changesTable(changes));
@@ -449,7 +579,7 @@ function renderProposalGate(m, panel) {
     allowBlockedHtml = `<label class="strat-check"><input type="checkbox" id="strat-allow-blocked"> apply blocked names anyway</label>`;
   }
   actions.innerHTML =
-    `<button class="primary" id="strat-approve-prop" type="button">Approve & apply →</button>` +
+    `<button class="primary" id="strat-approve-prop" type="button">Add to working draft →</button>` +
     allowBlockedHtml +
     `<span class="status" id="strat-prop-status"></span>`;
   card.appendChild(actions);
@@ -459,7 +589,7 @@ function renderProposalGate(m, panel) {
   $("#strat-approve-prop").addEventListener("click", () => approveProposal(m.run_id));
 }
 
-function changesTable(changes) {
+function changesTable(changes: Change[]) {
   const tbl = el("table", "strat-changes");
   tbl.innerHTML =
     `<thead><tr><th>Symbol</th><th>Conviction</th><th>Action</th>` +
@@ -468,7 +598,7 @@ function changesTable(changes) {
   if (!changes.length) {
     body.innerHTML = `<tr><td colspan="7" class="muted">No target changes proposed.</td></tr>`;
   }
-  changes.forEach((c) => {
+  changes.forEach((c: Change) => {
     const tr = el("tr");
     const conv = c.conviction || "";
     const actRaw = c.action || "";
@@ -488,7 +618,7 @@ function changesTable(changes) {
   return tbl;
 }
 
-async function approveProposal(runId) {
+async function approveProposal(runId: string) {
   const status = $("#strat-prop-status");
   const btn = $<HTMLButtonElement>("#strat-approve-prop");
   status.classList.remove("err");
@@ -502,20 +632,51 @@ async function approveProposal(runId) {
   }
   const allowBlocked = !!($<HTMLInputElement>("#strat-allow-blocked") && $<HTMLInputElement>("#strat-allow-blocked").checked);
   btn.disabled = true;
-  status.innerHTML = `<span class="spinner"></span> applying…`;
+  status.innerHTML = `<span class="spinner"></span> staging…`;
   try {
     const m = await api("/api/strategy/" + encodeURIComponent(runId) + "/approve-proposal", "POST",
       { changes, allow_blocked: allowBlocked });
     render(m);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "could not apply: " + e.message;
+    status.textContent = "could not stage: " + e.message;
     btn.disabled = false;
   }
 }
 
+// ---- staged ---------------------------------------------------------------
+// Approving a proposal now lands here: the run's changes are in the shared
+// working draft (composed with any other runs/edits), awaiting a single commit.
+function renderStaged(m: Manifest, panel: HTMLElement) {
+  const staged: Staged = m.staged || {};
+  const diff: Preview = m.preview || {};
+  const counts: { total?: number | string } = (diff && diff.counts) || {};
+  const appliedN = (staged.applied || []).length;
+  const skipped = staged.skipped || [];
+  panel.innerHTML = "";
+  const card = el("div", "card strat-done");
+  card.innerHTML =
+    `<h3>✓ Staged into the working draft</h3>` +
+    `<p class="hint">${esc(m.message || "")}</p>` +
+    `<p>Added ${appliedN} change(s) from this run. The working draft now holds ` +
+    `<strong>${esc(counts.total ?? "?")}</strong> pending change(s) across all runs and edits.</p>` +
+    (skipped.length
+      ? `<p class="muted">Skipped: ${skipped.map((s) => esc(s.symbol) + " (" + esc(s.reason) + ")").join("; ")}.</p>` : "");
+  const actions = el("div", "thesis-actions");
+  const goDraft = el("button", "primary", "Review working draft →");
+  goDraft.type = "button";
+  goDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
+  const restart = el("button", "ghost", "New run ↺");
+  restart.type = "button";
+  restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
+  actions.appendChild(goDraft);
+  actions.appendChild(restart);
+  card.appendChild(actions);
+  panel.appendChild(card);
+}
+
 // ---- needs login ----------------------------------------------------------
-function renderNeedsLogin(m, panel) {
+function renderNeedsLogin(m: Manifest, panel: HTMLElement) {
   panel.innerHTML = "";
   const card = el("div", "card strat-gate");
   card.innerHTML =
@@ -533,7 +694,7 @@ function renderNeedsLogin(m, panel) {
   $("#strat-resume").addEventListener("click", () => approveSegmentResume(m.run_id));
 }
 
-async function approveSegmentResume(runId) {
+async function approveSegmentResume(runId: string) {
   const status = $("#strat-login-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> resuming…`;
@@ -548,8 +709,8 @@ async function approveSegmentResume(runId) {
 }
 
 // ---- done -----------------------------------------------------------------
-function renderDone(m, panel) {
-  const applied = m.applied || {};
+function renderDone(m: Manifest, panel: HTMLElement) {
+  const applied: Applied = m.applied || {};
   const appliedSyms = applied.applied || [];
   panel.innerHTML = "";
   const card = el("div", "card strat-done");
@@ -579,15 +740,15 @@ function renderDone(m, panel) {
 }
 
 // ---- shared: compact rebalance preview ------------------------------------
-function previewBlock(preview, { final = false } = {}) {
+function previewBlock(preview: Preview | null | undefined, { final = false }: { final?: boolean } = {}) {
   const wrap = el("div", "strat-preview");
   if (!preview || !preview.available) {
     wrap.innerHTML = `<div class="hint">${esc((preview && preview.reason) || "No rebalance preview available (need a target model and a holdings snapshot).")}</div>`;
     return wrap;
   }
-  const plan = preview.plan || {};
-  const rows = (plan.rows || []).filter((r) => r.action && r.action !== "none" && r.action !== "hold");
-  rows.sort((a, b) => Math.abs(b.drift_pct || 0) - Math.abs(a.drift_pct || 0));
+  const plan: Plan = preview.plan || {};
+  const rows = (plan.rows || []).filter((r: PlanRow) => r.action && r.action !== "none" && r.action !== "hold");
+  rows.sort((a: PlanRow, b: PlanRow) => Math.abs(b.drift_pct || 0) - Math.abs(a.drift_pct || 0));
   const head = el("div", "subhead", final ? "Resulting rebalance recommendation" : "Preview rebalance (if applied)");
   wrap.appendChild(head);
   wrap.innerHTML +=
@@ -604,20 +765,20 @@ function previewBlock(preview, { final = false } = {}) {
   // actionable subset). Used to flag a sleeve member that is ALSO targeted on its
   // own line — the overlap that otherwise reads as a double-counted ticker.
   const targetNames = new Set(
-    (plan.rows || []).filter((r) => r.kind === "target").map((r) => r.name));
-  const hasSleeve = rows.some((r) => r.kind === "sleeve");
+    (plan.rows || []).filter((r: PlanRow) => r.kind === "target").map((r: PlanRow) => r.name));
+  const hasSleeve = rows.some((r: PlanRow) => r.kind === "sleeve");
 
-  const nameCellHtml = (r) => {
+  const nameCellHtml = (r: PlanRow) => {
     if (r.kind !== "sleeve") {
       // A standalone ticker that's also bundled inside a sleeve gets a quiet tag
       // so the same name showing up twice in the table is explained, not magic.
       const dup = (plan.rows || []).some(
-        (o) => o.kind === "sleeve" && (o.members || []).some((m) => m.symbol === r.name));
+        (o: PlanRow) => o.kind === "sleeve" && (o.members || []).some((m: PlanMember) => m.symbol === r.name));
       return symLink(r.name || r.key) +
         (dup ? ` <span class="strat-tag in-sleeve" title="Also part of a sleeve below — the sleeve's amount is separate from this one">in sleeve</span>` : "");
     }
     const members = r.members || [];
-    const mem = members.map((m) => {
+    const mem = members.map((m: PlanMember) => {
       const dup = targetNames.has(m.symbol);
       const s = esc(m.symbol);
       return `<a class="tlink strat-mem${dup ? " dup" : ""}" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(m.symbol)}"` +
@@ -632,7 +793,7 @@ function previewBlock(preview, { final = false } = {}) {
   const tbl = el("table", "strat-plan");
   tbl.innerHTML = `<thead><tr><th>Symbol</th><th>Status</th><th>Drift</th><th>Action</th><th>Suggested</th></tr></thead>`;
   const body = el("tbody");
-  rows.slice(0, 20).forEach((r) => {
+  rows.slice(0, 20).forEach((r: PlanRow) => {
     const isSleeve = r.kind === "sleeve";
     const tr = el("tr", isSleeve ? "strat-sleeve-row" : null);
     const suggested = sensitive(`${fmtCZK(r.suggest_delta_czk)} ${esc(plan.currency || "")}`, "suggested trade") +
@@ -660,23 +821,25 @@ function previewBlock(preview, { final = false } = {}) {
   return wrap;
 }
 
-function stateLabel(s) {
-  return ({
+function stateLabel(s: string | null | undefined) {
+  return (({
     draft_running: "drafting",
     awaiting_segment_approval: "needs segment approval",
     synthesis_running: "synthesizing",
     needs_login: "needs login",
     awaiting_proposal_approval: "needs approval",
     applying: "applying",
+    staged: "staged",
     done: "done",
     error: "failed",
-  })[s] || s || "";
+  }) as Record<string, string>)[s || ""] || s || "";
 }
 
 // Colour-coded lifecycle pill for the recent-runs list: green = done, red =
 // failed, amber = waiting on you, accent (with a pulsing dot) = a leg is working.
-const STATE_TONE = {
+const STATE_TONE: Record<string, string> = {
   done: "ok",
+  staged: "ok",
   error: "bad",
   awaiting_segment_approval: "warn",
   awaiting_proposal_approval: "warn",
@@ -685,8 +848,8 @@ const STATE_TONE = {
   synthesis_running: "run",
   applying: "run",
 };
-function recentStateBadge(state) {
-  const tone = STATE_TONE[state] || "muted";
+function recentStateBadge(state: string | null | undefined) {
+  const tone = STATE_TONE[state || ""] || "muted";
   const running = tone === "run";
   const cls = running ? "accent" : tone;
   const dot = running ? '<span class="strat-recent-dot"></span>' : "";

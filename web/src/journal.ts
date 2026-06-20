@@ -19,11 +19,46 @@ async function loadJournal() {
   });
 }
 
-function renderJournal(data) {
+// One scored row from /api/journal: the directional call's outcome.
+interface ScoredEntry {
+  id: string;
+  move_pct?: number | null;
+  correct?: boolean | null;
+}
+
+interface Calibration {
+  scored?: ScoredEntry[];
+  hit_rate_pct?: number | null;
+  n_correct?: number;
+  n_scored?: number;
+  n_entries?: number;
+  avg_move_buys_pct?: number | null;
+  avg_move_trims_pct?: number | null;
+}
+
+interface JournalEntry {
+  id: string;
+  symbol?: string;
+  action?: string;
+  size_czk?: number | null;
+  price?: number | null;
+  created_at?: string | null;
+  thesis?: string;
+  expected?: string;
+  review_after?: string;
+  outcome?: { price?: number | null } | null;
+}
+
+interface JournalData {
+  calibration?: Calibration;
+  entries?: JournalEntry[];
+}
+
+function renderJournal(data: JournalData) {
   const out = $("#journal-result");
   out.innerHTML = "";
   const cal = data.calibration || {};
-  const scoredById = {};
+  const scoredById: Record<string, ScoredEntry> = {};
   (cal.scored || []).forEach((s) => { scoredById[s.id] = s; });
 
   // Calibration headline.
@@ -62,7 +97,7 @@ function renderJournal(data) {
   out.appendChild(list);
 }
 
-function entryCard(e, scored) {
+function entryCard(e: JournalEntry, scored?: ScoredEntry) {
   const card = el("div", "jrnl-entry");
   const head = el("div", "jrnl-entry-head");
   const move = scored && scored.move_pct;
@@ -114,7 +149,8 @@ function entryCard(e, scored) {
   return card;
 }
 
-const jStat = (label, value, cls, title) => statTile(label, value, { cls, title });
+const jStat = (label: string, value: string, cls?: string, title?: string) =>
+  statTile(label, value, { cls, title });
 
 function initJournalControls() {
   const add = $<HTMLElement & { _wired?: boolean }>("#jrnl-add");

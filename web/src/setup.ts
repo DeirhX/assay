@@ -1,3 +1,4 @@
+import type { Job } from "./api-types";
 import { $, api, el, esc } from "./core";
 import { pollDeepJob } from "./errors";
 
@@ -5,16 +6,89 @@ let _wired = false;
 
 const LLM_IDS = ["claude", "cursor"];
 
+// ---- /api/setup/status shapes ---------------------------------------------
+interface BackendCheck {
+  ok?: boolean;
+  status?: string;
+  message?: string;
+}
+
+interface Backend {
+  id?: string;
+  label?: string;
+  installed?: boolean;
+  authenticated?: boolean;
+  check?: BackendCheck | null;
+}
+
+interface ProviderConfig {
+  id: string;
+  enabled?: boolean;
+  model?: string;
+  extra_args?: string[];
+}
+
+interface LlmConfig {
+  providers?: ProviderConfig[];
+  allow_web?: boolean;
+  timeout_sec?: number;
+}
+
+interface LlmStatus {
+  backends?: Backend[];
+  config: LlmConfig;
+}
+
+interface SetupData {
+  ready?: boolean;
+  holdings?: { positions?: number };
+  target_model?: { exists?: boolean };
+}
+
+interface SetupState {
+  llm: LlmStatus;
+  perplexity?: { logged_in?: boolean };
+  ibkr?: Record<string, any>;
+  data?: SetupData;
+  environment?: Record<string, any>;
+}
+
+// One model suggestion in a provider's combobox.
+interface ModelOption {
+  value: string;
+  label?: string;
+}
+
+// One Setup wizard step (LLM / Perplexity / IBKR / environment).
+interface SetupStep {
+  id: string;
+  title: string;
+  required: boolean;
+  done: boolean;
+  partial: boolean;
+  state: string;
+  render: () => HTMLElement;
+}
+
+// One entry in the operational error log (/api/error-log).
+interface ErrLogEntry {
+  level?: string;
+  category?: string;
+  message?: string;
+  ts?: string | number;
+  context?: Record<string, unknown>;
+}
+
 // Model suggestions per provider, fetched once from /api/analysis-models and
 // reused across re-renders. Empty until loaded; the inputs stay free-text so an
 // unlisted model still works even if the list never arrives.
-let _models = {};
+let _models: Record<string, ModelOption[]> = {};
 
-function badge(ok, text) {
+function badge(ok: unknown, text: string) {
   return `<span class="setup-badge ${ok ? "ok" : "bad"}">${esc(text)}</span>`;
 }
 
-function toggle(id, label, checked) {
+function toggle(id: string, label: string, checked: unknown) {
   return (
     `<label class="setup-toggle">` +
       `<input type="checkbox" id="${esc(id)}" ${checked ? "checked" : ""}>` +
@@ -36,7 +110,7 @@ async function ensureModels() {
 
 // Build the dropdown body. An empty filter (manual expand) shows everything;
 // a non-empty filter (the user typing) narrows to substring matches.
-function comboMenuHtml(id, filter) {
+function comboMenuHtml(id: string, filter: string) {
   const f = (filter || "").trim().toLowerCase();
   const items = (_models[id] || []).filter(
     (m) => !f || `${m.value} ${m.label || ""}`.toLowerCase().includes(f),
@@ -59,13 +133,13 @@ function comboMenuHtml(id, filter) {
 // moment the field is non-empty, which kills "open to see all". So we drive our
 // own menu — focus/caret shows the full list, typing filters it. Options are
 // read from _models lazily, so a slow Cursor list still populates once it lands.
-function wireModelCombo(id) {
+function wireModelCombo(id: string) {
   const input = document.getElementById(`setup-${id}-model`) as HTMLInputElement | null;
   const menu = document.getElementById(`setup-combo-${id}`);
   if (!input || !menu || input.dataset.comboWired) return;
   input.dataset.comboWired = "1";
 
-  const open = (showAll) => {
+  const open = (showAll: boolean) => {
     menu.innerHTML = comboMenuHtml(id, showAll ? "" : input.value);
     menu.hidden = false;
     input.setAttribute("aria-expanded", "true");
@@ -74,7 +148,7 @@ function wireModelCombo(id) {
     menu.hidden = true;
     input.setAttribute("aria-expanded", "false");
   };
-  const setActive = (items, idx) => {
+  const setActive = (items: HTMLElement[], idx: number) => {
     items.forEach((it) => it.classList.remove("active"));
     if (idx >= 0 && items[idx]) {
       items[idx].classList.add("active");
@@ -132,21 +206,21 @@ function fillModelLists() {
   LLM_IDS.forEach(wireModelCombo);
 }
 
-function backendById(st, id) {
+function backendById(st: SetupState, id: string): Backend {
   return (st?.llm?.backends || []).find((b) => b.id === id) || {};
 }
 
-function providerConfig(st, id) {
+function providerConfig(st: SetupState, id: string): ProviderConfig {
   return (st?.llm?.config?.providers || []).find((p) => p.id === id) || { id, enabled: true, model: "", extra_args: [] };
 }
 
-function commandBlock(lines) {
+function commandBlock(lines: string[]) {
   return `<pre class="setup-command">${esc(lines.join("\n"))}</pre>`;
 }
 
 // Collapse the backend record (installed / authenticated / smoke-check) into a
 // single phase the UI can drive status text, colours, and fix steps from.
-function backendPhase(b) {
+function backendPhase(b: Backend) {
   const check = b.check;
   if (check) {
     if (check.ok) return "ok";
@@ -160,7 +234,7 @@ function backendPhase(b) {
   return "installed";
 }
 
-function backendStateText(b) {
+function backendStateText(b: Backend) {
   const check = b.check;
   switch (backendPhase(b)) {
     case "ok": return `Ready — smoke check passed${check?.message ? " (" + check.message + ")" : ""}`;
@@ -173,14 +247,14 @@ function backendStateText(b) {
   }
 }
 
-function backendPhaseClass(phase) {
+function backendPhaseClass(phase: string) {
   if (phase === "ok" || phase === "ready") return "ok";
   if (phase === "installed") return "muted";
   return "bad"; // missing, logged_out, quota, error
 }
 
 // What to actually do, tailored to the phase (and which CLI).
-function backendFixSteps(id, phase) {
+function backendFixSteps(id: string, phase: string) {
   const loginCmd = id === "claude" ? "claude auth login" : "cursor-agent login";
   const installSteps = id === "claude"
     ? ["Install Claude Code, e.g. `npm i -g @anthropic-ai/claude-code` (or the official installer).",
@@ -208,7 +282,7 @@ function backendFixSteps(id, phase) {
 }
 
 // Second header badge: credential state, once we know it.
-function authBadge(b) {
+function authBadge(b: Backend) {
   const phase = backendPhase(b);
   if (phase === "ok" || phase === "ready") return badge(true, "logged in");
   if (phase === "logged_out") return badge(false, "not logged in");
@@ -218,7 +292,7 @@ function authBadge(b) {
 // Ordered setup steps. `done` drives which step auto-expands: the first
 // not-done step opens, everything else stays collapsed so the user only ever
 // deals with one thing at a time.
-function setupSteps(st) {
+function setupSteps(st: SetupState): SetupStep[] {
   const backends = st?.llm?.backends || [];
   const anyCliInstalled = backends.some((b) => b.installed);
   const anyCliOk = backends.some((b) => b.check?.ok);
@@ -280,13 +354,13 @@ function setupSteps(st) {
   return dataReady ? [...steps.slice(0, 2), portfolioStep, steps[2]] : [portfolioStep, ...steps];
 }
 
-function stepStateBadge(step) {
+function stepStateBadge(step: SetupStep) {
   if (step.done) return badge(true, "OK");
   if (step.partial) return `<span class="setup-badge warn">IN PROGRESS</span>`;
   return badge(false, step.required ? "TODO" : "OPTIONAL");
 }
 
-function renderSetup(st) {
+function renderSetup(st: SetupState) {
   const out = $("#setup-result");
   out.innerHTML = "";
 
@@ -324,15 +398,15 @@ function renderSetup(st) {
   fillModelLists();
 }
 
-function fmtTs(ts) {
+function fmtTs(ts: string | number | undefined) {
   try {
-    return new Date(ts).toLocaleString();
+    return new Date(ts ?? "").toLocaleString();
   } catch {
     return ts || "";
   }
 }
 
-function errLogEntryHtml(e) {
+function errLogEntryHtml(e: ErrLogEntry) {
   const lvl = e.level === "warning" ? "warn" : "err";
   const ctx = e.context && Object.keys(e.context).length
     ? `<div class="errlog-ctx">${Object.entries(e.context)
@@ -357,9 +431,9 @@ function errLogEntryHtml(e) {
 async function renderErrorLog(open = false) {
   const card = document.getElementById("setup-errlog") as HTMLDetailsElement | null;
   if (!card) return;
-  let entries;
+  let entries: ErrLogEntry[];
   try {
-    const r = await api("/api/error-log?limit=100");
+    const r = await api<{ entries?: ErrLogEntry[] }>("/api/error-log?limit=100");
     entries = r.entries || [];
   } catch {
     card.innerHTML =
@@ -409,7 +483,7 @@ async function clearErrorLog() {
   }
 }
 
-function renderIbkr(st) {
+function renderIbkr(st: SetupState) {
   const k = st.ibkr || {};
   const data = st.data || {};
   const positions = data.holdings?.positions || 0;
@@ -454,7 +528,7 @@ function renderIbkr(st) {
   return wrap;
 }
 
-function renderEnvironment(st) {
+function renderEnvironment(st: SetupState) {
   const env = st.environment || {};
   const wrap = el("div", "setup-body-inner");
   wrap.innerHTML =
@@ -469,7 +543,7 @@ function renderEnvironment(st) {
   return wrap;
 }
 
-function renderLlmCli(st) {
+function renderLlmCli(st: SetupState) {
   const claude = backendById(st, "claude");
   const cursor = backendById(st, "cursor");
   const wrap = el("div", "setup-body-inner");
@@ -494,7 +568,7 @@ function renderLlmCli(st) {
   return wrap;
 }
 
-function renderBackendStatus(st, id, backend) {
+function renderBackendStatus(st: SetupState, id: string, backend: Backend) {
   const cfg = providerConfig(st, id);
   const phase = backendPhase(backend);
   const stateCls = backendPhaseClass(phase);
@@ -530,7 +604,7 @@ function renderBackendStatus(st, id, backend) {
   );
 }
 
-function renderPerplexity(st) {
+function renderPerplexity(st: SetupState) {
   const pplx = st.perplexity || {};
   const env = st.environment || {};
   const wrap = el("div", "setup-body-inner");
@@ -573,9 +647,9 @@ async function saveLlmConfig() {
   }
 }
 
-async function pollJob(job, status) {
+async function pollJob(job: Job, status: HTMLElement): Promise<Job> {
   for (;;) {
-    const rec = await api("/api/deep-job?id=" + encodeURIComponent(job.id));
+    const rec = await api<Job>("/api/deep-job?id=" + encodeURIComponent(job.id));
     if (rec.state === "done") return rec;
     if (rec.state === "error" || rec.state === "needs_login") throw new Error(rec.error || rec.message || rec.state);
     status.innerHTML = `<span class="spinner"></span> ${esc(rec.message || rec.state || "running")}`;
@@ -674,7 +748,7 @@ async function syncIbkr() {
   }
 }
 
-const SETUP_ACTIONS = {
+const SETUP_ACTIONS: Record<string, () => unknown> = {
   "setup-save-llm": saveLlmConfig,
   "setup-check-llm": runSmokeChecks,
   "setup-pplx-login": startPerplexityLogin,

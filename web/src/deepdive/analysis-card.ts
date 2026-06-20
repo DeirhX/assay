@@ -10,6 +10,7 @@ import { pollDeepJob } from "../errors";
 import { ensureTickerSet, linkifyTickers, mdToHtml } from "../analyses";
 import { modelLabel, downloadText, pushNav, setActiveView } from "../shell";
 import { decorateAnalysis, decorateSources } from "./decorate";
+import { pinBlock } from "./pin";
 import { priceLevelsBlock } from "./price-levels";
 
 interface Rec {
@@ -169,7 +170,14 @@ export function renderAnalysisCard(rec: Rec): HTMLElement {
     } catch (_e) {
       lockedMap = {};
     }
+    let existingPin = null;
+    try {
+      const tm = await api("/api/target-model");
+      const p = tm && tm.provenance && tm.provenance[sym];
+      if (p && p.source === "user-pin") existingPin = p;
+    } catch (_e) { /* no model yet — pinning still seeds one */ }
     body.insertBefore(priceLevelsBlock(rec, a, lockedMap[sym]), prose);
+    body.insertBefore(pinBlock(rec, existingPin), prose);
     const actions = el("div", "analysis-actions");
     const re = el("button", "ghost", "&#8635; Regenerate");
     re.type = "button";
@@ -305,9 +313,9 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     let live: Job | null = null;
     try {
       const [runsRes, loginRes, jobsRes] = await Promise.all([
-        api("/api/deep-runs").then((d) => d.runs || []).catch(() => []),
-        api("/api/deep-research/login-status").catch(() => null),
-        api("/api/jobs").then((d) => d.jobs || []).catch(() => []),
+        api<{ runs?: DeepRun[] }>("/api/deep-runs").then((d) => d.runs || []).catch((): DeepRun[] => []),
+        api<{ logged_in?: boolean } | null>("/api/deep-research/login-status").catch((): { logged_in?: boolean } | null => null),
+        api<{ jobs?: Job[] }>("/api/jobs").then((d) => d.jobs || []).catch((): Job[] => []),
       ]);
       runs = runsRes
         .filter((r: DeepRun) => r.kind === "ticker" && norm(r.symbol) === want)

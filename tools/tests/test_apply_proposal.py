@@ -29,13 +29,16 @@ class ApplyChangesToModel(unittest.TestCase):
                          {"low": 5, "high": 8, "rule": "accumulate", "note": "keep me"})
 
     def test_modify_target_strips_non_schema_keys(self):
+        # `conviction` (and any other non-schema metadata) is stripped, but
+        # `sleeve` is now a write key: a normalized allocation-sleeve tag is
+        # allowed to persist onto the band (see sleeve_aliases / staging).
         model = {"targets": {"AAA": {"low": 1, "high": 3, "rule": "hold"}}}
         changes = [{"action": "modify_target", "symbol": "AAA",
                     "proposed_target": {"low": 4, "high": 6, "rule": "hold",
-                                        "conviction": "high", "sleeve": "core"}}]
+                                        "conviction": "high", "sleeve": "semis-compute"}}]
         target_model._apply_changes_to_model(model, changes, blocked=set())
         self.assertNotIn("conviction", model["targets"]["AAA"])
-        self.assertNotIn("sleeve", model["targets"]["AAA"])
+        self.assertEqual(model["targets"]["AAA"]["sleeve"], "semis-compute")
 
     def test_add_target_new_and_existing(self):
         model = {"targets": {"AAA": {"low": 1, "high": 3, "rule": "hold"}}}

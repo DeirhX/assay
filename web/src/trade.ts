@@ -7,13 +7,67 @@ import { $, api, el, esc, fmtCZK, sensitive, simpleTable, state } from "./core";
 // per-order human confirmation. Everything is gated server-side too; this UI
 // just refuses early and explains why.
 
-let _status = null;       // last /api/trade/status
-let _preview = null;      // last /api/trade/preview (carries the place token)
+// /api/trade/status: gateway connection + account posture.
+interface TradeAccount {
+  id: string;
+  kind?: string;
+}
 
-const sideTag = (side) =>
+interface TradeStatus {
+  trading_enabled?: boolean;
+  authenticated?: boolean;
+  gateway_base?: string | null;
+  default_account?: string | null;
+  accounts?: TradeAccount[];
+  live_allowed?: boolean;
+  competing?: boolean;
+}
+
+// One sized order inside a /api/trade/preview response.
+interface TradeOrder {
+  symbol?: string;
+  conid?: string | number;
+  side?: string;
+  quantity?: number | string;
+  orderType?: string;
+  price?: number | null;
+  tif?: string;
+}
+
+interface TradePreview {
+  is_paper?: boolean;
+  live_allowed?: boolean;
+  account?: string;
+  warnings?: string[];
+  orders?: TradeOrder[];
+  // The raw IBKR margin/commission blob; shape varies per account/order type.
+  ibkr_preview?: any;
+  trades?: unknown;
+  token?: string;
+}
+
+// One live working order from /api/trade/orders. Field names vary by IBKR
+// endpoint version, so every reader-facing alias is optional.
+interface LiveOrder {
+  orderId?: string | number;
+  order_id?: string | number;
+  ticker?: string;
+  symbol?: string;
+  conid?: string | number;
+  side?: string;
+  totalSize?: number | string;
+  quantity?: number | string;
+  status?: string;
+  order_status?: string;
+}
+
+let _status: TradeStatus | null = null;   // last /api/trade/status
+let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
+
+const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
 
-function gatewayOrigin(base) {
+function gatewayOrigin(base: string | null | undefined) {
   return String(base || "").replace(/\/v1\/api\/?$/, "") || "https://localhost:5000";
 }
 
@@ -30,7 +84,7 @@ async function renderConnection() {
   const status = $("#trade-status");
   if (status) status.textContent = "";
   try {
-    _status = await api("/api/trade/status");
+    _status = await api<TradeStatus>("/api/trade/status");
   } catch (e) {
     if (banner) banner.innerHTML = `<div class="trade-bnr bad">Could not read trade status: ${esc(e.message)}</div>`;
     return;
@@ -46,7 +100,7 @@ async function renderConnection() {
     bits.push(`<div class="trade-bnr warn"><strong>Gateway not connected.</strong> Start the IBKR Client Portal Gateway, log in (with 2FA) at <a href="${esc(origin)}" target="_blank" rel="noopener">${esc(origin)}</a>, then press <em>Refresh connection</em>.</div>`);
   } else {
     const acct = s.default_account || (s.accounts[0] && s.accounts[0].id) || "?";
-    const kind = (s.accounts.find((a) => a.id === acct) || {}).kind || "?";
+    const kind = s.accounts.find((a) => a.id === acct)?.kind || "?";
     const cls = kind === "live" ? "live" : "paper";
     bits.push(`<div class="trade-bnr ${cls}"><strong>${kind === "live" ? "LIVE" : "Paper"} account ${esc(acct)}</strong>` +
       (kind === "live"
@@ -101,12 +155,12 @@ function renderBasket() {
   wrap.appendChild(card);
 }
 
-async function doPreview(btn) {
+async function doPreview(btn: HTMLButtonElement) {
   const status = $("#trade-preview-status");
   if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> previewing\u2026`; }
   if (btn) btn.disabled = true;
   try {
-    _preview = await api("/api/trade/preview", "POST", {
+    _preview = await api<TradePreview>("/api/trade/preview", "POST", {
       trades: state.stagedBasket || [],
       account: _status && _status.default_account,
     });
@@ -147,7 +201,7 @@ function renderPreview() {
   const impact = Array.isArray(p.ibkr_preview) ? p.ibkr_preview[0] : p.ibkr_preview;
   if (impact && (impact.amount || impact.initial || impact.maintenance || impact.commission)) {
     const grid = el("div", "trade-impact");
-    const add = (label, val) => { if (val) grid.appendChild(el("div", "trade-impact-cell", `<span class="muted">${esc(label)}</span> ${esc(typeof val === "object" ? (val.amount || JSON.stringify(val)) : val)}`)); };
+    const add = (label: string, val: any) => { if (val) grid.appendChild(el("div", "trade-impact-cell", `<span class="muted">${esc(label)}</span> ${esc(typeof val === "object" ? (val.amount || JSON.stringify(val)) : val)}`)); };
     add("Order value", impact.amount && (impact.amount.amount || impact.amount));
     add("Init margin", impact.initial && (impact.initial.after || impact.initial.amount));
     add("Maint margin", impact.maintenance && (impact.maintenance.after || impact.maintenance.amount));
@@ -214,7 +268,7 @@ function renderPreview() {
   wrap.appendChild(card);
 }
 
-async function doPlace(btn) {
+async function doPlace(btn: HTMLButtonElement) {
   if (!_preview) return;
   const isLive = !_preview.is_paper;
   const msg = `Place ${_preview.orders.length} order(s) on the ${isLive ? "LIVE" : "paper"} account ${_preview.account}?` +
@@ -240,7 +294,13 @@ async function doPlace(btn) {
   }
 }
 
-function renderPlaceResult(res) {
+interface PlaceResult {
+  placed?: Array<Record<string, any>>;
+  kind?: string;
+  account?: string;
+}
+
+function renderPlaceResult(res: PlaceResult) {
   const wrap = $("#trade-result");
   if (!wrap) return;
   wrap.querySelectorAll(".trade-result-card").forEach((n) => n.remove());
@@ -260,8 +320,8 @@ async function loadLiveOrders() {
   const wrap = $("#trade-result");
   if (!wrap) return;
   wrap.querySelectorAll(".trade-live-card").forEach((n) => n.remove());
-  let data;
-  try { data = await api("/api/trade/orders"); }
+  let data: { orders?: LiveOrder[] } | undefined;
+  try { data = await api<{ orders?: LiveOrder[] }>("/api/trade/orders"); }
   catch (_e) { return; }
   const orders = (data && data.orders) || [];
   if (!orders.length) return;
