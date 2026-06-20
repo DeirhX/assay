@@ -43,6 +43,7 @@ AWAITING_SEGMENT = "awaiting_segment_approval"
 SYNTHESIS_RUNNING = "synthesis_running"
 AWAITING_PROPOSAL = "awaiting_proposal_approval"
 APPLYING = "applying"
+STAGED = "staged"
 DONE = "done"
 ERROR = "error"
 NEEDS_LOGIN = "needs_login"
@@ -57,8 +58,13 @@ _TRANSITIONS: dict[str | None, set[str]] = {
     AWAITING_SEGMENT: {SYNTHESIS_RUNNING},
     SYNTHESIS_RUNNING: {AWAITING_PROPOSAL, ERROR, NEEDS_LOGIN},
     NEEDS_LOGIN: {SYNTHESIS_RUNNING, ERROR},
-    AWAITING_PROPOSAL: {APPLYING, SYNTHESIS_RUNNING},
+    # Approving the proposal now STAGES into the working draft (no live write);
+    # APPLYING is kept for back-compat with any legacy direct-apply path.
+    AWAITING_PROPOSAL: {APPLYING, STAGED, SYNTHESIS_RUNNING},
     APPLYING: {DONE, ERROR},
+    # Staged is a resting endpoint; the user commits the draft globally. A run
+    # may be re-synthesized from here if the direction is revisited.
+    STAGED: {SYNTHESIS_RUNNING},
     # An errored run can be retried from the top or re-synthesized.
     ERROR: {DRAFT_RUNNING, SYNTHESIS_RUNNING},
     DONE: set(),
@@ -67,7 +73,7 @@ _TRANSITIONS: dict[str | None, set[str]] = {
 # States in which the run is parked waiting for a human (no thread is running).
 GATE_STATES = {AWAITING_SEGMENT, AWAITING_PROPOSAL, NEEDS_LOGIN}
 # Terminal-ish states the UI should stop polling on.
-RESTING_STATES = GATE_STATES | {DONE, ERROR}
+RESTING_STATES = GATE_STATES | {STAGED, DONE, ERROR}
 # States in which a background worker thread SHOULD be alive driving the run.
 # A thread cannot outlive its process, so if a run is parked in one of these from
 # a previous server boot, its worker is dead and the run is orphaned (see
@@ -122,6 +128,7 @@ def new_run(direction: str) -> dict[str, Any]:
         "proposal": None,
         "preview": None,
         "applied": None,
+        "staged": None,
         "error": None,
     }
     _transition(manifest, DRAFT_RUNNING)

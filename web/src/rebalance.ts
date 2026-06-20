@@ -85,6 +85,18 @@ interface RebRow {
   tax?: TaxInfo | null;
 }
 
+// Lineage of a band's target: where it came from (a pin, a research run, a
+// hand-set legacy value), surfaced as a small badge on the name cell.
+interface Provenance {
+  source?: string;
+  stance?: string;
+  rationale?: string;
+  set_at?: string;
+  conviction?: string;
+  run_id?: string;
+  segment?: string;
+}
+
 interface RebPlan {
   nav?: number | null;
   invested?: number;
@@ -96,6 +108,8 @@ interface RebPlan {
   rows?: RebRow[];
   untargeted?: RebMember[];
   untargeted_pct?: number;
+  provenance?: Record<string, Provenance | null | undefined>;
+  staged?: { has_draft?: boolean; pending?: number } | null;
 }
 
 const REB_RULE_LABEL: Record<string, string> = {
@@ -247,15 +261,49 @@ async function loadRebalance() {
   });
 }
 
+// Compact lineage badge for a band's name cell: pinned (your standing intent),
+// legacy/stale hand-set band, or research-derived (which run/segment).
+function provBadge(prov: Provenance | null | undefined) {
+  if (!prov || typeof prov !== "object") return null;
+  let cls: string, label: string, title: string;
+  if (prov.source === "user-pin") {
+    cls = "warn"; label = "pinned"; title = `pinned ${prov.stance || ""}${prov.rationale ? " — " + prov.rationale : ""}`;
+  } else if (prov.source === "legacy-plan") {
+    cls = "muted"; label = "legacy"; title = `hand-set band${prov.set_at ? " (" + prov.set_at + ")" : ""} — no research lineage`;
+  } else if (prov.source === "strategy" || prov.source === "pipeline") {
+    cls = "good"; label = prov.conviction || "research"; title = `from ${prov.source} ${prov.run_id || ""} ${prov.segment || ""}`.trim();
+  } else if (prov.source === "manual") {
+    cls = "muted"; label = "manual"; title = "manual edit";
+  } else {
+    return null;
+  }
+  const badge = el("span", `chip reb-prov reb-prov-${cls}`, esc(label));
+  badge.title = title;
+  return badge;
+}
+
+// "N uncommitted changes are staged" banner linking to the working draft.
+function stagedBannerHtml(plan: RebPlan) {
+  const s = plan.staged;
+  if (!s || !s.has_draft) return "";
+  const n = s.pending || 0;
+  return `<div class="reb-staged-banner" id="reb-staged-banner">` +
+    `<span><strong>${n}</strong> pending change(s) in the working draft — this planner still reflects your <em>live</em> portfolio.</span>` +
+    `<button class="ghost" id="reb-open-draft" type="button">Review working draft →</button>` +
+    `</div>`;
+}
+
 function renderRebalance(plan: RebPlan) {
   const summary = $("#reb-summary");
   const out = $("#reb-result");
   const nav = plan.nav;
+  const provenance: Record<string, Provenance | null | undefined> = plan.provenance || {};
   // Weights are % of invested book, so money is sized off invested value.
   const base = typeof plan.invested === "number" ? plan.invested : nav;
   out.innerHTML = "";
 
   summary.innerHTML =
+    stagedBannerHtml(plan) +
     `<div class="reb-meta">` +
     `<span>NAV ${sensitive(`${fmtCZK(nav)} ${esc(plan.currency)}`, "total NAV")}</span>` +
     `<span>invested ${sensitive(`${fmtCZK(plan.invested)} ${esc(plan.currency)}`, "invested book")}</span>` +
@@ -271,6 +319,9 @@ function renderRebalance(plan: RebPlan) {
     `<div class="reb-stat"><span class="reb-stat-k">Net cash</span><span class="reb-stat-v" id="reb-stat-net">—</span></div>` +
     `<div class="reb-stat"><span class="reb-stat-k">Target bands closed</span><span class="reb-stat-v" id="reb-stat-closed">—</span></div>` +
     `</div>`;
+
+  const openDraft = $("#reb-open-draft");
+  if (openDraft) openDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
 
   // Live-updated derived references, one per interactive row.
   interface RowCell {
@@ -306,6 +357,8 @@ function renderRebalance(plan: RebPlan) {
     const nameCell = el("div", "reb-c reb-name");
     nameCell.appendChild(sym);
     nameCell.appendChild(el("span", "reb-rule", esc(REB_RULE_LABEL[r.rule] || r.rule)));
+    const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
+    if (prov) nameCell.appendChild(prov);
     if (r.note) nameCell.title = r.note;
     const research = researchLine(r);
     if (research) {

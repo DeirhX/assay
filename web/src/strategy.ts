@@ -77,6 +77,7 @@ interface Preview {
   available?: boolean;
   reason?: string;
   plan?: Plan;
+  counts?: { total?: number | string };
 }
 
 interface SkippedName {
@@ -88,6 +89,12 @@ interface Applied {
   applied?: string[];
   skipped?: SkippedName[];
   backup?: string;
+}
+
+// Result of staging a proposal into the shared working draft (the "staged" state).
+interface Staged {
+  applied?: string[];
+  skipped?: SkippedName[];
 }
 
 interface Review {
@@ -114,6 +121,7 @@ interface Manifest {
   proposal?: Proposal;
   preview?: Preview;
   applied?: Applied;
+  staged?: Staged;
 }
 
 // A summary row in the recent-runs list (GET /api/strategy/runs).
@@ -137,6 +145,7 @@ const STATE_STAGE: Record<string, string> = {
   needs_login: "research",
   awaiting_proposal_approval: "review",
   applying: "review",
+  staged: "done",
   done: "done",
   error: "draft",
 };
@@ -288,6 +297,7 @@ function renderLiveStage(m: Manifest, panel: HTMLElement) {
   if (m.state === "awaiting_segment_approval") return renderSegmentGate(m, panel);
   if (m.state === "awaiting_proposal_approval") return renderProposalGate(m, panel);
   if (m.state === "needs_login") return renderNeedsLogin(m, panel);
+  if (m.state === "staged") return renderStaged(m, panel);
   if (m.state === "done") return renderDone(m, panel);
   // Any running state: a spinner with the live message.
   renderLoading(m.message || m.state);
@@ -550,7 +560,7 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
   card.innerHTML =
     `<h3>Gate 2 · Approve target-model changes</h3>` +
     `<p class="hint">Synthesized bands for ${changes.length} name(s). Budget ${esc(meta.segment_budget_pct ?? "?")}% of book, ` +
-    `sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%. Review each band before approving — applying writes target-model.json (a backup is kept).</p>` +
+    `sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%. Review each band before approving — this STAGES the changes into the working draft (it does not write your live portfolio; you commit the draft later).</p>` +
     (blocked.length ? `<div class="strat-warn">Blocked (ERROR-level data, skipped): ${blocked.map(esc).join(", ")}</div>` : "");
 
   card.appendChild(changesTable(changes));
@@ -569,7 +579,7 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
     allowBlockedHtml = `<label class="strat-check"><input type="checkbox" id="strat-allow-blocked"> apply blocked names anyway</label>`;
   }
   actions.innerHTML =
-    `<button class="primary" id="strat-approve-prop" type="button">Approve & apply →</button>` +
+    `<button class="primary" id="strat-approve-prop" type="button">Add to working draft →</button>` +
     allowBlockedHtml +
     `<span class="status" id="strat-prop-status"></span>`;
   card.appendChild(actions);
@@ -622,16 +632,47 @@ async function approveProposal(runId: string) {
   }
   const allowBlocked = !!($<HTMLInputElement>("#strat-allow-blocked") && $<HTMLInputElement>("#strat-allow-blocked").checked);
   btn.disabled = true;
-  status.innerHTML = `<span class="spinner"></span> applying…`;
+  status.innerHTML = `<span class="spinner"></span> staging…`;
   try {
     const m = await api("/api/strategy/" + encodeURIComponent(runId) + "/approve-proposal", "POST",
       { changes, allow_blocked: allowBlocked });
     render(m);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "could not apply: " + e.message;
+    status.textContent = "could not stage: " + e.message;
     btn.disabled = false;
   }
+}
+
+// ---- staged ---------------------------------------------------------------
+// Approving a proposal now lands here: the run's changes are in the shared
+// working draft (composed with any other runs/edits), awaiting a single commit.
+function renderStaged(m: Manifest, panel: HTMLElement) {
+  const staged: Staged = m.staged || {};
+  const diff: Preview = m.preview || {};
+  const counts: { total?: number | string } = (diff && diff.counts) || {};
+  const appliedN = (staged.applied || []).length;
+  const skipped = staged.skipped || [];
+  panel.innerHTML = "";
+  const card = el("div", "card strat-done");
+  card.innerHTML =
+    `<h3>✓ Staged into the working draft</h3>` +
+    `<p class="hint">${esc(m.message || "")}</p>` +
+    `<p>Added ${appliedN} change(s) from this run. The working draft now holds ` +
+    `<strong>${esc(counts.total ?? "?")}</strong> pending change(s) across all runs and edits.</p>` +
+    (skipped.length
+      ? `<p class="muted">Skipped: ${skipped.map((s) => esc(s.symbol) + " (" + esc(s.reason) + ")").join("; ")}.</p>` : "");
+  const actions = el("div", "thesis-actions");
+  const goDraft = el("button", "primary", "Review working draft →");
+  goDraft.type = "button";
+  goDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
+  const restart = el("button", "ghost", "New run ↺");
+  restart.type = "button";
+  restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
+  actions.appendChild(goDraft);
+  actions.appendChild(restart);
+  card.appendChild(actions);
+  panel.appendChild(card);
 }
 
 // ---- needs login ----------------------------------------------------------
@@ -788,6 +829,7 @@ function stateLabel(s: string | null | undefined) {
     needs_login: "needs login",
     awaiting_proposal_approval: "needs approval",
     applying: "applying",
+    staged: "staged",
     done: "done",
     error: "failed",
   }) as Record<string, string>)[s || ""] || s || "";
@@ -797,6 +839,7 @@ function stateLabel(s: string | null | undefined) {
 // failed, amber = waiting on you, accent (with a pulsing dot) = a leg is working.
 const STATE_TONE: Record<string, string> = {
   done: "ok",
+  staged: "ok",
   error: "bad",
   awaiting_segment_approval: "warn",
   awaiting_proposal_approval: "warn",
