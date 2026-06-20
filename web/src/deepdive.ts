@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { $, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, pctClass, sectionCard, state } from "./core";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
@@ -10,12 +9,42 @@ import { renderAnalysisCard, renderDeepResearchCard } from "./deepdive/analysis-
 import { renderHistory } from "./deepdive/history-card";
 import { renderThesis } from "./deepdive/thesis";
 
+// The deep-dive dossier record returned by /api/research, /api/pull, etc. Only
+// the fields this composer touches are named; the index signature keeps the
+// dynamic metric/field access (rec[key]) honest without re-listing every column.
+interface Rec {
+  symbol?: string;
+  name?: string;
+  input_symbol?: string;
+  provider_symbol?: string;
+  alias_candidate_for?: string;
+  currency?: string;
+  as_of?: string;
+  instrument_type?: string;
+  decision?: string;
+  price?: { value?: number | null } | null;
+  profile?: Record<string, any>;
+  thesis?: Record<string, any>;
+  portfolio?: Record<string, any>;
+  sources?: Record<string, any> | null;
+  cross_checks?: { severity: string; metric: string; message: string }[];
+  errors?: string[];
+  metrics?: Record<string, any> | null;
+  momentum?: Record<string, any> | null;
+  history?: any[];
+  provider_errors?: unknown;
+  error?: unknown;
+  [key: string]: any;
+}
+
+const tickerInput = () => $<HTMLInputElement>("#ticker-input");
+
 // ---- deep dive ------------------------------------------------------------
-$("#ticker-go").addEventListener("click", () => pullTicker($("#ticker-input").value));
-$("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker($("#ticker-input").value); });
+$("#ticker-go").addEventListener("click", () => pullTicker(tickerInput().value));
+$("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker(tickerInput().value); });
 // Return to the viewed-tickers overview (the deep-dive landing list).
 function goToOverview() {
-  $("#ticker-input").value = "";
+  tickerInput().value = "";
   pushNav({ view: "deepdive", ticker: "" });
   setActiveView("deepdive");
   renderViewedTickers();
@@ -36,7 +65,7 @@ function overviewBackBar() {
 
 const EXCHANGE_SUFFIXES = [".L", ".AS", ".DE", ".PA", ".BR", ".SW", ".HK", ".TO", ".PR"];
 
-function exchangeCandidates(sym) {
+function exchangeCandidates(sym: string): string[] {
   const base = cleanSymbol(sym).replace(/\s+/g, "");
   if (!base || base.includes(".") || base.includes("-") || base.includes("=")) return [];
   const candidates = EXCHANGE_SUFFIXES.map((suffix) => base + suffix);
@@ -44,13 +73,13 @@ function exchangeCandidates(sym) {
   return [...new Set(candidates)];
 }
 
-function hasUsableMarketData(rec) {
+function hasUsableMarketData(rec: Rec): boolean {
   if (!rec || typeof rec !== "object") return false;
   if (rec.price && rec.price.value != null) return true;
   return METRIC_ROWS.some(([key]) => rec[key] != null);
 }
 
-async function saveSymbolAlias(inputSymbol, providerSymbol) {
+async function saveSymbolAlias(inputSymbol: string, providerSymbol: string) {
   return api("/api/symbol-alias", "POST", {
     input_symbol: inputSymbol,
     provider_symbol: providerSymbol,
@@ -67,7 +96,10 @@ const NODATA_ICON_SVG =
 
 // One rich, clickable suggestion row: bold symbol, company name, exchange/type
 // meta, and an open affordance. Used for both name matches and exchange guesses.
-function symbolSuggestRow({ symbol, name, meta }, onClick) {
+function symbolSuggestRow(
+  { symbol, name, meta }: { symbol: string; name?: string; meta?: string },
+  onClick: () => void,
+): HTMLElement {
   const btn = el("button", "symbol-suggest");
   btn.type = "button";
   btn.title = `Analyze ${symbol}`;
@@ -80,7 +112,7 @@ function symbolSuggestRow({ symbol, name, meta }, onClick) {
   return btn;
 }
 
-function renderNoMarketData(rec) {
+function renderNoMarketData(rec: Rec): void {
   const sym = cleanSymbol(rec?.input_symbol || rec?.alias_candidate_for || rec?.symbol || "");
   const provider = rec?.provider_symbol || rec?.symbol || sym;
   const out = $("#dd-result");
@@ -132,11 +164,11 @@ function renderNoMarketData(rec) {
   out.appendChild(card);
 }
 
-async function loadNameSearch(sec, query) {
+async function loadNameSearch(sec: HTMLElement, query: string): Promise<void> {
   try {
     const result = await api("/api/symbol-search?q=" + encodeURIComponent(query));
     const wanted = cleanSymbol(query);
-    const matches = (result.results || []).filter((m) => cleanSymbol(m.symbol) !== wanted);
+    const matches = (result.results || []).filter((m: any) => cleanSymbol(m.symbol) !== wanted);
     sec.innerHTML = "";
     if (!matches.length) {
       sec.appendChild(el("div", "nodata-suggest-label", `No market symbols matched "${esc(query)}".`));
@@ -144,7 +176,7 @@ async function loadNameSearch(sec, query) {
     }
     sec.appendChild(el("div", "nodata-suggest-label", "Matching symbols"));
     const list = el("div", "symbol-suggest-list");
-    matches.forEach((m) => list.appendChild(symbolSuggestRow(
+    matches.forEach((m: any) => list.appendChild(symbolSuggestRow(
       { symbol: m.symbol, name: m.name, meta: [m.exchange, m.type].filter(Boolean).join(" \u00b7 ") },
       () => pullTicker(m.symbol, { push: false }))));
     sec.appendChild(list);
@@ -155,7 +187,7 @@ async function loadNameSearch(sec, query) {
   }
 }
 
-async function loadCandidateSuggestions(sec, inputSymbol, candidates) {
+async function loadCandidateSuggestions(sec: HTMLElement, inputSymbol: string, candidates: string[]): Promise<void> {
   try {
     const result = await api("/api/symbol-candidates", "POST", {
       input_symbol: inputSymbol,
@@ -169,7 +201,7 @@ async function loadCandidateSuggestions(sec, inputSymbol, candidates) {
     }
     sec.appendChild(el("div", "nodata-suggest-label", "Exchange-qualified alternatives"));
     const list = el("div", "symbol-suggest-list");
-    valid.forEach((c) => list.appendChild(symbolSuggestRow(
+    valid.forEach((c: any) => list.appendChild(symbolSuggestRow(
       { symbol: c.symbol, name: "", meta: [c.exchange, c.currency].filter(Boolean).join(" \u00b7 ") },
       () => pullTicker(c.symbol, { push: false, aliasFor: inputSymbol }))));
     sec.appendChild(list);
@@ -180,14 +212,14 @@ async function loadCandidateSuggestions(sec, inputSymbol, candidates) {
   }
 }
 
-async function loadTickerFromCache(raw) {
+async function loadTickerFromCache(raw: string): Promise<void> {
   const sym = cleanSymbol(raw);
   if (!sym) return;
   const status = $("#dd-status");
   status.classList.remove("err");
   status.textContent = `Loading cached ${sym}...`;
   try {
-    const rec = await api("/api/research/" + encodeURIComponent(sym));
+    const rec = await api<Rec>("/api/research/" + encodeURIComponent(sym));
     status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
     if (hasUsableMarketData(rec)) {
       renderDeepDive(rec);
@@ -212,18 +244,18 @@ async function loadTickerFromCache(raw) {
   }
 }
 
-async function pullTicker(raw, { push = true, aliasFor = "" } = {}) {
+async function pullTicker(raw: string, { push = true, aliasFor = "" }: { push?: boolean; aliasFor?: string } = {}): Promise<void> {
   const sym = cleanSymbol(raw);
   if (!sym) return;
   if (push) pushNav({ view: "deepdive", ticker: sym });
   setActiveView("deepdive");
-  $("#ticker-input").value = sym;
+  tickerInput().value = sym;
   const status = $("#dd-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling ${esc(sym)} from live sources...`;
-  $("#ticker-go").disabled = true;
+  $<HTMLButtonElement>("#ticker-go").disabled = true;
   try {
-    const rec = await api("/api/pull/" + encodeURIComponent(sym), "POST");
+    const rec = await api<Rec>("/api/pull/" + encodeURIComponent(sym), "POST");
     status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
     if (aliasFor) rec.alias_candidate_for = cleanSymbol(aliasFor);
     if (hasUsableMarketData(rec)) {
@@ -237,11 +269,11 @@ async function pullTicker(raw, { push = true, aliasFor = "" } = {}) {
     status.classList.add("err");
     renderNoMarketData({ symbol: sym, error: e.message });
   } finally {
-    $("#ticker-go").disabled = false;
+    $<HTMLButtonElement>("#ticker-go").disabled = false;
   }
 }
 
-function renderDeepDive(rec) {
+function renderDeepDive(rec: Rec): void {
   recordView(rec.symbol, rec.name);
   const out = $("#dd-result");
   out.innerHTML = "";
@@ -412,7 +444,7 @@ function renderDeepDive(rec) {
 // Fetch the recent-pulls change log out of band and drop it into its slot. Kept
 // off the critical render path so a cached dossier paints immediately; guarded by
 // symbol so a fast re-navigation to another ticker can't get the wrong table.
-async function hydrateHistory(rec) {
+async function hydrateHistory(rec: Rec): Promise<void> {
   try {
     const hist = await api("/api/history/" + encodeURIComponent(rec.symbol));
     rec.history = hist.history || [];
