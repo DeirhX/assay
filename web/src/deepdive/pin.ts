@@ -32,7 +32,7 @@ export function pinBlock(rec: PinRec2, existingPin: PinRec | null | undefined): 
     if (!pin) return `<span class="muted">not pinned</span>`;
     const floor = typeof pin.floor_pct === "number" ? " \u2265" + pin.floor_pct + "%" : "";
     const ceil = typeof pin.ceiling_pct === "number" ? " \u2264" + pin.ceiling_pct + "%" : "";
-    return `<span class="chip warn" title="${esc(pin.rationale || "")}">${esc(pin.stance || "hold")}${floor}${ceil}</span>`;
+    return `<span class="chip warn" title="${esc(pin.rationale || "")}">${esc(pin.stance || "accumulate")}${floor}${ceil}</span>`;
   }
 
   function draw() {
@@ -70,11 +70,21 @@ export function pinBlock(rec: PinRec2, existingPin: PinRec | null | undefined): 
     if (!open) return;
 
     const status = block.querySelector(".pin-status") as HTMLElement;
-    (block.querySelector(".pin-save") as HTMLElement).addEventListener("click", async () => {
+    const saveBtn = block.querySelector(".pin-save") as HTMLButtonElement;
+    const clearBtn = block.querySelector(".pin-clear") as HTMLButtonElement | null;
+    // Disable both action buttons while a request is in flight so a double-click
+    // can't fire two writes (e.g. unpin-then-unpin hitting an already-clear key).
+    const setBusy = (busy: boolean) => {
+      saveBtn.disabled = busy;
+      if (clearBtn) clearBtn.disabled = busy;
+    };
+    saveBtn.addEventListener("click", async () => {
       const stanceV = (block.querySelector(".pin-stance") as HTMLSelectElement).value;
       const floorV = (block.querySelector(".pin-floor") as HTMLInputElement).value.trim();
       const ceilV = (block.querySelector(".pin-ceil") as HTMLInputElement).value.trim();
       const why = (block.querySelector(".pin-rationale") as HTMLInputElement).value.trim();
+      setBusy(true);
+      status.classList.remove("err");
       status.textContent = "saving…";
       try {
         const res = await api<{ pin: PinRec }>("/api/staging/edit", "POST", {
@@ -87,12 +97,14 @@ export function pinBlock(rec: PinRec2, existingPin: PinRec | null | undefined): 
         open = false;
         draw();
       } catch (e) {
+        setBusy(false);
         status.textContent = "failed: " + (e instanceof Error ? e.message : String(e));
         status.classList.add("err");
       }
     });
-    const clearBtn = block.querySelector(".pin-clear") as HTMLElement | null;
     if (clearBtn) clearBtn.addEventListener("click", async () => {
+      setBusy(true);
+      status.classList.remove("err");
       status.textContent = "removing…";
       try {
         await api("/api/staging/edit", "POST", { op: "unpin", key: sym });
@@ -100,6 +112,7 @@ export function pinBlock(rec: PinRec2, existingPin: PinRec | null | undefined): 
         open = false;
         draw();
       } catch (e) {
+        setBusy(false);
         status.textContent = "failed: " + (e instanceof Error ? e.message : String(e));
         status.classList.add("err");
       }

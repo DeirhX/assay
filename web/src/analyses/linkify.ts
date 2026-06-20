@@ -85,8 +85,10 @@ export function linkifyTextNode(node: Text, set: Set<string>): void {
 // suffix), so "$5" / "$1000" stay plain dollar amounts while "$000660.KS" links.
 const _DOLLAR_TICKER = /\$([A-Z]{1,5}(?:\.[A-Z]{1,3})?|[A-Z0-9]{1,6}\.[A-Z]{1,3})\b/g;
 const _PAREN_TICKER = /\(\s*([A-Z]{2,5}(?:\.[A-Z]{1,3})?|[A-Z0-9]{1,6}\.[A-Z]{1,3})\s*\)/g;
+// A numeric base must carry a suffix here too: "(KRX: 000660)" without ".KS"
+// would otherwise harvest the bare, unresolvable "000660" into the report set.
 const _EXCH_TICKER =
-  /\(\s*(?:NYSE(?:\s+American)?|NASDAQ|AMEX|CBOE|OTCMKTS|OTC|TSXV?|LSE|ASX|HKEX|HKG|EURONEXT|KRX|KOSPI|KOSDAQ|SEHK|TSE|SSE|SZSE)[:\s]+([A-Z0-9]{1,6}(?:\.[A-Z]{1,3})?)\s*\)/gi;
+  /\(\s*(?:NYSE(?:\s+American)?|NASDAQ|AMEX|CBOE|OTCMKTS|OTC|TSXV?|LSE|ASX|HKEX|HKG|EURONEXT|KRX|KOSPI|KOSDAQ|SEHK|TSE|SSE|SZSE)[:\s]+([A-Z]{1,5}(?:\.[A-Z]{1,3})?|[A-Z0-9]{1,6}\.[A-Z]{1,3})\s*\)/gi;
 
 export function collectReportTickers(root: HTMLElement | null): Set<string> {
   const found = new Set<string>();
