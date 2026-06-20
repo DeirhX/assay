@@ -10,6 +10,7 @@ import { loadRebalance, openTicker } from "./rebalance";
 import { initRiskControls, loadRisk } from "./risk";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
+import { initStaging, loadStaging } from "./staging";
 import { initStrategy, loadStrategy } from "./strategy";
 import { loadTrade } from "./trade";
 import { getViewedMap, renderViewedTickers } from "./viewed";
@@ -133,7 +134,7 @@ function wireTickerSearch(input) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "trade", "risk", "journal", "holdings", "history", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "setup"]);
 
 // Two-level navigation: the header exposes three top-level GROUPS, each of which
 // fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
@@ -146,14 +147,14 @@ const VIEW_GROUP = {
   strategy: "strategy",
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
-  holdings: "portfolio", history: "portfolio", rebalance: "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
+  holdings: "portfolio", history: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
   setup: "setup",
 };
 // Which sub-tab lights up for a given view. Holdings + History are merged behind
 // one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
 const VIEW_SUBTAB = {
   analyses: "analyses", pipeline: "pipeline",
-  holdings: "positions", history: "positions", rebalance: "rebalance", trade: "trade", risk: "risk", journal: "journal",
+  holdings: "positions", history: "positions", rebalance: "rebalance", "working-draft": "working-draft", trade: "trade", risk: "risk", journal: "journal",
 };
 const GROUP_DEFAULT = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
 // Remember the last view visited within each group so re-clicking a group header
@@ -281,6 +282,7 @@ function setActiveView(view) {
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
   if (active === "rebalance") loadRebalance();
+  if (active === "working-draft") loadStaging();
   if (active === "trade") loadTrade();
   if (active === "risk") { initRiskControls(); loadRisk(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }
@@ -379,6 +381,7 @@ function initShell() {
 
   // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
   initStrategy();
+  initStaging();
 
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.

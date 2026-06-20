@@ -715,6 +715,118 @@ class DeepPromptEndpoint(unittest.TestCase):
         self.assertIn("unknown segment", payload["error"])
 
 
+class StagingEndpoints(unittest.TestCase):
+    """The rewired staging endpoints: GET /api/staging diff, POST /api/staging/edit
+    (pin/unpin/revert), commit, discard. Disk paths are redirected to a temp dir
+    and the site regenerator is stubbed, so this stays offline."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+
+    def setUp(self):
+        import target_model
+        import target_staging as ts
+        self.ts, self.tm = ts, target_model
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self._orig = {
+            (ts, "TARGET_MODEL_JSON"): ts.TARGET_MODEL_JSON,
+            (ts, "STAGED_JSON"): ts.STAGED_JSON,
+            (ts, "HOLDINGS_JSON"): ts.HOLDINGS_JSON,
+            (ts, "_regenerate_site"): ts._regenerate_site,
+            (target_model, "TARGET_MODEL_JSON"): target_model.TARGET_MODEL_JSON,
+            (target_model, "TARGET_MODEL_BACKUP_DIR"): target_model.TARGET_MODEL_BACKUP_DIR,
+            (target_model, "REPO_ROOT"): target_model.REPO_ROOT,
+        }
+        ts.TARGET_MODEL_JSON = self.tm.TARGET_MODEL_JSON = root / "target-model.json"
+        ts.STAGED_JSON = root / "target-model.staged.json"
+        ts.HOLDINGS_JSON = root / "current-holdings.json"
+        ts._regenerate_site = lambda: {"ok": True, "written": []}
+        self.tm.TARGET_MODEL_BACKUP_DIR = root / "backups"
+        self.tm.REPO_ROOT = root
+        from store import write_json
+        write_json(ts.TARGET_MODEL_JSON, {
+            "as_of": "2026-01-01", "cash_target_pct": 5.0,
+            "targets": {"TSM": {"low": 6, "high": 8, "rule": "accumulate"}},
+            "sleeves": {},
+        })
+
+    def tearDown(self):
+        for (mod, name), val in self._orig.items():
+            setattr(mod, name, val)
+        self.tmp.cleanup()
+
+    def _req(self, path, method="GET", body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read().decode("utf-8"))
+
+    def test_empty_draft_diff(self):
+        status, payload = self._req("/api/staging")
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["has_draft"])
+        self.assertEqual(payload["counts"]["total"], 0)
+
+    def test_pin_then_unpin_via_edit(self):
+        status, payload = self._req("/api/staging/edit", "POST", {
+            "op": "pin", "key": "TSM", "stance": "accumulate", "floor_pct": 3.0})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["pin"]["stance"], "accumulate")
+        _s, diff = self._req("/api/staging")
+        self.assertIn("TSM", diff["pins"])
+        _s, payload = self._req("/api/staging/edit", "POST", {"op": "unpin", "key": "TSM"})
+        self.assertTrue(payload["cleared"])
+
+    def test_manual_edit_stages_then_commit(self):
+        status, payload = self._req("/api/staging/edit", "POST", {
+            "op": "edit", "change": {"action": "add_target", "symbol": "NVDA",
+                                     "proposed_target": {"low": 8, "high": 10, "rule": "accumulate"}}})
+        self.assertEqual(status, 200)
+        self.assertIn("NVDA", payload["applied"])
+        _s, diff = self._req("/api/staging")
+        self.assertTrue(diff["has_draft"])
+        self.assertEqual(diff["counts"]["total"], 1)
+        # Revert it, draft becomes empty-diff.
+        self._req("/api/staging/edit", "POST", {"op": "revert", "key": "NVDA"})
+        _s, diff = self._req("/api/staging")
+        self.assertEqual(diff["counts"]["total"], 0)
+
+    def test_commit_promotes_to_live(self):
+        self._req("/api/staging/edit", "POST", {
+            "op": "edit", "change": {"action": "add_target", "symbol": "NVDA",
+                                     "proposed_target": {"low": 8, "high": 10, "rule": "accumulate"}}})
+        status, payload = self._req("/api/staging/commit", "POST", {"confirm": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["committed"])
+        from store import load
+        live = load(self.ts.TARGET_MODEL_JSON)
+        self.assertIn("NVDA", live["targets"])
+
+    def test_discard_clears_draft(self):
+        self._req("/api/staging/edit", "POST", {
+            "op": "edit", "change": {"action": "add_target", "symbol": "NVDA",
+                                     "proposed_target": {"low": 8, "high": 10, "rule": "accumulate"}}})
+        status, payload = self._req("/api/staging/discard", "POST", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["discarded"])
+
+
 class HostGuard(unittest.TestCase):
     def test_non_loopback_host_is_refused(self):
         # The guard fires before any socket is bound, so this never serves.
