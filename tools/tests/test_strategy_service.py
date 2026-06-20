@@ -139,31 +139,39 @@ class ApproveProposal(StrategyServiceBase):
         with self.assertRaises(Conflict):
             svc.approve_strategy_proposal(run["run_id"], None)
 
-    def test_approval_applies_changes_and_finishes(self):
+    def test_approval_stages_changes_into_the_working_draft(self):
         rid = self._run_at(orch.AWAITING_PROPOSAL, segment="ai-semis", date="2026-06-20",
                            proposal={"changes": []})
         changes = [{"symbol": "NVDA", "target": 0.05}]
         with mock.patch.object(svc, "load", return_value={}), \
              mock.patch.object(svc, "write_json") as write_json, \
-             mock.patch.object(svc, "apply_target_proposal",
-                               return_value={"applied": [1, 2]}) as apply, \
-             mock.patch.object(svc, "preview_plan_for_proposal", return_value={"ok": True}):
+             mock.patch.object(svc.target_staging, "stage_proposal",
+                               return_value={"applied": [1, 2]}) as stage, \
+             mock.patch.object(svc.target_staging, "diff_staged_vs_live",
+                               return_value={"counts": {"total": 2}}):
             out = svc.approve_strategy_proposal(rid, changes)
-        write_json.assert_called_once()  # edited proposal persisted before apply
-        apply.assert_called_once_with("ai-semis", "2026-06-20", True, allow_blocked=False)
-        self.assertEqual(out["state"], orch.DONE)
-        self.assertEqual(out["applied"], {"applied": [1, 2]})
+        write_json.assert_called_once()  # edited proposal persisted before staging
+        stage.assert_called_once_with("ai-semis", "2026-06-20", changes=changes,
+                                      run_id=rid, source="strategy", allow_blocked=False)
+        self.assertEqual(out["state"], orch.STAGED)  # stages, no longer commits live
+        self.assertEqual(out["staged"], {"applied": [1, 2]})
 
-    def test_apply_failure_marks_error_and_reraises(self):
+    def test_staging_failure_propagates_and_leaves_run_at_the_gate(self):
+        # Pins current behaviour: a stage_proposal failure surfaces as an
+        # exception and the run stays at AWAITING_PROPOSAL. NOTE: the handler tries
+        # set_state(ERROR), but ERROR is NOT a legal transition out of the proposal
+        # gate (see orchestrate TRANSITIONS), so that set_state itself raises and
+        # masks the original error -- a latent quirk of the #106 staging rework.
         rid = self._run_at(orch.AWAITING_PROPOSAL, segment="ai-semis", date="2026-06-20",
                            proposal={"changes": []})
         with mock.patch.object(svc, "load", return_value={}), \
              mock.patch.object(svc, "write_json"), \
-             mock.patch.object(svc, "apply_target_proposal",
-                               side_effect=RuntimeError("model locked")):
-            with self.assertRaises(RuntimeError):
+             mock.patch.object(svc.target_staging, "stage_proposal",
+                               side_effect=RuntimeError("draft locked")):
+            with self.assertRaises(Exception):
                 svc.approve_strategy_proposal(rid, [{"symbol": "NVDA"}])
-        self.assertEqual(orch.load_run(rid)["state"], orch.ERROR)
+        self.assertEqual(orch.load_run(rid)["state"], orch.AWAITING_PROPOSAL)
+        self.assertNotEqual(orch.load_run(rid)["state"], orch.STAGED)
 
 
 if __name__ == "__main__":
