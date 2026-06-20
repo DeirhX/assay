@@ -53,6 +53,12 @@ describe("mdToHtml", () => {
     expect(out).toContain("?view=deepdive&ticker=AMD");
   });
 
+  it("links foreign exchange-qualified tickers in a Ticker column", () => {
+    const out = mdToHtml("| Ticker | Name |\n| --- | --- |\n| 000660.KS | SK hynix |\n| N/A | n/a |");
+    expect(out).toContain('data-ticker="000660.KS"');
+    expect(out).not.toContain('data-ticker="N/A"');
+  });
+
   it("falls back to a pre block for a pipe blob without separator row", () => {
     const out = mdToHtml("| just | some |\n| random | pipes |");
     expect(out).toContain('<pre class="md-table">');
@@ -135,6 +141,22 @@ describe("linkifyTickers", () => {
     const out = linkify("<p>Constellation (NYSE: CEG) is core. CEG runs reactors.</p>");
     expect(out.querySelectorAll('a.tlink[data-ticker="CEG"]').length).toBe(2);
   });
+
+  it("links $-prefixed foreign numeric tickers like $000660.KS", () => {
+    const out = linkify("<p>SK hynix ($000660.KS) and Samsung Electronics ($005930.KS).</p>");
+    expect(out.querySelector('a.tlink[data-ticker="000660.KS"]')).not.toBeNull();
+    expect(out.querySelector('a.tlink[data-ticker="005930.KS"]')).not.toBeNull();
+  });
+
+  it("links bare later mentions of a $-tagged numeric ticker", () => {
+    const out = linkify("<p>Samsung ($005930.KS) leads. 005930.KS is core; we rate 005930.KS a buy.</p>");
+    expect(out.querySelectorAll('a.tlink[data-ticker="005930.KS"]').length).toBe(3);
+  });
+
+  it("never treats dollar amounts as tickers", () => {
+    const out = linkify("<p>It cost $5 and $1000 total, up from $3.50.</p>");
+    expect(out.querySelector("a.tlink")).toBeNull();
+  });
 });
 
 describe("collectReportTickers", () => {
@@ -156,6 +178,14 @@ describe("collectReportTickers", () => {
     const got = collect("<p>$NOW is fine. Acronym (CEO) is not a ticker.</p>");
     expect(got.has("NOW")).toBe(true);
     expect(got.has("CEO")).toBe(false);
+  });
+
+  it("collects $-prefixed foreign numeric symbols but not dollar amounts", () => {
+    const got = collect("<p>SK hynix ($000660.KS) at $5, Samsung ($005930.KS) at $1000.</p>");
+    expect(got.has("000660.KS")).toBe(true);
+    expect(got.has("005930.KS")).toBe(true);
+    expect(got.has("5")).toBe(false);
+    expect(got.has("1000")).toBe(false);
   });
 
   it("includes symbols from already-rendered Ticker-column anchors", () => {

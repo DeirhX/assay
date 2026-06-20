@@ -2364,9 +2364,15 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .reb-prov-muted { color: var(--muted); }
 
 /* ---- conviction pin block (deep dive) ---- */
-.pin-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 14px 16px; margin: 14px 0; }
-.pin-head { display: flex; align-items: center; gap: 10px; }
+/* Collapsed by default to a thin one-line strip; the editor only mounts when the
+   user expands it, so it stays subordinate to the price-levels card. */
+.pin-block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 8px 14px; margin: 12px 0; }
+.pin-strip { display: flex; align-items: center; gap: 10px; }
+.pin-pin { opacity: .8; }
 .pin-title { font-weight: 700; }
+.pin-strip .pin-toggle { margin-left: auto; font-size: 12px; padding: 3px 10px; }
+.pin-edit { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.pin-head { display: flex; align-items: center; gap: 10px; }
 .pin-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 6px 0 10px; }
 .pin-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .pin-controls select, .pin-controls input, .pin-rationale { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; height: 34px; padding: 0 10px; }
