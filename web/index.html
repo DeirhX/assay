@@ -14,6 +14,7 @@
       <button class="group" data-group="strategy" type="button" role="tab">Planner</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
+      <button class="group" data-group="basket" type="button" role="tab">Basket <span class="group-badge" id="basket-count" hidden></span></button>
     </div>
     <div class="topsearch">
       <input id="top-ticker" placeholder="Search ticker…" autocomplete="off" spellcheck="false" aria-label="Search any ticker" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="top-ticker-menu">
@@ -371,7 +372,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Working draft</h2>
-          <p class="hint">Uncommitted target-model changes staged from strategy runs and manual edits. Review the whole-book diff, accept or revert each change, then commit once — that single write becomes your live portfolio (with a reversible backup). Pinned names are anchored: a run can challenge them, but never drops them silently.</p>
+          <p class="hint">A safe scratchpad for changes to your plan. Proposals from strategy runs and manual edits collect here so you can review everything together and apply it in one step. <strong>Commit</strong> makes it live (a backup is kept, so it's reversible); <strong>Discard</strong> throws it away. Pinned names you've chosen are never dropped without flagging it.</p>
         </div>
         <div class="reb-head-actions">
           <button class="primary" id="stage-commit" type="button" title="Promote the working draft to the live target model">Commit to portfolio</button>
@@ -380,6 +381,21 @@
       </div>
       <div class="status" id="stage-status"></div>
       <div id="stage-body"></div>
+    </section>
+
+    <!-- BASKET (cross-surface shortlist) -->
+    <section class="view" id="view-basket">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Basket</h2>
+          <p class="hint">A shortlist of tickers you're interested in, starred from anywhere — a deep-dive, a rebalance row, a strategy proposal. It's just interest, not a decision: nothing here is sized or committed. The next step turns your picks into a drafted rebalance plan (with LLM suggestions for names that would round it out).</p>
+        </div>
+        <div class="reb-head-actions">
+          <button class="ghost" id="basket-clear" type="button" title="Remove all picks (your portfolio and plan are untouched)">Clear basket</button>
+        </div>
+      </div>
+      <div class="status" id="basket-status"></div>
+      <div id="basket-body"></div>
     </section>
 
     <!-- TRADE -->

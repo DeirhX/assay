@@ -78,6 +78,7 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
     start_sectors_sync as _start_sectors_sync,
 )
 import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
+import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
     delete_deep_run as _delete_deep_run, deep_runs as _deep_runs,
     save_deep_artifact as _save_deep_artifact,
@@ -489,6 +490,7 @@ _GET_EXACT = {
     "/api/symbol-search": "_get_symbol_search",
     "/api/strategy/runs": "_get_strategy_runs",
     "/api/staging": "_get_staging",
+    "/api/basket": "_get_basket",
 }
 _GET_PREFIX = [
     ("/api/strategy/", "_get_strategy"),
@@ -527,6 +529,9 @@ _POST_EXACT = {
     "/api/staging/commit": "_post_staging_commit",
     "/api/staging/discard": "_post_staging_discard",
     "/api/staging/edit": "_post_staging_edit",
+    "/api/basket/add": "_post_basket_add",
+    "/api/basket/remove": "_post_basket_remove",
+    "/api/basket/clear": "_post_basket_clear",
     "/api/history/delete": "_post_history_delete",
     "/api/tax-plan": "_post_tax_plan",
     "/api/whatif": "_post_whatif",
@@ -753,6 +758,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_staging(self, path, query):
         return self._send_json(target_staging.diff_staged_vs_live())
+
+    def _get_basket(self, path, query):
+        return self._send_json(basket.view())
 
     def _get_strategy(self, path, query):
         run_id = path.rsplit("/", 1)[-1]
@@ -1096,6 +1104,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_staging_discard(self, path):
         return self._send_json(target_staging.discard_staged())
+
+    def _post_basket_add(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(basket.add_symbol(
+                str(body.get("symbol") or ""),
+                source=str(body.get("source") or "manual"),
+                note=str(body.get("note") or "")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _post_basket_remove(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(basket.remove_symbol(str(body.get("symbol") or "")))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _post_basket_clear(self, path):
+        return self._send_json(basket.clear())
 
     def _post_staging_edit(self, path):
         """Manual edits to the working draft and pin management. ``op`` selects:
