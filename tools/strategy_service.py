@@ -15,6 +15,7 @@ Public names are underscore-free; serve.py imports the three gate entry points
 
 from __future__ import annotations
 
+import datetime as dt
 import threading
 import time
 
@@ -104,6 +105,44 @@ def start_strategy(direction: str) -> dict:
     run = orchestrate.new_run(direction)
     threading.Thread(target=run_strategy_draft, args=(run["run_id"],), daemon=True).start()
     return orchestrate.public(run)
+
+
+def start_basket_plan(members, *, title: str | None = None) -> dict:
+    """Draft a plan from a hand-picked basket.
+
+    Build an APPROVED ad-hoc segment from the given ``[{symbol, sleeve}]`` members
+    and launch synthesis straight away. The draft + segment-approval gates are
+    skipped on purpose: the membership IS the user's explicit pick, so there is
+    nothing to draft or approve. From there it runs exactly like any guided
+    strategy run — Deep Research over the basket-as-segment (whose prompt also
+    surfaces complementary names worth adding), deterministic pull, review,
+    construct, and a pause at the proposal gate for review + staging. Raises
+    ValueError on an empty basket."""
+    members = [m for m in (members or []) if isinstance(m, dict) and m.get("symbol")]
+    if not members:
+        raise ValueError("basket is empty — star some tickers first")
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    ttl = (title or f"Basket plan {today}").strip()
+    raw = {
+        "title": ttl,
+        "kind": "research",
+        "status": "draft",  # approve_strategy_segment promotes + validates members
+        "overlap_allowed": True,
+        "comment": "Ad-hoc plan drafted from the cross-surface basket.",
+        "members": members,
+        "origin": {"type": "basket", "created": today},
+    }
+    definition = validate_definition(raw)
+    slug = slugify(ttl)
+    run = orchestrate.new_run(f"basket plan ({len(members)} pick{'s' if len(members) != 1 else ''})")
+    run_id = run["run_id"]
+    orchestrate.set_state(
+        run_id, orchestrate.AWAITING_SEGMENT, segment=slug,
+        message="drafted from your basket — starting synthesis…",
+        draft={"slug": slug, "definition": definition, "warnings": [], "backend_label": None})
+    # Reuse the segment-approval gate verbatim: it re-validates, writes the def,
+    # transitions to SYNTHESIS_RUNNING, and spawns the synthesis worker.
+    return approve_strategy_segment(run_id, definition)
 
 
 def approve_strategy_segment(run_id: str, definition_raw: dict | None) -> dict:

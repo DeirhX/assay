@@ -117,5 +117,24 @@ class Enrichment(_BasketCase):
         self.assertFalse(item["targeted"])
 
 
+class Members(_BasketCase):
+    """The basket -> segment-members bridge that feeds the construct pipeline."""
+
+    def test_members_map_to_model_sleeves(self):
+        from store import write_json as _wj
+        _wj(self.model, {
+            "targets": {},
+            "sleeves": {"semis-equip": {"members": ["AMD"]}},
+        })
+        basket.add_symbol("AMD")     # known sleeve
+        basket.add_symbol("SOFI")    # unknown -> "other"
+        members = {m["symbol"]: m["sleeve"] for m in basket.basket_members()}
+        self.assertEqual(members["AMD"], "semis-equip")
+        self.assertEqual(members["SOFI"], "other")
+
+    def test_members_empty_when_basket_empty(self):
+        self.assertEqual(basket.basket_members(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

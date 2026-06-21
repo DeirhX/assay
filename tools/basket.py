@@ -97,6 +97,21 @@ def enriched_items() -> list[dict]:
     return out
 
 
+def basket_members() -> list[dict]:
+    """The basket as research-segment members (``[{symbol, sleeve}]``), mapping
+    each pick to its standing-model sleeve where known (else ``"other"``). This is
+    the bridge that lets a hand-picked basket feed the very same construct
+    pipeline a guided strategy run uses, instead of a parallel reimplementation."""
+    _, member_of = _target_index()
+    out: list[dict] = []
+    for it in load_basket()["items"]:
+        sym = it.get("symbol")
+        if not sym:
+            continue
+        out.append({"symbol": sym, "sleeve": member_of.get(sym) or "other"})
+    return out
+
+
 def view() -> dict:
     """The canonical response for every basket endpoint: the enriched list plus a
     count and the bare symbol set (so the client can toggle ★ across surfaces)."""
