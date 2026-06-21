@@ -2411,7 +2411,8 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .basket-note { color: var(--muted); max-width: 260px; }
 .basket-row-actions { text-align: right; }
 .basket-row-actions .basket-star { font-size: 16px; }
-.basket-next { margin-top: 14px; }
+.basket-actions { margin-top: 18px; }
+.basket-next { margin-top: 10px; max-width: 60ch; }
 
 .reb-staged-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px;
   background: rgba(245,199,107,.10); border: 1px solid rgba(245,199,107,.4); border-radius: var(--radius-soft);

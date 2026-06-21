@@ -8,6 +8,7 @@
 // Dependency-light (core only) and all DOM wiring is deferred to initBasket(),
 // called once from initShell — same import-cycle discipline as strategy/staging.
 import { $, api, esc, fmtWeight } from "./core";
+import { pushNav, setActiveView } from "./shell";
 
 interface BasketBand { low?: number | null; high?: number | null; rule?: string }
 interface BasketItem {
@@ -120,7 +121,35 @@ function render(v: BasketView): void {
     `<table class="basket-table">` +
     `<thead><tr><th>Ticker</th><th>Source</th><th>Held</th><th>In plan</th><th>Note</th><th></th></tr></thead>` +
     `<tbody>${v.items.map(rowHtml).join("")}</tbody></table>` +
-    `<p class="hint basket-next">Next: draft a rebalance plan from these picks (with LLM suggestions for complementary names). Coming in the next step.</p>`;
+    `<div class="basket-actions">` +
+    `<button class="primary basket-draft-btn" type="button" title="Run a guided strategy run over your picks">Draft a plan from these picks \u2192</button>` +
+    `</div>` +
+    `<p class="hint basket-next">This starts a guided strategy run over your picks: Deep Research across them ` +
+    `(which also surfaces complementary names worth adding), then sized target bands you review and stage ` +
+    `into your working draft. It can take a few minutes and needs a Perplexity login.</p>`;
+}
+
+// Turn the basket into a guided strategy run and hand off to the strategy view.
+async function draftPlan(btn: HTMLButtonElement): Promise<void> {
+  if (btn.disabled) return;
+  const status = $("#basket-status");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Starting\u2026";
+  if (status) {
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> drafting a plan from your basket\u2026`;
+  }
+  try {
+    const m = await api<{ run_id: string }>("/api/basket/draft-plan", "POST", {});
+    if (status) status.textContent = "";
+    pushNav({ view: "strategy", run: m.run_id });
+    setActiveView("strategy");
+  } catch (e) {
+    if (status) { status.textContent = "Could not draft a plan: " + (e as Error).message; status.classList.add("err"); }
+    btn.disabled = false;
+    btn.textContent = prev || "Draft a plan from these picks \u2192";
+  }
 }
 
 async function loadBasket(): Promise<void> {
@@ -169,6 +198,14 @@ function initBasket(): void {
     } finally {
       btn.disabled = false;
     }
+  });
+
+  // "Draft a plan" is re-rendered with the view, so delegate rather than bind.
+  document.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest?.<HTMLButtonElement>(".basket-draft-btn");
+    if (!b) return;
+    e.preventDefault();
+    draftPlan(b);
   });
 
   const clear = $<HTMLButtonElement>("#basket-clear");
