@@ -287,16 +287,17 @@ export function priceLevelsBlock(
     return { col, sum, matchHost };
   }
 
-  // Disclosure: the common case is one "buy below" / "trim above" price, so that
-  // is the default. The fair-value anchor, per-tranche sizes, margin%, the
-  // live/sized stats and multi-tranche laddering all live behind "Advanced".
-  // Reveal it up front only when the seeded levels are actually non-trivial, so
-  // we never silently hide real configuration.
+  // Disclosure: the common case is one "buy below" / "trim above" price, so the
+  // basic view is always the default landing state. The fair-value anchor,
+  // per-tranche sizes, margin%, the live/sized stats and multi-tranche laddering
+  // all live behind "Advanced". When a seeded ladder is actually non-trivial we
+  // don't auto-expand, but we DO flag it on the toggle so it's never silently
+  // hidden.
   function ladderNonTrivial(): boolean {
     if (buyRows.length > 1 || trimRows.length > 1) return true;
     return [...buyRows, ...trimRows].some((r) => r.size != null && Math.abs(r.size - 1) > 0.001);
   }
-  let advanced = ladderNonTrivial();
+  let advanced = false;
 
   // A lone "buy below" / "trim above" price bound to rows[0], created or dropped
   // as the field fills or clears. Size stays implicit (the backend splits a lone
@@ -453,11 +454,17 @@ export function priceLevelsBlock(
     const head = el("div", "pl-head");
     head.appendChild(el("h3", "pl-title", "Price levels"));
     if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
-    const toggle = el("button", "ghost pl-adv-toggle", advanced ? "Simpler" : "Advanced\u2026");
+    // When collapsed but a real ladder is seeded, badge the toggle so the hidden
+    // tranches aren't silent (the basic view only edits the first price per side).
+    const laddered = !advanced && ladderNonTrivial();
+    const toggle = el("button", "ghost pl-adv-toggle" + (laddered ? " pl-adv-toggle--ladder" : ""),
+      advanced ? "Simpler" : laddered ? "Advanced \u00b7 ladder\u2026" : "Advanced\u2026");
     toggle.type = "button";
     toggle.title = advanced
       ? "Hide the fair-value anchor, sizes and multi-tranche ladder"
-      : "Show the fair-value anchor, per-tranche sizes and multi-tranche laddering";
+      : laddered
+        ? "This name has a multi-tranche ladder; the basic view only shows the first price per side. Open Advanced to see and edit all tranches."
+        : "Show the fair-value anchor, per-tranche sizes and multi-tranche laddering";
     toggle.addEventListener("click", () => { advanced = !advanced; render(); });
     head.appendChild(toggle);
     block.appendChild(head);

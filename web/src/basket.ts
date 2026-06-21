@@ -1,0 +1,191 @@
+// The cross-surface basket: a persistent shortlist of tickers starred from
+// anywhere in the app (a deep-dive, a rebalance row, a strategy proposal). It
+// sits UPSTREAM of the working draft — bare interest, no sizing. This module
+// owns the basket view plus the ★ affordance: a single delegated click handler
+// toggles membership, and a client-side mirror of the symbol set keeps every ★
+// in the DOM in sync without a per-surface re-fetch.
+//
+// Dependency-light (core only) and all DOM wiring is deferred to initBasket(),
+// called once from initShell — same import-cycle discipline as strategy/staging.
+import { $, api, esc, fmtWeight } from "./core";
+
+interface BasketBand { low?: number | null; high?: number | null; rule?: string }
+interface BasketItem {
+  symbol: string;
+  source: string;
+  note?: string;
+  added_at?: string;
+  held_pct?: number | null;
+  targeted?: boolean;
+  target_band?: BasketBand | null;
+  in_sleeve?: string | null;
+}
+interface BasketView { items: BasketItem[]; count: number; symbols: string[] }
+
+// Client mirror of the server's basket symbols, so ★ buttons across every
+// surface can render their on/off state without each one fetching.
+let _symbols = new Set<string>();
+const norm = (s: string | null | undefined) => (s || "").toUpperCase();
+const inBasket = (sym: string) => _symbols.has(norm(sym));
+
+// Human label for where a pick came from.
+const SOURCE_LABEL: Record<string, string> = {
+  deepdive: "from analysis", rebalance: "from rebalance", strategy: "from strategy",
+  analyses: "from a report", suggestion: "suggested", manual: "added by hand",
+};
+
+// ---- the ★ affordance (usable from any surface) ---------------------------
+// Returns a button's HTML. Surfaces drop this next to a ticker; the delegated
+// handler below does the rest. `source` records where it was starred from.
+function starHtml(symbol: string, source = "manual"): string {
+  const sym = norm(symbol);
+  if (!sym) return "";
+  const on = inBasket(sym);
+  return `<button class="basket-star${on ? " on" : ""}" type="button" ` +
+    `data-basket-sym="${esc(sym)}" data-basket-src="${esc(source)}" ` +
+    `aria-pressed="${on ? "true" : "false"}" ` +
+    `title="${on ? "In your basket — click to remove" : "Add to basket"}">` +
+    `${on ? "\u2605" : "\u2606"}</button>`;
+}
+
+// Reflect the current symbol set onto every ★ already in the DOM.
+function syncStars(): void {
+  document.querySelectorAll<HTMLButtonElement>(".basket-star").forEach((b) => {
+    const on = inBasket(b.dataset.basketSym || "");
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = on ? "In your basket — click to remove" : "Add to basket";
+    b.textContent = on ? "\u2605" : "\u2606";
+  });
+}
+
+function updateBadge(count: number): void {
+  const b = $("#basket-count");
+  if (!b) return;
+  b.textContent = count ? String(count) : "";
+  b.hidden = !count;
+}
+
+function applyView(v: BasketView): void {
+  _symbols = new Set((v.symbols || []).map(norm));
+  updateBadge(v.count || 0);
+  syncStars();
+}
+
+// ---- basket view ----------------------------------------------------------
+const symLink = (sym: string) => {
+  const s = esc(sym);
+  return `<a class="tlink" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(sym)}" title="Open ${s} deep-dive"><strong>${s}</strong></a>`;
+};
+
+function planCell(it: BasketItem): string {
+  if (it.in_sleeve) return `<span class="basket-plan ok" title="Governed via a sleeve">in plan · ${esc(it.in_sleeve)}</span>`;
+  const b = it.target_band;
+  if (b && (b.low != null || b.high != null)) {
+    return `<span class="basket-plan ok">${b.low ?? "?"}–${b.high ?? "?"}% ${esc(b.rule || "")}</span>`;
+  }
+  return `<span class="basket-plan muted">not in plan</span>`;
+}
+
+function rowHtml(it: BasketItem): string {
+  const held = typeof it.held_pct === "number"
+    ? `<span class="basket-held">${fmtWeight(it.held_pct)}</span>`
+    : `<span class="muted">—</span>`;
+  return `<tr>
+    <td>${symLink(it.symbol)}</td>
+    <td><span class="basket-src">${esc(SOURCE_LABEL[it.source] || it.source)}</span></td>
+    <td>${held}</td>
+    <td>${planCell(it)}</td>
+    <td class="basket-note">${esc(it.note || "")}</td>
+    <td class="basket-row-actions">${starHtml(it.symbol, it.source)}</td>
+  </tr>`;
+}
+
+function render(v: BasketView): void {
+  const body = $("#basket-body");
+  if (!body) return;
+  const clearBtn = $<HTMLButtonElement>("#basket-clear");
+  if (clearBtn) clearBtn.disabled = !v.count;
+  if (!v.count) {
+    body.innerHTML = `<div class="empty"><strong>Your basket is empty.</strong><br>` +
+      `Star (\u2606) any ticker on a deep-dive, a rebalance row, or a strategy proposal to collect it here ` +
+      `\u2014 a shortlist that follows you across the app. Drafting a rebalance plan from your picks is the next step.</div>`;
+    return;
+  }
+  const heldCount = v.items.filter((i) => typeof i.held_pct === "number").length;
+  const planned = v.items.filter((i) => i.targeted).length;
+  body.innerHTML =
+    `<p class="basket-summary">${v.count} pick${v.count === 1 ? "" : "s"}` +
+    ` \u00b7 ${heldCount} already held \u00b7 ${planned} already in your plan.</p>` +
+    `<table class="basket-table">` +
+    `<thead><tr><th>Ticker</th><th>Source</th><th>Held</th><th>In plan</th><th>Note</th><th></th></tr></thead>` +
+    `<tbody>${v.items.map(rowHtml).join("")}</tbody></table>` +
+    `<p class="hint basket-next">Next: draft a rebalance plan from these picks (with LLM suggestions for complementary names). Coming in the next step.</p>`;
+}
+
+async function loadBasket(): Promise<void> {
+  const status = $("#basket-status");
+  if (status) { status.textContent = ""; status.classList.remove("err"); }
+  try {
+    const v = await api<BasketView>("/api/basket");
+    applyView(v);
+    render(v);
+  } catch (e) {
+    if (status) { status.textContent = "Could not load the basket: " + (e as Error).message; status.classList.add("err"); }
+  }
+}
+
+// Refresh just the symbol set + badge (no view render), e.g. on app boot so the
+// nav badge is correct before the basket view is ever opened.
+async function refreshBasket(): Promise<void> {
+  try { applyView(await api<BasketView>("/api/basket")); } catch (_e) { /* badge stays 0 */ }
+}
+
+let _wired = false;
+function initBasket(): void {
+  if (_wired) return;
+  _wired = true;
+
+  // One delegated handler for every ★ anywhere in the app. stopPropagation so a
+  // star sitting inside a clickable row/link doesn't also trigger that.
+  document.addEventListener("click", async (e) => {
+    const btn = (e.target as HTMLElement).closest?.<HTMLButtonElement>(".basket-star");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sym = btn.dataset.basketSym;
+    if (!sym || btn.disabled) return;
+    const src = btn.dataset.basketSrc || "manual";
+    const removing = inBasket(sym);
+    btn.disabled = true;
+    try {
+      const v = removing
+        ? await api<BasketView>("/api/basket/remove", "POST", { symbol: sym })
+        : await api<BasketView>("/api/basket/add", "POST", { symbol: sym, source: src });
+      applyView(v);
+      if ($("#view-basket")?.classList.contains("active")) render(v);
+    } catch (_err) {
+      // Leave the ★ as-is; a failed toggle just doesn't change state.
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  const clear = $<HTMLButtonElement>("#basket-clear");
+  if (clear) clear.addEventListener("click", async () => {
+    if (clear.disabled) return;
+    if (!window.confirm("Clear the whole basket? Your picks are removed (your portfolio and plan are untouched).")) return;
+    try {
+      const v = await api<BasketView>("/api/basket/clear", "POST", {});
+      applyView(v);
+      render(v);
+    } catch (e) {
+      const status = $("#basket-status");
+      if (status) { status.textContent = "Could not clear: " + (e as Error).message; status.classList.add("err"); }
+    }
+  });
+
+  refreshBasket();
+}
+
+export { initBasket, loadBasket, starHtml, inBasket };

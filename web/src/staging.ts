@@ -19,15 +19,29 @@ type Staging = {
 
 const pct = (v: any) => (typeof v === "number" ? fmtWeight(v) : "n/a");
 
+// Turn the model's terse rule verbs into plain words. Unknown verbs just get
+// their underscores spaced out. Folded into bandText so the whole UI speaks the
+// same language.
+const RULE_WORDS: Record<string, string> = {
+  accumulate: "accumulate",
+  hold: "hold",
+  wait: "wait",
+  buy: "buy",
+  avoid: "avoid",
+  trim_only: "trim only",
+  do_not_add: "hold, don't add",
+};
+const ruleWord = (r?: string): string => (r ? RULE_WORDS[r] || r.replace(/_/g, " ") : "");
+
 function bandText(b: Band): string {
   if (!b) return "—";
   const lo = typeof b.low === "number" ? b.low : "?";
   const hi = typeof b.high === "number" ? b.high : "?";
   const sleeve = b.sleeve ? ` · ${esc(b.sleeve)}` : "";
-  return `${lo}–${hi}% ${esc(b.rule || "")}${sleeve}`;
+  return `${lo}–${hi}% ${esc(ruleWord(b.rule))}${sleeve}`;
 }
 
-// One-line, human description of where a band came from.
+// Full provenance string (kept verbose for the row's tooltip and for tests).
 function provLabel(p: any): string {
   if (!p || typeof p !== "object") return "unknown origin";
   const conv = p.conviction ? ` · ${esc(p.conviction)}` : "";
@@ -41,33 +55,69 @@ function provLabel(p: any): string {
   }
 }
 
-const CHANGE_TONE = { added: "ok", modified: "warn", removed: "bad" } as const;
+// Short, friendly origin for the row headline (the opaque run hash moves to the
+// tooltip via provLabel — it means nothing to a person reading this).
+function provHeadline(p: any): string {
+  if (!p || typeof p !== "object") return "origin unknown";
+  const conv = p.conviction ? ` · ${esc(p.conviction)} conviction` : "";
+  switch (p.source) {
+    case "user-pin": return `your pin${p.stance ? " · " + esc(p.stance) : ""}`;
+    case "legacy-plan": return "from your earlier plan";
+    case "strategy":
+    case "pipeline": return `from research${p.segment ? " · " + esc(p.segment) : ""}${conv}`;
+    case "manual": return "your manual edit";
+    default: return esc(p.source || "origin unknown");
+  }
+}
+
+const midOf = (b: Band): number | null => {
+  if (!b) return null;
+  const lo = typeof b.low === "number" ? b.low : null;
+  const hi = typeof b.high === "number" ? b.high : null;
+  if (lo != null && hi != null) return (lo + hi) / 2;
+  return lo != null ? lo : hi;
+};
+
+// Plain-language direction of a change, so a user reads "trimmed" instead of
+// decoding "10–12% → 0–7.7%".
+function directionTag(r: DiffRow): { label: string; tone: "ok" | "warn" | "bad" } {
+  if (r.change === "added") return { label: "new", tone: "ok" };
+  if (r.change === "removed") return { label: "dropped", tone: "bad" };
+  const a = midOf(r.before);
+  const b = midOf(r.after);
+  if (a != null && b != null) {
+    if (b > a + 0.05) return { label: "raised", tone: "ok" };
+    if (b < a - 0.05) return { label: "trimmed", tone: "warn" };
+  }
+  if ((r.before && r.before.rule) !== (r.after && r.after.rule)) return { label: "rule change", tone: "warn" };
+  return { label: "tweaked", tone: "warn" };
+}
 
 function rowHtml(r: DiffRow): string {
-  const tone = CHANGE_TONE[r.change] || "warn";
-  const lockBadge = r.locked ? `<span class="strat-tag strat-tag-warn" title="Pinned: standing human intent">pinned</span>` : "";
+  const dir = directionTag(r);
+  const lockBadge = r.locked ? `<span class="strat-tag strat-tag-warn" title="Pinned: your standing intent — a run can challenge it but never drops it silently">pinned</span>` : "";
   const challenged = r.provenance && r.provenance.challenges_pin
-    ? `<span class="strat-tag strat-tag-bad" title="This change contradicts a pin">challenges pin</span>` : "";
+    ? `<span class="strat-tag strat-tag-bad" title="This change contradicts a pin you set">challenges your pin</span>` : "";
   const priorPin = r.provenance && r.provenance.prior_pin
-    ? `<div class="stage-prior">was pinned: ${esc(r.provenance.prior_pin.stance || "")}${typeof r.provenance.prior_pin.floor_pct === "number" ? " · floor " + r.provenance.prior_pin.floor_pct + "%" : ""}</div>` : "";
+    ? `<div class="stage-prior">was pinned: ${esc(ruleWord(r.provenance.prior_pin.stance) || r.provenance.prior_pin.stance || "")}${typeof r.provenance.prior_pin.floor_pct === "number" ? " · floor " + r.provenance.prior_pin.floor_pct + "%" : ""}</div>` : "";
+  const kindTag = r.kind === "sleeve" ? `<span class="stage-kind">sleeve</span>` : "";
   return `<div class="stage-row stage-${r.change}">
     <div class="stage-row-main">
       <div class="stage-key">
-        <span class="strat-tag strat-tag-${tone}">${esc(r.change)}</span>
+        <span class="strat-tag strat-tag-${dir.tone}">${esc(dir.label)}</span>
         <strong>${esc(r.key)}</strong>
-        <span class="stage-kind">${esc(r.kind)}</span>
-        ${lockBadge}${challenged}
+        ${kindTag}${lockBadge}${challenged}
       </div>
       <div class="stage-bands">
         <span class="stage-before">${bandText(r.before)}</span>
-        <span class="stage-arrow">→</span>
+        <span class="stage-arrow" aria-label="changes to">→</span>
         <span class="stage-after">${bandText(r.after)}</span>
       </div>
-      <div class="stage-prov">${provLabel(r.provenance)}</div>
+      <div class="stage-prov" title="${provLabel(r.provenance)}">${provHeadline(r.provenance)}</div>
       ${priorPin}
     </div>
     <div class="stage-row-actions">
-      <button class="ghost stage-revert" type="button" data-key="${esc(r.key)}" title="Restore this key to the live model (reject the staged change)">Revert</button>
+      <button class="ghost stage-revert" type="button" data-key="${esc(r.key)}" title="Reject this change and keep your current plan for ${esc(r.key)}">Keep current</button>
     </div>
   </div>`;
 }
@@ -76,28 +126,66 @@ function reconHtml(rec: any): string {
   if (!rec) return "";
   const over = rec.over_allocated;
   const tone = over ? "bad" : "ok";
+  const head = over
+    ? `This plan would commit <strong>${pct(rec.targeted_mid_pct)}</strong> to named positions plus <strong>${pct(rec.cash_target_pct)}</strong> cash — that's <strong>${pct(Math.abs(rec.available_pct))}</strong> more than your book holds.`
+    : `This plan puts <strong>${pct(rec.targeted_mid_pct)}</strong> into named positions and keeps <strong>${pct(rec.cash_target_pct)}</strong> in cash, leaving <strong>${pct(Math.abs(rec.available_pct))}</strong> free to allocate.`;
   const untargeted = (rec.untargeted || []).slice(0, 6)
     .map((u: any) => `<span class="chip">${esc(u.symbol)} ${pct(u.current_pct)}</span>`).join(" ");
   const funding = (rec.funding_order || []).length
-    ? `<div class="stage-funding">Funding order: ${(rec.funding_order || []).map((s: string) => esc(s)).join(", ")}</div>` : "";
+    ? `<div class="stage-funding">If you need cash, trim in this order: ${(rec.funding_order || []).map((s: string) => esc(s)).join(", ")}.</div>` : "";
   return `<div class="stage-recon stage-recon-${tone}">
+    <p class="stage-recon-lead">${head}</p>
     <div class="stage-recon-tiles">
-      <div class="stat-tile"><div class="stat-label">Targeted midpoints</div><div class="stat-value">${pct(rec.targeted_mid_pct)}</div></div>
-      <div class="stat-tile"><div class="stat-label">Cash target</div><div class="stat-value">${pct(rec.cash_target_pct)}</div></div>
-      <div class="stat-tile"><div class="stat-label">${over ? "Over-allocated by" : "Available"}</div><div class="stat-value">${pct(Math.abs(rec.available_pct))}</div></div>
-      ${typeof rec.untargeted_pct === "number" ? `<div class="stat-tile"><div class="stat-label">Untargeted book</div><div class="stat-value">${pct(rec.untargeted_pct)}</div></div>` : ""}
+      <div class="stat-tile"><div class="stat-label">In named positions</div><div class="stat-value">${pct(rec.targeted_mid_pct)}</div></div>
+      <div class="stat-tile"><div class="stat-label">Cash</div><div class="stat-value">${pct(rec.cash_target_pct)}</div></div>
+      <div class="stat-tile"><div class="stat-label">${over ? "Over budget by" : "Free to allocate"}</div><div class="stat-value">${pct(Math.abs(rec.available_pct))}</div></div>
+      ${typeof rec.untargeted_pct === "number" ? `<div class="stat-tile"><div class="stat-label">Held but unplanned</div><div class="stat-value">${pct(rec.untargeted_pct)}</div></div>` : ""}
     </div>
-    ${over ? `<div class="stage-warn">Midpoints + cash exceed 100% of the book — trim funding sources before committing.</div>` : ""}
-    ${untargeted ? `<div class="stage-untargeted"><span class="muted">Untargeted:</span> ${untargeted}</div>` : ""}
+    ${over ? `<div class="stage-warn">Named positions + cash exceed 100% of your book — trim a funding source before committing.</div>` : ""}
+    ${untargeted ? `<div class="stage-untargeted"><span class="muted">Held with no plan yet:</span> ${untargeted}</div>` : ""}
     ${funding}
   </div>`;
 }
 
+// Coarse, person-friendly bucket for an advisory check, derived from its
+// structured `area` field (not by parsing the message).
+function checkCategory(o: any): string {
+  const a = String(o.area || "");
+  if (a.startsWith("coverage:")) return "Held with no plan";
+  if (a.startsWith("sleeve:")) return "Counted in two places";
+  return "Plan vs. your holdings";
+}
+
+// The model checks were a wall of ~25 yellow lines — alarming and unreadable.
+// Group them by category, show a one-line summary, and tuck the detail behind a
+// native <details> (keyboard- and screen-reader-friendly), collapsed by default.
 function overlapsHtml(overlaps: any[]): string {
   if (!overlaps || !overlaps.length) return "";
-  const items = overlaps.map((o) =>
-    `<li class="stage-finding stage-finding-${esc((o.severity || "").toLowerCase())}"><span class="strat-tag strat-tag-${o.severity === "ERROR" ? "bad" : "warn"}">${esc(o.severity)}</span> ${esc(o.area)}: ${esc(o.message)}</li>`).join("");
-  return `<div class="stage-section"><div class="subhead">Model checks against the draft</div><ul class="stage-findings">${items}</ul></div>`;
+  const hasError = overlaps.some((o) => o.severity === "ERROR");
+  const groups = new Map<string, any[]>();
+  for (const o of overlaps) {
+    const c = checkCategory(o);
+    if (!groups.has(c)) groups.set(c, []);
+    groups.get(c)!.push(o);
+  }
+  const chips = [...groups.entries()]
+    .map(([cat, list]) => `<span class="chip">${esc(cat)} · ${list.length}</span>`).join(" ");
+  const sections = [...groups.entries()].map(([cat, list]) => {
+    const items = list.map((o) =>
+      `<li class="stage-finding stage-finding-${esc((o.severity || "").toLowerCase())}">` +
+      `<span class="strat-tag strat-tag-${o.severity === "ERROR" ? "bad" : "warn"}">${esc(o.severity)}</span> ` +
+      `${esc(o.message || o.area)}</li>`).join("");
+    return `<div class="stage-check-group"><div class="subhead">${esc(cat)}</div><ul class="stage-findings">${items}</ul></div>`;
+  }).join("");
+  const note = hasError
+    ? `<span class="stage-check-note err">Some checks are errors — resolve them before committing.</span>`
+    : `<span class="stage-check-note">These are advisories — they won't stop you committing.</span>`;
+  return `<div class="stage-section">
+    <details class="stage-checks"${hasError ? " open" : ""}>
+      <summary><strong>${overlaps.length} thing${overlaps.length === 1 ? "" : "s"} worth a look</strong> ${chips} ${note}</summary>
+      <div class="stage-checks-body">${sections}</div>
+    </details>
+  </div>`;
 }
 
 function pinsHtml(pins: Record<string, any>): string {
@@ -106,9 +194,26 @@ function pinsHtml(pins: Record<string, any>): string {
   const chips = keys.map((k) => {
     const p = pins[k];
     const floor = typeof p.floor_pct === "number" ? ` ≥${p.floor_pct}%` : "";
-    return `<span class="chip" title="${esc(p.rationale || "")}">${esc(k)} · ${esc(p.stance || "")}${floor}</span>`;
+    return `<span class="chip" title="${esc(p.rationale || "")}">${esc(k)} · ${esc(ruleWord(p.stance) || p.stance || "")}${floor}</span>`;
   }).join(" ");
-  return `<div class="stage-section"><div class="subhead">Pinned convictions</div><div class="stage-pins">${chips}</div></div>`;
+  return `<div class="stage-section"><div class="subhead">Pinned convictions <span class="stage-sub">— anchored; a run can challenge but never drop them</span></div><div class="stage-pins">${chips}</div></div>`;
+}
+
+// Pending changes grouped into New / Adjusted / Removed, each with a count, so
+// the list reads as three short buckets instead of one interleaved stream.
+function pendingHtml(rows: DiffRow[]): string {
+  if (!rows.length) return `<div class="empty">This draft matches your live plan — nothing to commit.</div>`;
+  const buckets: { title: string; test: (r: DiffRow) => boolean }[] = [
+    { title: "New targets", test: (r) => r.change === "added" },
+    { title: "Adjusted targets", test: (r) => r.change === "modified" },
+    { title: "Removed targets", test: (r) => r.change === "removed" },
+  ];
+  return buckets.map(({ title, test }) => {
+    const group = rows.filter(test);
+    if (!group.length) return "";
+    return `<div class="stage-bucket"><div class="subhead">${title} (${group.length})</div>` +
+      `<div class="stage-rows">${group.map(rowHtml).join("")}</div></div>`;
+  }).join("");
 }
 
 function render(s: Staging): void {
@@ -119,25 +224,32 @@ function render(s: Staging): void {
   if (!s.has_draft) {
     if (commit) commit.disabled = true;
     if (discard) discard.disabled = true;
-    body.innerHTML = `<div class="empty">No working draft. Stage changes from a strategy run ("Add to working draft") or the rebalance planner, then review and commit them here.`
-      + (s.reconciliation ? `<div class="stage-section"><div class="subhead">Live portfolio reconciliation</div>${reconHtml(s.reconciliation)}</div>` : "")
-      + `</div>`;
+    body.innerHTML = `<div class="empty"><strong>No working draft yet.</strong><br>`
+      + `Run a strategy and choose <em>"Add to working draft"</em>, or stage changes from the Rebalance planner. They'll collect here so you can review the whole book and commit once.</div>`
+      + (s.reconciliation ? `<div class="stage-section"><div class="subhead">Where your live portfolio stands</div>${reconHtml(s.reconciliation)}</div>` : "");
     return;
   }
   if (commit) commit.disabled = false;
   if (discard) discard.disabled = false;
   const rows = [...(s.targets || []), ...(s.sleeves || [])];
-  const rowsHtml = rows.length ? rows.map(rowHtml).join("") : `<div class="empty">Draft matches the live model (no net changes).</div>`;
+  const nNew = rows.filter((r) => r.change === "added").length;
+  const nMod = rows.filter((r) => r.change === "modified").length;
+  const nDrop = rows.filter((r) => r.change === "removed").length;
+  const parts = [nNew ? `${nNew} new` : "", nMod ? `${nMod} adjusted` : "", nDrop ? `${nDrop} removed` : ""].filter(Boolean);
+  const summary = rows.length
+    ? `This draft proposes <strong>${rows.length} change${rows.length === 1 ? "" : "s"}</strong> to your plan${parts.length ? ` (${parts.join(", ")})` : ""}. Nothing affects your portfolio until you press <em>Commit</em>.`
+    : `This draft currently matches your live plan.`;
   body.innerHTML = `
+    <p class="stage-summary">${summary}</p>
     <div class="stage-section">
-      <div class="subhead">Whole-book reconciliation (with the draft applied)</div>
+      <div class="subhead">How the whole book looks with this draft applied</div>
       ${reconHtml(s.reconciliation)}
     </div>
     ${overlapsHtml(s.overlaps)}
     ${pinsHtml(s.pins)}
     <div class="stage-section">
-      <div class="subhead">Pending changes (${s.counts.total})</div>
-      <div class="stage-rows">${rowsHtml}</div>
+      <div class="subhead">Changes in this draft (${s.counts.total})</div>
+      ${pendingHtml(rows)}
     </div>`;
 }
 

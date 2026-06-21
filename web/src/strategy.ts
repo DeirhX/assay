@@ -4,6 +4,7 @@
 // pauses at two human gates before showing the rebalance recommendation. The
 // durable state lives in the run manifest; this view is a thin renderer over
 // GET /api/strategy/{run_id}, polled while a leg is running.
+import { starHtml } from "./basket";
 import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
@@ -592,11 +593,11 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
 function changesTable(changes: Change[]) {
   const tbl = el("table", "strat-changes");
   tbl.innerHTML =
-    `<thead><tr><th>Symbol</th><th>Conviction</th><th>Action</th>` +
+    `<thead><tr><th></th><th>Symbol</th><th>Conviction</th><th>Action</th>` +
     `<th>Current</th><th>Proposed</th><th>Rule</th><th>Rationale</th></tr></thead>`;
   const body = el("tbody");
   if (!changes.length) {
-    body.innerHTML = `<tr><td colspan="7" class="muted">No target changes proposed.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="muted">No target changes proposed.</td></tr>`;
   }
   changes.forEach((c: Change) => {
     const tr = el("tr");
@@ -605,6 +606,7 @@ function changesTable(changes: Change[]) {
     const act = actRaw.replace("_target", "");
     const rule = (c.proposed_target && c.proposed_target.rule) || "";
     tr.innerHTML =
+      `<td class="strat-star-cell">${c.symbol ? starHtml(c.symbol, "strategy") : ""}</td>` +
       `<td>${symLink(c.symbol)}</td>` +
       `<td><span class="strat-conv strat-conv-${esc(conv)}">${esc(conv || "—")}</span></td>` +
       `<td>${act ? `<span class="strat-tag strat-tag-${toneOf(actRaw)}">${esc(act)}</span>` : "—"}</td>` +

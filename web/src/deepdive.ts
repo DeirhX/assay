@@ -1,4 +1,5 @@
 import { $, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, pctClass, sectionCard, state } from "./core";
+import { starHtml } from "./basket";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
 import { renderPriceChart } from "./deepdive/price-chart";
@@ -295,6 +296,7 @@ function renderDeepDive(rec: Rec): void {
   const head = el("div", "dd-head");
   head.innerHTML =
     `<span class="sym">${esc(rec.symbol)}</span>` +
+    starHtml(rec.symbol || "", "deepdive") +
     `<span class="name">${esc(rec.name || "")}</span>` +
     instrumentBadge(rec.instrument_type) +
     `<span class="decision-pill ${decisionClass(decision)}">${esc(decision.replace("_", " "))}</span>` +

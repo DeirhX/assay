@@ -1379,6 +1379,11 @@ a.tlink:hover { border-bottom-style: solid; }
 /* Advanced toggle: a quiet text button pinned to the right of the header, so the
    default stays a two-field "buy below / trim above" and the full ladder is opt-in. */
 .pl-adv-toggle { margin-left: auto; font-size: 11px; padding: 3px 9px; flex: none; }
+/* Flags that a real multi-tranche ladder is collapsed behind the basic view. */
+.pl-adv-toggle--ladder {
+  border-color: var(--warn, #d8a657);
+  color: var(--warn, #d8a657);
+}
 
 /* Simplified default view: one price per side, side by side. */
 .pl-simple { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -2327,6 +2332,26 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 /* ---- working draft (staging) ---- */
 .stage-section { margin: 18px 0; }
 .stage-section .subhead { margin-bottom: 10px; }
+.stage-sub { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
+/* Plain-language summary above the reconciliation and changes. */
+.stage-summary { font-size: 14px; line-height: 1.5; margin: 4px 0 16px; color: var(--text); }
+.stage-summary strong { color: var(--text); }
+.stage-recon-lead { font-size: 14px; line-height: 1.5; margin: 0 0 12px; color: var(--text); }
+/* Advisory checks: collapsed by default, expandable, never a scary wall. */
+.stage-checks { border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel); }
+.stage-checks > summary {
+  cursor: pointer; padding: 11px 14px; list-style: none; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 8px; font-size: 13px;
+}
+.stage-checks > summary::-webkit-details-marker { display: none; }
+.stage-checks > summary::before { content: "▸"; color: var(--muted); margin-right: 2px; }
+.stage-checks[open] > summary::before { content: "▾"; }
+.stage-check-note { color: var(--muted); font-size: 12px; }
+.stage-check-note.err { color: var(--bad); }
+.stage-checks-body { padding: 4px 14px 14px; border-top: 1px solid var(--border); }
+.stage-check-group { margin-top: 12px; }
+.stage-check-group:first-child { margin-top: 6px; }
+.stage-bucket { margin-bottom: 18px; }
 .stage-recon-tiles { display: flex; flex-wrap: wrap; gap: 10px; }
 .stage-recon .stat-tile { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 10px 14px; min-width: 140px; }
 .stage-recon .stat-label { color: var(--muted); font-size: 12px; }
@@ -2354,6 +2379,39 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .stage-prov { margin-top: 4px; color: var(--muted); font-size: 12px; }
 .stage-prior { margin-top: 2px; color: var(--warn); font-size: 12px; }
 .stage-row-actions { flex-shrink: 0; }
+
+/* ---- Basket (cross-surface shortlist) ---- */
+/* The ★ affordance: a small, quiet toggle that lives next to a ticker anywhere. */
+.basket-star {
+  background: none; border: none; cursor: pointer; padding: 0 3px; line-height: 1;
+  font-size: 14px; color: var(--muted); vertical-align: middle;
+  transition: color .12s, transform .08s;
+}
+.basket-star:hover { color: var(--warn); transform: scale(1.15); }
+.basket-star.on { color: var(--warn); }
+.basket-star:disabled { opacity: .5; cursor: progress; }
+/* Count badge on the nav group header. */
+.group-badge {
+  display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 2px;
+  border-radius: 9px; background: var(--warn); color: #1a1a1a;
+  font-size: 11px; font-weight: 700; line-height: 16px; text-align: center; vertical-align: middle;
+}
+.basket-summary { font-size: 14px; color: var(--text); margin: 4px 0 14px; }
+.basket-table { width: 100%; border-collapse: collapse; }
+.basket-table th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); font-weight: 700; padding: 6px 10px; border-bottom: 1px solid var(--border);
+}
+.basket-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+.basket-src { color: var(--muted); font-size: 12px; }
+.basket-held { font-weight: 600; }
+.basket-plan { font-size: 12px; }
+.basket-plan.ok { color: var(--good); }
+.basket-plan.muted { color: var(--muted); }
+.basket-note { color: var(--muted); max-width: 260px; }
+.basket-row-actions { text-align: right; }
+.basket-row-actions .basket-star { font-size: 16px; }
+.basket-next { margin-top: 14px; }
 
 .reb-staged-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px;
   background: rgba(245,199,107,.10); border: 1px solid rgba(245,199,107,.4); border-radius: var(--radius-soft);

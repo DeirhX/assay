@@ -1,4 +1,5 @@
 import { loadAnalyses, startPipeline } from "./analyses";
+import { initBasket, loadBasket } from "./basket";
 import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
@@ -134,7 +135,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
 
 // Two-level navigation: the header exposes three top-level GROUPS, each of which
 // fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
@@ -148,6 +149,7 @@ const VIEW_GROUP: Record<string, string> = {
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
   holdings: "portfolio", history: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
+  basket: "basket",
   setup: "setup",
 };
 // Which sub-tab lights up for a given view. Holdings + History are merged behind
@@ -156,10 +158,10 @@ const VIEW_SUBTAB: Record<string, string> = {
   analyses: "analyses", pipeline: "pipeline",
   holdings: "positions", history: "positions", rebalance: "rebalance", "working-draft": "working-draft", trade: "trade", risk: "risk", journal: "journal",
 };
-const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings", basket: "basket" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const lastViewByGroup: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings", basket: "basket" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -294,6 +296,7 @@ function setActiveView(view: string) {
   if (active === "trade") loadTrade();
   if (active === "risk") { initRiskControls(); loadRisk(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }
+  if (active === "basket") loadBasket();
   if (active === "setup") loadSetup();
   return active;
 }
@@ -390,6 +393,7 @@ function initShell() {
   // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
   initStrategy();
   initStaging();
+  initBasket();
 
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.
