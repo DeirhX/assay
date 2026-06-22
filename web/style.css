@@ -420,13 +420,73 @@ label.setup-toggle { display: inline-flex; align-items: center; gap: 10px; margi
   margin: -8px 0 12px; padding: 8px 0;
   background: rgba(15, 17, 21, 0.92); backdrop-filter: blur(8px);
 }
+
+/* ---- Dossier sticky bar: back + condensed summary (on scroll) + jump-tabs ---- */
+.dd-bar {
+  position: sticky; top: var(--topbar-h, 64px); z-index: 9;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: -8px 0 14px; padding: 8px 4px;
+  background: rgba(15, 17, 21, 0.92); backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+.dd-back { flex: none; }
+.dd-bar-summary { display: none; align-items: center; gap: 10px; font-size: 13px; }
+.dd-bar.scrolled .dd-bar-summary { display: inline-flex; flex-wrap: wrap; }
+.dd-bar-sym { font-weight: 700; letter-spacing: .02em; }
+.dd-bar-price { color: var(--text); }
+.dd-tabs { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+.dd-tab {
+  background: none; border: 1px solid transparent; border-radius: 999px;
+  color: var(--muted); font-size: 12px; padding: 4px 12px; cursor: pointer;
+}
+.dd-tab:hover { color: var(--text); }
+.dd-tab.active { color: var(--text); border-color: var(--border); background: var(--panel); }
+.dd-section { scroll-margin-top: calc(var(--topbar-h, 64px) + 56px); }
+.dd-section + .dd-section { margin-top: 30px; }
+.dd-section-label {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 2px 12px; padding-top: 2px;
+  font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted);
+}
+.dd-section-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+/* ---- Decision strip under the header (the "what do I do" glance) ---- */
+.dd-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dd-chip {
+  display: inline-flex; flex-direction: column; gap: 1px;
+  padding: 6px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-soft); background: var(--panel);
+}
+.dd-chip-k { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.dd-chip-v { font-size: 14px; font-weight: 600; }
+.dd-chip.good .dd-chip-v { color: var(--good); }
+.dd-chip.bad .dd-chip-v { color: var(--bad); }
+.dd-chip-levels { flex-direction: row; align-items: center; gap: 10px; }
+.dd-strip--quiet { align-items: center; }
+.dd-strip-note { color: var(--muted); font-size: 13px; }
+.dd-lv { font-size: 12px; color: var(--muted); }
+.dd-lv.good { color: var(--good); }
+.dd-lv.bad { color: var(--bad); }
+
+/* ---- Clamp the long analysis prose by default; expand on demand ---- */
+.prose-clamp { position: relative; max-height: 15em; overflow: hidden; }
+.prose-clamp::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4em;
+  background: linear-gradient(to bottom, transparent, var(--panel));
+  pointer-events: none;
+}
+.prose-clamp.expanded { max-height: none; overflow: visible; }
+.prose-clamp.expanded::after { display: none; }
+.analysis-toggle { margin-top: 8px; }
 .dd-back { height: 32px; padding: 0 14px; font-size: 13px; }
 .dd-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 .dd-head .sym { font-size: 30px; font-weight: 800; }
 .dd-head .name { color: var(--muted); font-size: 16px; }
 .dd-head .price { font-size: 26px; font-weight: 700; margin-left: auto; }
 .dd-sub { color: var(--muted); font-size: 13px; margin-top: 4px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.dd-refresh { margin-left: auto; padding: 4px 10px; font-size: 12px; }
+.dd-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.dd-refresh { padding: 4px 10px; font-size: 12px; }
 
 .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .badge {
@@ -681,6 +741,25 @@ tr:last-child td { border-bottom: 0; }
 .history-table tbody tr:hover .history-del { opacity: 1; }
 .history-del:hover { color: var(--bad); background: rgba(255,90,90,.12); }
 .history-del:disabled { opacity: .3; cursor: default; }
+
+/* ---- enriched "Recent pulls": value + guidance evolution ---- */
+.hd-table td { vertical-align: top; }
+.hd-table .hd-time { color: var(--muted); font-weight: 400; }
+.hd-sub { margin-top: 2px; min-height: 14px; }
+.hd-delta { font-size: 11px; font-variant-numeric: tabular-nums; }
+.hd-delta.up { color: var(--good); }
+.hd-delta.down { color: var(--bad); }
+.hd-delta.flat { color: var(--muted); }
+.hd-delta.neutral.up, .hd-delta.neutral.down { color: var(--muted); }
+.hd-band { text-transform: capitalize; }
+.hd-gap { font-size: 11px; font-variant-numeric: tabular-nums; }
+.hd-gap.good { color: var(--good); }
+.hd-gap.bad { color: var(--bad); }
+.hd-changed {
+  margin-left: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--warn); border: 1px solid var(--warn); border-radius: 999px; padding: 1px 6px;
+}
+.hd-single { color: var(--warn); }
 .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); } .muted { color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .dot.ERROR { background: var(--bad); } .dot.WARN { background: var(--warn); } .dot.INFO { background: var(--good); }
@@ -2390,6 +2469,17 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .basket-star:hover { color: var(--warn); transform: scale(1.15); }
 .basket-star.on { color: var(--warn); }
 .basket-star:disabled { opacity: .5; cursor: progress; }
+/* Labeled button variant for roomy surfaces (deep-dive header): reads as a real
+   button, not punctuation. Rules sit after the base so they win on equal
+   specificity. */
+.basket-star-btn {
+  font-size: 12px; font-weight: 600; padding: 5px 12px; line-height: 1;
+  border: 1px solid var(--accent); border-radius: var(--radius-soft);
+  background: rgba(130, 170, 255, .10); color: var(--accent);
+}
+.basket-star-btn:hover { background: rgba(130, 170, 255, .20); border-color: var(--accent); color: var(--accent); transform: none; }
+.basket-star-btn.on { color: var(--warn); border-color: var(--warn); background: rgba(245, 199, 107, .12); }
+.basket-star-btn.on:hover { color: var(--warn); background: rgba(245, 199, 107, .2); }
 /* Count badge on the nav group header. */
 .group-badge {
   display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 2px;

@@ -36,27 +36,40 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 // ---- the ★ affordance (usable from any surface) ---------------------------
+// The star's inner content. Dense table rows want the bare glyph; a roomy
+// surface (the deep-dive header) wants a labeled button that reads as a button.
+function starInner(on: boolean, labeled: boolean): string {
+  const glyph = on ? "\u2605" : "\u2606";
+  if (!labeled) return glyph;
+  return `${glyph} ${on ? "In basket" : "Add to basket"}`;
+}
+
 // Returns a button's HTML. Surfaces drop this next to a ticker; the delegated
 // handler below does the rest. `source` records where it was starred from.
-function starHtml(symbol: string, source = "manual"): string {
+// `labeled` renders the bigger, text-labeled button variant for roomy surfaces.
+function starHtml(symbol: string, source = "manual", opts: { labeled?: boolean } = {}): string {
   const sym = norm(symbol);
   if (!sym) return "";
   const on = inBasket(sym);
-  return `<button class="basket-star${on ? " on" : ""}" type="button" ` +
+  const labeled = !!opts.labeled;
+  const cls = "basket-star" + (on ? " on" : "") + (labeled ? " basket-star-btn" : "");
+  return `<button class="${cls}" type="button" ` +
     `data-basket-sym="${esc(sym)}" data-basket-src="${esc(source)}" ` +
+    (labeled ? `data-basket-labeled="1" ` : "") +
     `aria-pressed="${on ? "true" : "false"}" ` +
     `title="${on ? "In your basket — click to remove" : "Add to basket"}">` +
-    `${on ? "\u2605" : "\u2606"}</button>`;
+    `${starInner(on, labeled)}</button>`;
 }
 
 // Reflect the current symbol set onto every ★ already in the DOM.
 function syncStars(): void {
   document.querySelectorAll<HTMLButtonElement>(".basket-star").forEach((b) => {
     const on = inBasket(b.dataset.basketSym || "");
+    const labeled = b.dataset.basketLabeled === "1";
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.title = on ? "In your basket — click to remove" : "Add to basket";
-    b.textContent = on ? "\u2605" : "\u2606";
+    b.textContent = starInner(on, labeled);
   });
 }
 
