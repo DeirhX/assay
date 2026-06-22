@@ -311,6 +311,26 @@ function setSegmentControls(segment: string | null | undefined) {
   if (slug && !slug.value) slug.value = segment;
 }
 
+// Open a saved Deep Research run in the pipeline view, landing on the review
+// gate (Step 4) with the report/review loaded. Cross-view "open the full run"
+// buttons must use this rather than setActiveView("pipeline") alone, which
+// fires loadPipeline() and strands the user on the Step 1 segment chooser.
+//
+// Ordering is load-bearing: loadPipeline's refreshDeepRuns rebuilds
+// state.savedRuns from the standalone deep-runs list, which can omit an
+// orchestrated run's artifact. If that runs *after* loadDeepRun, it drops the
+// stem we just registered and re-locks Step 4. So we await loadPipeline to full
+// settle FIRST, then loadDeepRun (which re-adds the stem + refreshPipeLocks),
+// then setPipeStep(4) last.
+export async function openDeepRunInPipeline(stem: string): Promise<void> {
+  const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
+  pushNav(m ? { view: "pipeline", segment: m[1], run: stem } : { view: "pipeline", run: stem });
+  setActiveView("pipeline");
+  await loadPipeline();
+  await loadDeepRun(stem, { push: false });
+  setPipeStep(4);
+}
+
 async function restoreNav(nav: NavState) {
   const active = setActiveView(nav.view ?? "deepdive");
   if (nav.ticker) $<HTMLInputElement>("#ticker-input").value = nav.ticker;

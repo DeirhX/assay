@@ -156,12 +156,25 @@ export function renderAnalysisCard(rec: Rec): HTMLElement {
       `<span class="abadge ok">${esc(meta.backend_label || "CLI")}</span>` +
       `<span class="muted">${esc(modelLabel(meta.model))}</span>` +
       (when ? `<span class="muted">${esc(when)}</span>` : "") +
-      `</div><div class="prose analysis-prose"></div>`;
+      `</div><div class="prose analysis-prose prose-clamp"></div>`;
     const prose = body.querySelector(".analysis-prose") as HTMLElement;
     prose.innerHTML = mdToHtml(a.report || "");
     linkifyTickers(prose);
     decorateAnalysis(prose);
     decorateSources(prose, rec);
+    // Long analyses dominate the page; clamp by default with an expander so the
+    // verdict + price levels stay above the fold and the wall is opt-in.
+    if ((a.report || "").length > 600) {
+      const toggle = el("button", "linklike analysis-toggle", "Read full analysis \u25be");
+      toggle.type = "button";
+      toggle.addEventListener("click", () => {
+        const open = prose.classList.toggle("expanded");
+        toggle.textContent = open ? "Show less \u25b4" : "Read full analysis \u25be";
+      });
+      prose.insertAdjacentElement("afterend", toggle);
+    } else {
+      prose.classList.remove("prose-clamp");
+    }
     // Price-level triggers go right under the meta bar (above the prose) so the
     // accept/lock affordance is the first thing seen after the verdict.
     let lockedMap;

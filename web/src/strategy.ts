@@ -6,7 +6,7 @@
 // GET /api/strategy/{run_id}, polled while a leg is running.
 import { starHtml } from "./basket";
 import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
-import { pushNav, setActiveView } from "./shell";
+import { openDeepRunInPipeline, pushNav, setActiveView } from "./shell";
 
 // ---- manifest shapes (GET /api/strategy/{run_id}) -------------------------
 // A target band, with the rule token that produced it.
@@ -417,8 +417,8 @@ function renderResearchStep(m: Manifest, panel: HTMLElement) {
     const open = el("button", "ghost", "Open the full Deep Research run ↗");
     open.type = "button";
     open.addEventListener("click", () => {
-      pushNav({ view: "pipeline", segment: m.segment, run: `${m.segment}-${m.date}` });
-      setActiveView("pipeline");
+      // Land on the run's review gate, not the Step 1 segment chooser.
+      void openDeepRunInPipeline(`${m.segment}-${m.date}`);
     });
     actions.appendChild(open);
     card.appendChild(actions);
