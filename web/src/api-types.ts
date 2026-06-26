@@ -57,9 +57,18 @@ export interface PlanMember {
   current_czk: number | null;
 }
 
+// One tranche of a locked ladder as the overlay reports it to the planner: a
+// concrete trigger price and its signed distance from the current price.
+export interface GateTranche {
+  price?: number | null;
+  distance_pct?: number | null;
+}
+
 // Per-row price-trigger evaluation attached by the rebalance overlay when the
 // row's symbol has a locked level. `blocked_action` is set (and PlanRow.action
 // downgraded to "wait") when the current price isn't favorable for that side.
+// The ladder internals (totals/live/next/fraction) let the planner read out how
+// much of the move the price unlocks; they're absent on a plain single level.
 export interface PriceGate {
   buy_below: number | null;
   trim_above: number | null;
@@ -69,6 +78,59 @@ export interface PriceGate {
   blocks_buy: boolean;
   blocks_trim: boolean;
   blocked_action?: "buy" | "trim";
+  buy_total?: number;
+  trim_total?: number;
+  buy_live?: number;
+  trim_live?: number;
+  next_buy?: GateTranche | null;
+  next_trim?: GateTranche | null;
+  applied_fraction?: number | null;
+  partial?: boolean;
+}
+
+// Independent research context attached to a plan row (decision support only;
+// it never changes the trade math).
+export interface ResearchInfo {
+  data_quality?: string;
+  thesis_action?: string;
+  // Which way the (free-text) thesis verdict leans, classified server-side so the
+  // add/trim vocabulary lives in exactly one place (tools/rebalance_overlay.py).
+  thesis_lean?: "add" | "trim" | "neutral";
+  thesis_summary?: string;
+  momentum_3m_pct?: number;
+  as_of?: string | null;
+}
+
+// One realized-tax lot under a trim row (Czech 3-year aware).
+export interface TaxLot {
+  bucket?: string;
+  open_datetime?: string;
+  days_to_exempt?: number | null;
+  proceeds?: number | null;
+  gain?: number;
+}
+
+export interface TaxInfo {
+  has_lots?: boolean;
+  lots?: TaxLot[];
+  totals?: Record<string, number>;
+  raised?: number | null;
+  currency?: string;
+  n_lots_used?: number;
+  requested?: number | null;
+  shortfall?: number;
+}
+
+// Lineage of a band's target: where it came from (a pin, a research run, a
+// hand-set legacy value), surfaced as a small badge on the name cell.
+export interface Provenance {
+  source?: string;
+  stance?: string;
+  rationale?: string;
+  set_at?: string;
+  conviction?: string;
+  run_id?: string;
+  segment?: string;
 }
 
 export interface PlanRow {
@@ -90,9 +152,12 @@ export interface PlanRow {
   note: string | null;
   members: PlanMember[] | null;
   interactive: boolean;
-  // Decision-support overlays (added in-place by serve._attach_research_overlay);
-  // absent on rows with no dossier / no locked level.
+  // Decision-support overlays (added in-place by serve._attach_research_overlay
+  // and tax_lots.enrich_plan); absent on rows with no dossier / level / lots.
   price_gate?: PriceGate | null;
+  research?: ResearchInfo | null;
+  research_conflict?: boolean;
+  tax?: TaxInfo | null;
 }
 
 export interface RebalancePlan {
@@ -106,6 +171,34 @@ export interface RebalancePlan {
   rows: PlanRow[];
   untargeted: PlanMember[];
   untargeted_pct: number;
+  // Per-key lineage and the working-draft banner state (serve._get_rebalance).
+  provenance?: Record<string, Provenance | null | undefined>;
+  staged?: { has_draft?: boolean; pending?: number; previewing_draft?: boolean } | null;
+}
+
+// ---- what-if (POST /api/whatif) -------------------------------------------
+export interface WhatifTrade {
+  symbol: string;
+  delta_czk: number;
+}
+
+export interface WhatifSummary {
+  bands_in_before?: number;
+  bands_in_after?: number;
+  bands_total?: number;
+  net_cash_czk?: number;
+  realized_taxable_gain_czk?: number;
+}
+
+export interface Whatif {
+  summary?: WhatifSummary;
+  currency?: string;
+  trades?: WhatifTrade[];
+  cash?: { after?: number | null } | null;
+  after?: { rows?: PlanRow[] } | null;
+  before_status?: Record<string, string>;
+  tax?: { totals?: Record<string, number> } | null;
+  caveats?: string[];
 }
 
 // ---- jobs (GET /api/deep-job, POST run/import/login/analyze/qa) -----------

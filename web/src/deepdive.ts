@@ -1,4 +1,4 @@
-import { $, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, pctClass, sectionCard, state } from "./core";
+import { $, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, isStaleToken, nextToken, pctClass, sectionCard, state } from "./core";
 import { starHtml } from "./basket";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
@@ -216,11 +216,14 @@ async function loadCandidateSuggestions(sec: HTMLElement, inputSymbol: string, c
 async function loadTickerFromCache(raw: string): Promise<void> {
   const sym = cleanSymbol(raw);
   if (!sym) return;
+  // Drop this response if the user switches to another ticker before it lands.
+  const token = nextToken("deepdive");
   const status = $("#dd-status");
   status.classList.remove("err");
   status.textContent = `Loading cached ${sym}...`;
   try {
     const rec = await api<Rec>("/api/research/" + encodeURIComponent(sym));
+    if (isStaleToken("deepdive", token)) return;
     status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
     if (hasUsableMarketData(rec)) {
       renderDeepDive(rec);
@@ -229,6 +232,7 @@ async function loadTickerFromCache(raw: string): Promise<void> {
       renderNoMarketData(rec);
     }
   } catch {
+    if (isStaleToken("deepdive", token)) return;
     status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
     const out = $("#dd-result");
@@ -248,6 +252,9 @@ async function loadTickerFromCache(raw: string): Promise<void> {
 async function pullTicker(raw: string, { push = true, aliasFor = "" }: { push?: boolean; aliasFor?: string } = {}): Promise<void> {
   const sym = cleanSymbol(raw);
   if (!sym) return;
+  // Latest-wins: a slow live pull for a ticker the user has navigated away from
+  // must not paint over the dossier they're now looking at.
+  const token = nextToken("deepdive");
   if (push) pushNav({ view: "deepdive", ticker: sym });
   setActiveView("deepdive");
   tickerInput().value = sym;
@@ -257,6 +264,7 @@ async function pullTicker(raw: string, { push = true, aliasFor = "" }: { push?: 
   $<HTMLButtonElement>("#ticker-go").disabled = true;
   try {
     const rec = await api<Rec>("/api/pull/" + encodeURIComponent(sym), "POST");
+    if (isStaleToken("deepdive", token)) return;
     status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
     if (aliasFor) rec.alias_candidate_for = cleanSymbol(aliasFor);
     if (hasUsableMarketData(rec)) {
@@ -266,11 +274,12 @@ async function pullTicker(raw: string, { push = true, aliasFor = "" }: { push?: 
       renderNoMarketData(rec);
     }
   } catch (e) {
+    if (isStaleToken("deepdive", token)) return;
     status.textContent = "Pull failed: " + e.message;
     status.classList.add("err");
     renderNoMarketData({ symbol: sym, error: e.message });
   } finally {
-    $<HTMLButtonElement>("#ticker-go").disabled = false;
+    if (!isStaleToken("deepdive", token)) $<HTMLButtonElement>("#ticker-go").disabled = false;
   }
 }
 

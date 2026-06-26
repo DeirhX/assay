@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Target-model mutation and rebalance preview.
+"""Target-model mutation primitives and rebalance preview.
 
-Extracted from serve.py. Applies LLM/deterministic target-proposal change
-records onto the committed target model (with a reversible backup) and computes
-the rebalance plan a proposal *would* produce without writing anything -- the
-shared engine behind the Gate-2 preview, the final recommendation, and the
-direct apply endpoint. Disk paths come from config; site regeneration is reused
-from holdings_sync so an apply keeps the static plan in lockstep.
+Extracted from serve.py. Provides the shared in-place model mutator
+(``_apply_changes_to_model``) used by the staging layer, the reversible backup
+helper, and the read-only plan preview a proposal *would* produce
+(``preview_plan_for_proposal``) behind the Gate-2 preview and the final
+recommendation. Promotion to the live model now goes through the staging layer
+(``target_staging.commit_staged``), so nothing here writes the live model except
+via that path's reuse of these primitives. Disk paths come from config.
 """
 
 from __future__ import annotations
@@ -16,11 +17,9 @@ import datetime as dt
 
 import rebalance
 import tax_lots
-from config import DATA_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, TARGET_MODEL_JSON
-from holdings_sync import regenerate_site
+from config import DATA_DIR, HOLDINGS_JSON, REPO_ROOT, TARGET_MODEL_JSON
 from store import (
-    load as _load, safe_symbol as _safe_symbol,
-    slugify as _slugify, write_json as _write_json,
+    load as _load, safe_symbol as _safe_symbol, write_json as _write_json,
 )
 
 # Backups of the target model before a mutating apply -- target-model-only, so
@@ -129,31 +128,6 @@ def _backup_target_model() -> str | None:
     backup = TARGET_MODEL_BACKUP_DIR / f"target-model-{ts}.json"
     _write_json(backup, model)
     return str(backup.relative_to(REPO_ROOT))
-
-
-def apply_target_proposal(segment: str, date: str, confirm: bool, *, allow_blocked: bool = False) -> dict:
-    if not confirm:
-        raise ValueError("confirm=true is required")
-    segment = _slugify(segment)
-    proposal_path = DEEP_DIR / f"{segment}-{date}.target-proposal.json"
-    proposal = _load(proposal_path)
-    if not proposal:
-        raise ValueError(f"proposal not found: {proposal_path.relative_to(REPO_ROOT)}")
-    model = _load(TARGET_MODEL_JSON)
-    if not model:
-        raise ValueError("target model not found")
-    blocked = set(proposal.get("blocked_symbols", [])) if not allow_blocked else set()
-    backup = _backup_target_model()
-    applied, skipped = _apply_changes_to_model(model, proposal.get("changes", []), blocked=blocked)
-    proposal["status"] = "applied" if applied else "reviewed"
-    proposal["applied_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    proposal["applied_symbols"] = applied
-    proposal["skipped"] = skipped
-    _write_json(TARGET_MODEL_JSON, model)
-    _write_json(proposal_path, proposal)
-    # Keep the static plan in lockstep with the model the apply just changed.
-    site = regenerate_site()
-    return {"applied": applied, "skipped": skipped, "proposal": proposal, "backup": backup, "site": site}
 
 
 def preview_plan_for_proposal(proposal: dict, *, allow_blocked: bool = False) -> dict:
