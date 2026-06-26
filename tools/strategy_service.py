@@ -169,6 +169,10 @@ def run_strategy_synthesis(run_id: str) -> None:
     seg = run["segment"]
     job = new_job("strategy", segment=seg, run_id=run_id)
     orchestrate.update_run(run_id, job_id=job["id"])
+    # This is the one card the user should see for the whole run; flip it to
+    # running so it isn't stuck at "queued" while its child deep-research job
+    # does the work (the Task Center folds that child into this entry).
+    update_job(job["id"], state="running")
     progress = strategy_progress(run_id, job["id"])
 
     def fail(msg: str) -> None:
@@ -193,6 +197,9 @@ def run_strategy_synthesis(run_id: str) -> None:
             except RuntimeError as exc:
                 return fail(str(exc))
             sub_id = sub["id"]
+            # Tag the child so the Task Center can fold it into this strategy
+            # card instead of listing it as a second, identical-looking task.
+            update_job(sub_id, parent_run_id=run_id)
             while True:
                 time.sleep(3)
                 pub = jobs.get_public(sub_id)
@@ -200,6 +207,11 @@ def run_strategy_synthesis(run_id: str) -> None:
                     return fail("Deep Research job vanished")
                 if pub.get("message"):
                     progress(pub["message"])
+                # Carry the live Perplexity URL up to the parent so the single
+                # strategy card keeps the "view live run" link the child had.
+                if pub.get("source_url") and pub.get("source_url") != job.get("source_url"):
+                    update_job(job["id"], source_url=pub["source_url"])
+                    job["source_url"] = pub["source_url"]
                 state = pub.get("state")
                 if state == "done":
                     break

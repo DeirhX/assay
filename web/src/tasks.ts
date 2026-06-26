@@ -104,11 +104,31 @@ function activeJobs(): JobListing[] {
   return jobsList().filter((j) => ACTIVE_STATES.has(j.state));
 }
 
+// A guided strategy run spawns a child deep-research job that does the actual
+// work; both land in the registry with the same slug and mirrored progress, so
+// listing both reads as a duplicate. Fold the child into its parent: the
+// strategy card carries the mirrored message + the live-run URL. We keep a
+// child that's stuck at needs_login visible, so its login prompt isn't hidden.
+function foldChildJobs(jobs: JobListing[]): JobListing[] {
+  const strategyRuns = new Set(
+    jobs.filter((j) => j.kind === "strategy" && j.run_id).map((j) => j.run_id),
+  );
+  return jobs.filter(
+    (j) =>
+      !(
+        j.kind === "deep_research" &&
+        j.parent_run_id &&
+        strategyRuns.has(j.parent_run_id) &&
+        j.state !== "needs_login"
+      ),
+  );
+}
+
 async function pollOnce(): Promise<void> {
   try {
     const res = await api<JobsResponse>("/api/jobs");
     const next = new Map<string, JobListing>();
-    (res.jobs || []).forEach((j) => next.set(j.id, j));
+    foldChildJobs(res.jobs || []).forEach((j) => next.set(j.id, j));
     jobsById = next;
   } catch (_e) {
     // The server is down/unreachable; api() already records it centrally. Keep
