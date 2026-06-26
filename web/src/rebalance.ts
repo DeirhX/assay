@@ -25,15 +25,11 @@ const pctToCzk = (pct: number | null | undefined, base: number | null | undefine
 // judgement calls, so they start at zero — the human decides.
 const rebDefaultDelta = (r: Pick<RebRow, "action" | "suggest_delta_pct">) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
 
-// Thesis verdict (free text from the dossier form) -> visual lean. Mirrors the
-// backend's _research_conflict buckets so the chip color and the conflict flag
-// never tell different stories.
-const THESIS_ADD_LIKE = new Set(["add", "accumulate", "buy", "build", "increase", "overweight"]);
-const THESIS_TRIM_LIKE = new Set(["trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"]);
-const thesisLean = (a: string | null | undefined) => {
-  const k = String(a || "").toLowerCase().trim();
-  return THESIS_ADD_LIKE.has(k) ? "good" : THESIS_TRIM_LIKE.has(k) ? "bad" : "muted";
-};
+// Server-classified thesis lean -> chip color. The add/trim vocabulary lives in
+// exactly one place (tools/rebalance_overlay.py); here we only map its verdict to
+// a color so the chip and the backend's conflict flag can't drift apart.
+const LEAN_CLASS: Record<string, string> = { add: "good", trim: "bad", neutral: "muted" };
+const thesisLean = (lean: string | null | undefined) => LEAN_CLASS[lean || "neutral"] || "muted";
 
 // One compact line of independent research context under a target's name: a
 // data-trust dot, the thesis verdict, 3-month momentum, and report freshness.
@@ -48,7 +44,7 @@ function researchLine(r: RebRow) {
   const dqTitle = dqLabels[dq] || dq;
   bits.push(`<span class="dot ${esc(dq)}" title="Data trust: ${esc(dqTitle)}"></span>`);
   if (res.thesis_action) {
-    bits.push(`<span class="chip ${thesisLean(res.thesis_action)} reb-thesis-chip" title="Your saved thesis verdict">${esc(res.thesis_action)}</span>`);
+    bits.push(`<span class="chip ${thesisLean(res.thesis_lean)} reb-thesis-chip" title="Your saved thesis verdict">${esc(res.thesis_action)}</span>`);
   }
   if (typeof res.momentum_3m_pct === "number") {
     const m = res.momentum_3m_pct;

@@ -93,6 +93,9 @@ export interface PriceGate {
 export interface ResearchInfo {
   data_quality?: string;
   thesis_action?: string;
+  // Which way the (free-text) thesis verdict leans, classified server-side so the
+  // add/trim vocabulary lives in exactly one place (tools/rebalance_overlay.py).
+  thesis_lean?: "add" | "trim" | "neutral";
   thesis_summary?: string;
   momentum_3m_pct?: number;
   as_of?: string | null;
