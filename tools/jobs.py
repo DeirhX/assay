@@ -88,6 +88,10 @@ def public(job: dict) -> dict:
         "symbol": job.get("symbol"),
         "stem": job.get("stem"),
         "run_id": job.get("run_id"),
+        # Set on a child job (e.g. a deep-research run spawned by a guided
+        # strategy run) so the Task Center can fold it into its parent's card
+        # instead of showing two entries for one logical run.
+        "parent_run_id": job.get("parent_run_id"),
         # The live Perplexity run URL, surfaced mid-run so the UI can link to the
         # ongoing analysis (and so a clarification stall is one click away).
         "source_url": job.get("source_url"),

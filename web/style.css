@@ -2459,6 +2459,106 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .stage-prior { margin-top: 2px; color: var(--warn); font-size: 12px; }
 .stage-row-actions { flex-shrink: 0; }
 
+/* Direction pills (new / raised / trimmed / dropped). directionTag emits
+   ok|warn|bad tones; without these they fell back to a flat grey pill. */
+.strat-tag-ok { color: var(--good); border-color: rgba(107,211,138,.5); background: rgba(107,211,138,.12); }
+.strat-tag-warn { color: var(--warn); border-color: rgba(245,199,107,.5); background: rgba(245,199,107,.12); }
+.strat-tag-bad { color: var(--bad); border-color: rgba(255,122,122,.5); background: rgba(255,122,122,.12); }
+
+/* Tinted change rows + a little lift on hover so the list feels alive. */
+.stage-row { transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease; }
+.stage-row:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,.22); }
+.stage-row.stage-added { background: linear-gradient(180deg, rgba(107,211,138,.07), transparent 64%), var(--panel); }
+.stage-row.stage-modified { background: linear-gradient(180deg, rgba(245,199,107,.07), transparent 64%), var(--panel); }
+.stage-row.stage-removed { background: linear-gradient(180deg, rgba(255,122,122,.07), transparent 64%), var(--panel); }
+
+/* The band-shift bar: the headline graphic for each target change. All bars in
+   the list share one 0–scaleMax axis so moves are comparable across rows. */
+.band-viz { margin-top: 9px; max-width: 460px; }
+.band-track {
+  position: relative; height: 18px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border); overflow: hidden;
+}
+.band-seg { position: absolute; top: 3px; bottom: 3px; border-radius: 4px; }
+.band-ghost { background: rgba(148,163,184,.16); border: 1px dashed rgba(148,163,184,.5); }
+.band-ghost.tone-bad { background: rgba(255,122,122,.12); border-color: rgba(255,122,122,.5); }
+.band-live.tone-ok { background: rgba(107,211,138,.34); border: 1px solid var(--good); }
+.band-live.tone-warn { background: rgba(245,199,107,.32); border: 1px solid var(--warn); }
+.band-live.tone-bad { background: rgba(255,122,122,.32); border: 1px solid var(--bad); }
+.band-conn { position: absolute; top: 50%; height: 2px; transform: translateY(-50%); border-radius: 2px; opacity: .7; }
+.band-conn.tone-ok { background: var(--good); }
+.band-conn.tone-warn { background: var(--warn); }
+.band-conn.tone-bad { background: var(--bad); }
+.band-mark { position: absolute; top: -1px; bottom: -1px; width: 2px; transform: translateX(-1px); opacity: .9; }
+.band-mark.tone-ok { background: var(--good); }
+.band-mark.tone-warn { background: var(--warn); }
+.band-mark.tone-bad { background: var(--bad); }
+.band-axis { display: flex; justify-content: space-between; margin-top: 3px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Reconciliation reads as a coloured callout card: green when there's room,
+   red when the plan over-commits the book. */
+.stage-recon {
+  border: 1px solid var(--border); border-left-width: 4px; border-radius: var(--radius-soft);
+  padding: 14px 16px; background: linear-gradient(180deg, var(--panel-2), rgba(0,0,0,.04));
+}
+.stage-recon-ok { border-left-color: var(--good); }
+.stage-recon-bad { border-left-color: var(--bad); }
+.stage-recon .stat-tile { position: relative; overflow: hidden; }
+.stage-recon .stat-tile::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--border); }
+.stat-tile--accent::before { background: var(--accent); }
+.stat-tile--ok::before { background: var(--good); }
+.stat-tile--bad::before { background: var(--bad); }
+.stat-tile--warn::before { background: var(--warn); }
+.stat-tile--accent .stat-value { color: var(--accent); }
+.stat-tile--ok .stat-value { color: var(--good); }
+.stat-tile--bad .stat-value { color: var(--bad); }
+.stat-tile--warn .stat-value { color: var(--warn); }
+
+/* Bucket headers get a colour-coded dot + a pill count, so New / Adjusted /
+   Removed are scannable rather than three identical grey headings. */
+.stage-bucket-head { display: flex; align-items: center; gap: 8px; }
+.stage-bucket-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.stage-bucket-ok .stage-bucket-dot { background: var(--good); }
+.stage-bucket-warn .stage-bucket-dot { background: var(--warn); }
+.stage-bucket-bad .stage-bucket-dot { background: var(--bad); }
+.stage-bucket-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0;
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--border);
+}
+.stage-bucket-ok .stage-bucket-count { color: var(--good); border-color: rgba(107,211,138,.4); background: rgba(107,211,138,.10); }
+.stage-bucket-warn .stage-bucket-count { color: var(--warn); border-color: rgba(245,199,107,.4); background: rgba(245,199,107,.10); }
+.stage-bucket-bad .stage-bucket-count { color: var(--bad); border-color: rgba(255,122,122,.4); background: rgba(255,122,122,.10); }
+
+/* "Things worth a look": tone the whole callout by worst severity, badge the
+   tally, and turn the grey findings wall into per-severity cards. */
+.stage-checks { border-left-width: 4px; }
+.stage-checks-bad { border-left-color: var(--bad); background: linear-gradient(180deg, rgba(255,122,122,.06), transparent 60%), var(--panel); }
+.stage-checks-warn { border-left-color: var(--warn); background: linear-gradient(180deg, rgba(245,199,107,.06), transparent 60%), var(--panel); }
+.stage-checks-tally {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 20px; padding: 0 7px; border-radius: 999px;
+  font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+}
+.stage-checks-bad .stage-checks-tally { color: var(--bad); border-color: rgba(255,122,122,.5); background: rgba(255,122,122,.12); }
+.stage-checks-warn .stage-checks-tally { color: var(--warn); border-color: rgba(245,199,107,.5); background: rgba(245,199,107,.12); }
+.stage-finding {
+  display: flex; align-items: baseline; gap: 8px; font-size: 13px;
+  padding: 7px 10px; border-radius: 7px;
+  border: 1px solid var(--border); border-left-width: 3px; background: var(--panel-2);
+}
+.stage-finding .dot { flex: none; align-self: center; margin-right: 0; }
+.stage-finding .sf-sev { flex: none; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.stage-finding .sf-msg { color: var(--text); }
+.stage-finding.sf-bad { border-left-color: var(--bad); background: rgba(255,122,122,.06); }
+.stage-finding.sf-bad .sf-sev { color: var(--bad); }
+.stage-finding.sf-warn { border-left-color: var(--warn); background: rgba(245,199,107,.06); }
+.stage-finding.sf-warn .sf-sev { color: var(--warn); }
+.stage-finding.sf-ok { border-left-color: var(--good); }
+.stage-finding.sf-ok .sf-sev { color: var(--good); }
+
 /* ---- Basket (cross-surface shortlist) ---- */
 /* The ★ affordance: a small, quiet toggle that lives next to a ticker anywhere. */
 .basket-star {

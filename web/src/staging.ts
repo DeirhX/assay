@@ -78,6 +78,67 @@ const midOf = (b: Band): number | null => {
   return lo != null ? lo : hi;
 };
 
+// One shared axis for every bar in the list so a 0–8% band and a 10–18% band
+// are visually comparable, not each stretched to fill its own row. Round up to a
+// friendly multiple of 5, with a 10% floor so a book of small bands still reads.
+function scaleMaxFor(rows: DiffRow[]): number {
+  let max = 0;
+  for (const r of rows) {
+    for (const b of [r.before, r.after]) {
+      if (b && typeof b.high === "number") max = Math.max(max, b.high);
+      if (b && typeof b.low === "number") max = Math.max(max, b.low);
+    }
+  }
+  return Math.max(10, Math.ceil(max / 5) * 5);
+}
+
+// Project a band onto the [0, scaleMax] axis as left/width/mid percentages.
+function bandSeg(b: Band, scaleMax: number): { left: number; width: number; mid: number } | null {
+  if (!b) return null;
+  let lo = typeof b.low === "number" ? b.low : null;
+  let hi = typeof b.high === "number" ? b.high : null;
+  if (lo == null && hi == null) return null;
+  if (lo == null) lo = hi as number;
+  if (hi == null) hi = lo as number;
+  const clamp = (v: number) => Math.max(0, Math.min(100, (v / scaleMax) * 100));
+  const left = clamp(lo);
+  const right = clamp(hi);
+  const width = Math.max(2, right - left); // keep a hairline band visible
+  return { left, width, mid: (left + right) / 2 };
+}
+
+const r1 = (n: number) => Math.round(n * 10) / 10;
+
+// The headline graphic: a horizontal track showing where this name's target sits
+// before (ghost) and after (solid, colour-coded by direction) on the shared
+// axis, so a trim, a raise, a brand-new band or a drop all read at a glance.
+function bandBar(r: DiffRow, scaleMax: number): string {
+  const dir = directionTag(r);
+  const before = bandSeg(r.before, scaleMax);
+  const after = bandSeg(r.after, scaleMax);
+  const ghostTone = r.change === "removed" ? "bad" : "neutral";
+  const ghost = before
+    ? `<span class="band-seg band-ghost tone-${ghostTone}" style="left:${r1(before.left)}%;width:${r1(before.width)}%"></span>`
+    : "";
+  const live = after
+    ? `<span class="band-seg band-live tone-${dir.tone}" style="left:${r1(after.left)}%;width:${r1(after.width)}%"></span>`
+    : "";
+  let conn = "";
+  if (before && after && Math.abs(after.mid - before.mid) > 0.5) {
+    const a = Math.min(before.mid, after.mid);
+    const w = Math.abs(after.mid - before.mid);
+    conn = `<span class="band-conn tone-${dir.tone}" style="left:${r1(a)}%;width:${r1(w)}%"></span>`;
+  }
+  const afterMark = after
+    ? `<span class="band-mark tone-${dir.tone}" style="left:${r1(after.mid)}%"></span>`
+    : "";
+  const label = `${bandText(r.before)} to ${bandText(r.after)}`;
+  return `<div class="band-viz">
+    <div class="band-track" role="img" aria-label="${esc(label)}">${ghost}${conn}${live}${afterMark}</div>
+    <div class="band-axis"><span>0%</span><span>${scaleMax}%</span></div>
+  </div>`;
+}
+
 // Plain-language direction of a change, so a user reads "trimmed" instead of
 // decoding "10–12% → 0–7.7%".
 function directionTag(r: DiffRow): { label: string; tone: "ok" | "warn" | "bad" } {
@@ -93,7 +154,7 @@ function directionTag(r: DiffRow): { label: string; tone: "ok" | "warn" | "bad" 
   return { label: "tweaked", tone: "warn" };
 }
 
-function rowHtml(r: DiffRow): string {
+function rowHtml(r: DiffRow, scaleMax: number): string {
   const dir = directionTag(r);
   const lockBadge = r.locked ? `<span class="strat-tag strat-tag-warn" title="Pinned: your standing intent — a run can challenge it but never drops it silently">pinned</span>` : "";
   const challenged = r.provenance && r.provenance.challenges_pin
@@ -113,6 +174,7 @@ function rowHtml(r: DiffRow): string {
         <span class="stage-arrow" aria-label="changes to">→</span>
         <span class="stage-after">${bandText(r.after)}</span>
       </div>
+      ${bandBar(r, scaleMax)}
       <div class="stage-prov" title="${provLabel(r.provenance)}">${provHeadline(r.provenance)}</div>
       ${priorPin}
     </div>
@@ -136,10 +198,10 @@ function reconHtml(rec: any): string {
   return `<div class="stage-recon stage-recon-${tone}">
     <p class="stage-recon-lead">${head}</p>
     <div class="stage-recon-tiles">
-      <div class="stat-tile"><div class="stat-label">In named positions</div><div class="stat-value">${pct(rec.targeted_mid_pct)}</div></div>
+      <div class="stat-tile stat-tile--accent"><div class="stat-label">In named positions</div><div class="stat-value">${pct(rec.targeted_mid_pct)}</div></div>
       <div class="stat-tile"><div class="stat-label">Cash</div><div class="stat-value">${pct(rec.cash_target_pct)}</div></div>
-      <div class="stat-tile"><div class="stat-label">${over ? "Over budget by" : "Free to allocate"}</div><div class="stat-value">${pct(Math.abs(rec.available_pct))}</div></div>
-      ${typeof rec.untargeted_pct === "number" ? `<div class="stat-tile"><div class="stat-label">Held but unplanned</div><div class="stat-value">${pct(rec.untargeted_pct)}</div></div>` : ""}
+      <div class="stat-tile stat-tile--${over ? "bad" : "ok"}"><div class="stat-label">${over ? "Over budget by" : "Free to allocate"}</div><div class="stat-value">${pct(Math.abs(rec.available_pct))}</div></div>
+      ${typeof rec.untargeted_pct === "number" ? `<div class="stat-tile stat-tile--warn"><div class="stat-label">Held but unplanned</div><div class="stat-value">${pct(rec.untargeted_pct)}</div></div>` : ""}
     </div>
     ${over ? `<div class="stage-warn">Named positions + cash exceed 100% of your book — trim a funding source before committing.</div>` : ""}
     ${untargeted ? `<div class="stage-untargeted"><span class="muted">Held with no plan yet:</span> ${untargeted}</div>` : ""}
@@ -159,6 +221,15 @@ function checkCategory(o: any): string {
 // The model checks were a wall of ~25 yellow lines — alarming and unreadable.
 // Group them by category, show a one-line summary, and tuck the detail behind a
 // native <details> (keyboard- and screen-reader-friendly), collapsed by default.
+// Worst severity in a list, and its tone class, so a category chip / header and
+// the whole callout speak the same red/amber/green language as the change list.
+function worstSev(list: any[]): "ERROR" | "WARN" | "INFO" {
+  if (list.some((o) => o.severity === "ERROR")) return "ERROR";
+  if (list.some((o) => o.severity === "WARN")) return "WARN";
+  return "INFO";
+}
+const sevTone = (s: string): "bad" | "warn" | "ok" => (s === "ERROR" ? "bad" : s === "WARN" ? "warn" : "ok");
+
 function overlapsHtml(overlaps: any[]): string {
   if (!overlaps || !overlaps.length) return "";
   const hasError = overlaps.some((o) => o.severity === "ERROR");
@@ -168,21 +239,29 @@ function overlapsHtml(overlaps: any[]): string {
     if (!groups.has(c)) groups.set(c, []);
     groups.get(c)!.push(o);
   }
+  const topTone = hasError ? "bad" : "warn";
   const chips = [...groups.entries()]
-    .map(([cat, list]) => `<span class="chip">${esc(cat)} · ${list.length}</span>`).join(" ");
+    .map(([cat, list]) => `<span class="chip ${sevTone(worstSev(list))}">${esc(cat)} · ${list.length}</span>`).join(" ");
   const sections = [...groups.entries()].map(([cat, list]) => {
-    const items = list.map((o) =>
-      `<li class="stage-finding stage-finding-${esc((o.severity || "").toLowerCase())}">` +
-      `<span class="strat-tag strat-tag-${o.severity === "ERROR" ? "bad" : "warn"}">${esc(o.severity)}</span> ` +
-      `${esc(o.message || o.area)}</li>`).join("");
-    return `<div class="stage-check-group"><div class="subhead">${esc(cat)}</div><ul class="stage-findings">${items}</ul></div>`;
+    const gTone = sevTone(worstSev(list));
+    const items = list.map((o) => {
+      const sev = String(o.severity || "INFO");
+      return `<li class="stage-finding stage-finding-${esc(sev.toLowerCase())} sf-${sevTone(sev)}">` +
+        `<span class="dot ${esc(sev)}"></span>` +
+        `<span class="sf-sev">${esc(sev)}</span>` +
+        `<span class="sf-msg">${esc(o.message || o.area)}</span></li>`;
+    }).join("");
+    return `<div class="stage-check-group">` +
+      `<div class="subhead stage-bucket-head stage-bucket-${gTone}">` +
+      `<span class="stage-bucket-dot"></span>${esc(cat)}<span class="stage-bucket-count">${list.length}</span></div>` +
+      `<ul class="stage-findings">${items}</ul></div>`;
   }).join("");
   const note = hasError
     ? `<span class="stage-check-note err">Some checks are errors — resolve them before committing.</span>`
     : `<span class="stage-check-note">These are advisories — they won't stop you committing.</span>`;
   return `<div class="stage-section">
-    <details class="stage-checks"${hasError ? " open" : ""}>
-      <summary><strong>${overlaps.length} thing${overlaps.length === 1 ? "" : "s"} worth a look</strong> ${chips} ${note}</summary>
+    <details class="stage-checks stage-checks-${topTone}"${hasError ? " open" : ""}>
+      <summary><span class="stage-checks-tally">${overlaps.length}</span><strong>thing${overlaps.length === 1 ? "" : "s"} worth a look</strong> ${chips} ${note}</summary>
       <div class="stage-checks-body">${sections}</div>
     </details>
   </div>`;
@@ -203,16 +282,19 @@ function pinsHtml(pins: Record<string, any>): string {
 // the list reads as three short buckets instead of one interleaved stream.
 function pendingHtml(rows: DiffRow[]): string {
   if (!rows.length) return `<div class="empty">This draft matches your live plan — nothing to commit.</div>`;
-  const buckets: { title: string; test: (r: DiffRow) => boolean }[] = [
-    { title: "New targets", test: (r) => r.change === "added" },
-    { title: "Adjusted targets", test: (r) => r.change === "modified" },
-    { title: "Removed targets", test: (r) => r.change === "removed" },
+  const scaleMax = scaleMaxFor(rows);
+  const buckets: { title: string; tone: string; test: (r: DiffRow) => boolean }[] = [
+    { title: "New targets", tone: "ok", test: (r) => r.change === "added" },
+    { title: "Adjusted targets", tone: "warn", test: (r) => r.change === "modified" },
+    { title: "Removed targets", tone: "bad", test: (r) => r.change === "removed" },
   ];
-  return buckets.map(({ title, test }) => {
+  return buckets.map(({ title, tone, test }) => {
     const group = rows.filter(test);
     if (!group.length) return "";
-    return `<div class="stage-bucket"><div class="subhead">${title} (${group.length})</div>` +
-      `<div class="stage-rows">${group.map(rowHtml).join("")}</div></div>`;
+    return `<div class="stage-bucket stage-bucket-${tone}">` +
+      `<div class="subhead stage-bucket-head"><span class="stage-bucket-dot"></span>${title}` +
+      `<span class="stage-bucket-count">${group.length}</span></div>` +
+      `<div class="stage-rows">${group.map((r) => rowHtml(r, scaleMax)).join("")}</div></div>`;
   }).join("");
 }
 

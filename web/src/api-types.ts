@@ -129,6 +129,9 @@ export interface Job {
   symbol?: string | null;
   stem?: string | null;
   run_id?: string | null;
+  // Set on a child job (deep-research spawned by a strategy run) so the Task
+  // Center folds it into the parent strategy card instead of double-listing.
+  parent_run_id?: string | null;
   source_url?: string | null;
   result?: Record<string, unknown> | null;
   artifact?: { stem?: string; [key: string]: unknown } | null;
