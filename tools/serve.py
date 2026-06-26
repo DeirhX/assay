@@ -73,7 +73,7 @@ from segments_service import (  # noqa: E402  -- segment validate/prompt/list
 )
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
     history_payload as _history_payload, ibkr_status as _ibkr_status,
-    regenerate_site as _regenerate_site, save_ibkr_secrets as _save_ibkr_secrets,
+    save_ibkr_secrets as _save_ibkr_secrets,
     start_history_sync as _start_history_sync, start_holdings_sync as _start_holdings_sync,
     start_sectors_sync as _start_sectors_sync,
 )
@@ -514,7 +514,6 @@ _POST_EXACT = {
     "/api/holdings/sync": "_post_holdings_sync",
     "/api/portfolio-history/sync": "_post_portfolio_history_sync",
     "/api/portfolio-history/sectors": "_post_portfolio_history_sectors",
-    "/api/site/regenerate": "_post_site_regenerate",
     "/api/deep-job/cancel": "_post_deep_job_cancel",
     "/api/deep-run/delete": "_post_deep_run_delete",
     "/api/deep-qa": "_post_deep_qa",
@@ -1015,12 +1014,6 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("clear"):
             errorlog.clear()
         return self._send_json({"entries": errorlog.recent()})
-
-    def _post_site_regenerate(self, path):
-        res = _regenerate_site()
-        if not res.get("ok"):
-            return self._send_error_json(400, res.get("error") or "regeneration failed")
-        return self._send_json(res)
 
     def _post_analyze(self, path):
         sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))

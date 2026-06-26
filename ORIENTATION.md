@@ -14,10 +14,10 @@ private data repo).
 
 | Area | Path | Purpose |
 | --- | --- | --- |
-| Standing plan | generated `next-steps.html` (not committed); bands in `data/target-model.json` (private submodule) | Human-readable plan plus machine-readable target bands. |
-| Stock pages | generated `*-detail.html` (not committed) | Per-name thesis, valuation, risks, action. |
+| Standing plan | SPA rebalance planner (`web/`, served by `tools/serve.py`); bands in `data/target-model.json` (private submodule) | The planner recommends next steps dynamically from the live snapshot + target bands. |
+| Stock pages | SPA deep-dive view (`web/index.html?ticker=<SYM>`) | Per-name thesis, valuation, risks, action — rendered on demand. |
 | Holdings snapshot | `data/current-holdings.json`, `data/current-holdings-summary.md` (private `data` submodule) | Sanitized IBKR snapshot: no account id, no token, no raw XML. |
-| Static generated values | `tools/generate_site.py` | Keeps NAV/position snippets in markdown and HTML synced to holdings JSON. |
+| Holdings summary | `tools/generate_site.py` | Regenerates the markdown holdings summary from the snapshot JSON. |
 | Rebalance validator | `tools/rebalance.py` | Compares current weights against `data/target-model.json`. |
 | Risk lens | `tools/risk.py` | Correlation, volatility, effective-bets, and factor-shock stress over held names (`GET /api/risk`). |
 | Tax-lot planner | `tools/tax_lots.py` | Czech 3-year-aware lot selection for a trim; enriches the rebalance plan (`POST /api/tax-plan`). |
@@ -197,9 +197,9 @@ Pipeline discipline:
 ## What To Commit
 
 **Code repo (this one, public):** code under `tools/`, the `web/` client, root
-assets (`site.css`), `.cursor/skills/`, and docs. Generated HTML
-(`*-detail.html`, `next-steps.html`) is **not** committed here — it is built
-locally from private data and is gitignored.
+assets (`site.css`), `.cursor/skills/`, and docs. The derived holdings summary
+(`data/current-holdings-summary.md`) is built locally from private data and
+lives in the private `data/` submodule, not here.
 
 **Private `data/` submodule:** all portfolio data lives there —
 `current-holdings.json`/`.md` (after sanitization), `target-model.json`,
@@ -226,7 +226,6 @@ When starting a new Cursor chat in this repo, ask it to use the relevant skills:
 - `research-console`: local live numeric research.
 - `run-web`: start both halves of the app (Python API + Vite frontend) locally.
 - `perplexity-deep-research`: browser-based Perplexity Pro Deep Research.
-- `rebalancing-site`: static page maintenance and navigation rules.
 
 If recommendations change, update both the human-readable pages and the
 machine-readable model/claims where applicable. Otherwise future-you gets to

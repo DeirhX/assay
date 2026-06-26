@@ -15,8 +15,8 @@ This module inserts a single mutable *working draft* between the two so that:
   and parked, not silently applied).
 * You review the WHOLE-BOOK diff (added/modified/removed, reconciliation totals,
   overlap warnings) and COMMIT once, which writes the draft to live (with a
-  reversible backup), bumps ``as_of``/``basis_snapshot``, and regenerates the
-  static plan.
+  reversible backup), bumps ``as_of``/``basis_snapshot``, and refreshes the
+  derived holdings summary.
 
 Writes to the live model happen ONLY through ``commit_staged`` (and the pin
 helpers, which edit standing human judgement directly). Everything else mutates
@@ -444,7 +444,7 @@ def discard_staged() -> dict:
 
 def commit_staged(confirm: bool) -> dict:
     """Promote the working draft to the live model: backup, write, bump
-    ``as_of``/``basis_snapshot``, regenerate the static plan, clear the draft."""
+    ``as_of``/``basis_snapshot``, refresh the holdings summary, clear the draft."""
     if not confirm:
         raise ValueError("confirm=true is required")
     staged = _load(STAGED_JSON)
