@@ -729,13 +729,10 @@ function renderDone(m: Manifest, panel: HTMLElement) {
   const goReb = el("button", "primary", "Open the rebalance planner →");
   goReb.type = "button";
   goReb.addEventListener("click", () => { pushNav({ view: "rebalance" }); setActiveView("rebalance"); });
-  const planLink = el("a", "ghost", "Open standing plan ↗");
-  planLink.href = "/next-steps.html"; planLink.target = "_blank"; planLink.rel = "noopener"; planLink.setAttribute("role", "button");
   const restart = el("button", "ghost", "New run ↺");
   restart.type = "button";
   restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
   actions.appendChild(goReb);
-  actions.appendChild(planLink);
   actions.appendChild(restart);
   card.appendChild(actions);
   panel.appendChild(card);

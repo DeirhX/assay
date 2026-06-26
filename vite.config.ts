@@ -30,8 +30,8 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       "/api": { target: API, changeOrigin: false },
-      // Root static report pages (next-steps.html, losers.html, ...) are served
-      // by Python; forward them so links work in the dev server too.
+      // Any root static page served by Python (not the SPA's own index.html);
+      // forward them so links work in the dev server too.
       "^/[a-z0-9-]+\\.html$": { target: API, changeOrigin: false },
       // ...and the sibling assets those report pages pull in. Kept explicit so
       // the SPA's own /style.css (served by Vite from web/) is NOT proxied.

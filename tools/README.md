@@ -315,14 +315,14 @@ All recommendations are analysis, not financial or tax advice.
 ## generate_site.py
 
 Single source of truth for portfolio numbers is `data/current-holdings.json`
-(produced by the IBKR Flex reader). This script rederives everything that
-restates those numbers, so the markdown summary and HTML pages cannot silently
-drift away from the snapshot.
+(produced by the IBKR Flex reader). This script rederives the markdown holdings
+summary from that snapshot, so it cannot silently drift away from the JSON. (The
+old static HTML plan/detail pages were retired; the SPA now recommends next
+steps dynamically from the same data.)
 
 ### What it regenerates
 
 - `data/current-holdings-summary.md` — fully rewritten from the JSON.
-- `*.html` — only the values inside `<!--GEN:key-->...<!--/GEN:key-->` markers.
 
 ### Usage
 
