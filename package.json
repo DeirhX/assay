@@ -9,12 +9,14 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "typecheck:py": "mypy tools",
     "lint": "eslint web/src"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.0",
     "@types/node": "^25.9.3",
     "eslint": "^10.5.0",
     "happy-dom": "^20.10.2",

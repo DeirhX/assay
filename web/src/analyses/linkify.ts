@@ -36,7 +36,11 @@ export function tickerAnchorHtml(raw: string): string {
 // Walk text nodes and turn ticker-shaped tokens into deep-dive links. Skips text
 // already inside <a>/<code>/<pre>. A token links if it's $-prefixed, wrapped in
 // (parens), or present in the curated set -- and never if in the stoplist.
-export const _TICKER_TOKEN = /\b[A-Z]{2,5}(?:\.[A-Z]{1,2})?\b/g;
+// Two shapes: a 2-5 letter US-style base (optionally exchange-qualified), or a
+// foreign exchange-qualified symbol whose base may be numeric (e.g. 000660.KS,
+// 0700.HK) -- the suffix is REQUIRED there so plain numbers/dollar amounts ($5,
+// $1000) are never mistaken for tickers.
+export const _TICKER_TOKEN = /\b[A-Z]{2,5}(?:\.[A-Z]{1,3})?\b|\b[A-Z0-9]{1,6}\.[A-Z]{1,3}\b/g;
 export function linkifyTextNode(node: Text, set: Set<string>): void {
   const text = node.nodeValue || "";
   let m: RegExpExecArray | null, last = 0, frag: DocumentFragment | null = null;
@@ -77,10 +81,14 @@ export function linkifyTextNode(node: Text, set: Set<string>): void {
 // symbols we are confident are tickers -- so every *subsequent* bare mention can
 // be linked too, without pulling in the full US/EU list that collides with
 // English words (NOW, ON, ALL, IT...).
-const _DOLLAR_TICKER = /\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b/g;
-const _PAREN_TICKER = /\(\s*([A-Z]{2,5}(?:\.[A-Z]{1,2})?)\s*\)/g;
+// A numeric base only counts as a ticker when exchange-qualified (the `\.[A-Z]`
+// suffix), so "$5" / "$1000" stay plain dollar amounts while "$000660.KS" links.
+const _DOLLAR_TICKER = /\$([A-Z]{1,5}(?:\.[A-Z]{1,3})?|[A-Z0-9]{1,6}\.[A-Z]{1,3})\b/g;
+const _PAREN_TICKER = /\(\s*([A-Z]{2,5}(?:\.[A-Z]{1,3})?|[A-Z0-9]{1,6}\.[A-Z]{1,3})\s*\)/g;
+// A numeric base must carry a suffix here too: "(KRX: 000660)" without ".KS"
+// would otherwise harvest the bare, unresolvable "000660" into the report set.
 const _EXCH_TICKER =
-  /\(\s*(?:NYSE(?:\s+American)?|NASDAQ|AMEX|CBOE|OTCMKTS|OTC|TSXV?|LSE|ASX|HKEX|EURONEXT)[:\s]+([A-Z]{1,5}(?:\.[A-Z]{1,2})?)\s*\)/gi;
+  /\(\s*(?:NYSE(?:\s+American)?|NASDAQ|AMEX|CBOE|OTCMKTS|OTC|TSXV?|LSE|ASX|HKEX|HKG|EURONEXT|KRX|KOSPI|KOSDAQ|SEHK|TSE|SSE|SZSE)[:\s]+([A-Z]{1,5}(?:\.[A-Z]{1,3})?|[A-Z0-9]{1,6}\.[A-Z]{1,3})\s*\)/gi;
 
 export function collectReportTickers(root: HTMLElement | null): Set<string> {
   const found = new Set<string>();

@@ -466,6 +466,8 @@ def history_for(symbol: str, *, limit: int = 12) -> list[dict[str, Any]]:
         if not rec:
             continue
         metrics = rec.get("metrics", {})
+        portfolio = rec.get("portfolio", {}) or {}
+        target = portfolio.get("target", {}) or {}
         entries.append({
             "as_of": rec.get("as_of"),
             "price": _val(rec.get("price")),
@@ -473,7 +475,17 @@ def history_for(symbol: str, *, limit: int = 12) -> list[dict[str, Any]]:
             "pe_fwd": _val(metrics.get("pe_fwd")),
             "ps": _val(metrics.get("ps")),
             "revenue_ttm_usd_b": _val(metrics.get("revenue_ttm_usd_b")),
+            "rev_growth_yoy_pct": _val(metrics.get("rev_growth_yoy_pct")),
             "data_quality": _worst_severity(rec.get("cross_checks", [])),
+            # Guidance as it stood at pull time -- lets the change log show how our
+            # stance and the position vs the model band evolved alongside the
+            # market's perceived value, with no extra persistence.
+            "decision": rec.get("decision"),
+            "weight_pct": portfolio.get("current_weight_pct"),
+            "status": portfolio.get("status"),
+            "band_low": target.get("low"),
+            "band_high": target.get("high"),
+            "gap_to_band_pct": portfolio.get("gap_to_band_pct"),
             "stamp": path.stem,
             "path": str(path.relative_to(REPO_ROOT)).replace("\\", "/"),
         })

@@ -1,4 +1,5 @@
 import { loadAnalyses, startPipeline } from "./analyses";
+import { initBasket, loadBasket } from "./basket";
 import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
@@ -134,7 +135,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
 
 // Two-level navigation: the header exposes three top-level GROUPS, each of which
 // fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
@@ -148,6 +149,7 @@ const VIEW_GROUP: Record<string, string> = {
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
   holdings: "portfolio", history: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
+  basket: "basket",
   setup: "setup",
 };
 // Which sub-tab lights up for a given view. Holdings + History are merged behind
@@ -156,10 +158,10 @@ const VIEW_SUBTAB: Record<string, string> = {
   analyses: "analyses", pipeline: "pipeline",
   holdings: "positions", history: "positions", rebalance: "rebalance", "working-draft": "working-draft", trade: "trade", risk: "risk", journal: "journal",
 };
-const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings", basket: "basket" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings" };
+const lastViewByGroup: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings", basket: "basket" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -294,6 +296,7 @@ function setActiveView(view: string) {
   if (active === "trade") loadTrade();
   if (active === "risk") { initRiskControls(); loadRisk(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }
+  if (active === "basket") loadBasket();
   if (active === "setup") loadSetup();
   return active;
 }
@@ -306,6 +309,26 @@ function setSegmentControls(segment: string | null | undefined) {
   if (pipe && Array.from(pipe.options).some((o) => o.value === segment)) pipe.value = segment;
   const slug = $<HTMLInputElement>("#pipe-slug");
   if (slug && !slug.value) slug.value = segment;
+}
+
+// Open a saved Deep Research run in the pipeline view, landing on the review
+// gate (Step 4) with the report/review loaded. Cross-view "open the full run"
+// buttons must use this rather than setActiveView("pipeline") alone, which
+// fires loadPipeline() and strands the user on the Step 1 segment chooser.
+//
+// Ordering is load-bearing: loadPipeline's refreshDeepRuns rebuilds
+// state.savedRuns from the standalone deep-runs list, which can omit an
+// orchestrated run's artifact. If that runs *after* loadDeepRun, it drops the
+// stem we just registered and re-locks Step 4. So we await loadPipeline to full
+// settle FIRST, then loadDeepRun (which re-adds the stem + refreshPipeLocks),
+// then setPipeStep(4) last.
+export async function openDeepRunInPipeline(stem: string): Promise<void> {
+  const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
+  pushNav(m ? { view: "pipeline", segment: m[1], run: stem } : { view: "pipeline", run: stem });
+  setActiveView("pipeline");
+  await loadPipeline();
+  await loadDeepRun(stem, { push: false });
+  setPipeStep(4);
 }
 
 async function restoreNav(nav: NavState) {
@@ -390,6 +413,7 @@ function initShell() {
   // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
   initStrategy();
   initStaging();
+  initBasket();
 
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.

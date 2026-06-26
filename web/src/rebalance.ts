@@ -1,3 +1,4 @@
+import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, sensitive, simpleTable, state, statTile } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
@@ -355,6 +356,8 @@ function renderRebalance(plan: RebPlan) {
       sym.addEventListener("click", () => analyzeFromAnywhere(r.name));
     }
     const nameCell = el("div", "reb-c reb-name");
+    // Star only single tickers — a sleeve row is itself a basket, not one name.
+    if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", starHtml(r.name, "rebalance"));
     nameCell.appendChild(sym);
     nameCell.appendChild(el("span", "reb-rule", esc(REB_RULE_LABEL[r.rule] || r.rule)));
     const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);

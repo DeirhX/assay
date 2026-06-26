@@ -33,16 +33,17 @@ describe("provLabel", () => {
 });
 
 describe("reconHtml", () => {
-  it("shows the available headroom when the book fits", () => {
+  it("shows the free-to-allocate headroom when the book fits", () => {
     const html = reconHtml({ targeted_mid_pct: 40, cash_target_pct: 5, available_pct: 55, over_allocated: false });
-    expect(html).toContain("Available");
-    expect(html).not.toContain("Over-allocated");
+    expect(html).toContain("Free to allocate");
+    expect(html).not.toContain("Over budget");
+    expect(html).not.toContain("stage-recon-bad");
   });
 
   it("flags an over-allocated book in red with a warning", () => {
     const html = reconHtml({ targeted_mid_pct: 110, cash_target_pct: 5, available_pct: -15, over_allocated: true });
     expect(html).toContain("stage-recon-bad");
-    expect(html).toContain("Over-allocated");
+    expect(html).toContain("Over budget by");
     expect(html).toContain("exceed 100%");
   });
 });
