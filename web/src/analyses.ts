@@ -19,7 +19,7 @@ export { createQaCard } from "./analyses/qa-card";
 // A saved Deep Research run as the list/reader read it. Mirrors DeepRun from
 // api-types but adds `kind` (ticker vs segment) and keeps every field the row
 // renderer touches optional, since older nested re-runs are sparser.
-interface AnalysisRun {
+export interface AnalysisRun {
   stem: string;
   segment: string;
   date?: string;
@@ -58,7 +58,7 @@ interface StructuredDoc {
   members?: StructuredMember[];
 }
 
-function analysisBadges(r: AnalysisRun) {
+function analysisBadges(r: Partial<AnalysisRun>) {
   const parts = [];
   if (r.has_review) parts.push('<span class="abadge ok">reviewed</span>');
   if (r.change_count) parts.push(`<span class="abadge">${r.change_count} proposed</span>`);
@@ -336,7 +336,7 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
     reader.innerHTML = `<div class="status err">${esc(e.message)}</div>`;
     return;
   }
-  const meta = state.analysesRuns.find((r) => r.stem === stem) || {};
+  const meta: Partial<AnalysisRun> = state.analysesRuns.find((r) => r.stem === stem) || {};
   const sources = rec.sources || {};
   const citations = sources.citations || [];
   const age = relAge(meta.generated_at);

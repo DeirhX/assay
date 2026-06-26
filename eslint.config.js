@@ -1,10 +1,10 @@
 // Flat ESLint config for the SPA under web/src.
 //
-// Non-type-checked typescript-eslint (no project service) so it stays fast and
-// works regardless of @ts-nocheck markers. Tightens as modules are typed: real
-// `any` use is allowed for now (the migration leans on it), but genuinely dead
-// code (unused vars/imports) is an error so cleanups like dropping orphaned
-// imports don't silently regress.
+// Non-type-checked typescript-eslint (no project service) so it stays fast.
+// The @ts-nocheck migration is done and noImplicitAny is on (see tsconfig.json),
+// so the only remaining `any` is the api<T = any> default plus a few loose
+// payload spots; no-explicit-any stays off until those are pinned. Genuinely
+// dead code (unused vars/imports) is an error so cleanups don't silently regress.
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
@@ -36,8 +36,9 @@ export default tseslint.config(
       },
     },
     rules: {
-      // The TS migration intentionally leans on `any` and ts-directives while
-      // modules are still @ts-nocheck; don't fail the build on those yet.
+      // A handful of loose payload spots + the api<T = any> default still use
+      // `any`; keep this off until those are pinned to api-types DTOs. ban-ts-
+      // comment stays off as the cheap escape hatch (no directives in tree today).
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/ban-ts-comment": "off",
       // Allow leading-underscore throwaways (e.g. `catch (_e)`); flag the rest.

@@ -20,7 +20,6 @@ imports them aliased to its existing private call-site names.
 from __future__ import annotations
 
 import datetime as dt
-import threading
 from pathlib import Path
 
 import jobs
@@ -28,7 +27,7 @@ import research_pull
 import ticker_analysis
 from apierror import Conflict
 from config import ANALYSIS_DIR, DEEP_DIR, RESEARCH_DIR
-from jobs import new_job, public, update_job
+from jobs import update_job
 from research_pull import PULL_LOCK
 from store import load, safe_symbol, slugify, write_json, write_text
 
@@ -125,10 +124,8 @@ def start_analysis(symbol: str, refresh: bool) -> dict:
         raise Conflict(f"an analysis for {sym} is already running")
     # Unlike Perplexity runs, CLI analyses don't touch the shared browser, so we
     # do NOT take claim_active -- they may run alongside a deep-research job.
-    job = new_job("ticker_analysis", symbol=sym, refresh=bool(refresh))
-    threading.Thread(target=run_analysis_job,
-                     args=(job["id"], sym, bool(refresh)), daemon=True).start()
-    return public(job)
+    return jobs.spawn("ticker_analysis", run_analysis_job, sym, bool(refresh),
+                      symbol=sym, refresh=bool(refresh))
 
 
 # --------------------------------------------------------------------------- #
@@ -215,9 +212,7 @@ def start_qa(symbol: str, question: str) -> dict:
         raise ValueError("empty question")
     if qa_running(sym):
         raise Conflict(f"a question for {sym} is already being answered")
-    job = new_job("ticker_qa", symbol=sym)
-    threading.Thread(target=run_qa_job, args=(job["id"], sym, question), daemon=True).start()
-    return public(job)
+    return jobs.spawn("ticker_qa", run_qa_job, sym, question, symbol=sym)
 
 
 # --------------------------------------------------------------------------- #
@@ -323,6 +318,4 @@ def start_deep_qa(stem: str, question: str) -> dict:
         raise ValueError(f"no saved report for {stem}")
     if deep_qa_running(stem):
         raise Conflict(f"a question for {stem} is already being answered")
-    job = new_job("deep_qa", stem=stem)
-    threading.Thread(target=run_deep_qa_job, args=(job["id"], stem, question), daemon=True).start()
-    return public(job)
+    return jobs.spawn("deep_qa", run_deep_qa_job, stem, question, stem=stem)

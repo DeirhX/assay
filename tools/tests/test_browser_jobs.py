@@ -171,11 +171,9 @@ class StartGuards(TempFiles):
 
     def test_deep_research_spawns_when_clear(self):
         with mock.patch.object(bj, "claim_active", return_value=True), \
-             mock.patch.object(bj, "new_job", return_value={"id": "j1"}), \
-             mock.patch.object(bj, "public", side_effect=lambda j: j), \
-             mock.patch.object(bj.threading, "Thread") as Thread:
+             mock.patch.object(bj.jobs, "spawn", return_value={"id": "j1"}) as spawn:
             out = bj.start_deep_research({"segment": "Fin Tech", "date": "2026-06-20", "prompt": "p"})
-        Thread.assert_called_once()
+        spawn.assert_called_once()
         self.assertEqual(out, {"id": "j1"})
 
     def test_import_requires_segment_and_perplexity_url(self):

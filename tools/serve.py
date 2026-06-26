@@ -780,8 +780,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, f"unknown strategy run {run_id}")
         # A run left "running" by a previous server process has a dead worker;
         # fail it now so the client stops polling a spinner that will never move.
-        run = orchestrate.reap_if_orphaned(run)
-        job = jobs.get_public(run["job_id"]) if run.get("job_id") else None
+        run = orchestrate.reap_if_orphaned(run) or run
+        jid = run.get("job_id")
+        job = jobs.get_public(jid) if jid else None
         return self._send_json(orchestrate.public(run, job=job))
 
     def _get_segment_def(self, path, query):

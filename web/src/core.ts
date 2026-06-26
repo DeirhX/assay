@@ -4,8 +4,12 @@
 // its sink here at boot instead of core importing it.
 //
 // `import type` is erased at build time, so re-exporting the API DTOs from
-// ./api-types keeps core a runtime leaf while giving one source of truth.
-import type { PriceLevel } from "./api-types";
+// ./api-types — and pulling in a couple of view-owned record shapes for the
+// shared store below — keeps core a runtime leaf while giving one source of
+// truth. (Type-only edges can't form an import cycle; they vanish at build.)
+import type { DeepRun, PriceLevel } from "./api-types";
+import type { AnalysisRun } from "./analyses";
+import type { SegmentRec } from "./segment";
 
 // Optional numeric inputs from JSON (often null/undefined for missing data).
 type Num = number | null | undefined;
@@ -16,22 +20,25 @@ let _errorSink: ErrorSink | null = null;
 function setErrorSink(fn: ErrorSink): void { _errorSink = fn; }
 
 interface AppState {
-  holdings: Record<string, any>;
-  nav: any;
-  lastSegment: any;
+  // Symbol (and provider-symbol alias) -> percent-of-NAV, seeded from the
+  // holdings snapshot; read by the deep dive to show "owned" weight.
+  holdings: Record<string, number | null>;
+  nav: number | null;
+  lastSegment: SegmentRec | null;
   segSort: { key: string; dir: number };
-  currentDeepRun: any;
+  // Stems pinning the active deep-research run / analysis being viewed.
+  currentDeepRun: string | null;
   privacyMode: boolean;
   pplxLoggedIn: boolean;
   pipeStep: number;
   segMode: string;
   repMode: string;
   repManual: boolean;
-  promptSegment: any;
+  promptSegment: string | null;
   savedRuns: Set<string>;
-  deepRuns: any[];
-  analysesRuns: any[];
-  currentAnalysis: any;
+  deepRuns: DeepRun[];
+  analysesRuns: AnalysisRun[];
+  currentAnalysis: string | null;
   tickerSet: Set<string>;
   stagedBasket: Array<{ symbol: string; delta_czk: number }>;
   // Set lazily by views; absent in the initial literal.
@@ -188,8 +195,8 @@ function applyPrivacyMode(on: boolean): void {
 type AppError = Error & { _recorded?: unknown; status?: number };
 
 // Generic so typed call sites can pin a response shape from ./api-types, e.g.
-// `await api<HoldingsPayload>("/api/holdings")`. Defaults to any, so the many
-// still-untyped (@ts-nocheck) callers are unaffected.
+// `await api<HoldingsPayload>("/api/holdings")`. Defaults to any for the call
+// sites that haven't pinned a DTO yet; prefer passing an explicit type param.
 async function api<T = any>(path: string, method: string = "GET", body: unknown = null): Promise<T> {
   const opt: RequestInit = { method, headers: {} };
   if (body) {

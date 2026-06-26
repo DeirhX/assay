@@ -116,11 +116,9 @@ class StartGuards(CacheBackedTest):
 
     def test_start_qa_spawns_job_when_idle(self):
         with mock.patch.object(aj.jobs, "running", return_value=False), \
-             mock.patch.object(aj, "new_job", return_value={"id": "j1"}), \
-             mock.patch.object(aj, "public", side_effect=lambda j: j), \
-             mock.patch.object(aj.threading, "Thread") as Thread:
+             mock.patch.object(aj.jobs, "spawn", return_value={"id": "j1"}) as spawn:
             out = aj.start_qa("aapl", "why?")
-        Thread.assert_called_once()
+        spawn.assert_called_once()
         self.assertEqual(out, {"id": "j1"})
 
     def test_start_analysis_conflicts_when_already_running(self):
@@ -135,11 +133,9 @@ class StartGuards(CacheBackedTest):
     def test_start_deep_qa_spawns_job_when_report_exists(self):
         (aj.DEEP_DIR / "ai-semis.md").write_text("# report", encoding="utf-8")
         with mock.patch.object(aj.jobs, "running", return_value=False), \
-             mock.patch.object(aj, "new_job", return_value={"id": "d1"}), \
-             mock.patch.object(aj, "public", side_effect=lambda j: j), \
-             mock.patch.object(aj.threading, "Thread") as Thread:
+             mock.patch.object(aj.jobs, "spawn", return_value={"id": "d1"}) as spawn:
             out = aj.start_deep_qa("ai-semis", "what now?")
-        Thread.assert_called_once()
+        spawn.assert_called_once()
         self.assertEqual(out, {"id": "d1"})
 
 

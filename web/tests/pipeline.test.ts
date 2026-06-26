@@ -2,6 +2,7 @@
 // derived from real data (segment chosen, report saved on disk), and the
 // stem-prefix discipline must not let "ai" match "ai-software" runs.
 import { beforeEach, describe, expect, it } from "vitest";
+import type { DeepRun } from "../src/api-types";
 import { $, state } from "../src/core";
 import { latestReportForSegment, pipeCurrentStem, pipeHasSavedReport, pipeLockReason, pipeUnlockedMax } from "../src/pipeline";
 
@@ -74,10 +75,12 @@ describe("pipeLockReason", () => {
 });
 
 describe("latestReportForSegment", () => {
-  const run = (stem: string, hasReport = true) => ({
+  // Minimal fixture: latestReportForSegment only reads `stem` + `files.report`,
+  // so the other DeepRun fields are deliberately omitted (asserted, not built).
+  const run = (stem: string, hasReport = true): DeepRun => ({
     stem,
-    files: hasReport ? { report: true } : {},
-  });
+    files: hasReport ? { report: "report.md" } : {},
+  } as DeepRun);
 
   it("picks the newest run with a report on disk", () => {
     state.deepRuns = [
