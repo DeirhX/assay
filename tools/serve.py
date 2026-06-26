@@ -79,8 +79,11 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
 )
 import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
 import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
+import optimizer  # noqa: E402  -- whole-book global sizer over the candidate pool
+from target_model import preview_plan_for_proposal as _preview_plan  # noqa: E402
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
     delete_deep_run as _delete_deep_run, deep_runs as _deep_runs,
+    discovered_for as _discovered_for,
     save_deep_artifact as _save_deep_artifact,
 )
 from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q&A thread families
@@ -88,6 +91,7 @@ from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q
     load_deep_qa as _load_deep_qa, load_qa as _load_qa,
     deep_qa_path as _deep_qa_path, qa_path as _qa_path,
     start_analysis as _start_analysis, start_deep_qa as _start_deep_qa,
+    start_portfolio_review as _start_portfolio_review,
     start_qa as _start_qa,
 )
 from browser_jobs import (  # noqa: E402  -- Perplexity auth + deep-research/login/import jobs
@@ -494,6 +498,7 @@ _GET_EXACT = {
     "/api/strategy/runs": "_get_strategy_runs",
     "/api/staging": "_get_staging",
     "/api/basket": "_get_basket",
+    "/api/optimizer": "_get_optimizer",
 }
 _GET_PREFIX = [
     ("/api/strategy/", "_get_strategy"),
@@ -532,9 +537,13 @@ _POST_EXACT = {
     "/api/staging/discard": "_post_staging_discard",
     "/api/staging/edit": "_post_staging_edit",
     "/api/basket/add": "_post_basket_add",
+    "/api/basket/tier": "_post_basket_tier",
     "/api/basket/remove": "_post_basket_remove",
     "/api/basket/clear": "_post_basket_clear",
     "/api/basket/draft-plan": "_post_basket_draft_plan",
+    "/api/optimizer/run": "_post_optimizer_run",
+    "/api/optimizer/stage": "_post_optimizer_stage",
+    "/api/portfolio-review": "_post_portfolio_review",
     "/api/history/delete": "_post_history_delete",
     "/api/tax-plan": "_post_tax_plan",
     "/api/whatif": "_post_whatif",
@@ -772,6 +781,24 @@ class Handler(BaseHTTPRequestHandler):
     def _get_basket(self, path, query):
         return self._send_json(basket.view())
 
+    def _get_optimizer(self, path, query):
+        # The candidate pool + the default constraints, with no sizing yet. The
+        # client renders the pool table and the constraints panel from this, then
+        # POSTs /api/optimizer/run to size it.
+        include_curious = (query.get("include_curious") or ["1"])[0] not in ("0", "false", "")
+        pool = optimizer.build_pool(basket_items=basket.pool_candidates(include_curious=True),
+                                    include_curious=include_curious)
+        model = _load(TARGET_MODEL_JSON) or {}
+        return self._send_json({
+            "pool": pool,
+            "constraints": {
+                "cash_target_pct": float(model.get("cash_target_pct") or optimizer.DEFAULT_CASH_TARGET_PCT),
+                "per_name_cap": optimizer.DEFAULT_PER_NAME_CAP,
+                "concentration_pct": optimizer.DEFAULT_CONCENTRATION_PCT,
+                "include_curious": include_curious,
+            },
+        })
+
     def _get_strategy(self, path, query):
         run_id = path.rsplit("/", 1)[-1]
         run = orchestrate.load_run(run_id)
@@ -860,6 +887,9 @@ class Handler(BaseHTTPRequestHandler):
                 payload[suffix] = (
                     _load(rel) if rel.suffix == ".json" else rel.read_text(encoding="utf-8")
                 )
+        # Names the report discusses beyond the segment's members -- starrable
+        # into the optimizer pool. Best-effort; an empty list on a ticker run.
+        payload["discovered_candidates"] = _discovered_for(stem)
         return self._send_json(payload)
 
     def _get_target_model(self, path, query):
@@ -1121,7 +1151,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(basket.add_symbol(
                 str(body.get("symbol") or ""),
                 source=str(body.get("source") or "manual"),
-                note=str(body.get("note") or "")))
+                note=str(body.get("note") or ""),
+                tier=str(body.get("tier") or "want"),
+                segment=(str(body.get("segment")) if body.get("segment") else None),
+                run=(str(body.get("run")) if body.get("run") else None),
+                conviction=(str(body.get("conviction")) if body.get("conviction") else None)))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
+    def _post_basket_tier(self, path):
+        body = self._read_body()
+        try:
+            return self._send_json(basket.set_tier(
+                str(body.get("symbol") or ""), str(body.get("tier") or "want")))
         except ValueError as exc:
             return self._send_error_json(400, str(exc))
 
@@ -1143,6 +1185,53 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(_start_basket_plan(basket.basket_members()))
         except ValueError as exc:
             return self._send_error_json(400, str(exc))
+
+    def _post_optimizer_run(self, path):
+        # Size the whole candidate pool under the posted constraints and return
+        # the proposal + the rebalance plan it WOULD produce (throwaway preview;
+        # nothing is written until /api/optimizer/stage).
+        body = self._read_body()
+
+        def _f(key, default):
+            val = body.get(key)
+            try:
+                return float(val) if val is not None else default
+            except (TypeError, ValueError):
+                return default
+
+        exclude = body.get("exclude") if isinstance(body.get("exclude"), list) else []
+        try:
+            proposal = optimizer.optimize(
+                cash_target_pct=_f("cash_target_pct", None),
+                per_name_cap=_f("per_name_cap", optimizer.DEFAULT_PER_NAME_CAP),
+                concentration_pct=_f("concentration_pct", optimizer.DEFAULT_CONCENTRATION_PCT),
+                include_curious=bool(body.get("include_curious", True)),
+                drop_avoid=bool(body.get("drop_avoid", False)),
+                use_llm=bool(body.get("use_llm", False)),
+                exclude={str(s) for s in exclude},
+                basket_items=basket.pool_candidates(include_curious=True),
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad constraint shouldn't 500
+            return self._send_error_json(400, str(exc))
+        return self._send_json({"proposal": proposal, "preview": _preview_plan(proposal)})
+
+    def _post_optimizer_stage(self, path):
+        # Stage the (reviewed) optimizer changes into the working draft, reusing
+        # the same provenance-aware path every other proposal flows through.
+        body = self._read_body()
+        changes = body.get("changes")
+        if not isinstance(changes, list) or not changes:
+            return self._send_error_json(400, "changes[] required")
+        res = target_staging.stage_changes(
+            changes, source="optimizer",
+            allow_drop_pinned=bool(body.get("allow_drop_pinned")))
+        return self._send_json({**res, "staging": target_staging.diff_staged_vs_live()})
+
+    def _post_portfolio_review(self, path):
+        # Kick off the batch "analyse all holdings" job. It runs in the Task
+        # Center and writes per-held conviction the optimizer pool reads back.
+        body = self._read_body()
+        return self._send_json(_start_portfolio_review(bool(body.get("refresh"))))
 
     def _post_staging_edit(self, path):
         """Manual edits to the working draft and pin management. ``op`` selects:

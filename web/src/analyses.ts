@@ -3,6 +3,7 @@ import { $, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
 import { ensureTickerSet, linkifyTickers } from "./analyses/linkify";
 import { buildReportToc, mdToHtml } from "./analyses/markdown";
+import { starHtml } from "./basket";
 
 // Re-export the report-formatting helpers so existing importers (and tests) can
 // keep pulling them from "./analyses" while the implementations live in seams.
@@ -38,6 +39,36 @@ export interface AnalysisRun {
 interface Citation {
   href?: string;
   label?: string;
+}
+
+// A name the report discusses beyond the segment's own members (server-extracted
+// in deep_runs.discovered_for). Starrable into the optimizer pool with its
+// provenance so the sizer can credit the run's stance later.
+interface DiscoveredCandidate {
+  symbol: string;
+  action?: string;
+  context?: string;
+  segment?: string;
+  run?: string;
+}
+
+// Tone the action chip the way the rest of the app reads buy/sell signals.
+const _ACTION_TONE: Record<string, string> = {
+  add: "ok", hold: "", wait: "warn", trim: "warn", sell: "bad",
+};
+
+function discoveredRow(c: DiscoveredCandidate): string {
+  const sym = esc(c.symbol);
+  const action = (c.action || "mentioned").toLowerCase();
+  const tone = _ACTION_TONE[action] || "";
+  const link = `<a class="tlink" data-ticker="${sym}" href="?view=deepdive&ticker=${encodeURIComponent(c.symbol)}" title="Open ${sym} deep-dive"><strong>${sym}</strong></a>`;
+  const star = starHtml(c.symbol, "analyses", { tier: "curious", segment: c.segment, run: c.run });
+  return `<div class="disc-row">` +
+    `<span class="disc-sym">${link}</span>` +
+    `<span class="disc-action ${tone ? "strat-tag-" + tone : ""}">${esc(action)}</span>` +
+    (c.context ? `<span class="disc-ctx">${esc(c.context)}</span>` : "") +
+    `<span class="disc-star">${star}</span>` +
+    `</div>`;
 }
 
 // A report saved as a structured segment document rather than narrative markdown.
@@ -401,6 +432,19 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
   if (rec.review) {
     const box = synthBox("Review gate", "Local cross-check of the report against your holdings");
     box.querySelector(".synth-box-body").appendChild(el("div", "prose", mdToHtml(rec.review)));
+    reader.appendChild(box);
+  }
+
+  // Names the report discusses beyond the segment's member list. Star one to
+  // pull it into the optimizer pool (as a "curious" pick) with its provenance.
+  const discovered: DiscoveredCandidate[] = rec.discovered_candidates || [];
+  if (discovered.length) {
+    const box = synthBox(
+      `Candidates discovered (${discovered.length})`,
+      "Tickers this report names beyond the segment — star to add to your pool");
+    const list = el("div", "disc-list");
+    list.innerHTML = discovered.map(discoveredRow).join("");
+    box.querySelector(".synth-box-body").appendChild(list);
     reader.appendChild(box);
   }
 

@@ -29,6 +29,12 @@ BASKET_JSON = DATA_DIR / "basket.json"
 # coerced to "manual" so the provenance label stays meaningful.
 _SOURCES = {"manual", "deepdive", "rebalance", "strategy", "analyses", "suggestion"}
 
+# Interest tier. The basket is now the optimizer's candidate pool: "want" is a
+# real intent to size into the plan, "curious" is parked (sized only when the
+# optimizer is told to include curious picks). Legacy items with no tier read as
+# "want" — a star always meant active interest before this split.
+_TIERS = {"want", "curious"}
+
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -37,6 +43,11 @@ def _now_iso() -> str:
 def _norm_source(source: str | None) -> str:
     s = str(source or "").strip().lower()
     return s if s in _SOURCES else "manual"
+
+
+def _norm_tier(tier: str | None) -> str:
+    s = str(tier or "").strip().lower()
+    return s if s in _TIERS else "want"
 
 
 def load_basket() -> dict:
@@ -88,6 +99,13 @@ def enriched_items() -> list[dict]:
             "symbol": sym,
             "source": it.get("source") or "manual",
             "note": it.get("note") or "",
+            "tier": _norm_tier(it.get("tier")),
+            # Provenance for picks starred out of a segment analysis, so the pool
+            # can show where a candidate came from and the optimizer can credit
+            # the run's conviction without re-reading the report.
+            "segment": it.get("segment"),
+            "run": it.get("run"),
+            "conviction": it.get("conviction"),
             "added_at": it.get("added_at"),
             "held_pct": round(weights[sym], 2) if sym in weights else None,
             "targeted": bool(band) or bool(sleeve),
@@ -112,6 +130,34 @@ def basket_members() -> list[dict]:
     return out
 
 
+def pool_candidates(*, include_curious: bool = True) -> list[dict]:
+    """Basket picks as portfolio-optimizer pool candidates: symbol + sleeve +
+    interest tier + any carried conviction/provenance. ``curious`` picks are
+    dropped when ``include_curious`` is False, so the optimizer can size only the
+    high-interest set. This is the basket's contribution to the candidate pool;
+    held names are unioned in by the optimizer itself."""
+    _, member_of = _target_index()
+    out: list[dict] = []
+    for it in load_basket()["items"]:
+        sym = it.get("symbol")
+        if not sym:
+            continue
+        tier = _norm_tier(it.get("tier"))
+        if tier == "curious" and not include_curious:
+            continue
+        out.append({
+            "symbol": sym,
+            "sleeve": member_of.get(sym) or "other",
+            "tier": tier,
+            "source": it.get("source") or "manual",
+            "conviction": it.get("conviction"),
+            "segment": it.get("segment"),
+            "run": it.get("run"),
+            "note": it.get("note") or "",
+        })
+    return out
+
+
 def view() -> dict:
     """The canonical response for every basket endpoint: the enriched list plus a
     count and the bare symbol set (so the client can toggle ★ across surfaces)."""
@@ -123,11 +169,14 @@ def view() -> dict:
 # --------------------------------------------------------------------------- #
 # Mutations
 # --------------------------------------------------------------------------- #
-def add_symbol(symbol: str, *, source: str = "manual", note: str = "") -> dict:
-    """Star a ticker. Validates/normalizes the symbol (so a typo or a dollar
-    amount never lands in the basket), dedupes case-insensitively, and is
-    idempotent: re-adding an existing pick just refreshes a non-empty note. Raises
-    ValueError on an unusable symbol."""
+def add_symbol(symbol: str, *, source: str = "manual", note: str = "",
+               tier: str = "want", segment: str | None = None,
+               run: str | None = None, conviction: str | None = None) -> dict:
+    """Star a ticker into the pool. Validates/normalizes the symbol (so a typo or
+    a dollar amount never lands in the basket), dedupes case-insensitively, and is
+    idempotent: re-adding an existing pick refreshes a non-empty note, updates the
+    tier, and backfills any provenance that arrives later. Raises ValueError on an
+    unusable symbol."""
     sym = _safe_symbol(symbol)  # raises ValueError on junk
     basket = load_basket()
     items = basket["items"]
@@ -135,14 +184,42 @@ def add_symbol(symbol: str, *, source: str = "manual", note: str = "") -> dict:
     if existing is not None:
         if note:
             existing["note"] = str(note).strip()
+        existing["tier"] = _norm_tier(tier)
+        if segment and not existing.get("segment"):
+            existing["segment"] = str(segment)
+        if run and not existing.get("run"):
+            existing["run"] = str(run)
+        if conviction and not existing.get("conviction"):
+            existing["conviction"] = str(conviction)
         _save(items)
         return view()
-    items.append({
+    item = {
         "symbol": sym,
         "source": _norm_source(source),
         "note": str(note or "").strip(),
+        "tier": _norm_tier(tier),
         "added_at": _now_iso(),
-    })
+    }
+    if segment:
+        item["segment"] = str(segment)
+    if run:
+        item["run"] = str(run)
+    if conviction:
+        item["conviction"] = str(conviction)
+    items.append(item)
+    _save(items)
+    return view()
+
+
+def set_tier(symbol: str, tier: str) -> dict:
+    """Move a pick between ``want`` and ``curious``. Raises ValueError if the
+    symbol isn't in the basket (the UI only offers this on existing picks)."""
+    sym = _safe_symbol(symbol)
+    items = load_basket()["items"]
+    it = _find(items, sym)
+    if it is None:
+        raise ValueError(f"{sym} is not in the basket")
+    it["tier"] = _norm_tier(tier)
     _save(items)
     return view()
 

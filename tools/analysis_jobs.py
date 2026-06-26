@@ -19,14 +19,18 @@ imports them aliased to its existing private call-site names.
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as dt
+import re
 from pathlib import Path
 
 import jobs
+import optimizer
+import portfolio
 import research_pull
 import ticker_analysis
 from apierror import Conflict
-from config import ANALYSIS_DIR, DEEP_DIR, RESEARCH_DIR
+from config import ANALYSIS_DIR, DEEP_DIR, HOLDINGS_JSON, RESEARCH_DIR
 from jobs import update_job
 from research_pull import PULL_LOCK
 from store import load, safe_symbol, slugify, write_json, write_text
@@ -126,6 +130,219 @@ def start_analysis(symbol: str, refresh: bool) -> dict:
     # do NOT take claim_active -- they may run alongside a deep-research job.
     return jobs.spawn("ticker_analysis", run_analysis_job, sym, bool(refresh),
                       symbol=sym, refresh=bool(refresh))
+
+
+# --------------------------------------------------------------------------- #
+# Batch portfolio review: analyse every held name (reusing a recent note where
+# present, else a cheap CLI run), distil each ## Verdict into a conviction, then
+# a whole-book synthesis. The per-name convictions feed the optimizer pool via
+# optimizer.save_portfolio_review; held names with no other signal inherit them.
+# --------------------------------------------------------------------------- #
+def _held_symbols() -> list[str]:
+    """Held equity symbols, heaviest first, so the batch surfaces big positions
+    early. Option/derivative contracts (e.g. ``SPY 260618P00655000``) can't be
+    analysed as tickers, so we drop anything ``safe_symbol`` rejects."""
+    holdings = load(HOLDINGS_JSON) or {}
+    weights = portfolio.holdings_weights(holdings) if isinstance(holdings, dict) else {}
+    out: list[str] = []
+    for sym in sorted(weights, key=lambda s: -weights.get(s, 0.0)):
+        try:
+            out.append(safe_symbol(sym))
+        except ValueError:
+            continue
+    return out
+
+
+def _extract_verdict(report: str) -> str:
+    """The text under the report's ``## Verdict`` heading (the analyst's stance +
+    confidence), collapsed to one line. Falls back to the report's opening."""
+    if not report:
+        return ""
+    m = re.search(r"(?im)^#{1,6}\s*verdict\s*$([\s\S]*?)(?=^#{1,6}\s|\Z)", report)
+    seg = m.group(1).strip() if m else report[:400]
+    return " ".join(seg.split())[:400]
+
+
+def _verdict_stance(text: str) -> str:
+    """The analyst's stance. Read the *headline* clause first (the bold lead-in
+    like "Hold — medium confidence"); only fall back to the full blob if the
+    head carries no stance. Verdict bodies routinely discuss the rulebook
+    ("below band so the rulebook suggests accumulate"), so a whole-text scan
+    would flip a Hold into an Accumulate."""
+    t = (text or "").replace("*", "").lower()
+    head = re.split(r"[\u2014,./:(]", t, maxsplit=1)[0]  # clause before em-dash/comma/etc.
+    for scope in (head, t):
+        if re.search(r"\b(accumulate|buy|add|overweight)\b", scope):
+            return "accumulate"
+        if re.search(r"\b(trim|reduce|sell|exit|avoid|underweight)\b", scope):
+            return "trim"
+        if re.search(r"\bwait\b", scope):
+            return "wait"
+        if re.search(r"\b(hold|keep|maintain)\b", scope):
+            return "hold"
+    return ""
+
+
+def _stance_conviction(stance: str, text: str) -> str:
+    t = (text or "").lower()
+    # Prefer the explicit "<level> confidence/conviction" phrase; a bare "high"
+    # in "52-week high" or "high-quality" must not pass for analyst confidence.
+    m = re.search(r"\b(high|medium|low)\b\s*(?:conviction|confidence|conf)", t)
+    if m:
+        conf = m.group(1)
+    else:
+        conf = "high" if re.search(r"\bhigh\b", t) else "low" if re.search(r"\blow\b", t) else "medium"
+    if stance == "accumulate":
+        return "high" if conf == "high" else "medium"
+    if stance == "wait":
+        return "low"
+    if stance == "trim":
+        return "avoid"
+    return "medium"  # hold / unknown -> carry near current
+
+
+def _analyze_one(sym: str, *, progress=None, cancel=None) -> str:
+    """Run (or skip to) a single-name analysis and return its report text. Pulls
+    deterministic data first if we have none cached. The data pull is serialised
+    by ``PULL_LOCK`` (provider rate-limits); the LLM analysis itself is a plain
+    subprocess and safe to run concurrently from several worker threads."""
+    rec = load(RESEARCH_DIR / f"{sym}.json")
+    if rec is None:
+        with PULL_LOCK:
+            # Re-check under the lock: another worker may have pulled it while we
+            # waited, so we don't double-fetch the same name.
+            rec = load(RESEARCH_DIR / f"{sym}.json") or research_pull.pull_ticker(sym)
+    result = ticker_analysis.analyze(rec, progress=progress, cancel=cancel)
+    if result.get("ok"):
+        try:
+            save_analysis_artifact(sym, result["report"], result)
+        except Exception:  # noqa: BLE001 - a save miss shouldn't abort the batch
+            pass
+        return result["report"]
+    return ""
+
+
+def _synthesize_portfolio(notes: dict[str, str]) -> tuple[dict, str]:
+    """Heuristic per-name conviction from each verdict, optionally refined by one
+    LLM pass that also writes a rebalance summary. Returns (convictions, summary).
+    """
+    convictions: dict[str, dict] = {}
+    for sym, verdict in notes.items():
+        stance = _verdict_stance(verdict)
+        convictions[sym] = {
+            "conviction": _stance_conviction(stance, verdict),
+            "stance": stance,
+            "rationale": verdict,
+        }
+    summary = ""
+    cfg = ticker_analysis.load_config()
+    if not any(ticker_analysis.available_backends().values()):
+        return convictions, summary
+    lines = "\n".join(f"{sym}: {v or '(no verdict)'}" for sym, v in notes.items())
+    prompt = (
+        "You are reviewing a whole investment portfolio. Each held name has a "
+        "one-line analyst verdict below. Produce ONLY a JSON object:\n"
+        '{"holdings": {TICKER: {"conviction": "high|medium|low|avoid", '
+        '"rationale": "one short sentence"}}, '
+        '"summary": "2-4 sentences: where to add, where to trim, the biggest risks"}\n'
+        "Do not invent tickers outside the list. No prose outside the JSON.\n\n"
+        f"VERDICTS:\n{lines}\n"
+    )
+    res = ticker_analysis._run_with_fallback(prompt, cfg, None, None, label="portfolio-review")
+    if not res.get("ok"):
+        return convictions, summary
+    parsed = ticker_analysis._extract_json_object(res.get("report") or "")
+    if isinstance(parsed, dict):
+        summary = str(parsed.get("summary") or "")
+        for sym, node in (parsed.get("holdings") or {}).items():
+            key = str(sym).upper().strip()
+            if key not in convictions or not isinstance(node, dict):
+                continue
+            conv = str(node.get("conviction") or "").lower().strip()
+            if conv in {"high", "medium", "low", "avoid"}:
+                convictions[key]["conviction"] = conv
+            if node.get("rationale"):
+                convictions[key]["rationale"] = str(node["rationale"]).strip()
+    return convictions, summary
+
+
+# How many single-name analyses to run at once in a portfolio review. Each is a
+# separate LLM subprocess; ~8 keeps the batch quick without swamping the machine
+# or the backend's rate limits (the data pull stays serialised under PULL_LOCK).
+PORTFOLIO_REVIEW_WORKERS = 8
+
+
+def run_portfolio_review_job(job_id: str, refresh: bool) -> None:
+    try:
+        update_job(job_id, state="running", message="gathering holdings…")
+        syms = _held_symbols()
+        if not syms:
+            update_job(job_id, state="error", error="no holdings to review")
+            return
+        total = len(syms)
+
+        def cancelled() -> bool:
+            return jobs.is_cancelled(job_id)
+
+        def analyse(sym: str) -> tuple[str, str]:
+            """Worker: reuse a cached note (unless refreshing) else run one
+            analysis. Never raises — a bad name yields an empty verdict so it
+            can't sink the whole batch."""
+            if cancelled():
+                return sym, ""
+            try:
+                latest = latest_analysis(sym)
+                if latest and not refresh:
+                    report = latest.get("report") or ""
+                else:
+                    report = _analyze_one(sym, cancel=cancelled)
+            except Exception:  # noqa: BLE001 - one bad name shouldn't kill the batch
+                report = ""
+            return sym, _extract_verdict(report)
+
+        notes: dict[str, str] = {}
+        done = 0
+        workers = max(1, min(PORTFOLIO_REVIEW_WORKERS, total))
+        update_job(job_id, message=f"analysing {total} holding(s), {workers} at a time…")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(analyse, s) for s in syms]
+            try:
+                for fut in concurrent.futures.as_completed(futures):
+                    sym, verdict = fut.result()
+                    notes[sym] = verdict
+                    done += 1
+                    update_job(job_id, message=f"analysed {done}/{total} holdings…")
+                    if cancelled():
+                        # Stop scheduling queued names; in-flight analyses get the
+                        # cancel signal via their subprocess and unwind on their own.
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        update_job(job_id, state="cancelled", message="cancelled")
+                        return
+            except Exception:  # noqa: BLE001
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+
+        update_job(job_id, message="synthesising convictions across the book…")
+        convictions, summary = _synthesize_portfolio(notes)
+        optimizer.save_portfolio_review(convictions, summary=summary)
+    except Exception as exc:  # noqa: BLE001
+        update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
+        return
+    update_job(job_id, state="done", message=f"reviewed {len(notes)} holding(s)",
+               result={"reviewed": len(notes),
+                       "convictions": len({k for k, v in convictions.items() if v.get("conviction")}),
+                       "summary_chars": len(summary)})
+
+
+def portfolio_review_running() -> bool:
+    return jobs.running("portfolio_review")
+
+
+def start_portfolio_review(refresh: bool = False) -> dict:
+    if portfolio_review_running():
+        raise Conflict("a portfolio review is already running")
+    return jobs.spawn("portfolio_review", run_portfolio_review_job, bool(refresh),
+                      refresh=bool(refresh))
 
 
 # --------------------------------------------------------------------------- #
