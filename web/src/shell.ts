@@ -7,6 +7,7 @@ import { initHistoryControls, loadHistory } from "./history";
 import { loadHoldings } from "./holdings";
 import { initJournalControls, loadJournal } from "./journal";
 import { loadPipeline, setPipeStep } from "./pipeline";
+import { initOptimizer, loadOptimizer } from "./optimizer";
 import { loadRebalance, openTicker } from "./rebalance";
 import { initRiskControls, loadRisk } from "./risk";
 import { loadCachedSegment, loadSegmentList } from "./segment";
@@ -135,7 +136,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "optimizer", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
 
 // Two-level navigation: the header exposes three top-level GROUPS, each of which
 // fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
@@ -148,7 +149,7 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
-  holdings: "portfolio", history: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
+  holdings: "portfolio", history: "portfolio", optimizer: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
 };
@@ -156,7 +157,7 @@ const VIEW_GROUP: Record<string, string> = {
 // one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
 const VIEW_SUBTAB: Record<string, string> = {
   analyses: "analyses", pipeline: "pipeline",
-  holdings: "positions", history: "positions", rebalance: "rebalance", "working-draft": "working-draft", trade: "trade", risk: "risk", journal: "journal",
+  holdings: "positions", history: "positions", optimizer: "optimizer", rebalance: "rebalance", "working-draft": "working-draft", trade: "trade", risk: "risk", journal: "journal",
 };
 const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "holdings", basket: "basket" };
 // Remember the last view visited within each group so re-clicking a group header
@@ -291,6 +292,7 @@ function setActiveView(view: string) {
   if (active === "history") { initHistoryControls(); loadHistory(); }
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
+  if (active === "optimizer") loadOptimizer();
   if (active === "rebalance") loadRebalance();
   if (active === "working-draft") loadStaging();
   if (active === "trade") loadTrade();
@@ -414,6 +416,7 @@ function initShell() {
   initStrategy();
   initStaging();
   initBasket();
+  initOptimizer();
 
   // Positions Now / Over-time toggle: two views (holdings, history) behind one
   // sub-tab. Delegated so it works for the toggle in either section.

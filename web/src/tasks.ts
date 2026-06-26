@@ -41,6 +41,7 @@ const KIND_LABELS: Record<string, string> = {
   ibkr_history: "IBKR history",
   ibkr_sectors: "Sector lookup",
   strategy: "Strategy run",
+  portfolio_review: "Portfolio review",
 };
 
 function kindLabel(kind: string): string {
@@ -88,6 +89,8 @@ function navForTask(job: JobListing): NavTarget | null {
       return { view: "history" };
     case "strategy":
       return job.run_id ? { view: "strategy", run: job.run_id } : null;
+    case "portfolio_review":
+      return { view: "optimizer" };
     default:
       return null;
   }

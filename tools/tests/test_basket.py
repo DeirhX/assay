@@ -117,6 +117,49 @@ class Enrichment(_BasketCase):
         self.assertFalse(item["targeted"])
 
 
+class Tiers(_BasketCase):
+    """Interest tiers (want/curious) + the optimizer pool accessor."""
+
+    def test_tier_defaults_to_want(self):
+        item = basket.add_symbol("NVDA")["items"][0]
+        self.assertEqual(item["tier"], "want")
+
+    def test_add_with_curious_tier(self):
+        item = basket.add_symbol("AMD", tier="curious")["items"][0]
+        self.assertEqual(item["tier"], "curious")
+
+    def test_bogus_tier_coerced_to_want(self):
+        item = basket.add_symbol("AMD", tier="someday")["items"][0]
+        self.assertEqual(item["tier"], "want")
+
+    def test_set_tier_moves_and_validates(self):
+        basket.add_symbol("AMD", tier="want")
+        view = basket.set_tier("amd", "curious")
+        self.assertEqual(view["items"][0]["tier"], "curious")
+        with self.assertRaises(ValueError):
+            basket.set_tier("MSFT", "want")  # not in basket
+
+    def test_provenance_round_trips_and_backfills(self):
+        basket.add_symbol("CRWD", source="analyses", tier="curious",
+                           segment="cybersecurity", run="cybersecurity-2026-06-01")
+        it = basket.enriched_items()[0]
+        self.assertEqual(it["segment"], "cybersecurity")
+        self.assertEqual(it["run"], "cybersecurity-2026-06-01")
+        # Re-adding can promote the tier and backfill missing conviction.
+        basket.add_symbol("CRWD", tier="want", conviction="high")
+        it = basket.enriched_items()[0]
+        self.assertEqual(it["tier"], "want")
+        self.assertEqual(it["conviction"], "high")
+
+    def test_pool_candidates_filters_curious(self):
+        basket.add_symbol("NVDA", tier="want")
+        basket.add_symbol("AMD", tier="curious")
+        full = {c["symbol"] for c in basket.pool_candidates(include_curious=True)}
+        self.assertEqual(full, {"NVDA", "AMD"})
+        want_only = {c["symbol"] for c in basket.pool_candidates(include_curious=False)}
+        self.assertEqual(want_only, {"NVDA"})
+
+
 class Members(_BasketCase):
     """The basket -> segment-members bridge that feeds the construct pipeline."""
 

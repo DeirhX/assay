@@ -15,6 +15,7 @@ import datetime as dt
 import json
 import re
 
+import report_tickers
 from config import DEEP_DIR, REPO_ROOT, SEGMENT_DEF_DIR
 from store import (
     load as _load, slugify as _slugify,
@@ -87,6 +88,38 @@ def _enrich_deep_run(rec: dict) -> None:
         "change_count": len(proposal.get("changes") or []),
         "blocked_symbols": proposal.get("blocked_symbols") or [],
     })
+
+
+def discovered_for(stem: str) -> list[dict]:
+    """Names a segment report discusses *beyond* the segment's own member list —
+    candidates you might want to pull into the optimizer pool. Reads the saved
+    report and the segment definition; returns ``[]`` when the report is missing
+    or it's a single-ticker run (nothing to "discover" for a one-name dive).
+
+    Computed only on the single-run fetch (where the report is already read), so
+    the Analyses list stays cheap."""
+    report_path = DEEP_DIR / f"{stem}.md"
+    if not report_path.exists():
+        return []
+    m = re.match(r"^(.*)-(\d{4}-\d{2}-\d{2})$", stem)
+    segment = m.group(1) if m else stem
+    if segment.startswith("ticker-"):
+        return []
+    seg_def = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
+    members = {
+        str(mem.get("symbol", "")).upper()
+        for mem in seg_def.get("members", [])
+        if mem.get("symbol")
+    }
+    try:
+        text = report_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    cands = report_tickers.discovered_candidates(text, exclude=members)
+    for c in cands:
+        c["segment"] = segment
+        c["run"] = stem
+    return cands
 
 
 def _looks_like_json_doc(text: str) -> bool:
