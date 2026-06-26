@@ -15,6 +15,10 @@ interface BasketItem {
   symbol: string;
   source: string;
   note?: string;
+  tier?: string;          // "want" | "curious"
+  segment?: string | null;
+  run?: string | null;
+  conviction?: string | null;
   added_at?: string;
   held_pct?: number | null;
   targeted?: boolean;
@@ -47,7 +51,10 @@ function starInner(on: boolean, labeled: boolean): string {
 // Returns a button's HTML. Surfaces drop this next to a ticker; the delegated
 // handler below does the rest. `source` records where it was starred from.
 // `labeled` renders the bigger, text-labeled button variant for roomy surfaces.
-function starHtml(symbol: string, source = "manual", opts: { labeled?: boolean } = {}): string {
+// `tier`/`segment`/`run` flow through to the pool: a star on a segment-discovered
+// candidate carries that provenance and (typically) a "curious" tier.
+function starHtml(symbol: string, source = "manual",
+  opts: { labeled?: boolean; tier?: string; segment?: string; run?: string } = {}): string {
   const sym = norm(symbol);
   if (!sym) return "";
   const on = inBasket(sym);
@@ -56,6 +63,9 @@ function starHtml(symbol: string, source = "manual", opts: { labeled?: boolean }
   return `<button class="${cls}" type="button" ` +
     `data-basket-sym="${esc(sym)}" data-basket-src="${esc(source)}" ` +
     (labeled ? `data-basket-labeled="1" ` : "") +
+    (opts.tier ? `data-basket-tier="${esc(opts.tier)}" ` : "") +
+    (opts.segment ? `data-basket-seg="${esc(opts.segment)}" ` : "") +
+    (opts.run ? `data-basket-run="${esc(opts.run)}" ` : "") +
     `aria-pressed="${on ? "true" : "false"}" ` +
     `title="${on ? "In your basket — click to remove" : "Add to basket"}">` +
     `${starInner(on, labeled)}</button>`;
@@ -101,13 +111,34 @@ function planCell(it: BasketItem): string {
   return `<span class="basket-plan muted">not in plan</span>`;
 }
 
+// A two-state interest toggle. "Want" = size it into the plan; "Curious" =
+// parked, sized only when the optimizer is told to include curious picks.
+function tierCell(it: BasketItem): string {
+  const t = (it.tier || "want").toLowerCase();
+  const opt = (val: string, label: string, title: string) =>
+    `<button class="tier-opt tier-${val}${t === val ? " on" : ""}" type="button" ` +
+    `data-tier-sym="${esc(it.symbol)}" data-tier-set="${val}" ` +
+    `aria-pressed="${t === val ? "true" : "false"}" title="${esc(title)}">${label}</button>`;
+  return `<span class="tier-toggle">` +
+    opt("want", "Want", "Actively size this into the optimized plan") +
+    opt("curious", "Curious", "Park it — included only if you opt in to curious picks") +
+    `</span>`;
+}
+
+function srcCell(it: BasketItem): string {
+  const base = SOURCE_LABEL[it.source] || it.source;
+  const seg = it.segment ? `<span class="basket-src-seg" title="Discovered in this segment analysis">· ${esc(it.segment)}</span>` : "";
+  return `<span class="basket-src">${esc(base)}</span>${seg}`;
+}
+
 function rowHtml(it: BasketItem): string {
   const held = typeof it.held_pct === "number"
     ? `<span class="basket-held">${fmtWeight(it.held_pct)}</span>`
     : `<span class="muted">—</span>`;
   return `<tr>
     <td>${symLink(it.symbol)}</td>
-    <td><span class="basket-src">${esc(SOURCE_LABEL[it.source] || it.source)}</span></td>
+    <td>${tierCell(it)}</td>
+    <td>${srcCell(it)}</td>
     <td>${held}</td>
     <td>${planCell(it)}</td>
     <td class="basket-note">${esc(it.note || "")}</td>
@@ -128,18 +159,21 @@ function render(v: BasketView): void {
   }
   const heldCount = v.items.filter((i) => typeof i.held_pct === "number").length;
   const planned = v.items.filter((i) => i.targeted).length;
+  const wantCount = v.items.filter((i) => (i.tier || "want") === "want").length;
+  const curiousCount = v.count - wantCount;
   body.innerHTML =
     `<p class="basket-summary">${v.count} pick${v.count === 1 ? "" : "s"}` +
+    ` \u00b7 <span class="tier-want">${wantCount} want</span> \u00b7 <span class="tier-curious">${curiousCount} curious</span>` +
     ` \u00b7 ${heldCount} already held \u00b7 ${planned} already in your plan.</p>` +
     `<table class="basket-table">` +
-    `<thead><tr><th>Ticker</th><th>Source</th><th>Held</th><th>In plan</th><th>Note</th><th></th></tr></thead>` +
+    `<thead><tr><th>Ticker</th><th>Interest</th><th>Source</th><th>Held</th><th>In plan</th><th>Note</th><th></th></tr></thead>` +
     `<tbody>${v.items.map(rowHtml).join("")}</tbody></table>` +
     `<div class="basket-actions">` +
     `<button class="primary basket-draft-btn" type="button" title="Run a guided strategy run over your picks">Draft a plan from these picks \u2192</button>` +
+    `<button class="ghost basket-optimize-btn" type="button" title="Open the portfolio optimizer with these picks in the pool">Optimize portfolio \u2192</button>` +
     `</div>` +
-    `<p class="hint basket-next">This starts a guided strategy run over your picks: Deep Research across them ` +
-    `(which also surfaces complementary names worth adding), then sized target bands you review and stage ` +
-    `into your working draft. It can take a few minutes and needs a Perplexity login.</p>`;
+    `<p class="hint basket-next">"Draft a plan" runs a guided strategy run over your picks (Deep Research + sized bands). ` +
+    `"Optimize portfolio" pulls these picks together with your current holdings into one pool and sizes the whole book at once.</p>`;
 }
 
 // Turn the basket into a guided strategy run and hand off to the strategy view.
@@ -203,7 +237,12 @@ function initBasket(): void {
     try {
       const v = removing
         ? await api<BasketView>("/api/basket/remove", "POST", { symbol: sym })
-        : await api<BasketView>("/api/basket/add", "POST", { symbol: sym, source: src });
+        : await api<BasketView>("/api/basket/add", "POST", {
+            symbol: sym, source: src,
+            tier: btn.dataset.basketTier || "want",
+            segment: btn.dataset.basketSeg || undefined,
+            run: btn.dataset.basketRun || undefined,
+          });
       applyView(v);
       if ($("#view-basket")?.classList.contains("active")) render(v);
     } catch (_err) {
@@ -211,6 +250,31 @@ function initBasket(): void {
     } finally {
       btn.disabled = false;
     }
+  });
+
+  // Per-row interest tier toggle (want <-> curious) in the basket/pool view.
+  document.addEventListener("click", async (e) => {
+    const t = (e.target as HTMLElement).closest?.<HTMLButtonElement>("[data-tier-set]");
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sym = t.dataset.tierSym;
+    const tier = t.dataset.tierSet;
+    if (!sym || !tier || t.classList.contains("on")) return;
+    try {
+      const v = await api<BasketView>("/api/basket/tier", "POST", { symbol: sym, tier });
+      applyView(v);
+      if ($("#view-basket")?.classList.contains("active")) render(v);
+    } catch (_err) { /* leave the toggle as-is on failure */ }
+  });
+
+  // "Optimize portfolio" hands off to the optimizer view (pool = picks + holdings).
+  document.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest?.<HTMLButtonElement>(".basket-optimize-btn");
+    if (!b) return;
+    e.preventDefault();
+    pushNav({ view: "optimizer" });
+    setActiveView("optimizer");
   });
 
   // "Draft a plan" is re-rendered with the view, so delegate rather than bind.

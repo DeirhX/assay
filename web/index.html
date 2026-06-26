@@ -30,6 +30,7 @@
     <div class="subbar" id="subbar" hidden>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
+        <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
         <button class="subtab" data-view="working-draft" type="button" role="tab">Working draft</button>
         <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
@@ -364,6 +365,23 @@
       <div id="reb-summary"></div>
       <div id="reb-whatif"></div>
       <div id="reb-result"></div>
+    </section>
+
+    <!-- OPTIMIZER (whole-book global sizer) -->
+    <section class="view" id="view-optimizer">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Portfolio optimizer</h2>
+          <p class="hint">One candidate pool — everything you hold, plus your basket picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there.</p>
+        </div>
+        <div class="reb-head-actions">
+          <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and feed the convictions into the pool (runs in the Task Center)">Analyze all holdings</button>
+          <button class="primary" id="opt-run" type="button" title="Size the whole pool under the current constraints">Optimize</button>
+          <button class="ghost" id="opt-stage" type="button" title="Send the proposed bands to your working draft for review" disabled>Stage to working draft →</button>
+        </div>
+      </div>
+      <div class="status" id="opt-status"></div>
+      <div id="opt-body"></div>
     </section>
 
     <!-- WORKING DRAFT (staging) -->
