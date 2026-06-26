@@ -481,7 +481,7 @@ function initShell() {
       const job = await api("/api/holdings/sync", "POST", {});
       await pollDeepJob(job.id, status, async (done) => {
         await loadHoldings();
-        status.textContent = "Synced. " + planMsg((done.result as Record<string, any>)?.site);
+        status.textContent = "Synced. " + siteMsg((done.result as Record<string, any>)?.site);
       }, "IBKR sync");
     } catch (e) {
       status.textContent = "Sync failed: " + e.message;
@@ -492,43 +492,21 @@ function initShell() {
     }
   });
 
-  const regen = $<HTMLButtonElement>("#plan-regen");
-  if (regen) {
-    regen.addEventListener("click", async () => {
-      const status = $("#hold-status");
-      const prev = regen.textContent;
-      regen.disabled = true;
-      regen.textContent = "Regenerating…";
-      status.classList.remove("err");
-      try {
-        const res = await api("/api/site/regenerate", "POST", {});
-        status.textContent = planMsg(res);
-      } catch (e) {
-        status.textContent = "Regenerate failed: " + e.message;
-        status.classList.add("err");
-      } finally {
-        regen.disabled = false;
-        regen.textContent = prev;
-      }
-    });
-  }
 }
 
-// One generate_site.regenerate() result.
+// One generate_site.regenerate() result (now: the markdown holdings summary).
 interface SiteRegen {
   ok?: boolean;
   error?: string;
   written?: string[];
-  has_model?: boolean;
 }
 
-// Human-readable summary of a generate_site.regenerate() result.
-function planMsg(site: SiteRegen | null | undefined) {
-  if (!site) return "Plan not regenerated.";
-  if (site.ok === false) return "Plan not regenerated: " + (site.error || "unknown error");
-  const n = (site.written || []).length;
-  if (!site.has_model && n === 0) return "Plan unchanged (no target model found).";
-  return n ? `Plan regenerated (${n} file${n === 1 ? "" : "s"} updated).` : "Plan already up to date.";
+// Human-readable tail for the sync status line, reporting whether the derived
+// holdings summary was refreshed alongside the snapshot.
+function siteMsg(site: SiteRegen | null | undefined) {
+  if (!site) return "Summary not refreshed.";
+  if (site.ok === false) return "Summary not refreshed: " + (site.error || "unknown error");
+  return (site.written || []).length ? "Holdings summary refreshed." : "Holdings summary already up to date.";
 }
 
 export {

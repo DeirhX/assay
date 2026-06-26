@@ -155,10 +155,9 @@ def _sync_holdings(progress=None) -> dict:
     _p("merging snapshot…")
     current = _load(HOLDINGS_JSON) or {}
     _write_json(HOLDINGS_JSON, _merge_holdings_snapshot(current, fresh))
-    # A fresh snapshot makes the rendered plan (next-steps + detail pages) stale,
-    # so regenerate the derived artifacts in the same call. Best-effort: a render
-    # hiccup must not fail the sync itself.
-    _p("regenerating plan pages…")
+    # A fresh snapshot makes the derived holdings summary stale, so regenerate it
+    # in the same call. Best-effort: a render hiccup must not fail the sync itself.
+    _p("regenerating holdings summary…")
     payload = holdings_payload()
     payload["site"] = regenerate_site()
     return payload
@@ -331,9 +330,9 @@ def start_sectors_sync() -> dict:
 
 
 def regenerate_site() -> dict:
-    """Re-render the derived report pages from the current data snapshot. Wraps
-    generate_site.regenerate() so a failure degrades gracefully into the payload
-    instead of raising."""
+    """Re-render the derived markdown holdings summary from the current data
+    snapshot. Wraps generate_site.regenerate() so a failure degrades gracefully
+    into the payload instead of raising."""
     try:
         return generate_site.regenerate(write=True)
     except Exception as exc:  # noqa: BLE001 -- never let rendering break a sync
