@@ -116,7 +116,8 @@ class Sizing(unittest.TestCase):
         intc = next(c for c in prop["changes"] if c["symbol"] == "INTC")
         self.assertEqual(intc["proposed_target"]["rule"], "trim_only")
         # An avoid name that is NOT held should not appear at all.
-        m = _model(); m["targets"]["XYZ"] = {"low": 0, "high": 0, "rule": "avoid"}
+        m = _model()
+        m["targets"]["XYZ"] = {"low": 0, "high": 0, "rule": "avoid"}
         prop2 = optimizer.optimize(model=m, holdings=_holdings(), basket_items=_basket())
         self.assertNotIn("XYZ", {c["symbol"] for c in prop2["changes"]})
 
