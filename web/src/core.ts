@@ -313,6 +313,20 @@ function simpleTable<T>(o: SimpleTableOpts<T>): HTMLTableElement {
   return tbl;
 }
 
+// ---- per-view request tokens ----------------------------------------------
+// Views re-fetch on every (re)entry and on param changes (ticker switches,
+// account changes, tab flips). A slow response from a request the user has
+// already moved past must not clobber the current render. Each view bumps a
+// monotonic token when it (re)loads and checks it after the await; a stale
+// token means "a newer load for this view started — drop this response."
+const _viewTokens: Record<string, number> = {};
+function nextToken(view: string): number {
+  return (_viewTokens[view] = (_viewTokens[view] || 0) + 1);
+}
+function isStaleToken(view: string, token: number): boolean {
+  return _viewTokens[view] !== token;
+}
+
 interface ApiLoadOpts<T> {
   path: string;
   render: (data: T) => void;
@@ -324,6 +338,10 @@ interface ApiLoadOpts<T> {
   method?: string;
   body?: unknown;
   spin?: boolean;
+  // Returns true when this load has been superseded by a newer one for the same
+  // view; the response (success or error) is then dropped so it can't paint over
+  // fresher data. Pair with nextToken/isStaleToken.
+  stale?: () => boolean;
 }
 
 // Convenience wrapper for the uniform "status + clear + fetch + render" views
@@ -335,9 +353,11 @@ async function apiLoad<T = any>(o: ApiLoadOpts<T>): Promise<void> {
   (o.clear || []).forEach((c) => { if (c) c.innerHTML = ""; });
   try {
     const data = await api<T>(o.path, o.method, o.body);
+    if (o.stale && o.stale()) return;  // a newer load won; don't paint stale data
     o.render(data);
     if (status) status.textContent = "";
   } catch (e) {
+    if (o.stale && o.stale()) return;  // superseded request failing late; ignore
     (o.clear || []).forEach((c) => { if (c) c.innerHTML = ""; });
     if (status) loadError(status, o.errorLabel ?? "Could not load", e);
     else throw e;
@@ -376,5 +396,7 @@ export {
   sectionCard,
   simpleTable,
   apiLoad,
+  nextToken,
+  isStaleToken,
 };
 export type { AppState, Num, ErrorSink, AppError, ApiLoadOpts, StatTileOpts, SimpleTableOpts, PriceLevel };

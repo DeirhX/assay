@@ -1,4 +1,4 @@
-import { $, api, el, esc, fmtCZK, sensitive, simpleTable, state } from "./core";
+import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, simpleTable, state } from "./core";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -72,23 +72,35 @@ function gatewayOrigin(base: string | null | undefined) {
 }
 
 async function loadTrade() {
+  const token = nextToken("trade");
   const wrap = $("#trade-result");
   if (wrap) wrap.innerHTML = "";
   const refresh = $("#trade-refresh");
   if (refresh) refresh.onclick = () => loadTrade();
-  await renderConnection();
+  // Rehydrate the basket the planner persisted server-side so it survives a
+  // reload or navigating away and back — it used to live only in browser memory.
+  try {
+    const res = await api<{ trades?: Array<{ symbol: string; delta_czk: number }> }>("/api/trade/basket");
+    if (isStaleToken("trade", token)) return;
+    if (Array.isArray(res.trades)) state.stagedBasket = res.trades;
+  } catch (_e) {
+    if (isStaleToken("trade", token)) return;  // else: keep whatever's in memory
+  }
+  await renderConnection(token);
 }
 
-async function renderConnection() {
+async function renderConnection(token?: number) {
   const banner = $("#trade-banner");
   const status = $("#trade-status");
   if (status) status.textContent = "";
   try {
     _status = await api<TradeStatus>("/api/trade/status");
   } catch (e) {
+    if (token != null && isStaleToken("trade", token)) return;
     if (banner) banner.innerHTML = `<div class="trade-bnr bad">Could not read trade status: ${esc(e.message)}</div>`;
     return;
   }
+  if (token != null && isStaleToken("trade", token)) return;
   const s = _status;
   const bits = [];
 

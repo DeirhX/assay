@@ -1,117 +1,14 @@
 import { starHtml } from "./basket";
-import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, sensitive, simpleTable, state, statTile } from "./core";
+import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
+import type { Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, Whatif, WhatifTrade } from "./api-types";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 
 // ---- rebalance planner -----------------------------------------------------
-
-// Independent research context attached to a plan row (decision support only).
-interface ResearchInfo {
-  data_quality?: string;
-  thesis_action?: string;
-  thesis_summary?: string;
-  momentum_3m_pct?: number;
-  as_of?: string | null;
-}
-
-interface GateTranche {
-  price?: number | null;
-  distance_pct?: number | null;
-}
-
-// A locked valuation ladder overlaid on a row; richer than api-types PriceGate
-// because the planner reads the tranche/fraction internals too.
-interface RebPriceGate {
-  currency?: string;
-  buy_below?: number | null;
-  trim_above?: number | null;
-  blocked_action?: "buy" | "trim";
-  buy_total?: number;
-  trim_total?: number;
-  buy_live?: number;
-  trim_live?: number;
-  next_buy?: GateTranche | null;
-  next_trim?: GateTranche | null;
-  applied_fraction?: number | null;
-  partial?: boolean;
-  price_known?: boolean;
-  current?: number | null;
-}
-
-interface TaxLot {
-  bucket?: string;
-  open_datetime?: string;
-  days_to_exempt?: number | null;
-  proceeds?: number | null;
-  gain?: number;
-}
-
-interface TaxInfo {
-  has_lots?: boolean;
-  lots?: TaxLot[];
-  totals?: Record<string, any>;
-  raised?: number | null;
-  currency?: string;
-  n_lots_used?: number;
-  requested?: number | null;
-  shortfall?: number;
-}
-
-interface RebMember {
-  symbol?: string;
-  current_pct: number;
-  current_czk?: number | null;
-}
-
-// One plan row as the planner renders it: the band math plus the overlays.
-interface RebRow {
-  name: string;
-  kind?: string;
-  rule?: string;
-  held?: boolean;
-  action?: string | null;
-  status?: string;
-  current_pct: number;
-  current_czk?: number | null;
-  low: number;
-  high: number;
-  suggest_delta_pct: number;
-  note?: string | null;
-  interactive?: boolean;
-  members?: RebMember[];
-  research?: ResearchInfo | null;
-  research_conflict?: boolean;
-  price_gate?: RebPriceGate | null;
-  tax?: TaxInfo | null;
-}
-
-// Lineage of a band's target: where it came from (a pin, a research run, a
-// hand-set legacy value), surfaced as a small badge on the name cell.
-interface Provenance {
-  source?: string;
-  stance?: string;
-  rationale?: string;
-  set_at?: string;
-  conviction?: string;
-  run_id?: string;
-  segment?: string;
-}
-
-interface RebPlan {
-  nav?: number | null;
-  invested?: number;
-  currency?: string;
-  snapshot?: string | null;
-  as_of?: string | null;
-  cash_target_pct?: number;
-  funding_order?: string[];
-  rows?: RebRow[];
-  untargeted?: RebMember[];
-  untargeted_pct?: number;
-  provenance?: Record<string, Provenance | null | undefined>;
-  staged?: { has_draft?: boolean; pending?: number } | null;
-}
+// Plan/row/what-if shapes are the API contract, so they live in ./api-types as
+// the single source of truth (no local shadows). The aliases keep the call
+// sites below reading in planner vocabulary.
 
 const REB_RULE_LABEL: Record<string, string> = {
   trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
@@ -252,6 +149,7 @@ function escalateToStrategy(r: RebRow) {
 }
 
 async function loadRebalance() {
+  const token = nextToken("rebalance");
   await apiLoad({
     path: "/api/rebalance",
     status: $("#reb-status"),
@@ -259,6 +157,7 @@ async function loadRebalance() {
     loading: "Loading rebalance plan…",
     errorLabel: "Could not load rebalance plan",
     render: renderRebalance,
+    stale: () => isStaleToken("rebalance", token),
   });
 }
 
@@ -283,13 +182,15 @@ function provBadge(prov: Provenance | null | undefined) {
   return badge;
 }
 
-// "N uncommitted changes are staged" banner linking to the working draft.
+// "N uncommitted changes are staged" banner linking to the working draft. The
+// planner now previews the draft itself, so the copy says so — the drift and
+// suggested trades below reflect the staged (not yet committed) targets.
 function stagedBannerHtml(plan: RebPlan) {
   const s = plan.staged;
   if (!s || !s.has_draft) return "";
   const n = s.pending || 0;
   return `<div class="reb-staged-banner" id="reb-staged-banner">` +
-    `<span><strong>${n}</strong> pending change(s) in the working draft — this planner still reflects your <em>live</em> portfolio.</span>` +
+    `<span><strong>${n}</strong> pending change(s) — this planner is previewing your <em>working draft</em>, not the committed model. Commit the draft to make it live.</span>` +
     `<button class="ghost" id="reb-open-draft" type="button">Review working draft →</button>` +
     `</div>`;
 }
@@ -558,8 +459,10 @@ function renderRebalance(plan: RebPlan) {
         trades.push({ symbol: r.name, delta_czk: czk });
       });
       // Share the staged basket with the Trade desk so it can preview/place the
-      // exact same trades you just simulated here.
+      // exact same trades you just simulated here. Persisted server-side too, so
+      // it survives a reload / navigation instead of living only in this tab.
       state.stagedBasket = trades.slice();
+      void api("/api/trade/basket", "POST", { trades }).catch(() => { /* best-effort */ });
       const box = $("#reb-whatif");
       if (!trades.length) {
         box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name, then simulate. (Sleeves are spread across members by hand, so they are not staged.)</div>`;
@@ -582,30 +485,6 @@ function renderRebalance(plan: RebPlan) {
 }
 
 // ---- what-if "after" panel -------------------------------------------------
-interface WhatifSummary {
-  bands_in_before?: number;
-  bands_in_after?: number;
-  bands_total?: number;
-  net_cash_czk?: number;
-  realized_taxable_gain_czk?: number;
-}
-
-interface WhatifTrade {
-  symbol: string;
-  delta_czk: number;
-}
-
-interface Whatif {
-  summary?: WhatifSummary;
-  currency?: string;
-  trades?: WhatifTrade[];
-  cash?: { after?: number | null } | null;
-  after?: { rows?: RebRow[] } | null;
-  before_status?: Record<string, string>;
-  tax?: { totals?: Record<string, any> } | null;
-  caveats?: string[];
-}
-
 const whatifStat = (label: string, valueHtml: string, cls?: string) => statTile(label, valueHtml, { cls, html: true });
 
 function renderWhatif(wf: Whatif) {

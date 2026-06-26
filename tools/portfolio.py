@@ -38,6 +38,34 @@ def clean_symbol(symbol: str | None) -> str:
     return str(symbol or "").upper().strip()
 
 
+def normalize_basket(trades: Any) -> dict[str, float]:
+    """Validate a staged basket and net duplicate symbols into
+    ``{clean_symbol: delta_czk}``.
+
+    The single definition of "what a basket is", shared by the what-if simulator
+    (``whatif._coerce_trades``) and the live trade desk
+    (``trade_service._normalize_basket``) so the two paths can never disagree on
+    symbol normalization or netting -- a divergence there sizes real orders off a
+    different book than the simulation the human approved. Raises ``ValueError``
+    on malformed input so the server maps it to a clean 400.
+    """
+    if not isinstance(trades, list):
+        raise ValueError("trades must be a list of {symbol, delta_czk}")
+    netted: dict[str, float] = {}
+    for t in trades:
+        if not isinstance(t, dict):
+            raise ValueError("each trade must be an object")
+        sym = clean_symbol(t.get("symbol"))
+        if not sym:
+            raise ValueError("each trade needs a symbol")
+        try:
+            delta = float(t.get("delta_czk"))
+        except (TypeError, ValueError):
+            raise ValueError(f"trade for {sym} needs a numeric delta_czk")
+        netted[sym] = netted.get(sym, 0.0) + delta
+    return netted
+
+
 def symbol_aliases() -> dict[str, str]:
     """Broker/display symbol -> provider/research symbol.
 
