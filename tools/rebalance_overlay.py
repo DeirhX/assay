@@ -33,17 +33,30 @@ _THESIS_ADD_LIKE = {"add", "accumulate", "buy", "build", "increase", "overweight
 _THESIS_TRIM_LIKE = {"trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"}
 
 
+def thesis_lean(thesis_action: str | None) -> str:
+    """Which way a free-text thesis verdict leans: ``"add"``, ``"trim"``, or
+    ``"neutral"``. This is the ONE definition of the add/trim vocabulary; it is
+    emitted on the overlay (``research.lean``) so the planner UI can colour the
+    thesis chip without re-listing these word sets on the TypeScript side and
+    risking the two drifting apart."""
+    ta = (thesis_action or "").lower().strip()
+    if ta in _THESIS_ADD_LIKE:
+        return "add"
+    if ta in _THESIS_TRIM_LIKE:
+        return "trim"
+    return "neutral"
+
+
 def research_conflict(row_action: str | None, thesis_action: str | None) -> bool:
     """True when the band's suggested action and the thesis verdict point opposite
     ways: trimming a name the thesis wants more of, or buying one it wants less
     of. Anything else (no thesis, agreement, a neutral hold/wait) is not a
-    conflict."""
-    ta = (thesis_action or "").lower().strip()
-    if not ta:
-        return False
-    if row_action == "trim" and ta in _THESIS_ADD_LIKE:
+    conflict. Shares ``thesis_lean`` so the conflict flag and the UI chip can
+    never tell different stories."""
+    lean = thesis_lean(thesis_action)
+    if row_action == "trim" and lean == "add":
         return True
-    if row_action == "buy" and ta in _THESIS_TRIM_LIKE:
+    if row_action == "buy" and lean == "trim":
         return True
     return False
 
@@ -57,14 +70,17 @@ def research_overlay(provider_sym: str) -> dict | None:
     rec = load(RESEARCH_DIR / f"{provider_sym}.json")
     if not isinstance(rec, dict):
         return None
-    thesis = rec.get("thesis") if isinstance(rec.get("thesis"), dict) else {}
-    momentum = rec.get("momentum") if isinstance(rec.get("momentum"), dict) else {}
+    raw_thesis = rec.get("thesis")
+    thesis: dict = raw_thesis if isinstance(raw_thesis, dict) else {}
+    raw_momentum = rec.get("momentum")
+    momentum: dict = raw_momentum if isinstance(raw_momentum, dict) else {}
     return {
         "as_of": rec.get("as_of"),
         "data_quality": hygiene.worst_severity(rec.get("cross_checks") or []),
         "decision": rec.get("decision"),
         "momentum_3m_pct": momentum.get("chg_3m_pct"),
         "thesis_action": (thesis.get("action") or "").strip() or None,
+        "thesis_lean": thesis_lean(thesis.get("action")),
         "thesis_summary": (thesis.get("summary") or "").strip() or None,
         "thesis_as_of": thesis.get("as_of"),
     }

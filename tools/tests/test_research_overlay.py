@@ -37,6 +37,25 @@ class ResearchConflict(unittest.TestCase):
         self.assertTrue(rebalance_overlay.research_conflict("trim", "  Accumulate "))
 
 
+class ThesisLean(unittest.TestCase):
+    """The single add/trim vocabulary, emitted to the UI as research.thesis_lean."""
+
+    def test_add_like(self):
+        for ta in ("add", "accumulate", "buy", "build", "increase", "overweight"):
+            self.assertEqual(rebalance_overlay.thesis_lean(ta), "add", ta)
+
+    def test_trim_like(self):
+        for ta in ("trim", "sell", "reduce", "exit", "avoid", "underweight", "do_not_add"):
+            self.assertEqual(rebalance_overlay.thesis_lean(ta), "trim", ta)
+
+    def test_neutral_and_empty(self):
+        for ta in ("hold", "wait", "watch", "", None, "  HOLD  "):
+            self.assertEqual(rebalance_overlay.thesis_lean(ta), "neutral", repr(ta))
+
+    def test_case_and_space_insensitive(self):
+        self.assertEqual(rebalance_overlay.thesis_lean("  Accumulate "), "add")
+
+
 class AttachResearchOverlay(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -79,11 +98,12 @@ class AttachResearchOverlay(unittest.TestCase):
         self.assertEqual(res["decision"], "HOLD")
         self.assertEqual(res["momentum_3m_pct"], -12.3)
         self.assertEqual(res["thesis_action"], "accumulate")
+        self.assertEqual(res["thesis_lean"], "add")  # accumulate -> add-like
         self.assertEqual(res["thesis_summary"], "cheap, growing")
         # Only the compact, decision-support fields ship; raw metrics stay out.
         self.assertEqual(set(res), {
             "as_of", "data_quality", "decision", "momentum_3m_pct",
-            "thesis_action", "thesis_summary", "thesis_as_of",
+            "thesis_action", "thesis_lean", "thesis_summary", "thesis_as_of",
         })
 
     def test_no_thesis_means_no_conflict_but_still_overlaid(self):
