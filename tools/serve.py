@@ -107,6 +107,7 @@ from rebalance_overlay import (  # noqa: E402  -- research overlay + price gate 
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_place, _trade_preview, _trade_status,
+    load_basket as _load_basket, save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -481,6 +482,7 @@ _GET_EXACT = {
     "/api/analysis-models": "_get_analysis_models",
     "/api/trade/status": "_get_trade_status",
     "/api/trade/orders": "_get_trade_orders",
+    "/api/trade/basket": "_get_trade_basket",
     "/api/deep-research/login-status": "_get_login_status",
     "/api/deep-job": "_get_deep_job",
     "/api/jobs": "_get_jobs",
@@ -540,6 +542,7 @@ _POST_EXACT = {
     "/api/trade/preview": "_post_trade_preview",
     "/api/trade/place": "_post_trade_place",
     "/api/trade/cancel": "_post_trade_cancel",
+    "/api/trade/basket": "_post_trade_basket",
     "/api/journal": "_post_journal",
     "/api/journal/outcome": "_post_journal_outcome",
     "/api/symbol-alias": "_post_symbol_alias",
@@ -710,7 +713,11 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_load_deep_qa(stem))
 
     def _get_rebalance(self, path, query):
-        model = _load(TARGET_MODEL_JSON)
+        # Plan against the working draft when one exists so the drift, suggested
+        # trades, and what-if reflect what the user is editing (clearly labelled
+        # in the UI); otherwise the live model, exactly as before.
+        has_draft = target_staging.has_draft()
+        model = target_staging.active_model()
         holdings = _load(HOLDINGS_JSON)
         if not model:
             return self._send_error_json(404, "no target model — data/target-model.json missing")
@@ -722,9 +729,11 @@ class Handler(BaseHTTPRequestHandler):
         # source (legacy/stale vs research-derived vs pinned) and show a banner
         # when uncommitted changes are sitting in the working draft.
         plan["provenance"] = model.get("provenance") or {}
-        plan["staged"] = {"has_draft": target_staging.has_draft(),
-                          "pending": target_staging.diff_staged_vs_live()["counts"]["total"]
-                          if target_staging.has_draft() else 0}
+        plan["staged"] = {
+            "has_draft": has_draft,
+            "previewing_draft": has_draft,
+            "pending": target_staging.diff_staged_vs_live()["counts"]["total"] if has_draft else 0,
+        }
         return self._send_json(plan)
 
     def _get_risk(self, path, query):
@@ -809,6 +818,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_trade_orders(self, path, query):
         return self._send_json(_trade_orders())
+
+    def _get_trade_basket(self, path, query):
+        # The basket the planner last staged, so the trade desk can rehydrate it
+        # after a reload instead of losing it to an in-browser-only hand-off.
+        return self._send_json({"trades": _load_basket()})
 
     def _get_login_status(self, path, query):
         return self._send_json(_get_auth_state())
@@ -1190,7 +1204,8 @@ class Handler(BaseHTTPRequestHandler):
     def _post_whatif(self, path):
         body = self._read_body()
         holdings = _load(HOLDINGS_JSON)
-        model = _load(TARGET_MODEL_JSON)
+        # Simulate against the working draft when one exists, matching the planner.
+        model = target_staging.active_model()
         if not holdings or not model:
             return self._send_error_json(404, "need both a holdings snapshot and a target model")
         return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
@@ -1203,6 +1218,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_trade_cancel(self, path):
         return self._send_json(_trade_cancel(self._read_body()))
+
+    def _post_trade_basket(self, path):
+        # Persist (or clear) the planner-staged basket. Normalizes server-side and
+        # echoes the stored basket back so the client and disk stay in sync.
+        body = self._read_body()
+        return self._send_json({"trades": _save_basket(body.get("trades"))})
 
     def _post_journal(self, path):
         body = self._read_body()

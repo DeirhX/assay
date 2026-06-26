@@ -158,6 +158,18 @@ def has_draft() -> bool:
     return STAGED_JSON.exists()
 
 
+def active_model() -> dict:
+    """The model the planner, what-if, and trade preview should reflect: the
+    working draft if one exists, else the live committed model.
+
+    Before this, the planner and trade desk always read the *live* model while
+    edits sat in the draft -- so the drift, suggested trades, and what-if all
+    described a portfolio the user had already staged away from. Previewing the
+    draft (clearly labelled in the UI) keeps every downstream number consistent
+    with what's actually being edited."""
+    return load_staged() or load_live()
+
+
 def load_staged(*, create: bool = False) -> dict | None:
     """The working draft, or None. With ``create``, seed a fresh draft from the
     live model (provenance backfilled) the first time something is staged."""
@@ -438,13 +450,25 @@ def commit_staged(confirm: bool) -> dict:
     staged = _load(STAGED_JSON)
     if not isinstance(staged, dict):
         raise ValueError("no working draft to commit")
-    backup = _backup_target_model()
     out = copy.deepcopy(staged)
     out.pop("_runs", None)
     out["as_of"] = _today()
     holdings = _load(HOLDINGS_JSON)
     if isinstance(holdings, dict) and holdings.get("generated_at"):
         out["basis_snapshot"] = holdings["generated_at"]
+    # Never promote a draft that fails the model's own consistency checks (a band
+    # with low>high, an unknown rule, a 'reduce' on something not held, sleeve
+    # member overlaps, minimum targets + cash over 100%). WARN-level findings are
+    # informational and ride along; an ERROR is a hard contradiction the live
+    # model must not inherit, so refuse and name what to fix.
+    if isinstance(holdings, dict):
+        errors = [f for f in rebalance.check_model(out, holdings) if f.severity == "ERROR"]
+        if errors:
+            raise ValueError(
+                f"cannot commit — the working draft has {len(errors)} blocking "
+                "error(s): " + "; ".join(f"{f.area}: {f.message}" for f in errors)
+            )
+    backup = _backup_target_model()
     _write_json(TARGET_MODEL_JSON, out)
     try:
         STAGED_JSON.unlink()

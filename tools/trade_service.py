@@ -20,29 +20,50 @@ import ibkr_trade
 import price_levels
 import whatif
 from apierror import BadGateway as _BadGateway, Forbidden as _Forbidden
-from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON, provider_symbol_for
-from store import load as _load
+from config import DATA_DIR
+from portfolio import HOLDINGS_JSON, normalize_basket, provider_symbol_for
+from store import load as _load, write_json as _write_json
+
+# The planner-staged basket, persisted so the trade desk survives a reload or a
+# navigation away and back instead of relying on an in-browser hand-off that a
+# refresh silently drops. Gitignored cache, not portfolio truth.
+STAGED_BASKET_JSON = DATA_DIR / "cache" / "staged-basket.json"
 
 
 def _normalize_basket(trades) -> list[dict]:
     """Canonical, de-duplicated [{symbol, delta_czk}] used for both hashing and
-    sizing. Raises ValueError on malformed input (mirrors whatif._coerce_trades
-    so the two paths agree on what a basket is)."""
-    if not isinstance(trades, list):
-        raise ValueError("trades must be a list of {symbol, delta_czk}")
-    netted: dict[str, float] = {}
-    for t in trades:
-        if not isinstance(t, dict):
-            raise ValueError("each trade must be an object")
-        sym = str(t.get("symbol") or "").strip().upper()
-        if not sym:
-            raise ValueError("each trade needs a symbol")
-        try:
-            delta = float(t.get("delta_czk"))
-        except (TypeError, ValueError):
-            raise ValueError(f"trade for {sym} needs a numeric delta_czk")
-        netted[sym] = netted.get(sym, 0.0) + delta
+    sizing, sorted so the preview token is stable. Shares
+    ``portfolio.normalize_basket`` with the what-if path so the two can never
+    disagree on what a basket is. Raises ValueError on malformed input."""
+    netted = normalize_basket(trades)
     return [{"symbol": s, "delta_czk": round(d, 2)} for s, d in sorted(netted.items())]
+
+
+def load_basket() -> list[dict]:
+    """The last basket staged from the planner, or [] when nothing is staged. A
+    corrupt/foreign file reads as empty rather than raising."""
+    raw = _load(STAGED_BASKET_JSON)
+    trades = raw.get("trades") if isinstance(raw, dict) else None
+    if not isinstance(trades, list):
+        return []
+    try:
+        return _normalize_basket(trades)
+    except ValueError:
+        return []
+
+
+def save_basket(trades) -> list[dict]:
+    """Persist a normalized staged basket so the planner and the trade desk share
+    one durable source of truth. An empty/cleared basket removes the file."""
+    basket = _normalize_basket(trades) if trades else []
+    if basket:
+        _write_json(STAGED_BASKET_JSON, {"trades": basket})
+    else:
+        try:
+            STAGED_BASKET_JSON.unlink()
+        except OSError:
+            pass
+    return basket
 
 
 def _basket_token(account_id: str, basket: list[dict]) -> str:
@@ -230,7 +251,11 @@ def _trade_preview(body: dict) -> dict:
 
     local = None
     holdings = _load(HOLDINGS_JSON)
-    model = _load(TARGET_MODEL_JSON)
+    # Preview against the working draft when one exists, so the what-if's band
+    # status matches the planner the basket was built in (both now reflect the
+    # draft). With no draft this is the live model, exactly as before.
+    import target_staging
+    model = target_staging.active_model()
     if holdings and model:
         try:
             local = whatif.simulate(holdings, model, basket)

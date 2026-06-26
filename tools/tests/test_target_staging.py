@@ -194,7 +194,38 @@ class Revert(_StagingCase):
         self.assertNotIn("NVDA", _load(self.staged)["targets"])
 
 
+class ActiveModel(_StagingCase):
+    def test_returns_live_when_no_draft(self):
+        live = self._seed_live()
+        active = ts.active_model()
+        self.assertEqual(active.get("targets"), live["targets"])
+
+    def test_returns_draft_when_one_exists(self):
+        self._seed_live()
+        ts.stage_changes([self._add("NVDA", 8, 10)], run_id="r", segment="s")
+        active = ts.active_model()
+        # The planner/what-if now see the staged NVDA, not just the live TSM.
+        self.assertIn("NVDA", active.get("targets", {}))
+        self.assertIn("TSM", active.get("targets", {}))
+
+
 class CommitDiscard(_StagingCase):
+    def test_commit_blocks_on_check_model_error_and_keeps_draft(self):
+        self._seed_live()
+        _write_json(self.holdings, {"generated_at": "2026-06-15", "positions": []})
+        # 'reduce' on a name we don't hold is a hard ERROR in check_model: there
+        # is nothing to reduce. Such a draft must never be promoted to live.
+        ts.stage_changes([{"action": "add_target", "symbol": "ZZZ",
+                           "proposed_target": {"low": 1, "high": 2, "rule": "reduce"}}],
+                         run_id="r", segment="s")
+        with self.assertRaises(ValueError) as ctx:
+            ts.commit_staged(True)
+        self.assertIn("blocking", str(ctx.exception).lower())
+        # Live model untouched, draft preserved, and no backup was written.
+        self.assertNotIn("ZZZ", _load(self.live).get("targets", {}))
+        self.assertTrue(self.staged.exists())
+        self.assertFalse((Path(self.tmp.name) / "backups").exists())
+
     def test_commit_writes_live_bumps_as_of_clears_draft(self):
         self._seed_live()
         _write_json(self.holdings, {"generated_at": "2026-06-15", "positions": []})

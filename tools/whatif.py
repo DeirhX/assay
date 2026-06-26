@@ -27,23 +27,10 @@ EPS = 0.01
 
 
 def _coerce_trades(trades: Any) -> dict[str, float]:
-    """Validate the staged basket and net duplicate symbols. Raises ValueError on
-    malformed input so the server maps it to a clean 400."""
-    if not isinstance(trades, list):
-        raise ValueError("trades must be a list of {symbol, delta_czk}")
-    netted: dict[str, float] = {}
-    for t in trades:
-        if not isinstance(t, dict):
-            raise ValueError("each trade must be an object")
-        sym = portfolio.clean_symbol(t.get("symbol"))
-        if not sym:
-            raise ValueError("each trade needs a symbol")
-        try:
-            delta = float(t.get("delta_czk"))
-        except (TypeError, ValueError):
-            raise ValueError(f"trade for {sym} needs a numeric delta_czk")
-        netted[sym] = netted.get(sym, 0.0) + delta
-    return netted
+    """Validate the staged basket and net duplicate symbols. Thin wrapper over the
+    canonical ``portfolio.normalize_basket`` so the simulator and the live trade
+    desk agree, byte-for-byte, on symbol normalization and netting."""
+    return portfolio.normalize_basket(trades)
 
 
 def _cash_base(holdings: dict[str, Any]) -> float | None:
