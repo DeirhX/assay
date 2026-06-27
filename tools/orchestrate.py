@@ -30,7 +30,7 @@ import threading
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from store import load as _load, write_json as _write_json
 from config import DATA_DIR
