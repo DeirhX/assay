@@ -133,9 +133,12 @@ def build_pool(*, model: dict | None = None, holdings: dict | None = None,
     weights = portfolio.holdings_weights(holdings) if isinstance(holdings, dict) else {}
     pins = tc._pins(model)
     member_of: dict[str, str] = {}
+    managed_by: dict[str, str] = {}  # member -> sleeve, only for sleeves with a usable band
     for name, sleeve in (model.get("sleeves") or {}).items():
         for m in (sleeve.get("members") or []):
             member_of.setdefault(str(m).upper(), name)
+            if _band_ok(sleeve):
+                managed_by.setdefault(str(m).upper(), name)
 
     basket_by_sym = {str(b.get("symbol") or "").upper(): b for b in basket_items}
 
@@ -179,6 +182,7 @@ def build_pool(*, model: dict | None = None, holdings: dict | None = None,
         pool.append({
             "symbol": sym,
             "sleeve": sleeve,
+            "sleeve_managed": sym in managed_by,
             "held_pct": held_pct,
             "current_target": band,
             "pinned": bool(pin),
@@ -241,6 +245,21 @@ def _size_weights(points: dict[str, float], caps: dict[str, float], budget: floa
 def _curve_points(curve: str) -> dict[str, float]:
     """Conviction->points for the named curve, defaulting to the balanced 3:2:1."""
     return _CURVES.get(str(curve or "").lower(), _CURVES["balanced"])
+
+
+def _band_ok(b: dict) -> bool:
+    """A band (target or sleeve) carries a usable, positive-width allocation."""
+    lo, hi = (b or {}).get("low"), (b or {}).get("high")
+    return isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and float(hi) > 0.0
+
+
+def _safe_symbol_or(sym: str) -> str:
+    """Normalize a member symbol to match pool keys; pass it through on failure
+    so a quirky sleeve member still de-dupes against an identical target key."""
+    try:
+        return _safe_symbol(sym)
+    except ValueError:
+        return str(sym).upper().strip()
 
 
 def _select_funded(points: dict[str, float], caps: dict[str, float], budget: float, *,
@@ -356,14 +375,34 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
     def cap_for(sym: str) -> float:
         return min(hard_cap, caps_model.get(sym, hard_cap))
 
+    # Allocation sleeves with a usable band govern their members *collectively*
+    # (rebalance.plan emits one aggregate, non-interactive row per sleeve). So the
+    # optimizer must NOT also size those members as standalone names -- doing so
+    # double-counts the same capital (sleeve midpoint + member band) and trips a
+    # phantom over-allocation. We reserve the sleeve budget, size the free names
+    # into what's left, and strip any redundant standalone target a sleeve member
+    # still carries (the ambiguity check_model only WARNs about), resolving it in
+    # the sleeve's favour. Sleeve bands themselves pass through untouched.
+    sleeve_mid = {name: (float(s["low"]) + float(s["high"])) / 2.0
+                  for name, s in (model.get("sleeves") or {}).items() if _band_ok(s)}
+    sleeve_of: dict[str, str] = {}
+    for name, s in (model.get("sleeves") or {}).items():
+        if not _band_ok(s):
+            continue
+        for m in (s.get("members") or []):
+            sleeve_of.setdefault(_safe_symbol_or(m), name)
+    sleeve_members = set(sleeve_of)
+    sleeve_budget = sum(sleeve_mid.values())
+    free_invested = max(0.0, invested - sleeve_budget)
+
     by_sym = {e["symbol"]: e for e in pool}
     buy = {e["symbol"]: e["conviction"] for e in pool
-           if e["conviction"] in tc._POINTS}
+           if e["conviction"] in tc._POINTS and e["symbol"] not in sleeve_members}
     curve = _curve_points(conviction_curve)
     points = {sym: curve[conv] for sym, conv in buy.items()}
     caps = {sym: cap_for(sym) for sym in buy}
     weights, pruned = _select_funded(
-        points, caps, invested,
+        points, caps, free_invested,
         min_position_pct=float(min_position_pct or 0.0),
         max_names=max_names, protect=set(pins), by_sym=by_sym)
 
@@ -391,11 +430,26 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
                                    action="remove_target", existing=existing, aliases=aliases))
             prune_count += 1
 
+    # Sleeve members keep being governed by their sleeve band, so drop any
+    # redundant standalone target one still carries (resolving the ambiguous
+    # member+target overlap in the sleeve's favour). This is also what makes the
+    # book reconcile: with the member's individual target gone, only the sleeve
+    # band counts its capital.
+    sleeve_dedup = 0
+    for sym in sorted(sleeve_members):
+        existing = existing_targets.get(sym)
+        if isinstance(existing, dict) and _band_ok(existing):
+            entry = by_sym.get(sym, {"symbol": sym, "sleeve": sleeve_of.get(sym, "")})
+            changes.append(_change(entry, low=0.0, high=0.0, rule="trim_only",
+                                   action="remove_target", existing=existing, aliases=aliases))
+            sleeve_dedup += 1
+
     # Avoid-rated names: trim held positions toward their existing band (or drop).
+    # Sleeve members are governed by their sleeve, never trimmed individually.
     trim_count = drop_count = 0
     for sym in sorted(by_sym):
         entry = by_sym[sym]
-        if entry["conviction"] != "avoid":
+        if entry["conviction"] != "avoid" or sym in sleeve_members:
             continue
         cur = entry.get("held_pct") or 0.0
         if cur <= 0:
@@ -445,6 +499,10 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
         "min_position_pct": _round1(float(min_position_pct or 0.0)),
         "max_names": int(max_names) if max_names else None,
         "conviction_curve": str(conviction_curve or DEFAULT_SIZER_CURVE).lower(),
+        "sleeve_budget_pct": _round1(sleeve_budget),
+        "free_invested_pct": _round1(free_invested),
+        "sleeve_count": len(sleeve_mid),
+        "sleeve_dedup_count": sleeve_dedup,
         "trim_count": trim_count,
         "drop_count": drop_count,
         "pinned_count": sum(1 for c in changes if c["symbol"] in pins),
@@ -600,6 +658,22 @@ def optimize(*, cash_target_pct: float | None = None,
         if ch.get("sleeve_unknown"):
             findings.append({"level": "FYI", "symbol": ch["symbol"],
                              "message": f"{ch['symbol']}: sleeve '{ch.get('sleeve')}' is not in sleeve-aliases.json (kept as-is)."})
+    if meta.get("sleeve_budget_pct"):
+        findings.append({"level": "FYI", "symbol": None,
+                         "message": (f"{meta['sleeve_count']} allocation sleeve(s) reserve "
+                                     f"{meta['sleeve_budget_pct']}%; free names were sized into the "
+                                     f"remaining {meta['free_invested_pct']}%.")})
+    if meta.get("sleeve_dedup_count"):
+        deduped = sorted(c["symbol"] for c in changes
+                         if c["action"] == "remove_target" and c["symbol"] in
+                         {s for sl in (model.get("sleeves") or {}).values() for s in (sl.get("members") or [])})
+        findings.append({"level": "FYI", "symbol": None,
+                         "message": (f"removed {meta['sleeve_dedup_count']} redundant standalone target(s) on "
+                                     f"sleeve members ({', '.join(deduped)}) — their sleeve governs them now.")})
+    if meta["free_invested_pct"] <= 0.0 and meta.get("sleeve_budget_pct"):
+        findings.append({"level": "WARN", "symbol": None,
+                         "message": (f"allocation sleeves alone reserve {meta['sleeve_budget_pct']}% — at or above the "
+                                     f"{meta['invested_budget_pct']}% invested budget, leaving no room for individual names.")})
     book = meta["book_reconciliation"]
     if book.get("over_allocated"):
         findings.append({"level": "WARN", "symbol": None,

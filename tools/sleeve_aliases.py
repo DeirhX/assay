@@ -75,4 +75,9 @@ def normalize(label: str, *, aliases: dict[str, str] | None = None) -> tuple[str
     aliases = load_aliases() if aliases is None else aliases
     if raw in aliases:
         return aliases[raw], True
+    # A label that is *already* a canonical tag (an alias value, e.g. the model
+    # stores ``semis-compute`` directly) is known too -- otherwise every
+    # already-normalized tag gets falsely reported as an unmapped one-off.
+    if raw in {str(v).strip().lower() for v in aliases.values()}:
+        return raw, True
     return raw, False
