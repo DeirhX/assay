@@ -19,13 +19,12 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-import threading
 from pathlib import Path
 
 import jobs
 import ticker_analysis
 from config import SEGMENT_DEF_DIR, SEGMENT_OUT_DIR
-from jobs import new_job, public, update_job
+from jobs import update_job
 from portfolio import holdings_weights
 from store import load, safe_symbol, slugify
 
@@ -251,10 +250,7 @@ def start_draft(query: str) -> dict:
         raise ValueError("query is required")
     # Like ticker analysis, drafting shells out to a CLI but not the browser, so
     # it does not take the single browser slot and can run alongside other work.
-    job = new_job("segment_draft", query=query)
-    threading.Thread(target=run_draft_job,
-                     args=(job["id"], query), daemon=True).start()
-    return public(job)
+    return jobs.spawn("segment_draft", run_draft_job, query, query=query)
 
 
 def freshness_directive(today: str) -> str:

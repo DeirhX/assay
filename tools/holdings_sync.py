@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
 from pathlib import Path
 
 import errorlog
@@ -24,7 +23,7 @@ import sectors  # symbol -> sector map (research seed + Yahoo backfill)
 from apierror import Conflict as _Conflict
 from config import DATA_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR, TOOLS_SECRETS
 from ibkr_portfolio import load_env_file as _read_env_file
-from jobs import new_job as _new_job, public as _job_public, update_job as _update_job
+from jobs import update_job as _update_job
 from portfolio import holdings_payload
 from store import load as _load, write_json as _write_json
 
@@ -191,9 +190,7 @@ def _run_holdings_sync_job(job_id: str) -> None:
 def start_holdings_sync() -> dict:
     if _sync_running():
         raise _Conflict("an IBKR sync is already running")
-    job = _new_job("ibkr_sync")
-    threading.Thread(target=_run_holdings_sync_job, args=(job["id"],), daemon=True).start()
-    return _job_public(job)
+    return jobs.spawn("ibkr_sync", _run_holdings_sync_job)
 
 
 # Full trade + NAV history is a separate, slower pull: it walks the account back
@@ -255,9 +252,7 @@ def _run_history_sync_job(job_id: str, full: bool = False) -> None:
 def start_history_sync(full: bool = False) -> dict:
     if _history_running():
         raise _Conflict("a portfolio-history pull is already running")
-    job = _new_job("ibkr_history")
-    threading.Thread(target=_run_history_sync_job, args=(job["id"], full), daemon=True).start()
-    return _job_public(job)
+    return jobs.spawn("ibkr_history", _run_history_sync_job, full)
 
 
 SECTORS_JSON = IBKR_CACHE_DIR / "sectors.json"  # gitignored (mirrors trade ledger)
@@ -324,9 +319,7 @@ def _run_sectors_job(job_id: str) -> None:
 def start_sectors_sync() -> dict:
     if _sectors_running():
         raise _Conflict("a sector lookup is already running")
-    job = _new_job("ibkr_sectors")
-    threading.Thread(target=_run_sectors_job, args=(job["id"],), daemon=True).start()
-    return _job_public(job)
+    return jobs.spawn("ibkr_sectors", _run_sectors_job)
 
 
 def regenerate_site() -> dict:

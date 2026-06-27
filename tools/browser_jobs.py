@@ -20,14 +20,13 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-import threading
 
 import jobs
 from apierror import Conflict
 from config import AUTH_STATE_FILE, SEGMENT_DEF_DIR
 from deep_runs import save_deep_artifact
 from jobs import (
-    claim_active, new_job, public, release_active, slots_busy_msg, update_job,
+    claim_active, release_active, slots_busy_msg, update_job,
 )
 from store import load, slugify, write_json
 
@@ -229,19 +228,14 @@ def start_deep_research(body: dict) -> dict:
         raise ValueError("window_mode must be offscreen, visible, or headless")
     if not claim_active():
         raise Conflict(slots_busy_msg())
-    job = new_job("deep_research", segment=segment, date=date, window_mode=window_mode)
-    threading.Thread(target=run_deep_job,
-                     args=(job["id"], segment, date, prompt, window_mode),
-                     daemon=True).start()
-    return public(job)
+    return jobs.spawn("deep_research", run_deep_job, segment, date, prompt, window_mode,
+                      segment=segment, date=date, window_mode=window_mode)
 
 
 def start_login() -> dict:
     if not claim_active():
         raise Conflict(slots_busy_msg())
-    job = new_job("login")
-    threading.Thread(target=run_login_job, args=(job["id"],), daemon=True).start()
-    return public(job)
+    return jobs.spawn("login", run_login_job)
 
 
 def run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
@@ -290,8 +284,5 @@ def start_import(body: dict) -> dict:
         raise ValueError("a perplexity.ai run URL is required")
     if not claim_active():
         raise Conflict(slots_busy_msg())
-    job = new_job("import", segment=segment, date=date)
-    threading.Thread(target=run_import_job,
-                     args=(job["id"], segment, date, url),
-                     daemon=True).start()
-    return public(job)
+    return jobs.spawn("import", run_import_job, segment, date, url,
+                      segment=segment, date=date)

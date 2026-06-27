@@ -148,7 +148,7 @@ interface SegMember {
   [key: string]: unknown;
 }
 
-interface SegmentRec {
+export interface SegmentRec {
   title: string;
   members: SegMember[];
   [key: string]: unknown;

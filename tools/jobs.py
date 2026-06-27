@@ -26,7 +26,52 @@ import datetime as dt
 import os
 import threading
 import uuid
-from typing import Callable
+from enum import StrEnum
+from typing import Any, Callable, NotRequired, TypedDict, cast
+
+
+class JobState(StrEnum):
+    """Lifecycle states a background job moves through. A ``StrEnum`` so members
+    compare equal to (and JSON-serialize as) their plain string value -- existing
+    code that reads ``job["state"] == "done"`` or round-trips the value through
+    JSON keeps working unchanged."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    DONE = "done"
+    ERROR = "error"
+    CANCELLED = "cancelled"
+    NEEDS_LOGIN = "needs_login"
+
+
+# Live states: a job is still doing (or about to do) work and counts against the
+# "is one already in flight?" guards.
+_LIVE_STATES = (JobState.QUEUED, JobState.RUNNING)
+
+
+class Job(TypedDict):
+    """The in-memory job record. The four head fields are always set by
+    ``new_job``; the rest are optional identifiers/results stashed by the various
+    runners (a deep-research run carries ``stem``/``source_url``, a ticker
+    analysis carries ``symbol``, etc.). ``new_job(**fields)`` still accepts
+    arbitrary keys -- this documents the shapes the registry and Task Center
+    actually read."""
+    id: str
+    kind: str
+    state: str
+    message: str
+    created_at: str
+    updated_at: NotRequired[str]
+    segment: NotRequired[str | None]
+    date: NotRequired[str | None]
+    symbol: NotRequired[str | None]
+    stem: NotRequired[str | None]
+    run_id: NotRequired[str | None]
+    parent_run_id: NotRequired[str | None]
+    source_url: NotRequired[str | None]
+    result: NotRequired[dict | None]
+    artifact: NotRequired[dict | None]
+    error: NotRequired[str | None]
+    cancelled: NotRequired[bool]
 
 
 def _env_max_slots() -> int:
@@ -36,7 +81,7 @@ def _env_max_slots() -> int:
         return 3
 
 
-_JOBS: dict[str, dict] = {}
+_JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 # Number of browser slots currently held, and the ceiling on concurrent runs.
 _ACTIVE = {"held": 0, "max": _env_max_slots()}
@@ -46,30 +91,30 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def new_job(kind: str, **fields) -> dict:
-    job = {
+def new_job(kind: str, **fields: Any) -> Job:
+    job = cast(Job, {
         "id": uuid.uuid4().hex[:8],
         "kind": kind,
-        "state": "queued",
+        "state": JobState.QUEUED,
         "message": "",
         "created_at": _now(),
         **fields,
-    }
+    })
     with _LOCK:
         _JOBS[job["id"]] = job
     return job
 
 
-def update_job(job_id: str, **fields) -> None:
+def update_job(job_id: str, **fields: Any) -> None:
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return
-        job.update(fields)
+        job.update(cast(Job, fields))
         job["updated_at"] = _now()
 
 
-def public(job: dict) -> dict:
+def public(job: Job) -> dict[str, Any]:
     """The UI-safe view of a job (no giant report body).
 
     Besides progress fields, this exposes the small set of identifiers the Task
@@ -104,6 +149,17 @@ def public(job: dict) -> dict:
     }
 
 
+def spawn(kind: str, target: Callable[..., None], *args: Any, **fields: Any) -> dict[str, Any]:
+    """Register a job of ``kind`` and start ``target(job_id, *args)`` on a daemon
+    thread, returning the job's public view. Centralizes the new_job + Thread +
+    public tail every ``start_*`` runner repeated: keyword args seed the job
+    record (``segment=``, ``symbol=``, ...); positional args are forwarded to the
+    worker after the new job id."""
+    job = new_job(kind, **fields)
+    threading.Thread(target=target, args=(job["id"], *args), daemon=True).start()
+    return public(job)
+
+
 def cancel_job(job_id: str) -> bool:
     """Flag a job for cooperative cancellation. The runner is responsible for
     noticing (via ``is_cancelled``) and tearing down its subprocess; here we just
@@ -111,7 +167,7 @@ def cancel_job(job_id: str) -> bool:
     if the job is unknown or already finished."""
     with _LOCK:
         job = _JOBS.get(job_id)
-        if not job or job.get("state") not in ("queued", "running"):
+        if not job or job.get("state") not in _LIVE_STATES:
             return False
         job["cancelled"] = True
         job["message"] = "cancelling…"
@@ -125,14 +181,14 @@ def is_cancelled(job_id: str) -> bool:
         return bool(job and job.get("cancelled"))
 
 
-def get_public(job_id: str) -> dict | None:
+def get_public(job_id: str) -> dict[str, Any] | None:
     """Thread-safe public snapshot of one job, or None if unknown."""
     with _LOCK:
         job = _JOBS.get(job_id)
         return public(job) if job else None
 
 
-def list_public() -> list[dict]:
+def list_public() -> list[dict[str, Any]]:
     """Public snapshots of every known job, newest first.
 
     Backs the central Task Center. The registry is in-memory, so this is the
@@ -144,13 +200,13 @@ def list_public() -> list[dict]:
     return jobs
 
 
-def find(predicate: Callable[[dict], bool]) -> bool:
+def find(predicate: Callable[[Job], bool]) -> bool:
     """True if any job satisfies predicate (evaluated under the lock)."""
     with _LOCK:
         return any(predicate(j) for j in _JOBS.values())
 
 
-def running(kind: str, **match) -> bool:
+def running(kind: str, **match: Any) -> bool:
     """True if a job of ``kind`` is still live (queued/running and not flagged
     for cancellation), optionally matching extra public fields like
     ``symbol=`` or ``stem=``.
@@ -158,8 +214,8 @@ def running(kind: str, **match) -> bool:
     This is the one place the "is there already an X in flight?" guard lives, so
     every caller agrees that a cancelled-but-not-yet-reaped job no longer counts
     as live (its slot is being released) and can't wedge new work."""
-    def predicate(j: dict) -> bool:
-        if j.get("kind") != kind or j.get("state") not in ("queued", "running"):
+    def predicate(j: Job) -> bool:
+        if j.get("kind") != kind or j.get("state") not in _LIVE_STATES:
             return False
         if j.get("cancelled"):
             return False
@@ -218,4 +274,4 @@ def any_active() -> bool:
     with _LOCK:
         if _ACTIVE["held"] > 0:
             return True
-        return any(j.get("state") in ("queued", "running") for j in _JOBS.values())
+        return any(j.get("state") in _LIVE_STATES for j in _JOBS.values())

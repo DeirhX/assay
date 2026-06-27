@@ -159,7 +159,7 @@ def approve_strategy_segment(run_id: str, definition_raw: dict | None) -> dict:
     orchestrate.set_state(run_id, orchestrate.SYNTHESIS_RUNNING, segment=slug,
                           message="starting synthesis…", error=None)
     threading.Thread(target=run_strategy_synthesis, args=(run_id,), daemon=True).start()
-    return orchestrate.public(orchestrate.load_run(run_id))
+    return orchestrate.public_or_raise(run_id)
 
 
 def run_strategy_synthesis(run_id: str) -> None:
@@ -167,6 +167,12 @@ def run_strategy_synthesis(run_id: str) -> None:
     if not run:
         return
     seg = run["segment"]
+    if not seg:
+        # The segment gate sets this before synthesis; absent means a corrupt or
+        # out-of-order run -- fail loudly rather than feed None down the pipeline.
+        orchestrate.set_state(run_id, orchestrate.ERROR,
+                              error="run has no approved segment", message="synthesis failed")
+        return
     job = new_job("strategy", segment=seg, run_id=run_id)
     orchestrate.update_run(run_id, job_id=job["id"])
     # This is the one card the user should see for the whole run; flip it to
@@ -200,6 +206,10 @@ def run_strategy_synthesis(run_id: str) -> None:
             # Tag the child so the Task Center can fold it into this strategy
             # card instead of listing it as a second, identical-looking task.
             update_job(sub_id, parent_run_id=run_id)
+            # Last URL we propagated to the parent. Tracked locally so we never
+            # mutate the shared registry job dict outside jobs._LOCK (update_job
+            # is the only writer); avoids a read-modify-write race on the record.
+            last_source_url = job.get("source_url")
             while True:
                 time.sleep(3)
                 pub = jobs.get_public(sub_id)
@@ -209,9 +219,9 @@ def run_strategy_synthesis(run_id: str) -> None:
                     progress(pub["message"])
                 # Carry the live Perplexity URL up to the parent so the single
                 # strategy card keeps the "view live run" link the child had.
-                if pub.get("source_url") and pub.get("source_url") != job.get("source_url"):
+                if pub.get("source_url") and pub.get("source_url") != last_source_url:
                     update_job(job["id"], source_url=pub["source_url"])
-                    job["source_url"] = pub["source_url"]
+                    last_source_url = pub["source_url"]
                 state = pub.get("state")
                 if state == "done":
                     break
@@ -270,6 +280,8 @@ def approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = Fal
     if run.get("state") != orchestrate.AWAITING_PROPOSAL:
         raise Conflict(f"run {run_id} is not awaiting proposal approval")
     seg, date = run.get("segment"), run.get("date")
+    if not seg or not date:
+        raise Conflict(f"run {run_id} has no segment/date to stage")
     if changes is not None:
         ppath = DEEP_DIR / f"{seg}-{date}.target-proposal.json"
         proposal = load(ppath) or (run.get("proposal") or {})
@@ -289,4 +301,4 @@ def approve_strategy_proposal(run_id: str, changes, *, allow_blocked: bool = Fal
         run_id, orchestrate.STAGED, staged=staged, preview=diff,
         message=(f"Staged {n} change(s) into the working draft. "
                  f"Review the draft ({diff['counts']['total']} pending) and commit."))
-    return orchestrate.public(orchestrate.load_run(run_id))
+    return orchestrate.public_or_raise(run_id)

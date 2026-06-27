@@ -136,7 +136,7 @@ class ParallelFanout(unittest.TestCase):
 
     def test_runs_in_parallel_under_cap(self):
         aj.PORTFOLIO_REVIEW_WORKERS = 8
-        job = aj.new_job("portfolio_review", refresh=True)
+        job = jobs.new_job("portfolio_review", refresh=True)
         aj.run_portfolio_review_job(job["id"], refresh=True)
 
         # Every name got a verdict; finished cleanly.
