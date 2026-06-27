@@ -234,5 +234,66 @@ class Concentration(unittest.TestCase):
         self.assertIn("PINLOW", funded)
 
 
+class Sleeves(unittest.TestCase):
+    """Allocation sleeves with a real band govern their members collectively, so
+    the optimizer must reserve their budget rather than re-size the members as
+    free-standing names (the old double-count that tripped over-allocation)."""
+
+    def _model(self):
+        return {
+            "cash_target_pct": 5.0,
+            # SOXX carries a redundant standalone target AND sits in the sleeve.
+            "targets": {"SOXX": {"low": 4, "high": 6, "rule": "accumulate"}},
+            "sleeves": {"semis-etf": {"low": 5, "high": 10, "members": ["SOXX", "XSD"]}},
+        }
+
+    def _pool(self):
+        members = [
+            {"symbol": "SOXX", "conviction": "high", "conviction_source": "held",
+             "held_pct": 5.0, "sleeve": "semis-etf",
+             "current_target": {"low": 4, "high": 6, "rule": "accumulate"}, "rationale": ""},
+            {"symbol": "XSD", "conviction": "medium", "conviction_source": "held",
+             "held_pct": 2.0, "sleeve": "semis-etf", "current_target": None, "rationale": ""},
+        ]
+        return _flat_pool(6) + members
+
+    def test_members_not_individually_sized(self):
+        changes, meta = optimizer.size_pool(self._pool(), self._model(), cash_target_pct=5.0)
+        sized = {c["symbol"] for c in changes
+                 if c["action"] in ("add_target", "modify_target")}
+        self.assertNotIn("SOXX", sized)
+        self.assertNotIn("XSD", sized)
+
+    def test_reserves_sleeve_budget(self):
+        _, meta = optimizer.size_pool(self._pool(), self._model(), cash_target_pct=5.0)
+        # invested 95% − sleeve midpoint 7.5% = 87.5% for the free names.
+        self.assertAlmostEqual(meta["sleeve_budget_pct"], 7.5, places=3)
+        self.assertAlmostEqual(meta["free_invested_pct"], 87.5, places=3)
+        self.assertEqual(meta["sleeve_count"], 1)
+        self.assertLessEqual(meta["sized_midpoint_total_pct"], 87.5 + 0.5)
+
+    def test_redundant_member_target_removed(self):
+        changes, meta = optimizer.size_pool(self._pool(), self._model(), cash_target_pct=5.0)
+        removed = {c["symbol"] for c in changes if c["action"] == "remove_target"}
+        self.assertIn("SOXX", removed)
+        self.assertEqual(meta["sleeve_dedup_count"], 1)
+
+    def test_book_reconciles_no_phantom_over_allocation(self):
+        _, meta = optimizer.size_pool(self._pool(), self._model(), cash_target_pct=5.0)
+        # With the member target gone and the sleeve budget reserved, the book
+        # must not report an over-allocation it used to from double-counting.
+        self.assertFalse(meta["book_reconciliation"]["over_allocated"])
+
+    def test_bandless_sleeve_does_not_reserve(self):
+        # A members-only sleeve (no low/high) is a cap/taxonomy grouping, not an
+        # allocation reservation — its members still get sized individually.
+        model = {"cash_target_pct": 5.0, "targets": {},
+                 "sleeves": {"semis": {"members": ["AAA"], "member_caps": {"AAA": 9.0}}}}
+        changes, meta = optimizer.size_pool(_flat_pool(4), model, cash_target_pct=5.0)
+        self.assertEqual(meta["sleeve_budget_pct"], 0.0)
+        sized = {c["symbol"] for c in changes if c["action"] in ("add_target", "modify_target")}
+        self.assertIn("AAA", sized)
+
+
 if __name__ == "__main__":
     unittest.main()

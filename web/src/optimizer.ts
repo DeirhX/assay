@@ -10,6 +10,7 @@ import { pushNav, setActiveView } from "./shell";
 interface PoolEntry {
   symbol: string;
   sleeve?: string;
+  sleeve_managed?: boolean;
   held_pct?: number | null;
   current_target?: { low?: number; high?: number; rule?: string } | null;
   pinned?: boolean;
@@ -78,13 +79,22 @@ function bandTextShort(b: any): string {
 function poolRow(e: PoolEntry): string {
   const excluded = _excluded.has(e.symbol);
   const sym = esc(e.symbol);
-  return `<tr class="${excluded ? "opt-row-excluded" : ""}">
+  // Sleeve members are sized collectively by their allocation sleeve, not as
+  // standalone names — flag that so the missing individual band isn't a mystery.
+  const managed = !!e.sleeve_managed;
+  const bandCell = managed
+    ? `<span class="opt-sleeve-managed" title="Governed by allocation sleeve '${esc(e.sleeve || "")}'; sized as part of that sleeve, not individually.">→ sleeve ${esc(e.sleeve || "")}</span>`
+    : bandTextShort(e.current_target);
+  const exCell = managed
+    ? `<span class="muted" title="Excluding a sleeve member here has no effect — its sleeve governs it.">—</span>`
+    : `<label class="opt-ex"><input type="checkbox" data-opt-exclude="${sym}" ${excluded ? "checked" : ""}> exclude</label>`;
+  return `<tr class="${excluded ? "opt-row-excluded" : ""} ${managed ? "opt-row-sleeve" : ""}">
     <td><a class="tlink" data-ticker="${sym}" href="?view=deepdive&ticker=${encodeURIComponent(e.symbol)}"><strong>${sym}</strong></a></td>
     <td>${sourceChips(e)}</td>
     <td>${convCell(e)}</td>
     <td class="num">${pct(e.held_pct)}</td>
-    <td class="num">${bandTextShort(e.current_target)}</td>
-    <td class="opt-ex-cell"><label class="opt-ex"><input type="checkbox" data-opt-exclude="${sym}" ${excluded ? "checked" : ""}> exclude</label></td>
+    <td class="num">${bandCell}</td>
+    <td class="opt-ex-cell">${exCell}</td>
   </tr>`;
 }
 
@@ -177,6 +187,8 @@ function reconTiles(meta: any): string {
     </div>
     <p class="hint opt-recon-note">${meta.funded_count ?? meta.buy_count} funded · ${meta.trim_count} trimmed · ${meta.drop_count} dropped` +
     `${meta.prune_count ? " · " + meta.prune_count + " pruned (concentration)" : ""}` +
+    `${meta.sleeve_budget_pct ? " · " + meta.sleeve_count + " sleeve" + (meta.sleeve_count === 1 ? "" : "s") + " reserve " + pct(meta.sleeve_budget_pct) : ""}` +
+    `${meta.sleeve_dedup_count ? " · " + meta.sleeve_dedup_count + " sleeve dup" + (meta.sleeve_dedup_count === 1 ? "" : "s") + " removed" : ""}` +
     `${meta.pinned_count ? " · " + meta.pinned_count + " pinned" : ""}${meta.included_curious ? "" : " · curious excluded"}` +
     `${meta.conviction_curve ? " · " + meta.conviction_curve + " curve" : ""}` +
     `${meta.synthesis === "llm" ? " · AI-synthesized convictions" : ""}.</p>
