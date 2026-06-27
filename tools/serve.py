@@ -795,6 +795,9 @@ class Handler(BaseHTTPRequestHandler):
                 "cash_target_pct": float(model.get("cash_target_pct") or optimizer.DEFAULT_CASH_TARGET_PCT),
                 "per_name_cap": optimizer.DEFAULT_PER_NAME_CAP,
                 "concentration_pct": optimizer.DEFAULT_CONCENTRATION_PCT,
+                "min_position_pct": optimizer.DEFAULT_MIN_POSITION_PCT,
+                "max_names": optimizer.DEFAULT_MAX_NAMES,
+                "conviction_curve": optimizer.DEFAULT_CONVICTION_CURVE,
                 "include_curious": include_curious,
             },
         })
@@ -1199,12 +1202,24 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 return default
 
+        # max_names: absent -> product default; explicit null/0 -> off (no cap).
+        if "max_names" in body:
+            try:
+                mn = int(body["max_names"]) if body["max_names"] else None
+            except (TypeError, ValueError):
+                mn = optimizer.DEFAULT_MAX_NAMES
+        else:
+            mn = optimizer.DEFAULT_MAX_NAMES
+
         exclude = body.get("exclude") if isinstance(body.get("exclude"), list) else []
         try:
             proposal = optimizer.optimize(
                 cash_target_pct=_f("cash_target_pct", None),
                 per_name_cap=_f("per_name_cap", optimizer.DEFAULT_PER_NAME_CAP),
                 concentration_pct=_f("concentration_pct", optimizer.DEFAULT_CONCENTRATION_PCT),
+                min_position_pct=_f("min_position_pct", optimizer.DEFAULT_MIN_POSITION_PCT),
+                max_names=mn,
+                conviction_curve=str(body.get("conviction_curve") or optimizer.DEFAULT_CONVICTION_CURVE),
                 include_curious=bool(body.get("include_curious", True)),
                 drop_avoid=bool(body.get("drop_avoid", False)),
                 use_llm=bool(body.get("use_llm", False)),

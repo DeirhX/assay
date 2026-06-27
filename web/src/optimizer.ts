@@ -25,6 +25,9 @@ interface Constraints {
   cash_target_pct: number;
   per_name_cap: number;
   concentration_pct: number;
+  min_position_pct?: number;
+  max_names?: number | null;
+  conviction_curve?: string;
   include_curious: boolean;
 }
 interface OptimizerView { pool: PoolEntry[]; constraints: Constraints }
@@ -108,6 +111,18 @@ function constraintsPanel(c: Constraints): string {
       <div class="opt-inwrap"><input id="opt-cap" type="number" min="1" max="100" step="0.5" value="${c.per_name_cap}"><span>%</span></div></div>
     <div class="opt-field"><label for="opt-conc">Max concentration</label>
       <div class="opt-inwrap"><input id="opt-conc" type="number" min="1" max="100" step="0.5" value="${c.concentration_pct}"><span>%</span></div></div>
+    <div class="opt-field" title="Auto-drop dust: any name sized below this midpoint weight is pruned and its budget concentrates into the keepers (0 = off).">
+      <label for="opt-minpos">Min position</label>
+      <div class="opt-inwrap"><input id="opt-minpos" type="number" min="0" max="10" step="0.5" value="${c.min_position_pct ?? 1.5}"><span>%</span></div></div>
+    <div class="opt-field" title="Fund at most this many names (pins always kept). Blank = no limit.">
+      <label for="opt-maxnames">Max names</label>
+      <div class="opt-inwrap"><input id="opt-maxnames" type="number" min="1" max="100" step="1" value="${c.max_names ?? ""}"></div></div>
+    <div class="opt-field" title="How sharply conviction maps to size. Aggressive lets high-conviction names dominate; balanced spreads more evenly.">
+      <label for="opt-curve">Conviction curve</label>
+      <select id="opt-curve">
+        <option value="aggressive" ${(c.conviction_curve ?? "aggressive") === "aggressive" ? "selected" : ""}>Aggressive</option>
+        <option value="balanced" ${c.conviction_curve === "balanced" ? "selected" : ""}>Balanced</option>
+      </select></div>
     <label class="opt-check"><input id="opt-curious" type="checkbox" ${c.include_curious ? "checked" : ""}> Include <span class="tier-curious">curious</span> picks</label>
     <label class="opt-check"><input id="opt-drop" type="checkbox"> Drop avoid-rated held names (instead of trimming)</label>
     <label class="opt-check" title="Use the configured AI backend to read conviction from each name's latest research; falls back to the deterministic read if unavailable. Slower."><input id="opt-llm" type="checkbox"> AI conviction synthesis</label>
@@ -120,10 +135,15 @@ function readConstraints() {
     return Number.isFinite(v) ? v : dflt;
   };
   const c = _constraints;
+  const maxRaw = ($<HTMLInputElement>("#opt-maxnames")?.value ?? "").trim();
+  const maxNames = maxRaw === "" ? null : Math.max(1, Math.round(parseFloat(maxRaw)));
   return {
     cash_target_pct: num("#opt-cash", c?.cash_target_pct ?? 5),
     per_name_cap: num("#opt-cap", c?.per_name_cap ?? 12),
     concentration_pct: num("#opt-conc", c?.concentration_pct ?? 20),
+    min_position_pct: num("#opt-minpos", c?.min_position_pct ?? 1.5),
+    max_names: Number.isFinite(maxNames as number) ? maxNames : null,
+    conviction_curve: $<HTMLSelectElement>("#opt-curve")?.value || "aggressive",
     include_curious: !!$<HTMLInputElement>("#opt-curious")?.checked,
     drop_avoid: !!$<HTMLInputElement>("#opt-drop")?.checked,
     use_llm: !!$<HTMLInputElement>("#opt-llm")?.checked,
@@ -155,8 +175,10 @@ function reconTiles(meta: any): string {
       <div class="stat-tile stat-tile--${over ? "bad" : "ok"}"><div class="stat-label">${over ? "Over budget by" : "Free to allocate"}</div><div class="stat-value">${pct(Math.abs(book.available_pct ?? 0))}</div></div>
       <div class="stat-tile stat-tile--warn"><div class="stat-label">Invested budget</div><div class="stat-value">${pct(meta.invested_budget_pct)}</div></div>
     </div>
-    <p class="hint opt-recon-note">${meta.buy_count} sized · ${meta.trim_count} trimmed · ${meta.drop_count} dropped` +
+    <p class="hint opt-recon-note">${meta.funded_count ?? meta.buy_count} funded · ${meta.trim_count} trimmed · ${meta.drop_count} dropped` +
+    `${meta.prune_count ? " · " + meta.prune_count + " pruned (concentration)" : ""}` +
     `${meta.pinned_count ? " · " + meta.pinned_count + " pinned" : ""}${meta.included_curious ? "" : " · curious excluded"}` +
+    `${meta.conviction_curve ? " · " + meta.conviction_curve + " curve" : ""}` +
     `${meta.synthesis === "llm" ? " · AI-synthesized convictions" : ""}.</p>
   </div>`;
 }

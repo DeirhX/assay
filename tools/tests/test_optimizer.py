@@ -170,5 +170,69 @@ class Sizing(unittest.TestCase):
         self.assertTrue(applied)
 
 
+def _flat_pool(n_medium: int, highs=("AAA", "BBB"), held=None):
+    """A synthetic buy-only pool for exercising the concentration gates directly."""
+    held = held or {}
+    out = []
+    for h in highs:
+        out.append({"symbol": h, "conviction": "high", "conviction_source": "x",
+                    "held_pct": held.get(h), "sleeve": "", "current_target": None, "rationale": ""})
+    for i in range(n_medium):
+        s = f"M{i:02d}"
+        out.append({"symbol": s, "conviction": "medium", "conviction_source": "x",
+                    "held_pct": held.get(s), "sleeve": "", "current_target": None, "rationale": ""})
+    return out
+
+
+class Concentration(unittest.TestCase):
+    _M = {"targets": {}, "sleeves": {}}
+
+    def test_max_names_caps_funded_count(self):
+        changes, meta = optimizer.size_pool(_flat_pool(30), self._M, cash_target_pct=5.0,
+                                            max_names=10)
+        self.assertLessEqual(meta["funded_count"], 10)
+        funded = {c["symbol"] for c in changes if c["action"] != "remove_target"}
+        # The two high-conviction names always make the cut over the mediums.
+        self.assertIn("AAA", funded)
+        self.assertIn("BBB", funded)
+
+    def test_min_position_prunes_dust(self):
+        # 40 medium names sharing a 95% budget land at ~2.2% each; a 3% floor must
+        # prune the smallest and lift every survivor to at least the floor.
+        changes, meta = optimizer.size_pool(_flat_pool(40), self._M, cash_target_pct=5.0,
+                                            min_position_pct=3.0)
+        mids = [(c["proposed_target"]["low"] + c["proposed_target"]["high"]) / 2.0
+                for c in changes if c["action"] != "remove_target"]
+        self.assertTrue(mids)
+        self.assertGreaterEqual(min(mids), 3.0 - 1e-6)
+        self.assertLess(meta["funded_count"], 42)  # dust got pruned
+
+    def test_aggressive_curve_rewards_high_more(self):
+        pool = _flat_pool(10)
+        bal, _ = optimizer.size_pool(pool, self._M, cash_target_pct=5.0,
+                                     conviction_curve="balanced")
+        agg, _ = optimizer.size_pool(pool, self._M, cash_target_pct=5.0,
+                                     conviction_curve="aggressive")
+
+        def mid(changes, sym):
+            c = next(x for x in changes if x["symbol"] == sym)
+            return (c["proposed_target"]["low"] + c["proposed_target"]["high"]) / 2.0
+
+        self.assertGreater(mid(agg, "AAA"), mid(bal, "AAA"))
+
+    def test_pin_never_pruned_by_floor(self):
+        # A pinned low-conviction name must survive even a punishing min-position
+        # floor that would otherwise drop it.
+        model = {"targets": {}, "sleeves": {},
+                 "provenance": {"PINLOW": {"source": "user-pin", "stance": "hold"}}}
+        pool = _flat_pool(20) + [{"symbol": "PINLOW", "conviction": "low",
+                                  "conviction_source": "pin", "held_pct": 0.5,
+                                  "sleeve": "", "current_target": None, "rationale": ""}]
+        changes, meta = optimizer.size_pool(pool, model, cash_target_pct=5.0,
+                                            min_position_pct=3.0, max_names=5)
+        funded = {c["symbol"] for c in changes if c["action"] != "remove_target"}
+        self.assertIn("PINLOW", funded)
+
+
 if __name__ == "__main__":
     unittest.main()

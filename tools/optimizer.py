@@ -48,6 +48,24 @@ DEFAULT_PER_NAME_CAP = tc.DEFAULT_PER_NAME_CAP  # 12%
 DEFAULT_CONCENTRATION_PCT = 20.0
 MIN_INVESTED_PCT = 50.0   # refuse to size a book that's almost all cash by mistake
 
+# Concentration knobs. Without them, conviction-proportional sizing across a big
+# pool smears the budget into a near-equal-weight book (every "hold" lands at the
+# same small weight). These three gates produce a sharper, more intentional book.
+# The PRODUCT defaults below are what the UI/endpoint apply; the pure sizer keeps
+# them OFF (DEFAULT_SIZER_CURVE/0/None) so the unit-tested math is unchanged.
+DEFAULT_MIN_POSITION_PCT = 1.5   # auto-drop dust whose sized midpoint is below this
+DEFAULT_MAX_NAMES = 25           # fund at most this many names (pins always kept)
+DEFAULT_CONVICTION_CURVE = "aggressive"
+DEFAULT_SIZER_CURVE = "balanced"
+
+# Conviction -> sizing points, by curve. "balanced" mirrors target_construct
+# (3:2:1). "aggressive" steepens the spread so high-conviction names dominate and
+# low-conviction tails stay deliberately small.
+_CURVES = {
+    "balanced": dict(tc._POINTS),                       # high 3 / medium 2 / low 1
+    "aggressive": {"high": 6.0, "medium": 2.0, "low": 0.6},
+}
+
 # Conviction reads, in precedence order, all collapsing to high/medium/low/avoid.
 _RULE_CONVICTION = {
     "accumulate": "high", "hold": "medium", "do_not_add": "medium", "wait": "low",
@@ -220,6 +238,51 @@ def _size_weights(points: dict[str, float], caps: dict[str, float], budget: floa
             for sym, pts in points.items()}
 
 
+def _curve_points(curve: str) -> dict[str, float]:
+    """Conviction->points for the named curve, defaulting to the balanced 3:2:1."""
+    return _CURVES.get(str(curve or "").lower(), _CURVES["balanced"])
+
+
+def _select_funded(points: dict[str, float], caps: dict[str, float], budget: float, *,
+                   min_position_pct: float, max_names: int | None,
+                   protect: set[str], by_sym: dict) -> tuple[dict[str, float], set[str]]:
+    """Decide which buy-rated names actually get funded, and their weights.
+
+    Two concentration gates layered on conviction-proportional sizing:
+    * ``max_names`` keeps the top-N by points (then held weight, then symbol),
+      always retaining ``protect`` (pinned) names even past N.
+    * ``min_position_pct`` iteratively drops the smallest non-protected name whose
+      sized midpoint falls below the floor and re-sizes the survivors, so freed
+      budget concentrates into the keepers instead of leaving dust.
+
+    Returns ``(weights, pruned)``; ``pruned`` are buy names left unfunded so the
+    caller can exit any that are currently targeted."""
+    pts = dict(points)
+    pruned: set[str] = set()
+
+    if max_names and max_names > 0 and len(pts) > max_names:
+        pinned_here = [s for s in pts if s in protect]
+        rest = sorted((s for s in pts if s not in protect),
+                      key=lambda s: (pts[s], by_sym.get(s, {}).get("held_pct") or 0.0, s),
+                      reverse=True)
+        keep = set(pinned_here) | set(rest[: max(0, max_names - len(pinned_here))])
+        pruned |= set(pts) - keep
+        pts = {s: pts[s] for s in keep}
+
+    floor = float(min_position_pct or 0.0)
+    while True:
+        weights = _size_weights(pts, caps, budget)
+        if floor > 0 and len(pts) > 1:
+            below = sorted((w, s) for s, w in weights.items()
+                           if s not in protect and w < floor)
+            if below:
+                victim = below[0][1]
+                del pts[victim]
+                pruned.add(victim)
+                continue
+        return weights, pruned
+
+
 def _clamp_to_pin(pins: dict, sym: str, low: float, high: float) -> tuple[float, float]:
     pin = pins.get(sym)
     if not pin:
@@ -269,13 +332,18 @@ def _change(entry: dict, *, low: float, high: float, rule: str, action: str,
 def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
               per_name_cap: float = DEFAULT_PER_NAME_CAP,
               concentration_pct: float = DEFAULT_CONCENTRATION_PCT,
-              drop_avoid: bool = False) -> tuple[list[dict], dict]:
+              drop_avoid: bool = False,
+              min_position_pct: float = 0.0,
+              max_names: int | None = None,
+              conviction_curve: str = DEFAULT_SIZER_CURVE) -> tuple[list[dict], dict]:
     """Pure sizing pass over the whole pool. Returns ``(changes, meta)``.
 
     Buy-rated names (high/medium/low) split the invested budget by conviction
-    points under caps; avoid-rated *held* names get a trim band (or a drop when
-    ``drop_avoid``); avoid-rated unheld names are skipped. Pins clamp bands and
-    are never auto-dropped."""
+    points (per ``conviction_curve``) under caps; avoid-rated *held* names get a
+    trim band (or a drop when ``drop_avoid``); avoid-rated unheld names are
+    skipped. ``min_position_pct`` and ``max_names`` concentrate the book by
+    pruning dust / capping the name count (held pruned names are exited). Pins
+    clamp bands and are never auto-dropped or pruned."""
     existing_targets = model.get("targets") or {}
     caps_model = tc._member_caps(model)
     pins = tc._pins(model)
@@ -291,13 +359,17 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
     by_sym = {e["symbol"]: e for e in pool}
     buy = {e["symbol"]: e["conviction"] for e in pool
            if e["conviction"] in tc._POINTS}
-    points = {sym: tc._POINTS[conv] for sym, conv in buy.items()}
+    curve = _curve_points(conviction_curve)
+    points = {sym: curve[conv] for sym, conv in buy.items()}
     caps = {sym: cap_for(sym) for sym in buy}
-    weights = _size_weights(points, caps, invested)
+    weights, pruned = _select_funded(
+        points, caps, invested,
+        min_position_pct=float(min_position_pct or 0.0),
+        max_names=max_names, protect=set(pins), by_sym=by_sym)
 
     changes: list[dict] = []
     sized_total = 0.0
-    for sym in sorted(buy):
+    for sym in sorted(weights):  # only the funded names
         entry = by_sym[sym]
         low, high = tc._band_from_weight(weights.get(sym, 0.0))
         low, high = _clamp_to_pin(pins, sym, low, high)
@@ -306,6 +378,18 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
         action = "modify_target" if existing else "add_target"
         changes.append(_change(entry, low=low, high=high, rule=tc._RULE[buy[sym]],
                                action=action, existing=existing, aliases=aliases))
+
+    # Names dropped for concentration (over the name budget or below the dust
+    # floor): exit any that are currently targeted so the book actually narrows.
+    # Untargeted held names just stay untargeted (the preview flags them); we
+    # don't litter the proposal with zero-bands.
+    prune_count = 0
+    for sym in sorted(pruned):
+        existing = existing_targets.get(sym)
+        if existing:
+            changes.append(_change(by_sym[sym], low=0.0, high=0.0, rule="trim_only",
+                                   action="remove_target", existing=existing, aliases=aliases))
+            prune_count += 1
 
     # Avoid-rated names: trim held positions toward their existing band (or drop).
     trim_count = drop_count = 0
@@ -338,8 +422,17 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
 
     book = tc._book_reconciliation(model, changes)
     book["cash_target_pct"] = _round1(cash)
-    book["available_pct"] = _round1(100.0 - book["targeted_mid_pct"] - cash)
-    book["over_allocated"] = book["available_pct"] < -0.01
+    # Each band midpoint is rounded to 0.1pp, so a many-name book can drift up to
+    # ~0.05pp/band above the (unrounded) budget the weights actually respect.
+    # Absorb that as "fully deployed" rather than crying over-allocation; a real
+    # over-allocation (pins forcing the book past 100%) still trips the flag.
+    avail = 100.0 - book["targeted_mid_pct"] - cash
+    n_bands = sum(1 for c in changes
+                  if isinstance(c.get("proposed_target"), dict)
+                  and float(c["proposed_target"].get("high") or 0.0) > 0.0)
+    tol = 0.05 * n_bands + 0.05
+    book["available_pct"] = 0.0 if abs(avail) <= tol else _round1(avail)
+    book["over_allocated"] = avail < -tol
     meta = {
         "cash_target_pct": _round1(cash),
         "invested_budget_pct": _round1(invested),
@@ -347,6 +440,11 @@ def size_pool(pool: list[dict], model: dict, *, cash_target_pct: float,
         "concentration_pct": _round1(concentration_pct),
         "sized_midpoint_total_pct": _round1(sized_total),
         "buy_count": len(buy),
+        "funded_count": len(weights),
+        "prune_count": prune_count,
+        "min_position_pct": _round1(float(min_position_pct or 0.0)),
+        "max_names": int(max_names) if max_names else None,
+        "conviction_curve": str(conviction_curve or DEFAULT_SIZER_CURVE).lower(),
         "trim_count": trim_count,
         "drop_count": drop_count,
         "pinned_count": sum(1 for c in changes if c["symbol"] in pins),
@@ -451,6 +549,8 @@ def optimize(*, cash_target_pct: float | None = None,
              per_name_cap: float = DEFAULT_PER_NAME_CAP,
              concentration_pct: float = DEFAULT_CONCENTRATION_PCT,
              include_curious: bool = True, drop_avoid: bool = False,
+             min_position_pct: float = 0.0, max_names: int | None = None,
+             conviction_curve: str = DEFAULT_SIZER_CURVE,
              exclude: set[str] | None = None, use_llm: bool = False,
              model: dict | None = None, holdings: dict | None = None,
              basket_items: list[dict] | None = None,
@@ -478,7 +578,9 @@ def optimize(*, cash_target_pct: float | None = None,
 
     changes, meta = size_pool(pool, model, cash_target_pct=cash_target_pct,
                               per_name_cap=per_name_cap,
-                              concentration_pct=concentration_pct, drop_avoid=drop_avoid)
+                              concentration_pct=concentration_pct, drop_avoid=drop_avoid,
+                              min_position_pct=min_position_pct, max_names=max_names,
+                              conviction_curve=conviction_curve)
     meta["included_curious"] = bool(include_curious)
     meta["pool_size"] = len(pool)
     meta["excluded"] = sorted(exclude)
