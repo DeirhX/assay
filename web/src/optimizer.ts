@@ -98,28 +98,44 @@ function poolRow(e: PoolEntry): string {
   </tr>`;
 }
 
-function poolTable(): string {
-  if (!_pool.length) {
-    return `<div class="empty"><strong>Your pool is empty.</strong><br>Hold positions, or star tickers into your basket, then come back to size the whole book.</div>`;
-  }
+// Chips summarising the pool, shown on the drawer's summary bar so the counts
+// read without expanding it.
+function poolChips(): string {
   const held = _pool.filter((e) => typeof e.held_pct === "number").length;
   const want = _pool.filter((e) => e.tier === "want").length;
   const curious = _pool.filter((e) => e.tier === "curious").length;
   const chip = (n: number, label: string, cls = "") =>
     `<span class="opt-chip ${cls}"><strong>${n}</strong> ${label}</span>`;
-  return `<div class="opt-pool-head">` +
-    `<div class="subhead">Candidate pool</div>` +
-    `<div class="opt-pool-chips">` +
-    chip(_pool.length, _pool.length === 1 ? "candidate" : "candidates", "opt-chip-total") +
+  return chip(_pool.length, _pool.length === 1 ? "candidate" : "candidates", "opt-chip-total") +
     chip(held, "held", "opt-chip-held") +
     chip(want, "want", "opt-chip-want") +
-    chip(curious, "curious", "opt-chip-curious") +
-    `</div></div>` +
-    `<div class="opt-pool-scroll"><table class="opt-pool-table">` +
+    chip(curious, "curious", "opt-chip-curious");
+}
+
+function poolTable(): string {
+  return `<div class="opt-pool-scroll"><table class="opt-pool-table">` +
     `<colgroup><col class="col-sym"><col class="col-src"><col class="col-conv"><col class="col-held"><col class="col-band"><col class="col-excl"></colgroup>` +
     `<thead><tr>` +
     `<th>Symbol</th><th>Source</th><th>Conviction</th><th class="num">Held</th><th class="num">Band</th><th class="opt-ex-th" title="Exclude from sizing">Excl</th>` +
     `</tr></thead><tbody>${_pool.map(poolRow).join("")}</tbody></table></div>`;
+}
+
+// The pool as a collapsible drawer: open before the first run (it's the input
+// you review and exclude from), auto-collapsed after a proposal exists so it
+// stops competing with the result for screen space.
+function poolDrawer(): string {
+  if (!_pool.length) {
+    return `<div class="opt-card empty"><strong>Your pool is empty.</strong><br>Hold positions, or star tickers into your basket, then come back to size the whole book.</div>`;
+  }
+  return `<details class="opt-pool-details" id="opt-pool-details" open>` +
+    `<summary class="opt-pool-bar">` +
+      `<span class="opt-pool-caret" aria-hidden="true"></span>` +
+      `<span class="opt-pool-title">Candidate pool</span>` +
+      `<span class="opt-pool-chips">${poolChips()}</span>` +
+      `<span class="opt-pool-bar-hint">exclude names, then re-optimize</span>` +
+    `</summary>` +
+    `<div class="opt-pool-body opt-card">${poolTable()}</div>` +
+    `</details>`;
 }
 
 // ---- constraints panel ----------------------------------------------------
@@ -221,16 +237,30 @@ function findingsBlock(findings: any[]): string {
     return `<li class="stage-finding sf-${tone}"><span class="dot ${esc(f.level || "FYI")}"></span>` +
       `<span class="sf-sev">${esc(f.level || "FYI")}</span><span class="sf-msg">${esc(f.message || "")}</span></li>`;
   }).join("");
+  const heading = `${findings.length} thing${findings.length === 1 ? "" : "s"} worth a look`;
+  const list = `<ul class="stage-findings">${items}</ul>`;
+  // A handful inline; a wall of advisories collapses so it doesn't bury the
+  // proposal. Anything more severe than FYI auto-expands so it isn't missed.
+  const severe = findings.some((f) => f.level === "BLOCK" || f.level === "WARN");
+  const body = (findings.length > 4 && !severe)
+    ? `<details class="opt-findings-det"><summary><span class="opt-findings-caret" aria-hidden="true"></span><span class="subhead" style="display:inline">${heading}</span></summary>${list}</details>`
+    : `<div class="subhead">${heading}</div>${list}`;
   return `<div class="stage-section"><div class="stage-checks stage-checks-${worst}" style="padding:12px 14px;border:1px solid var(--border);border-left-width:4px;border-radius:var(--radius-soft)">` +
-    `<div class="subhead">${findings.length} thing${findings.length === 1 ? "" : "s"} worth a look</div>` +
-    `<ul class="stage-findings">${items}</ul></div></div>`;
+    `${body}</div></div>`;
 }
 
+// A compact change card: symbol + conviction + target band on one line, then a
+// thin axis-less band bar. Designed to tile in a multi-column grid so 30+
+// changes read as a dense board instead of one endless column.
 function previewRow(row: ReturnType<typeof changeToRow>, scaleMax: number): string {
   const conv = row.conviction ? `<span class="opt-conv ${CONV_TONE[row.conviction] ? "strat-tag-" + CONV_TONE[row.conviction] : ""}">${esc(row.conviction)}</span>` : "";
+  const after = row.after ? `${row.after.low ?? "?"}–${row.after.high ?? "?"}%` : (row.change === "removed" ? "drop" : "—");
   return `<div class="opt-prev-row">
-    <div class="opt-prev-head"><strong>${esc(row.symbol)}</strong>${conv}</div>
-    ${bandBar(row, scaleMax)}
+    <div class="opt-prev-top">
+      <span class="opt-prev-sym"><strong>${esc(row.symbol)}</strong>${conv}</span>
+      <span class="opt-prev-after">${esc(after)}</span>
+    </div>
+    ${bandBar(row, scaleMax, { axis: false })}
   </div>`;
 }
 
@@ -245,8 +275,10 @@ function renderPreview(proposal: Proposal): void {
   const scaleMax = scaleMaxFor(rows);
   const buys = rows.filter((r) => r.change !== "removed" && r.rule !== "trim_only");
   const trims = rows.filter((r) => r.rule === "trim_only" || r.change === "removed");
+  // One shared axis legend per bucket header rather than under every row.
+  const legend = `<span class="opt-bucket-axis">0–${scaleMax}% of book</span>`;
   const group = (title: string, tone: string, list: typeof rows) => list.length
-    ? `<div class="stage-bucket stage-bucket-${tone}"><div class="subhead stage-bucket-head"><span class="stage-bucket-dot"></span>${title}<span class="stage-bucket-count">${list.length}</span></div>` +
+    ? `<div class="stage-bucket stage-bucket-${tone}"><div class="subhead stage-bucket-head"><span class="stage-bucket-dot"></span>${title}<span class="stage-bucket-count">${list.length}</span>${legend}</div>` +
       `<div class="opt-prev-rows">${list.map((r) => previewRow(r, scaleMax)).join("")}</div></div>`
     : "";
   host.innerHTML =
@@ -260,13 +292,14 @@ function renderPreview(proposal: Proposal): void {
 function renderShell(v: OptimizerView): void {
   const body = $("#opt-body");
   if (!body) return;
+  // Single-column flow on one (page) scrollbar: constraints, then the proposal
+  // as the primary surface, then the candidate pool as a collapsible drawer.
   body.innerHTML =
     constraintsPanel(v.constraints) +
-    `<div class="opt-split">` +
-    `<div class="opt-pool opt-card">${poolTable()}</div>` +
-    `<div class="opt-preview-wrap"><div class="opt-card opt-preview-card">` +
+    `<div class="opt-card opt-preview-card">` +
     `<div class="subhead">Proposed allocation</div>` +
-    `<div id="opt-preview">${previewPlaceholder()}</div></div></div></div>`;
+    `<div id="opt-preview">${previewPlaceholder()}</div></div>` +
+    poolDrawer();
 }
 
 // Calm, centered empty state for the preview column before the first run.
@@ -313,6 +346,11 @@ async function runOptimize(): Promise<void> {
     renderPreview(res.proposal);
     if (status) status.textContent = "";
     if (stageBtn) stageBtn.disabled = !(res.proposal.changes && res.proposal.changes.length);
+    // Collapse the (now-reviewed) pool so the proposal owns the screen, and bring
+    // the result into view.
+    const drawer = $<HTMLDetailsElement>("#opt-pool-details");
+    if (drawer) drawer.open = false;
+    document.querySelector(".opt-preview-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     if (status) { status.textContent = "Optimize failed: " + (e as Error).message; status.classList.add("err"); }
   } finally {

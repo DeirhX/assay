@@ -1745,18 +1745,51 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-stat-v.good { color: var(--good); }
 .reb-stat-v.warn { color: var(--warn); }
 .reb-stat-v.bad { color: var(--bad); }
+.reb-stat-bar { margin-top: 6px; height: 5px; border-radius: 3px; background: var(--panel); overflow: hidden; }
+.reb-stat-bar > span { display: block; height: 100%; width: 0; border-radius: 3px; transition: width .15s ease; }
+.reb-stat-bar > span.freed { background: var(--good); }
+.reb-stat-bar > span.need { background: rgba(130,170,255,.85); }
+.reb-stat-bar > span.closed { background: var(--accent, #82aaff); }
 
-.reb-tbl { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+/* ---- omnifilter: ticker search + status / action / confidence facets ----- */
+.reb-filter {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-soft);
+  padding: 12px 14px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 9px;
+}
+.reb-filter.filtering { border-color: rgba(130,170,255,.45); box-shadow: inset 3px 0 0 var(--accent, #82aaff); }
+.reb-filter-top { display: flex; align-items: center; gap: 10px; }
+.reb-filter-search { flex: 1; min-width: 0; }
+.reb-filter-search input {
+  width: 100%; height: 34px; padding: 6px 12px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: inherit;
+}
+.reb-filter-search input:focus { border-color: var(--accent); outline: none; }
+.reb-filter-count { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.reb-filter-count.active { color: var(--accent); font-weight: 700; }
+.reb-filter-clear { font-size: 12px; padding: 5px 12px; }
+.reb-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.reb-filter-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; min-width: 76px; }
+.reb-filter-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.reb-fpill {
+  font: inherit; font-size: 12px; cursor: pointer; padding: 3px 11px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+  text-transform: capitalize; transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.reb-fpill:hover { color: var(--text); border-color: var(--muted); }
+.reb-fpill.on { color: var(--accent); border-color: var(--accent); background: rgba(130,170,255,.14); font-weight: 700; }
+
+.reb-tbl { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .reb-tbl-sleeves { margin-top: 20px; }
+.reb-row-group { display: flex; flex-direction: column; }
 .reb-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1.4fr) 0.9fr 0.8fr 0.8fr 1.2fr 1fr;
-  align-items: center; gap: 10px;
-  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-soft);
+  grid-template-columns: minmax(150px, 1.5fr) minmax(190px, 2.4fr) minmax(118px, 1fr) minmax(90px, 0.9fr);
+  align-items: center; gap: 14px;
+  padding: 9px 13px; border: 1px solid var(--border); border-radius: var(--radius-soft);
   background: var(--panel);
 }
 .reb-head-row {
-  background: transparent; border: none; padding: 2px 12px;
+  background: transparent; border: none; padding: 2px 13px;
   font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 700;
 }
 .reb-data-row.planned-sell { border-left: 3px solid var(--bad); }
@@ -1798,6 +1831,44 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-cur small, .reb-member small, .reb-untargeted-row small { color: var(--muted); font-size: 11.5px; }
 .reb-band { color: var(--muted); white-space: nowrap; }
 
+/* ---- position track: band zone + current + projected on a shared axis ---- */
+.reb-pos { display: flex; flex-direction: column; gap: 4px; }
+.reb-pos-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-variant-numeric: tabular-nums; }
+.reb-pos-cur { font-weight: 700; font-size: 13.5px; }
+.reb-pos-meta small { color: var(--muted); font-size: 11px; }
+.reb-pos-band { color: var(--muted); font-size: 11.5px; }
+.reb-pos-status { font-size: 10px; padding: 1px 7px; margin-left: auto; }
+.reb-track {
+  position: relative; height: 16px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border); overflow: hidden;
+}
+/* Target band: the "where we want it" zone. */
+.reb-zone {
+  position: absolute; top: 2px; bottom: 2px; border-radius: 4px;
+  background: rgba(107,211,138,.16); border: 1px solid rgba(107,211,138,.45);
+}
+/* Current weight: a muted tick (where we are today). */
+.reb-cur-mark {
+  position: absolute; top: -1px; bottom: -1px; width: 2px; transform: translateX(-1px);
+  background: var(--muted); opacity: .85; z-index: 2;
+}
+.reb-cur-mark::after {
+  content: ""; position: absolute; top: -2px; left: 50%; width: 7px; height: 7px;
+  transform: translateX(-50%) rotate(45deg); background: var(--muted);
+}
+/* Projected weight: a bright tick that slides as you edit the plan. */
+.reb-proj-mark {
+  position: absolute; top: -2px; bottom: -2px; width: 3px; transform: translateX(-1.5px);
+  border-radius: 2px; z-index: 3; transition: left .12s ease;
+}
+.reb-proj-mark.in { background: var(--good); box-shadow: 0 0 0 2px rgba(107,211,138,.25); }
+.reb-proj-mark.out { background: var(--warn); box-shadow: 0 0 0 2px rgba(245,199,107,.25); }
+/* Connector showing the planned move from current → projected. */
+.reb-conn { position: absolute; top: 50%; height: 3px; transform: translateY(-50%); border-radius: 2px; z-index: 1; transition: left .12s ease, width .12s ease; }
+.reb-conn.buy { background: rgba(107,211,138,.6); }
+.reb-conn.sell { background: rgba(255,122,122,.6); }
+.reb-axis { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 .chip {
   display: inline-block; font-size: 11px; font-weight: 700; border-radius: 999px;
   padding: 2px 9px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
@@ -1833,28 +1904,98 @@ a.tlink:hover { border-bottom-style: solid; }
   font-size: 13px;
 }
 .reb-member-sym { font-weight: 600; }
+
+/* Sleeve drawer: per-member recommendations + editable amounts. Reads as a
+   nested mini-plan under the sleeve aggregate row. */
+.reb-sleeve-group .reb-members {
+  margin: 2px 0 6px; border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--radius-soft) var(--radius-soft);
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+}
+.reb-mem-summary {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.reb-mem-summary strong { color: var(--text); }
+.reb-mem-sum-act {
+  margin-left: auto; font-weight: 600; font-size: 12px; padding: 1px 8px;
+  border-radius: 999px; border: 1px solid var(--border);
+}
+.reb-mem-sum-act.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.reb-mem-sum-act.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.reb-mem-sum-act.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+
+.reb-mem-row {
+  display: grid;
+  grid-template-columns: 24px minmax(96px, 1.1fr) minmax(128px, 1.2fr) minmax(120px, auto) 78px;
+  gap: 10px; align-items: center; font-size: 13px; padding: 3px 4px; border-radius: 5px;
+}
+.reb-mem-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding-bottom: 5px; margin-bottom: 2px;
+}
+.reb-mem-row.reb-mem-act { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.reb-mem-order {
+  justify-self: center; min-width: 18px; text-align: center; font-size: 11.5px; font-weight: 700;
+  color: var(--muted);
+}
+.reb-mem-row.reb-mem-act .reb-mem-order {
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 999px; padding: 1px 0;
+}
+.reb-mem-sym { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.reb-mem-sym .reb-link { color: var(--accent); cursor: pointer; }
+.reb-mem-sym .reb-link:hover { text-decoration: underline; }
+.reb-mem-conv { font-size: 10.5px; padding: 0 6px; }
+.reb-mem-cur { display: flex; align-items: baseline; gap: 6px; color: var(--muted); }
+.reb-mem-cur > span:first-child { color: var(--text); }
+.reb-mem-arrow { opacity: .6; }
+.reb-mem-tgt { color: var(--text); font-weight: 600; }
+.reb-mem-tgt small { color: var(--muted); font-weight: 400; }
+.reb-mem-plan { display: flex; align-items: center; gap: 8px; }
+.reb-mem-plan .reb-plan-input { width: 60px; }
+.reb-mem-plan .reb-plan-czk { color: var(--muted); white-space: nowrap; }
+.reb-mem-proj { justify-self: end; font-weight: 700; white-space: nowrap; }
+.reb-mem-proj.good { color: var(--good); }
+.reb-mem-proj .chip { font-size: 10px; padding: 0 5px; margin-left: 4px; }
+
+@media (max-width: 720px) {
+  .reb-mem-row {
+    grid-template-columns: 22px 1fr auto;
+    grid-template-areas: "ord sym proj" "ord cur cur" "ord plan plan";
+    row-gap: 4px;
+  }
+  .reb-mem-head { display: none; }
+  .reb-mem-order { grid-area: ord; align-self: start; }
+  .reb-mem-sym { grid-area: sym; }
+  .reb-mem-cur { grid-area: cur; }
+  .reb-mem-plan { grid-area: plan; }
+  .reb-mem-proj { grid-area: proj; }
+}
 .reb-untargeted { border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel); margin-top: 16px; }
 .reb-untargeted-list {
   padding: 6px 14px 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 18px;
+}
+.reb-untargeted-row {
+  position: relative; padding: 3px 8px; border-radius: 5px;
+  background: linear-gradient(to right, rgba(130,170,255,.16) var(--w, 0%), transparent var(--w, 0%));
 }
 .reb-untargeted-row .reb-link { color: var(--accent); cursor: pointer; }
 .reb-untargeted-row .reb-link:hover { text-decoration: underline; }
 
 @media (max-width: 720px) {
   .reb-row {
-    grid-template-columns: minmax(0, 1.3fr) 0.9fr 1fr;
+    grid-template-columns: 1fr auto;
     grid-template-areas:
-      "name cur status"
-      "band plan proj";
-    gap: 6px 10px;
+      "name name"
+      "pos  pos"
+      "plan proj";
+    gap: 8px 10px;
   }
   .reb-head-row { display: none; }
   .reb-name { grid-area: name; }
-  .reb-cur { grid-area: cur; }
-  .reb-band { grid-area: band; }
-  .reb-status { grid-area: status; }
+  .reb-pos { grid-area: pos; }
   .reb-plan { grid-area: plan; }
-  .reb-proj { grid-area: proj; }
+  .reb-proj { grid-area: proj; justify-self: end; align-self: center; }
 }
 
 /* ---- risk lens ---------------------------------------------------------- */
@@ -1932,9 +2073,30 @@ a.tlink:hover { border-bottom-style: solid; }
 .risk-vol-val { width: 52px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* ---- tax-lot breakdown in the rebalance view ---------------------------- */
-.reb-tax { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft); padding: 8px 12px; margin: 2px 0 6px; }
-.reb-tax > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+/* Tax-lot drawer: visually hangs off the ticker row above it (shared left edge,
+   connected top border, indented) so it reads as an expandable part of that
+   ticker rather than a separator between names. */
+.reb-tax {
+  background: var(--panel-2); border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--radius-soft) var(--radius-soft);
+  margin: -1px 0 0 16px; padding: 0 12px 0;
+}
+.reb-tax[open] { padding-bottom: 10px; }
+.reb-tax > summary {
+  cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  color: var(--muted); font-size: 12.5px; padding: 7px 2px;
+}
+.reb-tax > summary::-webkit-details-marker { display: none; }
 .reb-tax > summary:hover { color: var(--text); }
+.reb-tax-caret { width: 0; height: 0; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .15s ease; }
+.reb-tax[open] .reb-tax-caret { transform: rotate(90deg); }
+.reb-tax-tag {
+  font-weight: 700; text-transform: uppercase; letter-spacing: .03em; font-size: 10.5px;
+  color: var(--warn); border: 1px solid rgba(245,199,107,.4); background: rgba(245,199,107,.08);
+  border-radius: 999px; padding: 1px 8px;
+}
+.reb-tax-count { color: var(--text); font-weight: 600; }
+.reb-tax-bits { color: var(--muted); }
 .reb-tax-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
 .reb-tax-row { display: grid; grid-template-columns: minmax(96px, auto) 1fr auto auto; gap: 10px; align-items: center; font-size: 13px; font-variant-numeric: tabular-nums; }
 .reb-tax-date { color: var(--muted); }
@@ -2440,6 +2602,11 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .stage-recon .stat-value { font-size: 18px; font-weight: 700; margin-top: 2px; }
 .stage-recon-bad .stat-value { color: var(--bad); }
 .stage-warn { color: var(--bad); margin-top: 10px; font-size: 13px; }
+.stage-committed { border: 1px solid color-mix(in srgb, var(--good) 45%, var(--border));
+  background: color-mix(in srgb, var(--good) 10%, var(--panel));
+  border-radius: var(--radius-soft); padding: 14px 16px; font-size: 14px; line-height: 1.55; }
+.stage-committed strong { color: var(--good); }
+.stage-committed code { font-size: 12px; }
 .stage-untargeted { margin-top: 10px; font-size: 13px; }
 .stage-funding { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .stage-pins { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -2698,8 +2865,10 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .opt-chip-curious strong { color: var(--warn); }
 
 /* full-bleed within the card so the table reclaims the card's side padding and
-   the Current-band / exclude columns are never clipped. */
-.opt-pool-scroll { max-height: 72vh; overflow: auto; margin: 0 -18px; }
+   the Current-band / exclude columns are never clipped. No inner scroll: the
+   pool flows on the page (and is collapsed once a proposal exists), so the view
+   has a single scrollbar instead of a pool box scrolling next to the page. */
+.opt-pool-scroll { margin: 0 -18px; }
 .opt-pool-scroll thead th:first-child, .opt-pool-scroll tbody td:first-child { padding-left: 18px; }
 .opt-pool-scroll thead th:last-child, .opt-pool-scroll tbody td:last-child { padding-right: 18px; }
 .opt-pool-table td:nth-child(2) { line-height: 1.7; }
@@ -2736,16 +2905,41 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .opt-conv { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .opt-conv-src { font-size: 10px; color: var(--muted); margin-left: 6px; opacity: .75; }
 
+/* candidate-pool drawer: collapsible so it doesn't dump alongside the result */
+.opt-pool-details { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel); overflow: hidden; }
+.opt-pool-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; cursor: pointer; list-style: none;
+  padding: 11px 16px; background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+.opt-pool-bar::-webkit-details-marker { display: none; }
+.opt-pool-bar:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.opt-pool-caret { width: 0; height: 0; border-left: 6px solid var(--muted); border-top: 5px solid transparent; border-bottom: 5px solid transparent; transition: transform .15s ease; flex: none; }
+.opt-pool-details[open] .opt-pool-caret { transform: rotate(90deg); }
+.opt-pool-title { font-weight: 700; font-size: 13px; }
+.opt-pool-bar-hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+.opt-pool-body { border: none; border-top: 1px solid var(--border); border-radius: 0; }
+
 /* proposed allocation */
-.opt-preview-wrap { position: sticky; top: 12px; }
+.opt-preview-card { scroll-margin-top: calc(var(--topbar-h, 64px) + 56px); }
 .opt-preview-card .subhead { margin-top: 0; }
 .opt-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 5px; padding: 44px 20px 40px; color: var(--muted); }
 .opt-empty svg { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); opacity: .9; margin-bottom: 4px; }
 .opt-empty-title { margin: 0; font-weight: 700; color: var(--text); font-size: 14px; }
 .opt-empty-sub { margin: 0; font-size: 12.5px; max-width: 36ch; line-height: 1.5; }
-.opt-prev-rows { display: flex; flex-direction: column; gap: 8px; }
-.opt-prev-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
-.opt-prev-head { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 2px; }
+/* Dense board: change cards tile across the full width so 30+ rows read as a
+   compact grid, not one 4000px column. */
+.opt-prev-rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+.opt-prev-row { padding: 7px 10px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+.opt-prev-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 13px; }
+.opt-prev-sym { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.opt-prev-after { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.opt-prev-row .band-viz { margin-top: 5px; max-width: none; }
+.opt-bucket-axis { color: var(--muted); font-size: 11px; font-weight: 600; margin-left: auto; }
+.opt-findings-det > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 7px; }
+.opt-findings-det > summary::-webkit-details-marker { display: none; }
+.opt-findings-det .stage-findings { margin-top: 8px; }
+.opt-findings-caret { width: 0; height: 0; border-left: 6px solid var(--muted); border-top: 5px solid transparent; border-bottom: 5px solid transparent; transition: transform .15s ease; flex: none; }
+.opt-findings-det[open] .opt-findings-caret { transform: rotate(90deg); }
 .opt-recon-note { margin: 8px 0 0; }
 .basket-plan { font-size: 12px; }
 .basket-plan.ok { color: var(--good); }

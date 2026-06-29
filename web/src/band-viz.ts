@@ -92,7 +92,7 @@ export function directionTag(r: BandRow): { label: string; tone: "ok" | "warn" |
 // The headline graphic: a horizontal track showing where this name's target sits
 // before (ghost) and after (solid, colour-coded by direction) on the shared
 // axis, so a trim, a raise, a brand-new band or a drop all read at a glance.
-export function bandBar(r: BandRow, scaleMax: number): string {
+export function bandBar(r: BandRow, scaleMax: number, opts?: { axis?: boolean }): string {
   const dir = directionTag(r);
   const before = bandSeg(r.before, scaleMax);
   const after = bandSeg(r.after, scaleMax);
@@ -113,8 +113,11 @@ export function bandBar(r: BandRow, scaleMax: number): string {
     ? `<span class="band-mark tone-${dir.tone}" style="left:${r1(after.mid)}%"></span>`
     : "";
   const label = `${bandText(r.before)} to ${bandText(r.after)}`;
+  // The axis (0%…max labels) is worth showing once per list, not per row; callers
+  // rendering many rows can drop it and show a single shared legend instead.
+  const axis = opts?.axis === false ? "" : `<div class="band-axis"><span>0%</span><span>${scaleMax}%</span></div>`;
   return `<div class="band-viz">
     <div class="band-track" role="img" aria-label="${esc(label)}">${ghost}${conn}${live}${afterMark}</div>
-    <div class="band-axis"><span>0%</span><span>${scaleMax}%</span></div>
+    ${axis}
   </div>`;
 }

@@ -355,6 +355,65 @@ def _suggest(rule: str, status: str, cur: float, low: float, high: float) -> tup
     return None, 0.0
 
 
+def _allocate_sleeve_members(
+    sl: dict[str, Any], members: list[str], weights: dict[str, float],
+    czk, action: str | None, delta: float, provenance: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Turn a sleeve's *aggregate* buy/trim suggestion into per-member advice so
+    the UI can show which names to act on, in what order, and stage member trades
+    into the basket.
+
+    Each member gets a target weight: an even split of the sleeve midpoint,
+    capped by ``member_caps``. The sleeve's suggested delta is then spread across
+    members in proportion to their room-to-target (for buys) or excess-over-target
+    (for trims), so the per-member deltas sum back to the sleeve delta. Members
+    already at/above their share get nothing; the most under-weight name leads the
+    order. Pure advice — the human still edits the amounts."""
+    low = float(sl["low"])
+    high = float(sl["high"])
+    mid = (low + high) / 2.0
+    caps = sl.get("member_caps", {}) or {}
+    n = max(1, len(members))
+    base_share = mid / n
+
+    def target_for(sym: str) -> float:
+        cap = caps.get(sym)
+        return min(base_share, float(cap)) if cap is not None else base_share
+
+    curs = {m: weights.get(m, 0.0) for m in members}
+    rooms = {m: max(0.0, target_for(m) - curs[m]) for m in members}
+    excess = {m: max(0.0, curs[m] - target_for(m)) for m in members}
+    sum_room = sum(rooms.values())
+    sum_excess = sum(excess.values())
+
+    out: list[dict[str, Any]] = []
+    for m in members:
+        cur = curs[m]
+        cap = caps.get(m)
+        mdelta = 0.0
+        if action == "buy" and delta > EPS:
+            mdelta = delta * (rooms[m] / sum_room) if sum_room > EPS else delta / n
+        elif action == "trim" and delta < -EPS:
+            mdelta = delta * (excess[m] / sum_excess) if sum_excess > EPS else delta / n
+        prov = provenance.get(m) if isinstance(provenance, dict) else None
+        out.append({
+            "symbol": m,
+            "current_pct": round(cur, 2),
+            "current_czk": czk(cur),
+            "cap": (float(cap) if cap is not None else None),
+            "target_pct": round(target_for(m), 2),
+            "conviction": (prov or {}).get("conviction") if isinstance(prov, dict) else None,
+            "suggest_delta_pct": round(mdelta, 2),
+            "suggest_delta_czk": czk(mdelta),
+            "member_action": ("buy" if mdelta > EPS else "trim" if mdelta < -EPS else None),
+        })
+    # Order by the size of the suggested move (biggest first); ties and no-ops
+    # keep the model's member order.
+    for rank, i in enumerate(sorted(range(len(out)), key=lambda i: -abs(out[i]["suggest_delta_pct"])), start=1):
+        out[i]["order"] = rank
+    return out
+
+
 def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
     """Structured drift + suggested-action data for the UI rebalance planner.
 
@@ -398,15 +457,18 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
             add_row(sym, sym, "target", str(t.get("rule")), weights.get(sym, 0.0),
                     float(t["low"]), float(t["high"]), t.get("note"))
 
+    provenance = model.get("provenance", {}) if isinstance(model, dict) else {}
     for name, sl in sleeves.items():
         if not _band_ok(sl.get("low"), sl.get("high")):
             continue
         members = sl.get("members", [])
+        low = float(sl["low"])
+        high = float(sl["high"])
         cur = sum(weights.get(m, 0.0) for m in members)
-        member_rows = [{"symbol": m, "current_pct": round(weights.get(m, 0.0), 2),
-                        "current_czk": czk(weights.get(m, 0.0))} for m in members]
-        add_row(f"[{name}]", name, "sleeve", str(sl.get("rule", "accumulate")), cur,
-                float(sl["low"]), float(sl["high"]), sl.get("note"),
+        rule = str(sl.get("rule", "accumulate"))
+        action, delta = _suggest(rule, _status(cur, low, high), cur, low, high)
+        member_rows = _allocate_sleeve_members(sl, members, weights, czk, action, delta, provenance)
+        add_row(f"[{name}]", name, "sleeve", rule, cur, low, high, sl.get("note"),
                 members=member_rows, interactive=False)
 
     managed = set(targets) | {m for sl in sleeves.values() for m in sl.get("members", [])}

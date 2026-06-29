@@ -19,6 +19,13 @@ type Staging = {
 
 const pct = (v: any) => (typeof v === "number" ? fmtWeight(v) : "n/a");
 
+// Set by a successful commit so the very next render can show a persistent
+// "committed" confirmation instead of the bare "No working draft yet" empty
+// state -- otherwise loadStaging() wipes the status line and the user is left
+// staring at an empty draft with no sign their commit worked. Consumed (cleared)
+// on first render so revisits show the normal empty state.
+let _committed: { as_of?: string; backup?: string } | null = null;
+
 // Band rendering, the shared axis, and direction tagging now live in band-viz.ts
 // (used by both this view and the optimizer preview). Provenance labels below
 // stay here — they're specific to the working draft's change records.
@@ -204,8 +211,16 @@ function render(s: Staging): void {
   if (!s.has_draft) {
     if (commit) commit.disabled = true;
     if (discard) discard.disabled = true;
-    body.innerHTML = `<div class="empty"><strong>No working draft yet.</strong><br>`
-      + `Run a strategy and choose <em>"Add to working draft"</em>, or stage changes from the Rebalance planner. They'll collect here so you can review the whole book and commit once.</div>`
+    const done = _committed;
+    _committed = null; // consume: only show right after a commit, not on revisits
+    const head = done
+      ? `<div class="stage-committed"><strong>&#10003; Committed to your live plan.</strong> `
+        + `Your model is now <code>as_of ${esc(done.as_of || "today")}</code>`
+        + (done.backup ? ` and a reversible backup was saved (<code>${esc(done.backup)}</code>)` : "")
+        + `.<br>The working draft is empty again &mdash; that's expected after a commit. Start a new strategy run or stage from the Rebalance planner to build the next one.</div>`
+      : `<div class="empty"><strong>No working draft yet.</strong><br>`
+        + `Run a strategy and choose <em>"Add to working draft"</em>, or stage changes from the Rebalance planner. They'll collect here so you can review the whole book and commit once.</div>`;
+    body.innerHTML = head
       + (s.reconciliation ? `<div class="stage-section"><div class="subhead">Where your live portfolio stands</div>${reconHtml(s.reconciliation)}</div>` : "");
     return;
   }
@@ -256,8 +271,8 @@ function initStaging(): void {
     if (!window.confirm("Commit the working draft to your live portfolio? A reversible backup is kept.")) return;
     commit.disabled = true;
     try {
-      const res = await api("/api/staging/commit", "POST", { confirm: true });
-      if (status) { status.classList.remove("err"); status.textContent = `Committed. Live model is now as_of ${res.as_of}. Backup: ${res.backup || "none"}.`; }
+      const res = await api<{ as_of?: string; backup?: string }>("/api/staging/commit", "POST", { confirm: true });
+      _committed = { as_of: res.as_of, backup: res.backup };
       await loadStaging();
     } catch (e: any) {
       if (status) { status.textContent = "Commit failed: " + (e && e.message); status.classList.add("err"); }
