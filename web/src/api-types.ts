@@ -55,6 +55,16 @@ export interface PlanMember {
   symbol: string;
   current_pct: number;
   current_czk: number | null;
+  // Per-member sleeve advice (sleeve members only; absent on the untargeted bucket):
+  // an even split of the sleeve midpoint capped by member_caps, the share of the
+  // sleeve's suggested buy/trim allocated to this name, and a 1-based order.
+  cap?: number | null;
+  target_pct?: number;
+  conviction?: string | null;
+  suggest_delta_pct?: number;
+  suggest_delta_czk?: number | null;
+  member_action?: "buy" | "trim" | null;
+  order?: number;
 }
 
 // One tranche of a locked ladder as the overlay reports it to the planner: a
@@ -117,6 +127,7 @@ export interface TaxInfo {
   raised?: number | null;
   currency?: string;
   n_lots_used?: number;
+  n_lots_total?: number;
   requested?: number | null;
   shortfall?: number;
 }

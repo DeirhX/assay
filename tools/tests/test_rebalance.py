@@ -197,6 +197,49 @@ class Plan(unittest.TestCase):
         self.assertEqual(sl["current_pct"], 0.0)        # neither TXN nor ADI held
         self.assertEqual(len(sl["members"]), 2)
 
+    def test_sleeve_members_carry_per_member_recommendations(self):
+        sl = next(r for r in self._plan()["rows"] if r["kind"] == "sleeve")
+        mems = {m["symbol"]: m for m in sl["members"]}
+        self.assertEqual(set(mems), {"TXN", "ADI"})
+        for m in mems.values():
+            self.assertAlmostEqual(m["target_pct"], 2.75, places=2)     # even split of mid 5.5
+            self.assertAlmostEqual(m["suggest_delta_pct"], 2.5, places=2)  # buy toward the share
+            self.assertEqual(m["member_action"], "buy")
+            self.assertIn("order", m)
+        # per-member buys sum back to the sleeve's aggregate buy (low 5 - cur 0)
+        self.assertAlmostEqual(sum(m["suggest_delta_pct"] for m in mems.values()),
+                               sl["suggest_delta_pct"], places=1)
+
+    def test_sleeve_member_order_leads_with_biggest_move(self):
+        members = ["TXN", "ADI"]
+        weights = {"TXN": 2.75, "ADI": 0.0}   # TXN already at its share, ADI empty
+        sl = {"low": 5.0, "high": 6.0, "members": members}
+        out = rb._allocate_sleeve_members(sl, members, weights, round, "buy", 5.0 - 2.75, {})
+        by = {m["symbol"]: m for m in out}
+        self.assertEqual(by["ADI"]["order"], 1)                        # biggest move leads
+        self.assertGreater(by["ADI"]["suggest_delta_pct"], by["TXN"]["suggest_delta_pct"])
+        self.assertIsNone(by["TXN"]["member_action"])                  # already at its share
+
+    def test_sleeve_member_caps_bound_target_and_buy(self):
+        members = ["TXN", "ADI"]
+        weights = {"TXN": 0.0, "ADI": 0.0}
+        sl = {"low": 5.0, "high": 6.0, "members": members, "member_caps": {"TXN": 1.0}}
+        out = rb._allocate_sleeve_members(sl, members, weights, round, "buy", 5.0, {})
+        by = {m["symbol"]: m for m in out}
+        self.assertAlmostEqual(by["TXN"]["target_pct"], 1.0)           # capped below 2.75 split
+        self.assertAlmostEqual(by["ADI"]["target_pct"], 2.75)
+        self.assertLess(by["TXN"]["suggest_delta_pct"], by["ADI"]["suggest_delta_pct"])
+
+    def test_sleeve_member_conviction_from_provenance(self):
+        members = ["TXN", "ADI"]
+        weights = {"TXN": 0.0, "ADI": 0.0}
+        sl = {"low": 5.0, "high": 6.0, "members": members}
+        prov = {"TXN": {"conviction": "high"}}
+        out = rb._allocate_sleeve_members(sl, members, weights, round, "buy", 5.0, prov)
+        by = {m["symbol"]: m for m in out}
+        self.assertEqual(by["TXN"]["conviction"], "high")
+        self.assertIsNone(by["ADI"]["conviction"])
+
     def test_untargeted_bucket(self):
         p = self._plan()
         self.assertEqual([u["symbol"] for u in p["untargeted"]], ["ORPHAN"])

@@ -1,6 +1,6 @@
 import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, Whatif, WhatifTrade } from "./api-types";
+import type { Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -24,6 +24,69 @@ const pctToCzk = (pct: number | null | undefined, base: number | null | undefine
 // trim/buy actions. "review" (accumulate over ceiling) and untargeted names are
 // judgement calls, so they start at zero — the human decides.
 const rebDefaultDelta = (r: Pick<RebRow, "action" | "suggest_delta_pct">) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
+
+// ---- position track --------------------------------------------------------
+// A horizontal weight axis shared by every row so a 2% band and an 8% band are
+// visually comparable. The track shows the target band as a shaded zone, the
+// current weight as a ghost tick, and the projected weight (current + planned
+// delta) as a live tick that slides as you edit the plan. Far more skimmable
+// than reading three numeric columns.
+const r1 = (n: number) => Math.round(n * 10) / 10;
+const clampPct = (v: number) => Math.max(0, Math.min(100, v));
+
+// One axis for the whole plan: round the largest band edge / weight / projection
+// up to a friendly multiple of 5, with a 10% floor so a book of small bands
+// still reads.
+function rebScaleMax(rows: RebRow[]): number {
+  let max = 0;
+  for (const r of rows) {
+    if (typeof r.high === "number") max = Math.max(max, r.high);
+    if (typeof r.current_pct === "number") max = Math.max(max, r.current_pct);
+    const proj = (r.current_pct || 0) + (r.suggest_delta_pct || 0);
+    max = Math.max(max, proj);
+  }
+  return Math.max(10, Math.ceil(max / 5) * 5);
+}
+
+// Refs into a row's track that recompute() nudges live as the plan changes.
+interface PosRefs { proj: HTMLElement; conn: HTMLElement; curP: number; }
+
+// Build the Position cell. Returns the cell plus the live-updatable bits (for
+// interactive rows); sleeve rows render a static projected tick at the
+// suggested amount.
+function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRefs } {
+  const cell = el("div", "reb-c reb-pos");
+  const toP = (v: number) => clampPct((v / scaleMax) * 100);
+  const low = typeof r.low === "number" ? r.low : 0;
+  const high = typeof r.high === "number" ? r.high : low;
+  const zL = toP(low);
+  const zW = Math.max(1.5, toP(high) - zL);
+  const curP = toP(r.current_pct);
+  const defDelta = r.interactive ? rebDefaultDelta(r) : (r.suggest_delta_pct || 0);
+  const projInit = (r.current_pct || 0) + defDelta;
+  const projP = toP(projInit);
+  const inBand0 = projInit >= low - 0.01 && projInit <= high + 0.01;
+
+  const meta =
+    `<span class="reb-pos-cur">${r.current_pct.toFixed(2)}%</span>` +
+    `<small>${sensitive(`${fmtCZK(r.current_czk)} CZK`, "position value")}</small>` +
+    `<span class="reb-pos-band">band ${low.toFixed(1)}–${high.toFixed(1)}%</span>` +
+    `<span class="chip ${rebStatusClass(r.status)} reb-pos-status">${esc(r.status)}</span>`;
+  const aria = `${esc(r.name)}: current ${r.current_pct.toFixed(1)}%, target band ${low.toFixed(1)} to ${high.toFixed(1)}%`;
+  cell.innerHTML =
+    `<div class="reb-pos-meta">${meta}</div>` +
+    `<div class="reb-track" role="img" aria-label="${aria}">` +
+      `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
+      `<span class="reb-conn" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>` +
+      `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="current ${r.current_pct.toFixed(2)}%"></span>` +
+      `<span class="reb-proj-mark ${inBand0 ? "in" : "out"}" style="left:${r1(projP)}%" title="projected ${projInit.toFixed(2)}%"></span>` +
+    `</div>` +
+    `<div class="reb-axis"><span>0%</span><span>${scaleMax}%</span></div>`;
+
+  const proj = cell.querySelector(".reb-proj-mark") as HTMLElement;
+  const conn = cell.querySelector(".reb-conn") as HTMLElement;
+  return { cell, refs: { proj, conn, curP } };
+}
 
 // Server-classified thesis lean -> chip color. The add/trim vocabulary lives in
 // exactly one place (tools/rebalance_overlay.py); here we only map its verdict to
@@ -212,10 +275,13 @@ function renderRebalance(plan: RebPlan) {
       ? `<span>funding order ${plan.funding_order.map(esc).join(" \u2192 ")}</span>` : "") +
     `</div>` +
     `<div class="reb-stats">` +
-    `<div class="reb-stat"><span class="reb-stat-k">Cash freed by trims</span><span class="reb-stat-v" id="reb-stat-raised">—</span></div>` +
-    `<div class="reb-stat"><span class="reb-stat-k">Cash needed for buys</span><span class="reb-stat-v" id="reb-stat-spent">—</span></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Cash freed by trims</span><span class="reb-stat-v" id="reb-stat-raised">—</span>` +
+      `<div class="reb-stat-bar"><span class="freed" id="reb-bar-raised"></span></div></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Cash needed for buys</span><span class="reb-stat-v" id="reb-stat-spent">—</span>` +
+      `<div class="reb-stat-bar"><span class="need" id="reb-bar-spent"></span></div></div>` +
     `<div class="reb-stat"><span class="reb-stat-k">Net cash</span><span class="reb-stat-v" id="reb-stat-net">—</span></div>` +
-    `<div class="reb-stat"><span class="reb-stat-k">Target bands closed</span><span class="reb-stat-v" id="reb-stat-closed">—</span></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Target bands closed</span><span class="reb-stat-v" id="reb-stat-closed">—</span>` +
+      `<div class="reb-stat-bar"><span class="closed" id="reb-bar-closed"></span></div></div>` +
     `</div>`;
 
   const openDraft = $("#reb-open-draft");
@@ -229,16 +295,91 @@ function renderRebalance(plan: RebPlan) {
     projPct: HTMLElement;
     projBand: HTMLElement;
     row: HTMLElement;
+    pos: PosRefs;
   }
   const cells: RowCell[] = [];
+  // Sleeve members are now editable too: each carries an input that stages a real
+  // ticker trade into the basket, and the parent sleeve's projected marker tracks
+  // the sum of its members' moves.
+  interface MemberRef {
+    symbol: string;
+    input: HTMLInputElement;
+    czk: HTMLElement;
+    proj: HTMLElement;
+    cur: number;
+    target: number;
+    cap: number | null;
+    def: number;
+  }
+  interface SleeveUnit { r: RebRow; pos: PosRefs; members: MemberRef[]; }
+  const sleeveUnits: SleeveUnit[] = [];
+  const scaleMax = rebScaleMax(plan.rows || []);
+
+  // One per-member recommendation row inside a sleeve's drawer: order, ticker +
+  // conviction, current→target share, an editable buy/trim amount, and a live
+  // projected weight. The amount defaults to the server's suggested allocation of
+  // the sleeve's buy/trim so simulating "just works" — edit down to taste.
+  const buildMemberRow = (m: PlanMember): { rowEl: HTMLElement; ref: MemberRef } => {
+    const cur = m.current_pct || 0;
+    const target = typeof m.target_pct === "number" ? m.target_pct : 0;
+    const def = m.suggest_delta_pct || 0;
+    const cap = typeof m.cap === "number" ? m.cap : null;
+    const rowEl = el("div", "reb-mem-row" + (m.member_action ? " reb-mem-act" : ""));
+
+    const order = el("span", "reb-mem-order", m.order ? `${m.order}` : "\u00b7");
+    order.title = m.member_action ? "buy/trim order within the sleeve" : "no move suggested";
+
+    const symWrap = el("span", "reb-mem-sym");
+    const sym = el("span", "reb-link reb-member-sym", esc(m.symbol));
+    sym.title = "Open dossier";
+    sym.addEventListener("click", () => analyzeFromAnywhere(m.symbol));
+    symWrap.appendChild(sym);
+    if (m.conviction) {
+      const cc = String(m.conviction).toLowerCase();
+      const cls = cc === "high" ? "good" : cc === "low" ? "warn" : "muted";
+      symWrap.appendChild(el("span", `chip reb-mem-conv ${cls}`, esc(cc)));
+    }
+
+    const curCell = el("span", "reb-mem-cur",
+      `<span>${cur.toFixed(2)}%</span>` +
+      `<span class="reb-mem-arrow">\u2192</span>` +
+      `<span class="reb-mem-tgt">${target.toFixed(2)}%` +
+      (cap != null ? ` <small title="member cap">\u2264${cap.toFixed(1)}</small>` : "") +
+      `</span>`);
+
+    const planCell = el("div", "reb-mem-plan");
+    const wrap = el("div", "reb-plan-input-wrap");
+    const input = el("input", "reb-plan-input") as HTMLInputElement;
+    input.type = "number";
+    input.step = "0.1";
+    input.value = String(r1(def));
+    input.title = m.member_action
+      ? `suggested ${fmtSignedWeight(def)} toward its ${target.toFixed(1)}% share`
+      : "at or above its share — no buy suggested; type an amount to stage one anyway";
+    wrap.appendChild(input);
+    wrap.appendChild(el("span", "reb-unit", "%"));
+    planCell.appendChild(wrap);
+    const czk = el("small", "reb-plan-czk");
+    planCell.appendChild(czk);
+
+    const proj = el("span", "reb-mem-proj");
+
+    rowEl.appendChild(order);
+    rowEl.appendChild(symWrap);
+    rowEl.appendChild(curCell);
+    rowEl.appendChild(planCell);
+    rowEl.appendChild(proj);
+
+    const ref: MemberRef = { symbol: m.symbol, input, czk, proj, cur, target, cap, def };
+    input.addEventListener("input", recompute);
+    return { rowEl, ref };
+  };
 
   const headRow = (title: string) => {
     const h = el("div", "reb-row reb-head-row");
     h.innerHTML =
       `<div class="reb-c reb-name">${esc(title)}</div>` +
-      `<div class="reb-c reb-cur">Current</div>` +
-      `<div class="reb-c reb-band">Band</div>` +
-      `<div class="reb-c reb-status">Status</div>` +
+      `<div class="reb-c reb-pos">Current · band · status</div>` +
       `<div class="reb-c reb-plan">Plan (% of book)</div>` +
       `<div class="reb-c reb-proj">Projected</div>`;
     return h;
@@ -271,17 +412,10 @@ function renderRebalance(plan: RebPlan) {
       if (r.price_gate && r.price_gate.blocked_action) row.classList.add("reb-gated");
     }
 
-    const curCell = el("div", "reb-c reb-cur",
-      `<span>${r.current_pct.toFixed(2)}%</span>` +
-      `<small>${sensitive(`${fmtCZK(r.current_czk)} CZK`, "position value")}</small>`);
-    const bandCell = el("div", "reb-c reb-band", `${r.low.toFixed(1)}–${r.high.toFixed(1)}%`);
-    const statusCell = el("div", "reb-c reb-status",
-      `<span class="chip ${rebStatusClass(r.status)}">${r.status}</span>`);
+    const { cell: posC, refs: posRefs } = posCell(r, scaleMax);
 
     row.appendChild(nameCell);
-    row.appendChild(curCell);
-    row.appendChild(bandCell);
-    row.appendChild(statusCell);
+    row.appendChild(posC);
 
     if (r.interactive) {
       const planCell = el("div", "reb-c reb-plan");
@@ -309,71 +443,123 @@ function renderRebalance(plan: RebPlan) {
       projCell.appendChild(projBand);
       row.appendChild(projCell);
 
-      cells.push({ r, input, czk, projPct, projBand, row });
+      cells.push({ r, input, czk, projPct, projBand, row, pos: posRefs });
       input.addEventListener("input", recompute);
     } else {
-      // Sleeve: combined band, no single trade — the human spreads it across members.
+      // Sleeve: combined band sized across members. The per-member breakdown +
+      // editable amounts live in the expandable drawer below this row.
       const planCell = el("div", "reb-c reb-plan reb-plan-ro",
         (r.action
           ? `<span class="chip ${rebActionClass(r.action)}">${fmtSignedWeight(r.suggest_delta_pct)}</span>`
           : `<span class="muted">in band</span>`) +
-        `<small>spread across members</small>`);
+        `<small>across members ↓</small>`);
       row.appendChild(planCell);
       row.appendChild(el("div", "reb-c reb-proj", "<span class=\"muted\">—</span>"));
     }
-    return row;
+    return { row, pos: posRefs };
   };
 
   const targetRows = (plan.rows || []).filter((r) => r.kind === "target");
   const sleeveRows = (plan.rows || []).filter((r) => r.kind === "sleeve");
 
+  // Every filterable row-group, tagged with the facets the omnifilter slices on:
+  // status, suggested action, conviction (confidence) and the ticker text.
+  interface FilterItem { group: HTMLElement; name: string; status: string; action: string; conv: string; }
+  const filterItems: FilterItem[] = [];
+  const convOf = (r: RebRow): string => {
+    const key = r.kind === "sleeve" ? `[${r.name}]` : r.name;
+    const c = String((provenance[key] || {}).conviction || "").toLowerCase();
+    return c === "high" || c === "medium" || c === "low" ? c : "none";
+  };
+
   const grid = el("div", "reb-tbl");
   grid.appendChild(headRow("Targets"));
   targetRows.forEach((r) => {
-    grid.appendChild(buildRow(r));
+    // Row + its tax-lot drawer live in one group so the drawer reads as an
+    // expandable part of the ticker, not a separator floating between names.
+    const group = el("div", "reb-row-group");
+    group.appendChild(buildRow(r).row);
     const tax = taxDetails(r);
-    if (tax) grid.appendChild(tax);
+    if (tax) { group.classList.add("has-tax"); group.appendChild(tax); }
+    grid.appendChild(group);
+    filterItems.push({ group, name: r.name.toLowerCase(), status: r.status, action: r.action || "none", conv: convOf(r) });
   });
   out.appendChild(grid);
 
+  let sgrid: HTMLElement | null = null;
   if (sleeveRows.length) {
-    const sgrid = el("div", "reb-tbl reb-tbl-sleeves");
-    sgrid.appendChild(headRow("Sleeves"));
+    const sg = el("div", "reb-tbl reb-tbl-sleeves");
+    sgrid = sg;
+    sg.appendChild(headRow("Sleeves"));
     sleeveRows.forEach((r) => {
-      sgrid.appendChild(buildRow(r));
-      if (r.members && r.members.length) {
+      const group = el("div", "reb-row-group reb-sleeve-group");
+      const built = buildRow(r);
+      group.appendChild(built.row);
+      filterItems.push({ group, name: r.name.toLowerCase(), status: r.status, action: r.action || "none", conv: convOf(r) });
+      const members = r.members || [];
+      if (members.length) {
         const det = el("details", "reb-members");
-        const held = r.members.filter((m) => m.current_pct > 0).length;
-        det.appendChild(el("summary", null,
-          `${r.members.length} members · ${held} held`));
+        // Open by default when there's something to do, so the per-name plan is
+        // visible rather than hidden behind a click.
+        det.open = !!r.action;
+        const held = members.filter((m) => m.current_pct > 0).length;
+        const actN = members.filter((m) => m.member_action).length;
+        const verb = r.action === "trim" ? "trim" : r.action === "buy" ? "buy" : null;
+        const hint = verb
+          ? `<span class="reb-mem-sum-act ${rebActionClass(r.action)}">${verb} ${fmtSignedWeight(r.suggest_delta_pct)} \u00b7 ${actN} name${actN === 1 ? "" : "s"}</span>`
+          : `<span class="muted">in band \u2014 hold</span>`;
+        det.appendChild(el("summary", "reb-mem-summary",
+          `<span><strong>${members.length}</strong> members \u00b7 ${held} held</span>${hint}`));
+
         const ml = el("div", "reb-members-list");
-        r.members.forEach((m) => {
-          ml.appendChild(el("div", "reb-member",
-            `<span class="reb-member-sym">${esc(m.symbol)}</span>` +
-            `<span>${m.current_pct.toFixed(2)}%</span>` +
-            `<small>${sensitive(`${fmtCZK(m.current_czk)} CZK`, "position value")}</small>`));
+        ml.appendChild(el("div", "reb-mem-row reb-mem-head",
+          `<span class="reb-mem-order" title="suggested order">#</span>` +
+          `<span class="reb-mem-sym">Ticker</span>` +
+          `<span class="reb-mem-cur">Current \u2192 target</span>` +
+          `<span class="reb-mem-plan">Buy / trim</span>` +
+          `<span class="reb-mem-proj">Projected</span>`));
+
+        const unit: SleeveUnit = { r, pos: built.pos, members: [] };
+        // Render in the server's suggested order (biggest move first).
+        members.slice().sort((a, b) => (a.order || 99) - (b.order || 99)).forEach((m) => {
+          const built2 = buildMemberRow(m);
+          ml.appendChild(built2.rowEl);
+          unit.members.push(built2.ref);
         });
+        sleeveUnits.push(unit);
         det.appendChild(ml);
-        sgrid.appendChild(det);
+        group.appendChild(det);
       }
+      sg.appendChild(group);
     });
-    out.appendChild(sgrid);
+    out.appendChild(sg);
   }
 
+  // Untargeted names carry no band/action/conviction, so the omnifilter only
+  // text-matches them; an active categorical facet hides the whole section.
+  const untargetedItems: { row: HTMLElement; name: string }[] = [];
+  let untargetedDet: HTMLElement | null = null;
   if (plan.untargeted && plan.untargeted.length) {
     const det = el("details", "reb-untargeted");
+    untargetedDet = det;
     det.appendChild(el("summary", null,
       `Untargeted holdings — ${plan.untargeted.length} names, ` +
       `${plan.untargeted_pct.toFixed(1)}% of NAV (no band; not in the plan)`));
     const list = el("div", "reb-untargeted-list");
+    // Shared scale so the fill behind each name reads as its relative size — the
+    // 6% names stand out from the 0.x% dust at a glance.
+    const uMax = Math.max(0.01, ...plan.untargeted.map((u) => Math.max(0, u.current_pct || 0)));
     plan.untargeted.forEach((u) => {
       const r = el("div", "reb-untargeted-row");
+      const w = clampPct((Math.max(0, u.current_pct || 0) / uMax) * 100);
+      r.style.setProperty("--w", `${r1(w)}%`);
       r.innerHTML =
         `<span class="reb-link reb-member-sym">${esc(u.symbol)}</span>` +
         `<span>${u.current_pct.toFixed(2)}%</span>` +
         `<small>${sensitive(`${fmtCZK(u.current_czk)} CZK`, "position value")}</small>`;
       r.querySelector(".reb-link").addEventListener("click", () => analyzeFromAnywhere(u.symbol));
       list.appendChild(r);
+      untargetedItems.push({ row: r, name: String(u.symbol || "").toLowerCase() });
     });
     det.appendChild(list);
     out.appendChild(det);
@@ -385,9 +571,97 @@ function renderRebalance(plan: RebPlan) {
     "Cash totals include the sleeves' suggested buys/sells (fixed — you allocate those across members). " +
     "Net cash > 0 means trims fund the buys; < 0 means you'd need fresh cash (e.g. from the untargeted bucket)."));
 
+  // ---- omnifilter: ticker search + status / action / confidence facets -----
+  // Pills within a facet OR together; facets AND together; the search box ANDs
+  // a substring match on the ticker. Untargeted names have no facets, so they
+  // only react to the search and hide entirely when a facet is active.
+  const FILTER_FACETS: { key: "status" | "action" | "conv"; label: string; opts: [string, string][] }[] = [
+    { key: "status", label: "Status", opts: [["BELOW", "below"], ["IN", "in band"], ["ABOVE", "above"]] },
+    { key: "action", label: "Action", opts: [["buy", "buy"], ["trim", "trim"], ["review", "review"], ["wait", "wait"], ["none", "no action"]] },
+    { key: "conv", label: "Confidence", opts: [["high", "high"], ["medium", "medium"], ["low", "low"], ["none", "none"]] },
+  ];
+  const filterBar = el("div", "reb-filter");
+  filterBar.innerHTML =
+    `<div class="reb-filter-top">` +
+      `<div class="reb-filter-search">` +
+        `<input type="search" id="reb-filter-q" placeholder="Filter by ticker…" autocomplete="off" spellcheck="false">` +
+      `</div>` +
+      `<span class="reb-filter-count" id="reb-filter-count"></span>` +
+      `<button type="button" class="ghost reb-filter-clear" id="reb-filter-clear">Clear</button>` +
+    `</div>` +
+    FILTER_FACETS.map((f) =>
+      `<div class="reb-filter-row"><span class="reb-filter-label">${f.label}</span>` +
+      `<div class="reb-filter-pills" data-facet="${f.key}">` +
+      f.opts.map(([v, l]) => `<button type="button" class="reb-fpill" data-val="${esc(v)}">${esc(l)}</button>`).join("") +
+      `</div></div>`).join("");
+  out.prepend(filterBar);
+
+  const qInput = filterBar.querySelector("#reb-filter-q") as HTMLInputElement;
+  const countEl = filterBar.querySelector("#reb-filter-count") as HTMLElement;
+  const selectedVals = (facet: string): string[] =>
+    [...filterBar.querySelectorAll(`[data-facet="${facet}"] .reb-fpill.on`)].map((b) => (b as HTMLElement).dataset.val || "");
+
+  const syncSection = (g: HTMLElement | null) => {
+    if (!g) return;
+    const groups = [...g.querySelectorAll(".reb-row-group")];
+    const vis = groups.some((x) => (x as HTMLElement).style.display !== "none");
+    const head = g.querySelector(".reb-head-row") as HTMLElement | null;
+    if (head) head.style.display = vis ? "" : "none";
+    g.style.display = vis ? "" : "none";
+  };
+
+  function applyFilter() {
+    const q = qInput.value.trim().toLowerCase();
+    const st = selectedVals("status"), ac = selectedVals("action"), cv = selectedVals("conv");
+    const catActive = !!(st.length || ac.length || cv.length);
+    let shown = 0;
+    filterItems.forEach((it) => {
+      let ok = true;
+      if (q && !it.name.includes(q)) ok = false;
+      if (ok && st.length && !st.includes(it.status)) ok = false;
+      if (ok && ac.length && !ac.includes(it.action)) ok = false;
+      if (ok && cv.length && !cv.includes(it.conv)) ok = false;
+      it.group.style.display = ok ? "" : "none";
+      if (ok) shown += 1;
+    });
+    syncSection(grid);
+    syncSection(sgrid);
+
+    let uShown = 0;
+    if (untargetedDet) {
+      if (catActive) {
+        untargetedDet.style.display = "none";
+      } else {
+        untargetedItems.forEach((u) => {
+          const ok = !q || u.name.includes(q);
+          u.row.style.display = ok ? "" : "none";
+          if (ok) uShown += 1;
+        });
+        untargetedDet.style.display = uShown ? "" : "none";
+      }
+    }
+
+    const active = !!q || catActive;
+    const tail = (!catActive && untargetedDet && untargetedItems.length) ? ` · ${uShown} untargeted` : "";
+    countEl.textContent = active ? `${shown} of ${filterItems.length} plan names${tail}` : `${filterItems.length} plan names`;
+    countEl.classList.toggle("active", active);
+    filterBar.classList.toggle("filtering", active);
+  }
+
+  filterBar.querySelectorAll(".reb-fpill").forEach((b) => {
+    b.addEventListener("click", () => { b.classList.toggle("on"); applyFilter(); });
+  });
+  qInput.addEventListener("input", applyFilter);
+  filterBar.querySelector("#reb-filter-clear")!.addEventListener("click", () => {
+    qInput.value = "";
+    filterBar.querySelectorAll(".reb-fpill.on").forEach((b) => b.classList.remove("on"));
+    applyFilter();
+  });
+  applyFilter();
+
   function recompute() {
     let raised = 0, spent = 0, closed = 0, total = 0;
-    cells.forEach(({ r, input, czk, projPct, projBand, row }) => {
+    cells.forEach(({ r, input, czk, projPct, projBand, row, pos }) => {
       total += 1;
       let d = parseFloat(input.value);
       if (!Number.isFinite(d)) d = 0;
@@ -404,16 +678,50 @@ function renderRebalance(plan: RebPlan) {
       projBand.className = "chip reb-proj-band " + (inBand ? "good" : "warn");
       row.classList.toggle("planned-sell", d < -0.001);
       row.classList.toggle("planned-buy", d > 0.001);
+
+      // Slide the projected tick + draw the current→projected connector live.
+      const projP = clampPct((proj / scaleMax) * 100);
+      pos.proj.style.left = `${r1(projP)}%`;
+      pos.proj.title = `projected ${proj.toFixed(2)}%`;
+      pos.proj.classList.toggle("in", inBand);
+      pos.proj.classList.toggle("out", !inBand);
+      pos.conn.style.left = `${r1(Math.min(pos.curP, projP))}%`;
+      pos.conn.style.width = `${r1(Math.abs(projP - pos.curP))}%`;
+      pos.conn.classList.toggle("buy", d > 0.001);
+      pos.conn.classList.toggle("sell", d < -0.001);
     });
 
-    // Sleeves aren't per-name editable (the human spreads them across members),
-    // but their suggested buys/sells are real capital the plan needs. Folding
-    // them in at the suggested amount keeps "cash needed" honest — otherwise the
-    // headline silently ignores ~15% of NAV in sleeve buys.
-    (plan.rows || []).filter((r) => r.kind === "sleeve").forEach((r) => {
-      const d = r.suggest_delta_pct || 0;
-      if (r.action === "trim") raised += -d;
-      else if (r.action === "buy") spent += d;
+    // Sleeve members are editable now, so the headline sums the per-member
+    // amounts (which default to the server's split of the sleeve buy/trim). Each
+    // sleeve's projected marker slides to current + the sum of its members' moves
+    // so the aggregate band still reads true.
+    sleeveUnits.forEach(({ r, pos, members }) => {
+      let sum = 0;
+      members.forEach((mc) => {
+        let d = parseFloat(mc.input.value);
+        if (!Number.isFinite(d)) d = 0;
+        sum += d;
+        if (d < 0) raised += -d; else spent += d;
+        const mproj = mc.cur + d;
+        const overCap = mc.cap != null && mproj > mc.cap + 0.01;
+        mc.czk.innerHTML = d
+          ? sensitive(`${d > 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(pctToCzk(d, base)))} CZK`, "planned trade size")
+          : "<span class=\"muted\">no change</span>";
+        mc.proj.innerHTML = `${mproj.toFixed(2)}%` +
+          (overCap ? ` <span class="chip warn" title="over its member cap">cap</span>` : "");
+        mc.proj.classList.toggle("good", !overCap && mproj >= mc.target - 0.01);
+      });
+      const proj = r.current_pct + sum;
+      const inBand = proj >= r.low - 0.01 && proj <= r.high + 0.01;
+      const projP = clampPct((proj / scaleMax) * 100);
+      pos.proj.style.left = `${r1(projP)}%`;
+      pos.proj.title = `projected ${proj.toFixed(2)}%`;
+      pos.proj.classList.toggle("in", inBand);
+      pos.proj.classList.toggle("out", !inBand);
+      pos.conn.style.left = `${r1(Math.min(pos.curP, projP))}%`;
+      pos.conn.style.width = `${r1(Math.abs(projP - pos.curP))}%`;
+      pos.conn.classList.toggle("buy", sum > 0.001);
+      pos.conn.classList.toggle("sell", sum < -0.001);
     });
 
     const raisedCzk = pctToCzk(raised, base);
@@ -433,12 +741,23 @@ function renderRebalance(plan: RebPlan) {
     const closedEl = $("#reb-stat-closed");
     closedEl.textContent = `${closed}/${total}`;
     closedEl.classList.toggle("good", total > 0 && closed === total);
+
+    // Funding bars: freed vs needed on a shared scale, so a glance shows whether
+    // trims cover the buys (freed ≥ needed) or you'd need fresh cash.
+    const fundMax = Math.max(raised, spent, 0.01);
+    const barRaised = $("#reb-bar-raised");
+    const barSpent = $("#reb-bar-spent");
+    const barClosed = $("#reb-bar-closed");
+    if (barRaised) barRaised.style.width = `${r1((raised / fundMax) * 100)}%`;
+    if (barSpent) barSpent.style.width = `${r1((spent / fundMax) * 100)}%`;
+    if (barClosed) barClosed.style.width = `${r1(total > 0 ? (closed / total) * 100 : 0)}%`;
   }
 
   const reset = $("#reb-reset");
   if (reset) {
     reset.onclick = () => {
       cells.forEach(({ r, input }) => { input.value = String(rebDefaultDelta(r)); });
+      sleeveUnits.forEach(({ members }) => members.forEach((mc) => { mc.input.value = String(r1(mc.def)); }));
       recompute();
     };
   }
@@ -454,6 +773,15 @@ function renderRebalance(plan: RebPlan) {
         if (czk == null || czk === 0) return;
         trades.push({ symbol: r.name, delta_czk: czk });
       });
+      // Sleeve members stage as real ticker trades — the simulator recomputes the
+      // sleeve aggregate from them, so the "after" band reflects your member buys.
+      sleeveUnits.forEach(({ members }) => members.forEach((mc) => {
+        const d = parseFloat(mc.input.value);
+        if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
+        const czk = pctToCzk(d, base);
+        if (czk == null || czk === 0) return;
+        trades.push({ symbol: mc.symbol, delta_czk: czk });
+      }));
       // Share the staged basket with the Trade desk so it can preview/place the
       // exact same trades you just simulated here. Persisted server-side too, so
       // it survives a reload / navigation instead of living only in this tab.
@@ -461,7 +789,7 @@ function renderRebalance(plan: RebPlan) {
       void api("/api/trade/basket", "POST", { trades }).catch(() => { /* best-effort */ });
       const box = $("#reb-whatif");
       if (!trades.length) {
-        box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name, then simulate. (Sleeves are spread across members by hand, so they are not staged.)</div>`;
+        box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name or a sleeve member, then simulate.</div>`;
         return;
       }
       box.innerHTML = `<div class="status">Simulating…</div>`;
@@ -508,19 +836,30 @@ function renderWhatif(wf: Whatif) {
   card.appendChild(stats);
 
   const afterRows: Record<string, RebRow> = {};
-  ((wf.after && wf.after.rows) || []).forEach((r) => { if (r.kind === "target") afterRows[r.name] = r; });
+  // A member trade (e.g. XSD) doesn't have its own row — it rolls up into its
+  // sleeve, so map members to the sleeve row to show the sleeve's after band.
+  const sleeveByMember: Record<string, RebRow> = {};
+  ((wf.after && wf.after.rows) || []).forEach((r) => {
+    if (r.kind === "target") afterRows[r.name] = r;
+    else if (r.kind === "sleeve" && r.members) r.members.forEach((m) => { sleeveByMember[m.symbol] = r; });
+  });
   card.appendChild(simpleTable({
     className: "whatif-table",
     head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr>`,
     rows: wf.trades,
     cells: (t: { symbol: string; delta_czk: number }) => {
       const ar = afterRows[t.symbol];
+      const sleeve = ar ? null : sleeveByMember[t.symbol];
+      const status = ar || sleeve;
       const before = (wf.before_status && wf.before_status[t.symbol]) || "\u2014";
-      return `<td>${esc(t.symbol)}</td>` +
+      const nameCell = sleeve
+        ? `${esc(t.symbol)} <small class="muted">\u2192 ${esc(sleeve.name)}</small>`
+        : esc(t.symbol);
+      return `<td>${nameCell}</td>` +
         `<td class="num">${sensitive(`${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`, "trade size")}</td>` +
         `<td><span class="chip ${rebStatusClass(before)}">${esc(before)}</span></td>` +
-        `<td>${ar ? `<span class="chip ${rebStatusClass(ar.status)}">${esc(ar.status)}</span>` : "\u2014"}</td>` +
-        `<td class="num">${ar ? ar.current_pct.toFixed(2) + "%" : "\u2014"}</td>`;
+        `<td>${status ? `<span class="chip ${rebStatusClass(status.status)}">${esc(status.status)}</span>` : "\u2014"}</td>` +
+        `<td class="num">${status ? status.current_pct.toFixed(2) + "%" : "\u2014"}</td>`;
     },
   }));
 
@@ -575,7 +914,11 @@ function taxDetails(r: RebRow) {
   ];
   if (tot.exempt_proceeds > 0) bits.push(`${sensitive(`${fmtCZK(tot.exempt_proceeds)}`, "exempt proceeds")} already 3y-exempt`);
   if (tot.harvestable_loss > 0) bits.push(`${sensitive(`${fmtCZK(tot.harvestable_loss)}`, "harvestable loss")} harvestable loss`);
-  det.appendChild(el("summary", null, `Tax lots to sell for the ${esc(r.name)} trim — ${bits.join(" · ")}`));
+  det.appendChild(el("summary", null,
+    `<span class="reb-tax-caret" aria-hidden="true"></span>` +
+    `<span class="reb-tax-tag">Tax lots</span>` +
+    `<span class="reb-tax-count">${t.n_lots_used} of ${t.n_lots_total} lot(s) to sell</span>` +
+    `<span class="reb-tax-bits">${bits.join(" · ")}</span>`));
 
   const list = el("div", "reb-tax-list");
   t.lots.forEach((l) => {
