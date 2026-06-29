@@ -629,10 +629,11 @@ async function openTicker(sym: string | null | undefined) {
     status.textContent = `Cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()} — press Analyze to refresh`;
     // Paint everything that's already on file now; the recent-pulls change log is
     // a separate fetch that streams in under its own progress bar (see below).
-    renderDeepDive(rec);
+    // Opening a ticker anchors on its price history (nav already pushed above).
+    renderDeepDive(rec, { anchorChart: true });
     hydrateHistory(rec);
   } catch (_e) {
-    await pullTicker(ticker, { push: false });  // nothing cached -> pull live
+    await pullTicker(ticker, { push: false, anchor: true });  // nothing cached -> pull live
   }
 }
 

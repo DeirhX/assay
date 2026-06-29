@@ -267,8 +267,22 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
     except ProviderError as exc:
         errors.append(f"yahoo fundamentals: {exc}")
 
-    s = sec_edgar.fundamentals(symbol)
-    f = fmp.fundamentals(symbol) if fmp.enabled() else None
+    # SEC EDGAR is the optional cross-check leg, not the primary source. Guard it
+    # like Yahoo above so a provider failure (e.g. a 403 on the SEC ticker map
+    # from a rejected User-Agent) degrades to a missing cross-check, not a dead
+    # pull. sec_edgar.fundamentals already fails soft; this is belt-and-suspenders.
+    s: dict[str, Any] | None = None
+    try:
+        s = sec_edgar.fundamentals(symbol)
+    except ProviderError as exc:
+        errors.append(f"sec_edgar fundamentals: {exc}")
+
+    f: dict[str, Any] | None = None
+    if fmp.enabled():
+        try:
+            f = fmp.fundamentals(symbol)
+        except ProviderError as exc:
+            errors.append(f"fmp fundamentals: {exc}")
 
     by_metric = _collect(y, s, f)
     merged = _merge_metrics(by_metric)

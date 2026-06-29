@@ -97,7 +97,9 @@ async function renderViewedTickers() {
       const st = detectStance(r.verdict);
       if (st) {
         stancePill = `<span class="verdict-stance ${st.cls}">${esc(st.label)}</span>`;
-        verdictText = r.verdict.replace(st.re, "").replace(/^[\s,:;.\u2014\u2013-]+/, "");
+        // Drop the matched stance word, then any leading separators it left behind
+        // -- including the "/" / "|" that delimit "Avoid / high confidence: …".
+        verdictText = r.verdict.replace(st.re, "").replace(/^[\s/|,:;.\u2014\u2013-]+/, "");
       } else {
         verdictText = r.verdict;
       }

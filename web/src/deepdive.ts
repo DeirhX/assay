@@ -226,7 +226,7 @@ async function loadTickerFromCache(raw: string): Promise<void> {
     if (isStaleToken("deepdive", token)) return;
     status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
     if (hasUsableMarketData(rec)) {
-      renderDeepDive(rec);
+      renderDeepDive(rec, { anchorChart: true });
       hydrateHistory(rec);
     } else {
       renderNoMarketData(rec);
@@ -249,9 +249,12 @@ async function loadTickerFromCache(raw: string): Promise<void> {
   }
 }
 
-async function pullTicker(raw: string, { push = true, aliasFor = "" }: { push?: boolean; aliasFor?: string } = {}): Promise<void> {
+async function pullTicker(raw: string, { push = true, aliasFor = "", anchor }: { push?: boolean; aliasFor?: string; anchor?: boolean } = {}): Promise<void> {
   const sym = cleanSymbol(raw);
   if (!sym) return;
+  // A real navigation (push) anchors on the chart; an in-place refresh keeps the
+  // reader where they were. Callers can override with an explicit `anchor`.
+  const anchorChart = anchor ?? push;
   // Latest-wins: a slow live pull for a ticker the user has navigated away from
   // must not paint over the dossier they're now looking at.
   const token = nextToken("deepdive");
@@ -268,7 +271,7 @@ async function pullTicker(raw: string, { push = true, aliasFor = "" }: { push?: 
     status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
     if (aliasFor) rec.alias_candidate_for = cleanSymbol(aliasFor);
     if (hasUsableMarketData(rec)) {
-      renderDeepDive(rec);
+      renderDeepDive(rec, { anchorChart });
       hydrateHistory(rec);
     } else {
       renderNoMarketData(rec);
@@ -421,7 +424,10 @@ function wireDossierChrome(headerCard: HTMLElement, sections: DossierSection[]):
   });
 }
 
-function renderDeepDive(rec: Rec): void {
+// `anchorChart` lands a fresh navigation on the Price history card (below the
+// sticky bar) instead of the very top, so opening a ticker drops you straight at
+// the chart. In-place refreshes pass false to preserve the reader's scroll.
+function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boolean } = {}): void {
   recordView(rec.symbol, rec.name);
   const out = $("#dd-result");
   teardownDossierChrome();  // drop observers from any prior dossier render
@@ -617,6 +623,13 @@ function renderDeepDive(rec: Rec): void {
   out.appendChild(secAnalysis);
   out.appendChild(secHistory);
   wireDossierChrome(card, sections);
+
+  // Anchor a fresh open on the price history once layout has settled. The chart
+  // card carries its own scroll-margin so it clears the sticky bar; if there's
+  // no chart (no price series), stay at the top rather than jumping to nothing.
+  if (anchorChart && chart) {
+    requestAnimationFrame(() => chart.scrollIntoView({ block: "start" }));
+  }
 }
 
 // Fetch the recent-pulls change log out of band and drop it into its slot. Kept

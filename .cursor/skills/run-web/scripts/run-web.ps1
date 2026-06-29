@@ -90,8 +90,11 @@ if (-not $NoInstall -and -not (Test-Path (Join-Path $root 'node_modules'))) {
 }
 
 # --- Polite SEC user-agent default if the caller has not set one ---
+# SEC fair-access rejects (403) a UA without a contact email, so the default MUST
+# contain an email-looking token. example.com is RFC2606-reserved; override with
+# your real contact via $env:SEC_USER_AGENT.
 if (-not $env:SEC_USER_AGENT) {
-    $env:SEC_USER_AGENT = 'assay research (local-dev)'
+    $env:SEC_USER_AGENT = 'assay-research (local dev) admin@example.com'
 }
 
 # --- Resolve a python launcher (py -3 on Windows, else python) ---

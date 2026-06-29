@@ -655,26 +655,65 @@ function renderStaged(m: Manifest, panel: HTMLElement) {
   const counts: { total?: number | string } = (diff && diff.counts) || {};
   const appliedN = (staged.applied || []).length;
   const skipped = staged.skipped || [];
+  const skippedHtml = skipped.length
+    ? `<p class="muted">Skipped: ${skipped.map((s) => esc(s.symbol) + " (" + esc(s.reason) + ")").join("; ")}.</p>` : "";
   panel.innerHTML = "";
   const card = el("div", "card strat-done");
-  card.innerHTML =
-    `<h3>✓ Staged into the working draft</h3>` +
-    `<p class="hint">${esc(m.message || "")}</p>` +
-    `<p>Added ${appliedN} change(s) from this run. The working draft now holds ` +
-    `<strong>${esc(counts.total ?? "?")}</strong> pending change(s) across all runs and edits.</p>` +
-    (skipped.length
-      ? `<p class="muted">Skipped: ${skipped.map((s) => esc(s.symbol) + " (" + esc(s.reason) + ")").join("; ")}.</p>` : "");
-  const actions = el("div", "thesis-actions");
-  const goDraft = el("button", "primary", "Review working draft →");
-  goDraft.type = "button";
-  goDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
-  const restart = el("button", "ghost", "New run ↺");
-  restart.type = "button";
-  restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
-  actions.appendChild(goDraft);
-  actions.appendChild(restart);
-  card.appendChild(actions);
   panel.appendChild(card);
+
+  const restartBtn = () => {
+    const b = el("button", "ghost", "New run ↺");
+    b.type = "button";
+    b.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
+    return b;
+  };
+
+  // A run sits in "staged" state durably, but the working draft it fed is
+  // ephemeral: committing promotes it to the live model and deletes it, and
+  // discarding deletes it too. Trusting the stored state alone left a "Review
+  // working draft →" link that dead-ended on the empty "No working draft yet"
+  // screen. Reconcile against the live draft and render accordingly.
+  const renderActive = (pendingTotal: number | string) => {
+    card.innerHTML =
+      `<h3>✓ Staged into the working draft</h3>` +
+      `<p class="hint">${esc(m.message || "")}</p>` +
+      `<p>Added ${appliedN} change(s) from this run. The working draft now holds ` +
+      `<strong>${esc(pendingTotal)}</strong> pending change(s) across all runs and edits.</p>` +
+      skippedHtml;
+    const actions = el("div", "thesis-actions");
+    const goDraft = el("button", "primary", "Review working draft →");
+    goDraft.type = "button";
+    goDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
+    actions.appendChild(goDraft);
+    actions.appendChild(restartBtn());
+    card.appendChild(actions);
+  };
+
+  const renderResolved = () => {
+    card.innerHTML =
+      `<h3>Staged changes already resolved</h3>` +
+      `<p>This run staged ${appliedN} change(s) into a working draft, but that draft no longer ` +
+      `exists — it was <strong>committed to your live plan</strong> or discarded since. ` +
+      `Nothing from this run is pending anymore.</p>` +
+      skippedHtml;
+    const actions = el("div", "thesis-actions");
+    const goPlan = el("button", "primary", "View live plan →");
+    goPlan.type = "button";
+    goPlan.addEventListener("click", () => { pushNav({ view: "rebalance" }); setActiveView("rebalance"); });
+    actions.appendChild(goPlan);
+    actions.appendChild(restartBtn());
+    card.appendChild(actions);
+  };
+
+  // Optimistic immediate paint (no flicker for the common just-staged case),
+  // then confirm against the live draft.
+  renderActive(counts.total ?? appliedN);
+  api("/api/staging", "GET")
+    .then((s: { has_draft?: boolean; counts?: { total?: number | string } }) => {
+      if (s && s.has_draft) renderActive(s.counts?.total ?? "?");
+      else renderResolved();
+    })
+    .catch(() => { /* keep the optimistic view if the probe fails */ });
 }
 
 // ---- needs login ----------------------------------------------------------
