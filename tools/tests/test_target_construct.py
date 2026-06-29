@@ -186,6 +186,60 @@ class NormalizeTargets(unittest.TestCase):
                                               segment_budget_pct=20.0, holdings=holdings)
         self.assertTrue(meta["book_reconciliation"]["over_allocated"])
 
+    # --- position-aware rule derivation (the rule must match the move needed to
+    # reach the band, not just the conviction; otherwise 'hold' lands on names
+    # not held or far from their band and the rebalancer flags a contradiction).
+    def _rule_for(self, conviction, held):
+        rows = [_row("AAA", held=held)]
+        convictions = self._convictions({"AAA": conviction})
+        changes, _ = tc.normalize_targets(convictions, rows, {}, segment_budget_pct=10.0)
+        return {c["symbol"]: c for c in changes}["AAA"]["proposed_target"]
+
+    def test_owned_name_not_held_accumulates(self):
+        # medium conviction, no current position -> build toward the band.
+        pt = self._rule_for("medium", None)
+        self.assertEqual(pt["rule"], "accumulate")
+
+    def test_owned_name_below_band_accumulates(self):
+        # held well under the sized band low (band ~ [8.5, 11.5] for budget 10).
+        pt = self._rule_for("medium", 2.0)
+        self.assertEqual(pt["rule"], "accumulate")
+
+    def test_owned_name_in_band_holds(self):
+        pt = self._rule_for("medium", 10.0)
+        self.assertEqual(pt["rule"], "hold")
+        self.assertLessEqual(pt["low"], 10.0)
+        self.assertGreaterEqual(pt["high"], 10.0)
+
+    def test_owned_name_above_band_trims(self):
+        pt = self._rule_for("medium", 18.0)
+        self.assertEqual(pt["rule"], "trim_only")
+
+    def test_high_conviction_in_band_holds_not_accumulate(self):
+        # Even a high-conviction name already inside its band is 'hold' -- the
+        # band is a no-trade zone, so we don't keep buying within it.
+        pt = self._rule_for("high", 10.0)
+        self.assertEqual(pt["rule"], "hold")
+
+    def test_low_conviction_stays_wait_regardless_of_holding(self):
+        # 'wait' is a deliberate "don't chase a lukewarm name" -- position must
+        # NOT promote it to accumulate.
+        self.assertEqual(self._rule_for("low", None)["rule"], "wait")
+        self.assertEqual(self._rule_for("low", 0.5)["rule"], "wait")
+
+    def test_sleeve_member_is_not_sized_standalone(self):
+        # A name already governed by a named sleeve must not also get a top-level
+        # target (the rebalancer flags 'both a sleeve member and a target').
+        rows = [_row("AAA"), _row("SOXX")]
+        convictions = self._convictions({"AAA": "high", "SOXX": "medium"})
+        model = {"sleeves": {"semis-etf": {"low": 5, "high": 10, "rule": "accumulate",
+                                           "members": ["XSD", "SOXX"]}}}
+        changes, meta = tc.normalize_targets(convictions, rows, model, segment_budget_pct=20.0)
+        syms = {c["symbol"] for c in changes}
+        self.assertIn("AAA", syms)
+        self.assertNotIn("SOXX", syms)
+        self.assertEqual(meta["sleeve_managed_skipped"], ["SOXX"])
+
 
 class BuildLlmPrompt(unittest.TestCase):
     def test_research_block_is_injected(self):

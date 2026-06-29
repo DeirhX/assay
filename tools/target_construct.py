@@ -111,6 +111,47 @@ def _member_caps(model: dict[str, Any]) -> dict[str, float]:
     return caps
 
 
+def _sleeve_members(model: dict[str, Any]) -> set[str]:
+    """Every symbol already governed by a named sleeve in the existing model. The
+    sleeve sizes these collectively, so synthesizing a *standalone* target for one
+    would double-define it (the rebalancer flags 'both a sleeve member and a
+    top-level target'). We skip them here and let the sleeve govern."""
+    out: set[str] = set()
+    for sleeve in (model.get("sleeves") or {}).values():
+        if not isinstance(sleeve, dict):
+            continue
+        for member in (sleeve.get("members") or []):
+            try:
+                out.add(_safe_symbol(member))
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
+# Convictions that mean "we'd own this" -- their rule reconciles against the
+# current holding (below band -> accumulate, above -> trim_only, in -> hold).
+# A 'low' read stays 'wait': a lukewarm name we document but won't chase.
+_OWN_CONVICTIONS = {"high", "medium"}
+
+
+def _rule_for(conviction: str, cur: float | None, low: float, high: float) -> str:
+    """Pick the rule that matches the *action* needed to move the current weight
+    into the proposed band. Conviction already chose the band SIZE; deriving the
+    rule from conviction alone (the old ``_RULE`` map) emitted ``hold`` on names
+    not held, or held far from their band -- an inert target the rebalancer both
+    ignores and warns about. Reconciling against the holding keeps rule and band
+    internally consistent."""
+    if conviction not in _OWN_CONVICTIONS:
+        return _RULE.get(conviction, "wait")
+    eps = 1e-9
+    c = cur if isinstance(cur, (int, float)) else 0.0
+    if c < low - eps:
+        return "accumulate"
+    if c > high + eps:
+        return "trim_only"
+    return "hold"
+
+
 def heuristic_convictions(rows: list[dict[str, Any]]) -> dict[str, str]:
     """Offline conviction read from the review gate's keyword report-action."""
     out: dict[str, str] = {}
@@ -236,6 +277,7 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
     blocked = blocked or set()
     existing_targets = model.get("targets") or {}
     caps = _member_caps(model)
+    sleeve_members = _sleeve_members(model)
     pins = _pins(model)
     aliases = sleeve_aliases.load_aliases()
     by_symbol = {str(r.get("symbol") or "").upper(): r for r in rows}
@@ -247,8 +289,13 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
             held[sym] = float(hp)
 
     # Names we'd actually buy/hold drive the budget split; avoid-rated names do not.
+    # Sleeve members are sized by their sleeve, not as standalone targets -- emitting
+    # one here would double-define the name, so skip them (recorded in meta).
     buy = {sym: node["conviction"] for sym, node in convictions.items()
-           if node["conviction"] in _POINTS and sym not in blocked}
+           if node["conviction"] in _POINTS and sym not in blocked and sym not in sleeve_members}
+    sleeve_managed_skipped = sorted(
+        sym for sym, node in convictions.items()
+        if node["conviction"] in _POINTS and sym not in blocked and sym in sleeve_members)
 
     if segment_budget_pct is None:
         held_in_segment = sum(held.get(sym, 0.0) for sym in convictions)
@@ -282,8 +329,9 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
         low, high = _band_from_weight(weight)
         low, high = clamp_to_pin(sym, low, high)
         sized_total += (low + high) / 2.0
+        rule = _rule_for(conviction, held.get(sym), low, high)
         changes.append(_change(sym, by_symbol.get(sym), convictions.get(sym), existing_targets,
-                               low=low, high=high, rule=_RULE[conviction], aliases=aliases))
+                               low=low, high=high, rule=rule, aliases=aliases))
 
     # Avoid-rated held names: propose a trim band (or a drop). When the model
     # already has a sized target, trim toward THAT existing band rather than
@@ -291,7 +339,7 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
     # is flagged as challenging the pin; a `drop_mode` run removes unpinned held
     # avoids outright.
     for sym, node in sorted(convictions.items()):
-        if node["conviction"] != "avoid" or sym in blocked:
+        if node["conviction"] != "avoid" or sym in blocked or sym in sleeve_members:
             continue
         cur = held.get(sym, 0.0)
         if cur <= 0:
@@ -324,6 +372,7 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
         "per_name_cap": per_name_cap,
         "pinned_count": sum(1 for c in changes if c.get("symbol") in pins),
         "challenges_pins": sorted(c["symbol"] for c in changes if c.get("challenges_pin")),
+        "sleeve_managed_skipped": sleeve_managed_skipped,
     }
     if isinstance(holdings, dict):
         meta["book_reconciliation"] = _book_reconciliation(model, changes)
