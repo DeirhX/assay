@@ -87,7 +87,7 @@ function poolRow(e: PoolEntry): string {
     : bandTextShort(e.current_target);
   const exCell = managed
     ? `<span class="muted" title="Excluding a sleeve member here has no effect — its sleeve governs it.">—</span>`
-    : `<label class="opt-ex"><input type="checkbox" data-opt-exclude="${sym}" ${excluded ? "checked" : ""}> exclude</label>`;
+    : `<label class="opt-ex" title="Exclude ${sym} from sizing"><input type="checkbox" aria-label="Exclude ${sym} from sizing" data-opt-exclude="${sym}" ${excluded ? "checked" : ""}></label>`;
   return `<tr class="${excluded ? "opt-row-excluded" : ""} ${managed ? "opt-row-sleeve" : ""}">
     <td><a class="tlink" data-ticker="${sym}" href="?view=deepdive&ticker=${encodeURIComponent(e.symbol)}"><strong>${sym}</strong></a></td>
     <td>${sourceChips(e)}</td>
@@ -105,37 +105,55 @@ function poolTable(): string {
   const held = _pool.filter((e) => typeof e.held_pct === "number").length;
   const want = _pool.filter((e) => e.tier === "want").length;
   const curious = _pool.filter((e) => e.tier === "curious").length;
-  return `<p class="opt-pool-summary">${_pool.length} candidate${_pool.length === 1 ? "" : "s"} · ` +
-    `${held} held · ${want} want · ${curious} curious</p>` +
-    `<table class="opt-pool-table"><thead><tr>` +
-    `<th>Symbol</th><th>Source</th><th>Conviction</th><th class="num">Held</th><th class="num">Current band</th><th></th>` +
-    `</tr></thead><tbody>${_pool.map(poolRow).join("")}</tbody></table>`;
+  const chip = (n: number, label: string, cls = "") =>
+    `<span class="opt-chip ${cls}"><strong>${n}</strong> ${label}</span>`;
+  return `<div class="opt-pool-head">` +
+    `<div class="subhead">Candidate pool</div>` +
+    `<div class="opt-pool-chips">` +
+    chip(_pool.length, _pool.length === 1 ? "candidate" : "candidates", "opt-chip-total") +
+    chip(held, "held", "opt-chip-held") +
+    chip(want, "want", "opt-chip-want") +
+    chip(curious, "curious", "opt-chip-curious") +
+    `</div></div>` +
+    `<div class="opt-pool-scroll"><table class="opt-pool-table">` +
+    `<colgroup><col class="col-sym"><col class="col-src"><col class="col-conv"><col class="col-held"><col class="col-band"><col class="col-excl"></colgroup>` +
+    `<thead><tr>` +
+    `<th>Symbol</th><th>Source</th><th>Conviction</th><th class="num">Held</th><th class="num">Band</th><th class="opt-ex-th" title="Exclude from sizing">Excl</th>` +
+    `</tr></thead><tbody>${_pool.map(poolRow).join("")}</tbody></table></div>`;
 }
 
 // ---- constraints panel ----------------------------------------------------
 function constraintsPanel(c: Constraints): string {
   return `<div class="opt-constraints">
-    <div class="opt-field"><label for="opt-cash">Cash target</label>
-      <div class="opt-inwrap"><input id="opt-cash" type="number" min="0" max="95" step="0.5" value="${c.cash_target_pct}"><span>%</span></div></div>
-    <div class="opt-field"><label for="opt-cap">Per-name cap</label>
-      <div class="opt-inwrap"><input id="opt-cap" type="number" min="1" max="100" step="0.5" value="${c.per_name_cap}"><span>%</span></div></div>
-    <div class="opt-field"><label for="opt-conc">Max concentration</label>
-      <div class="opt-inwrap"><input id="opt-conc" type="number" min="1" max="100" step="0.5" value="${c.concentration_pct}"><span>%</span></div></div>
-    <div class="opt-field" title="Auto-drop dust: any name sized below this midpoint weight is pruned and its budget concentrates into the keepers (0 = off).">
-      <label for="opt-minpos">Min position</label>
-      <div class="opt-inwrap"><input id="opt-minpos" type="number" min="0" max="10" step="0.5" value="${c.min_position_pct ?? 1.5}"><span>%</span></div></div>
-    <div class="opt-field" title="Fund at most this many names (pins always kept). Blank = no limit.">
-      <label for="opt-maxnames">Max names</label>
-      <div class="opt-inwrap"><input id="opt-maxnames" type="number" min="1" max="100" step="1" value="${c.max_names ?? ""}"></div></div>
-    <div class="opt-field" title="How sharply conviction maps to size. Aggressive lets high-conviction names dominate; balanced spreads more evenly.">
-      <label for="opt-curve">Conviction curve</label>
-      <select id="opt-curve">
-        <option value="aggressive" ${(c.conviction_curve ?? "aggressive") === "aggressive" ? "selected" : ""}>Aggressive</option>
-        <option value="balanced" ${c.conviction_curve === "balanced" ? "selected" : ""}>Balanced</option>
-      </select></div>
-    <label class="opt-check"><input id="opt-curious" type="checkbox" ${c.include_curious ? "checked" : ""}> Include <span class="tier-curious">curious</span> picks</label>
-    <label class="opt-check"><input id="opt-drop" type="checkbox"> Drop avoid-rated held names (instead of trimming)</label>
-    <label class="opt-check" title="Use the configured AI backend to read conviction from each name's latest research; falls back to the deterministic read if unavailable. Slower."><input id="opt-llm" type="checkbox"> AI conviction synthesis</label>
+    <div class="opt-constraints-head">
+      <span class="opt-constraints-title">Constraints</span>
+      <span class="opt-constraints-sub">tune the whole-book sizer, then hit Optimize</span>
+    </div>
+    <div class="opt-constraints-grid">
+      <div class="opt-field"><label for="opt-cash">Cash target</label>
+        <div class="opt-inwrap"><input id="opt-cash" type="number" min="0" max="95" step="0.5" value="${c.cash_target_pct}"><span>%</span></div></div>
+      <div class="opt-field"><label for="opt-cap">Per-name cap</label>
+        <div class="opt-inwrap"><input id="opt-cap" type="number" min="1" max="100" step="0.5" value="${c.per_name_cap}"><span>%</span></div></div>
+      <div class="opt-field"><label for="opt-conc">Max concentration</label>
+        <div class="opt-inwrap"><input id="opt-conc" type="number" min="1" max="100" step="0.5" value="${c.concentration_pct}"><span>%</span></div></div>
+      <div class="opt-field" title="Auto-drop dust: any name sized below this midpoint weight is pruned and its budget concentrates into the keepers (0 = off).">
+        <label for="opt-minpos">Min position</label>
+        <div class="opt-inwrap"><input id="opt-minpos" type="number" min="0" max="10" step="0.5" value="${c.min_position_pct ?? 1.5}"><span>%</span></div></div>
+      <div class="opt-field" title="Fund at most this many names (pins always kept). Blank = no limit.">
+        <label for="opt-maxnames">Max names</label>
+        <div class="opt-inwrap"><input id="opt-maxnames" type="number" min="1" max="100" step="1" value="${c.max_names ?? ""}" placeholder="∞"></div></div>
+      <div class="opt-field" title="How sharply conviction maps to size. Aggressive lets high-conviction names dominate; balanced spreads more evenly.">
+        <label for="opt-curve">Conviction curve</label>
+        <select id="opt-curve">
+          <option value="aggressive" ${(c.conviction_curve ?? "aggressive") === "aggressive" ? "selected" : ""}>Aggressive</option>
+          <option value="balanced" ${c.conviction_curve === "balanced" ? "selected" : ""}>Balanced</option>
+        </select></div>
+    </div>
+    <div class="opt-constraints-opts">
+      <label class="opt-check"><input id="opt-curious" type="checkbox" ${c.include_curious ? "checked" : ""}> Include <span class="tier-curious">curious</span> picks</label>
+      <label class="opt-check"><input id="opt-drop" type="checkbox"> Drop avoid-rated held names (instead of trimming)</label>
+      <label class="opt-check" title="Use the configured AI backend to read conviction from each name's latest research; falls back to the deterministic read if unavailable. Slower."><input id="opt-llm" type="checkbox"> AI conviction synthesis</label>
+    </div>
   </div>`;
 }
 
@@ -244,9 +262,20 @@ function renderShell(v: OptimizerView): void {
   if (!body) return;
   body.innerHTML =
     constraintsPanel(v.constraints) +
-    `<div class="opt-split"><div class="opt-pool">${poolTable()}</div>` +
-    `<div class="opt-preview-wrap"><div class="subhead">Proposed allocation</div>` +
-    `<div id="opt-preview"><div class="hint">Set your constraints and hit <strong>Optimize</strong> to size the pool.</div></div></div></div>`;
+    `<div class="opt-split">` +
+    `<div class="opt-pool opt-card">${poolTable()}</div>` +
+    `<div class="opt-preview-wrap"><div class="opt-card opt-preview-card">` +
+    `<div class="subhead">Proposed allocation</div>` +
+    `<div id="opt-preview">${previewPlaceholder()}</div></div></div></div>`;
+}
+
+// Calm, centered empty state for the preview column before the first run.
+function previewPlaceholder(): string {
+  return `<div class="opt-empty">` +
+    `<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>` +
+    `<p class="opt-empty-title">No proposal yet</p>` +
+    `<p class="opt-empty-sub">Set your constraints and hit <strong>Optimize</strong> to size the whole pool into a reviewable allocation.</p>` +
+    `</div>`;
 }
 
 async function loadOptimizer(): Promise<void> {

@@ -27,9 +27,12 @@ _CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "cache"
 _TICKER_MAP = _CACHE_DIR / "sec_ticker_cik.json"
 _TICKER_MAP_TTL = 7 * 86400  # refresh weekly
 
-# Contact UA per SEC fair-access policy. Override with SEC_USER_AGENT.
+# Contact UA per SEC fair-access policy. SEC returns 403 for a UA without a
+# contact email (a plain name or a browser UA is rejected), so the default MUST
+# carry an email-looking token. example.com is RFC2606-reserved; override with
+# your real contact via SEC_USER_AGENT.
 _UA = os.environ.get(
-    "SEC_USER_AGENT", "assay research (contact: set SEC_USER_AGENT)"
+    "SEC_USER_AGENT", "assay-research (local dev) admin@example.com"
 )
 _HEADERS = {"User-Agent": _UA}
 
@@ -147,11 +150,15 @@ def _ttm_and_fy(units: list[dict[str, Any]]) -> tuple[float | None, float | None
 
 
 def fundamentals(symbol: str) -> dict[str, Any] | None:
-    """Independent anchors for a US filer, or None if not covered by EDGAR."""
-    cik = cik_for(symbol)
-    if not cik:
-        return None
+    """Independent anchors for a US filer, or None if not covered by EDGAR.
+
+    SEC is an optional cross-check, not the primary source, so any provider
+    failure here -- including a 403 on the shared ticker->CIK map (e.g. a UA the
+    SEC rejects) -- degrades to None rather than sinking the whole pull."""
     try:
+        cik = cik_for(symbol)
+        if not cik:
+            return None
         facts = _company_facts(cik)
     except ProviderError:
         return None
