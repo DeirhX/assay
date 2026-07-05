@@ -158,6 +158,60 @@ describe("placeResultHtml (post-placement loop close)", () => {
   });
 });
 
+async function loadWith(status: object, orders: object[]) {
+  apiMock.mockImplementation((path: string) => {
+    if (path === "/api/trade/status") return Promise.resolve(status);
+    if (path === "/api/trade/orders") return Promise.resolve({ orders });
+    if (path === "/api/trade/cancel") return Promise.resolve({ ok: true });
+    return Promise.resolve({ trades: [] });  // /api/trade/basket
+  });
+  await loadTrade();
+  await flush();
+}
+
+describe("trade desk working orders", () => {
+  it("fetches and lists working orders on load when the gateway is connected", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-9", ticker: "NVDA", side: "SELL", remainingQuantity: 10,
+        orderType: "LMT", price: 180, tif: "GTC", status: "Submitted" },
+    ]);
+    const card = document.querySelector(".trade-live-card");
+    expect(card).toBeTruthy();
+    expect(card!.textContent).toContain("Working orders (1)");
+    expect(card!.textContent).toContain("NVDA");
+    expect(card!.textContent).toContain("GTC");
+    expect(apiMock).toHaveBeenCalledWith("/api/trade/orders");
+  });
+
+  it("shows an empty state when connected with no working orders", async () => {
+    await loadWith(PAPER_STATUS, []);
+    const card = document.querySelector(".trade-live-card");
+    expect(card!.textContent).toContain("Working orders (0)");
+    expect(card!.textContent).toContain("No working orders");
+  });
+
+  it("does not query orders and prompts to connect when the gateway is offline", async () => {
+    await loadWith({ trading_enabled: true, authenticated: false, accounts: [] }, []);
+    const card = document.querySelector(".trade-live-card");
+    expect(card).toBeTruthy();
+    expect(card!.textContent).toContain("Connect the IBKR Client Portal Gateway");
+    expect(apiMock).not.toHaveBeenCalledWith("/api/trade/orders");
+  });
+
+  it("cancels a working order against the connected account", async () => {
+    await loadWith(PAPER_STATUS, [{ orderId: "o-1", ticker: "AMD", side: "SELL", status: "Submitted" }]);
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>(".trade-live-card button")]
+      .find((b) => (b.textContent || "") === "Cancel");
+    expect(cancel).toBeTruthy();
+    cancel!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/cancel", "POST",
+      expect.objectContaining({ order_id: "o-1", account: "DU1" }),
+    );
+  });
+});
+
 describe("trade desk connection banner", () => {
   it("blocks preview and explains when trading is disabled", async () => {
     apiMock.mockResolvedValue({ trading_enabled: false, authenticated: false, accounts: [] });

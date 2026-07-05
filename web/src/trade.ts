@@ -60,8 +60,17 @@ interface LiveOrder {
   side?: string;
   totalSize?: number | string;
   quantity?: number | string;
+  remainingQuantity?: number | string;
+  filledQuantity?: number | string;
   status?: string;
   order_status?: string;
+  orderType?: string;
+  order_type?: string;
+  price?: number | string | null;
+  tif?: string;
+  timeInForce?: string;
+  // IBKR's human-readable one-liner, e.g. "Sell 100 AAPL Limit 150.00 GTC".
+  orderDesc?: string;
 }
 
 let _status: TradeStatus | null = null;   // last /api/trade/status
@@ -133,6 +142,7 @@ async function renderConnection(token?: number) {
   if (banner) banner.innerHTML = bits.join("");
 
   renderBasket();
+  void renderLiveOrders(token);
 }
 
 function renderBasket() {
@@ -326,7 +336,7 @@ async function doPlace(btn: HTMLButtonElement) {
     if (res.staged_basket_cleared) state.stagedBasket = [];
     renderBasket();
     renderPlaceResult(res);
-    loadLiveOrders();
+    void renderLiveOrders();
   } catch (e) {
     if (status) { status.classList.add("err"); status.textContent = "placement failed: " + e.message; }
     if (btn) btn.disabled = false;
@@ -421,37 +431,93 @@ function renderPlaceResult(res: PlaceResult) {
   wrap.appendChild(card);
 }
 
-async function loadLiveOrders() {
+// Working orders live only in CPAPI (the Client Portal Gateway), never in the
+// Flex snapshot that feeds Holdings. We surface them on every trade-desk load
+// and offer a manual refresh, so a GTC ladder placed earlier (e.g. a graceful
+// exit) is visible without having to place something new first. Rendered as its
+// own card in #trade-result; degrades to a note when the gateway is offline.
+async function renderLiveOrders(token?: number) {
   const wrap = $("#trade-result");
   if (!wrap) return;
   wrap.querySelectorAll(".trade-live-card").forEach((n) => n.remove());
-  let data: { orders?: LiveOrder[] } | undefined;
-  try { data = await api<{ orders?: LiveOrder[] }>("/api/trade/orders"); }
-  catch (_e) { return; }
-  const orders = (data && data.orders) || [];
-  if (!orders.length) return;
+  const s = _status;
+  if (!s || !s.trading_enabled) return;  // the banner already explains why
+
   const card = el("div", "card trade-live-card");
-  card.appendChild(el("div", "trade-card-title", `Live orders (${orders.length})`));
-  orders.forEach((o) => {
-    const row = el("div", "trade-live-row");
-    const oid = o.orderId || o.order_id || "";
-    row.innerHTML = `<span>${esc(o.ticker || o.symbol || o.conid || "?")}</span>` +
-      `<span>${esc(o.side || "")}</span>` +
-      `<span>${esc(o.totalSize || o.quantity || "")}</span>` +
-      `<span class="trade-live-status">${esc(o.status || o.order_status || "")}</span>`;
-    const cancel = el("button", "ghost", "Cancel");
-    cancel.type = "button";
-    cancel.onclick = async () => {
-      cancel.disabled = true;
-      try {
-        await api("/api/trade/cancel", "POST", { order_id: oid, account: _preview && _preview.account });
-        loadLiveOrders();
-      } catch (e) { cancel.disabled = false; cancel.title = e.message; }
-    };
-    if (oid) row.appendChild(cancel);
-    card.appendChild(row);
-  });
+  const head = el("div", "trade-card-head");
+  const title = el("span", "trade-card-title", "Working orders");
+  head.appendChild(title);
+  const refreshBtn = el("button", "ghost", "Refresh");
+  refreshBtn.type = "button";
+  refreshBtn.onclick = () => renderLiveOrders();  // user-initiated: no stale token
+  head.appendChild(refreshBtn);
+  card.appendChild(head);
+  const body = el("div", "trade-live-body");
+  card.appendChild(body);
   wrap.appendChild(card);
+
+  if (!s.authenticated) {
+    body.appendChild(el("div", "hint",
+      "Connect the IBKR Client Portal Gateway (see above) to see your working orders here."));
+    return;
+  }
+
+  body.innerHTML = `<span class="spinner"></span> loading working orders\u2026`;
+  let data: { orders?: LiveOrder[] } | undefined;
+  try {
+    data = await api<{ orders?: LiveOrder[] }>("/api/trade/orders");
+  } catch (e) {
+    if (token != null && isStaleToken("trade", token)) return;
+    body.innerHTML = "";
+    body.appendChild(el("div", "trade-bnr warn",
+      `Could not read working orders: ${esc((e as Error).message)}`));
+    return;
+  }
+  if (token != null && isStaleToken("trade", token)) return;
+
+  const orders = (data && data.orders) || [];
+  body.innerHTML = "";
+  title.textContent = `Working orders (${orders.length})`;
+  if (!orders.length) {
+    body.appendChild(el("div", "hint", "No working orders at IBKR right now."));
+    return;
+  }
+  orders.forEach((o) => body.appendChild(liveOrderRow(o)));
+}
+
+function liveOrderRow(o: LiveOrder): HTMLElement {
+  const row = el("div", "trade-live-row");
+  const oid = o.orderId || o.order_id || "";
+  const side = String(o.side || "").toUpperCase();
+  const qty = o.remainingQuantity ?? o.totalSize ?? o.quantity ?? "";
+  const type = o.orderType || o.order_type || "";
+  const priceBit = o.price != null && o.price !== "" ? ` @ ${esc(o.price)}` : "";
+  const tif = o.tif || o.timeInForce || "";
+  // Prefer IBKR's own one-liner when present; it already reads well.
+  const detail = o.orderDesc
+    ? esc(o.orderDesc)
+    : `${esc(type)}${priceBit}${tif ? ` / ${esc(tif)}` : ""}`;
+  row.innerHTML =
+    `<span class="trade-live-sym">${esc(o.ticker || o.symbol || o.conid || "?")}</span>` +
+    `<span>${side ? sideTag(side) : ""}</span>` +
+    `<span class="num">${esc(qty)}</span>` +
+    `<span class="trade-live-detail">${detail}</span>` +
+    `<span class="trade-live-status">${esc(o.status || o.order_status || "")}</span>`;
+  const cancel = el("button", "ghost", "Cancel");
+  cancel.type = "button";
+  cancel.onclick = async () => {
+    cancel.disabled = true;
+    try {
+      await api("/api/trade/cancel", "POST", {
+        order_id: oid,
+        account: (_status && _status.default_account) || (_preview && _preview.account),
+      });
+      renderLiveOrders();
+    } catch (e) { cancel.disabled = false; cancel.title = (e as Error).message; }
+  };
+  if (oid) row.appendChild(cancel);
+  else row.appendChild(el("span"));  // keep the grid columns aligned
+  return row;
 }
 
 export { loadTrade };

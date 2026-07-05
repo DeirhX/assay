@@ -2584,8 +2584,11 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .trade-raw-det { margin-top: 10px; }
 .trade-raw-det summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
-.trade-live-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
-.trade-live-status { color: var(--muted); }
+.trade-live-row { display: grid; grid-template-columns: minmax(56px, 0.8fr) auto auto minmax(120px, 1.4fr) auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.trade-live-sym { font-weight: 600; }
+.trade-live-detail { color: var(--muted); font-variant-numeric: tabular-nums; }
+.trade-live-status { color: var(--muted); text-transform: capitalize; }
+.trade-live-body { display: flex; flex-direction: column; }
 
 /* ---- working draft (staging) ---- */
 .stage-section { margin: 18px 0; }
