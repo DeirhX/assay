@@ -24,6 +24,7 @@ import datetime as dt
 import re
 from pathlib import Path
 
+import basket
 import jobs
 import optimizer
 import portfolio
@@ -153,6 +154,26 @@ def _held_symbols() -> list[str]:
     return out
 
 
+def _review_symbols() -> list[str]:
+    """The review's scope = the optimizer's candidate pool: held names
+    (heaviest first) plus basket picks. A discovery starred last week competes
+    in the pool on conviction; leaving it out of the review left it riding a
+    tier default while every held name got a researched one."""
+    out = _held_symbols()
+    seen = set(out)
+    for it in basket.load_basket()["items"]:
+        raw = it.get("symbol")
+        if not raw or raw in seen:
+            continue
+        try:
+            sym = safe_symbol(raw)
+        except ValueError:
+            continue
+        out.append(sym)
+        seen.add(sym)
+    return out
+
+
 def _extract_verdict(report: str) -> str:
     """The text under the report's ``## Verdict`` heading (the analyst's stance +
     confidence), collapsed to one line. Falls back to the report's opening."""
@@ -240,8 +261,9 @@ def _synthesize_portfolio(notes: dict[str, str]) -> tuple[dict, str]:
         return convictions, summary
     lines = "\n".join(f"{sym}: {v or '(no verdict)'}" for sym, v in notes.items())
     prompt = (
-        "You are reviewing a whole investment portfolio. Each held name has a "
-        "one-line analyst verdict below. Produce ONLY a JSON object:\n"
+        "You are reviewing a whole investment portfolio. Each candidate (held "
+        "or shortlisted) has a one-line analyst verdict below. Produce ONLY a "
+        "JSON object:\n"
         '{"holdings": {TICKER: {"conviction": "high|medium|low|avoid", '
         '"rationale": "one short sentence"}}, '
         '"summary": "2-4 sentences: where to add, where to trim, the biggest risks"}\n'
@@ -274,10 +296,10 @@ PORTFOLIO_REVIEW_WORKERS = 8
 
 def run_portfolio_review_job(job_id: str, refresh: bool) -> None:
     try:
-        update_job(job_id, state="running", message="gathering holdings…")
-        syms = _held_symbols()
+        update_job(job_id, state="running", message="gathering the pool…")
+        syms = _review_symbols()
         if not syms:
-            update_job(job_id, state="error", error="no holdings to review")
+            update_job(job_id, state="error", error="nothing to review — no holdings and an empty basket")
             return
         total = len(syms)
 
@@ -303,7 +325,7 @@ def run_portfolio_review_job(job_id: str, refresh: bool) -> None:
         notes: dict[str, str] = {}
         done = 0
         workers = max(1, min(PORTFOLIO_REVIEW_WORKERS, total))
-        update_job(job_id, message=f"analysing {total} holding(s), {workers} at a time…")
+        update_job(job_id, message=f"analysing {total} name(s), {workers} at a time…")
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(analyse, s) for s in syms]
             try:
@@ -311,7 +333,7 @@ def run_portfolio_review_job(job_id: str, refresh: bool) -> None:
                     sym, verdict = fut.result()
                     notes[sym] = verdict
                     done += 1
-                    update_job(job_id, message=f"analysed {done}/{total} holdings…")
+                    update_job(job_id, message=f"analysed {done}/{total} names…")
                     if cancelled():
                         # Stop scheduling queued names; in-flight analyses get the
                         # cancel signal via their subprocess and unwind on their own.
@@ -328,7 +350,7 @@ def run_portfolio_review_job(job_id: str, refresh: bool) -> None:
     except Exception as exc:  # noqa: BLE001
         update_job(job_id, state="error", error=f"{type(exc).__name__}: {exc}")
         return
-    update_job(job_id, state="done", message=f"reviewed {len(notes)} holding(s)",
+    update_job(job_id, state="done", message=f"reviewed {len(notes)} name(s)",
                result={"reviewed": len(notes),
                        "convictions": len({k for k, v in convictions.items() if v.get("conviction")}),
                        "summary_chars": len(summary)})
