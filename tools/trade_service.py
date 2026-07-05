@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 import ibkr_trade
+import overview
 import price_levels
 import whatif
 from apierror import BadGateway as _BadGateway, Forbidden as _Forbidden
@@ -28,6 +30,18 @@ from store import load as _load, write_json as _write_json
 # navigation away and back instead of relying on an in-browser hand-off that a
 # refresh silently drops. Gitignored cache, not portfolio truth.
 STAGED_BASKET_JSON = DATA_DIR / "cache" / "staged-basket.json"
+
+# A preview binds the exact basket+account via its token, but the *sizes* were
+# computed from prices at preview time. After this many seconds the preview is
+# stale and place refuses until the caller re-previews. In-memory on purpose: a
+# server restart forgets outstanding previews, which fails safe (place then
+# demands a fresh preview).
+PREVIEW_TTL_S = 600
+_preview_issued: dict[str, float] = {}
+
+# A holdings snapshot older than this shouldn't silently size real orders —
+# the CZK->shares math uses its marks. Warning only; the human decides.
+STALE_SNAPSHOT_DAYS = 7
 
 
 def _normalize_basket(trades) -> list[dict]:
@@ -262,12 +276,28 @@ def _trade_preview(body: dict) -> dict:
         except ValueError:
             local = None
 
+    # Sizing quality gate: the CZK->shares math leans on the snapshot's marks,
+    # so an old snapshot deserves a loud warning before real orders.
+    age = overview.age_days(holdings.get("generated_at")) if isinstance(holdings, dict) else None
+    if age is not None and age > STALE_SNAPSHOT_DAYS:
+        warnings = list(warnings) + [
+            f"holdings snapshot is {age} days old — order sizes are computed from "
+            f"its marks; resync from IBKR before placing real orders."]
+
+    token = _basket_token(account_id, basket)
+    now = time.time()
+    # Register the preview and prune expired entries so the map can't grow.
+    _preview_issued[token] = now
+    for t in [t for t, at in _preview_issued.items() if now - at > PREVIEW_TTL_S]:
+        _preview_issued.pop(t, None)
+
     return {
         "account": account_id,
         "kind": ibkr_trade.account_kind(account_id),
         "is_paper": ibkr_trade.is_paper_account(account_id),
         "live_allowed": ibkr_trade.live_allowed(),
-        "token": _basket_token(account_id, basket),
+        "token": token,
+        "preview_ttl_s": PREVIEW_TTL_S,
         "trades": basket,
         "orders": orders,
         "warnings": warnings,
@@ -296,6 +326,13 @@ def _trade_place(body: dict) -> dict:
     if not ibkr_trade.is_paper_account(account_id) and not ibkr_trade.live_allowed():
         raise _Forbidden("live account placement is locked — validate on paper, "
                          "then set IBKR_ALLOW_LIVE to enable live orders")
+    # Freshness (after the authorization gates, which always win): a token is
+    # only as good as the prices the preview sized from. Unknown tokens (e.g.
+    # after a server restart) read as expired — fail safe.
+    issued = _preview_issued.get(expected)
+    if issued is None or time.time() - issued > PREVIEW_TTL_S:
+        raise ValueError("preview expired — prices and sizes may be stale; "
+                         "re-preview the basket before placing")
     orders, warnings = _prepare_trade_orders(account_id, basket)
     if not orders:
         raise ValueError("no orders could be sized from this basket — see preview warnings")
@@ -306,7 +343,9 @@ def _trade_place(body: dict) -> dict:
     # Close the loop: the staged basket was just submitted, so stop offering it
     # for re-placement — double-placing the same persisted basket is the worst
     # failure mode of the planner→desk hand-off. Stage a fresh basket any time.
+    # The preview token is consumed with it: a re-place needs a re-preview.
     save_basket([])
+    _preview_issued.pop(expected, None)
     return {
         "account": account_id,
         "kind": ibkr_trade.account_kind(account_id),

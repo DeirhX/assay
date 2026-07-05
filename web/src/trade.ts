@@ -41,6 +41,7 @@ interface TradePreview {
   live_allowed?: boolean;
   account?: string;
   warnings?: string[];
+  preview_ttl_s?: number;
   orders?: TradeOrder[];
   // The raw IBKR margin/commission blob; shape varies per account/order type.
   ibkr_preview?: any;
@@ -68,6 +69,9 @@ let _preview: TradePreview | null = null;  // last /api/trade/preview (carries t
 // The basket as it was placed — snapshotted before the staged store is cleared,
 // so the "Log to journal" next step can still describe the executed trades.
 let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
+// Mirrors the server's preview TTL: when it lapses, the Place button locks and
+// asks for a re-preview (the server enforces the same window on its side).
+let _previewExpiry: ReturnType<typeof setTimeout> | null = null;
 
 const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
@@ -282,6 +286,17 @@ function renderPreview() {
   card.appendChild(el("div", "status", "")).id = "trade-place-status";
 
   refreshPlaceBtn();
+
+  // Server-side the token expires after preview_ttl_s; mirror it here so the
+  // button explains the refusal instead of surfacing a rejected place call.
+  if (_previewExpiry) clearTimeout(_previewExpiry);
+  if (p.preview_ttl_s) {
+    _previewExpiry = setTimeout(() => {
+      placeBtn.disabled = true;
+      placeBtn.textContent = "Preview expired — re-preview";
+      placeBtn.title = "Prices and sizes are stale; run Preview again to re-arm placement";
+    }, p.preview_ttl_s * 1000);
+  }
   wrap.appendChild(card);
 }
 
