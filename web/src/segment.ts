@@ -1,3 +1,4 @@
+import { starHtml } from "./basket";
 import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import type { SegmentSummary } from "./api-types";
 import { analyzeFromAnywhere } from "./rebalance";
@@ -110,6 +111,10 @@ emptyState($("#seg-result"),
   "Pick a peer universe above, then <em>Run live pull</em> (~30-60s for ~20 names) " +
   "or <em>Load cached</em> for the last saved table.");
 
+// Leading ★ column: the segment table is the prime discovery surface, so a
+// find must be shortlistable in place (basket, "curious" tier, segment
+// provenance) instead of forcing a deep-dive round-trip per name. Not in
+// SEG_COLS — it's not a sortable metric.
 const SEG_COLS: [string, string, boolean][] = [
   ["symbol", "Symbol", false],
   ["decision", "Decision", false],
@@ -150,6 +155,7 @@ interface SegMember {
 
 export interface SegmentRec {
   title: string;
+  segment?: string;   // the slug, carried on every cached/live pull record
   members: SegMember[];
   [key: string]: unknown;
 }
@@ -162,6 +168,7 @@ function renderSegment(rec: SegmentRec) {
   const table = el("table", "segment-table");
   const thead = el("thead");
   const htr = el("tr");
+  htr.appendChild(el("th", "seg-star-th", "")); // ★ column — not sortable
   SEG_COLS.forEach(([key, label, num]) => {
     const th = el("th", num ? "num" : "", esc(label));
     th.addEventListener("click", () => {
@@ -184,8 +191,13 @@ function renderSegment(rec: SegmentRec) {
     if (av == null) return 1; if (bv == null) return -1;
     return d * (Number(av) - Number(bv));
   });
+  const slug = typeof rec.segment === "string" ? rec.segment : "";
   rows.forEach((m: SegMember) => {
     const tr = el("tr");
+    // Discovery default: a segment star is bare interest, so it lands in the
+    // basket as a "curious" pick carrying which universe it was found in.
+    const star = el("td", "seg-star-cell", starHtml(m.symbol, "segment", { tier: "curious", segment: slug || undefined }));
+    tr.appendChild(star);
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
       `<span class="decision-pill ${decisionClass(m.decision)}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,

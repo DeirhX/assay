@@ -2739,6 +2739,9 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .basket-star:hover { color: var(--warn); transform: scale(1.15); }
 .basket-star.on { color: var(--warn); }
 .basket-star:disabled { opacity: .5; cursor: progress; }
+/* ★ column in the segment peer table: narrow, and quiet until hovered. */
+.seg-star-th, .seg-star-cell { width: 26px; padding-right: 0; }
+.seg-star-cell .basket-star { font-size: 15px; }
 /* Labeled button variant for roomy surfaces (deep-dive header): reads as a real
    button, not punctuation. Rules sit after the base so they win on equal
    specificity. */
@@ -2975,3 +2978,45 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .pin-rationale { width: 100%; margin-bottom: 10px; }
 .pin-actions { display: flex; align-items: center; gap: 10px; }
 .pin-status { color: var(--muted); font-size: 12px; }
+
+/* ---- Today cockpit (portfolio front door) ---- */
+/* Next-step banner: one primary CTA above the lanes. */
+.today-next {
+  display: flex; align-items: center; gap: 16px; justify-content: space-between;
+  border: 1px solid var(--border); border-left-width: 4px; border-radius: var(--radius-soft);
+  background: var(--panel); padding: 14px 16px; margin: 4px 0 18px;
+}
+.today-next-warn { border-left-color: var(--warn); background: rgba(245,199,107,.06); }
+.today-next-info { border-left-color: var(--accent); background: rgba(130,170,255,.06); }
+.today-next-ok { border-left-color: var(--good); }
+.today-next-kicker { display: block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+.today-next-text strong { font-size: 15px; }
+.today-next-text p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.today-next > button { flex-shrink: 0; }
+
+/* Two lanes side by side; stack on narrow screens. */
+.today-lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+@media (max-width: 980px) { .today-lanes { grid-template-columns: 1fr; } }
+.today-cards { display: flex; flex-direction: column; gap: 12px; }
+
+.today-card {
+  border: 1px solid var(--border); border-left-width: 3px; border-radius: var(--radius-soft);
+  background: var(--panel); padding: 12px 14px;
+}
+.today-ok { border-left-color: var(--good); }
+.today-warn { border-left-color: var(--warn); }
+.today-bad { border-left-color: var(--bad); }
+.today-muted { border-left-color: var(--border); }
+.today-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.today-card-title { font-weight: 700; font-size: 13px; }
+.today-card-body { font-size: 13px; color: var(--text); line-height: 1.5; }
+.today-warn-text { color: var(--warn); }
+.today-card-actions { display: flex; gap: 8px; margin-top: 10px; }
+.today-card-actions button { font-size: 12px; padding: 4px 12px; }
+
+/* Research queue rows + shortlist pick chips. */
+.today-queue { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.today-queue-row { display: flex; align-items: center; gap: 8px; }
+.today-pick { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; white-space: nowrap; }
+.today-age { color: var(--warn); font-size: 11px; }
+.today-seg { font-size: 12px; padding: 3px 10px; margin: 2px 2px 0 0; }

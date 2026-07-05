@@ -79,6 +79,7 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
 )
 import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
 import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
+import overview  # noqa: E402  -- "Today" cockpit: pure lane summaries + next-step pick
 import optimizer  # noqa: E402  -- whole-book global sizer over the candidate pool
 from target_model import preview_plan_for_proposal as _preview_plan  # noqa: E402
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
@@ -469,6 +470,7 @@ _MAX_BODY_BYTES = 5 * 1024 * 1024
 _GET_EXACT = {
     "/api/dev/livereload": "_get_livereload",
     "/api/holdings": "_get_holdings",
+    "/api/overview": "_get_overview",
     "/api/portfolio-history": "_get_portfolio_history",
     "/api/ibkr/status": "_get_ibkr_status",
     "/api/rebalance": "_get_rebalance",
@@ -743,6 +745,42 @@ class Handler(BaseHTTPRequestHandler):
             "pending": target_staging.diff_staged_vs_live()["counts"]["total"] if has_draft else 0,
         }
         return self._send_json(plan)
+
+    def _get_overview(self, path, query):
+        # The "Today" cockpit: lane summaries + one next-step recommendation,
+        # composed from the same stores every other view reads. Tolerant of a
+        # first run (no holdings / no model) — sections degrade, never 404.
+        now = dt.datetime.now(dt.timezone.utc)
+        holdings = _load(HOLDINGS_JSON)
+        model = target_staging.active_model()
+        snap = overview.snapshot_summary(holdings, now=now)
+
+        plan_sum = None
+        if model and snap["exists"]:
+            plan = rebalance.plan(model, holdings)
+            _attach_research_overlay(plan, holdings)
+            plan_sum = overview.plan_summary(plan)
+
+        has_draft = target_staging.has_draft()
+        draft = {
+            "has_draft": has_draft,
+            "pending": target_staging.diff_staged_vs_live()["counts"]["total"] if has_draft else 0,
+        }
+        segs = _segments_list()
+        seg_records = [rec for s in segs if s.get("cached")
+                       and (rec := _load(SEGMENT_OUT_DIR / f"{s['name']}.json"))]
+        payload = {
+            "generated_at": now.isoformat(timespec="seconds"),
+            "snapshot": snap,
+            "plan": plan_sum,
+            "draft": draft,
+            "staged_basket": overview.staged_basket_summary(_load_basket()),
+            "journal": overview.journal_summary(journal.load_entries(), now=now),
+            "research": overview.research_summary(
+                basket.enriched_items(), _ticker_index(), segs, seg_records, now=now),
+        }
+        payload["next_step"] = overview.next_step(payload)
+        return self._send_json(payload)
 
     def _get_risk(self, path, query):
         holdings = _load(HOLDINGS_JSON)

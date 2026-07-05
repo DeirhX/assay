@@ -37,6 +37,7 @@ const inBasket = (sym: string) => _symbols.has(norm(sym));
 const SOURCE_LABEL: Record<string, string> = {
   deepdive: "from analysis", rebalance: "from rebalance", strategy: "from strategy",
   analyses: "from a report", suggestion: "suggested", manual: "added by hand",
+  segment: "from a segment",
 };
 
 // ---- the ★ affordance (usable from any surface) ---------------------------
