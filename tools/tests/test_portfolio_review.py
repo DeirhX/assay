@@ -89,6 +89,46 @@ class ReviewStore(unittest.TestCase):
         self.assertEqual(pool["QQQ"]["conviction"], "high")
         self.assertEqual(pool["QQQ"]["conviction_source"], "review")
 
+    def test_pool_uses_review_conviction_for_unheld_basket_pick(self):
+        # The point of reviewing basket picks: an unheld discovery must compete
+        # on a researched conviction, not ride its tier default ("curious"->low).
+        pool = {e["symbol"]: e for e in optimizer.build_pool(
+            model={"targets": {}, "sleeves": {}}, holdings={"positions": []},
+            basket_items=[{"symbol": "FIND", "tier": "curious", "sleeve": "other"}],
+            review_convictions={"FIND": "high"})}
+        self.assertEqual(pool["FIND"]["conviction"], "high")
+        self.assertEqual(pool["FIND"]["conviction_source"], "review")
+
+
+class ReviewSymbols(unittest.TestCase):
+    """The review's scope is the whole candidate pool: held names first
+    (heaviest leading), then basket picks, deduped, junk symbols dropped."""
+
+    def setUp(self):
+        import basket
+        self._held = aj._held_symbols
+        self._load = basket.load_basket
+        self._basket_mod = basket
+
+    def tearDown(self):
+        aj._held_symbols = self._held
+        self._basket_mod.load_basket = self._load
+
+    def test_union_held_then_picks_deduped(self):
+        aj._held_symbols = lambda: ["NVDA", "QQQ"]
+        self._basket_mod.load_basket = lambda: {"items": [
+            {"symbol": "QQQ"},          # already held -> deduped
+            {"symbol": "FIND"},
+            {"symbol": "bad sym!!"},    # junk -> dropped by safe_symbol
+            {"symbol": None},
+        ]}
+        self.assertEqual(aj._review_symbols(), ["NVDA", "QQQ", "FIND"])
+
+    def test_basket_only_still_reviews(self):
+        aj._held_symbols = lambda: []
+        self._basket_mod.load_basket = lambda: {"items": [{"symbol": "FIND"}]}
+        self.assertEqual(aj._review_symbols(), ["FIND"])
+
 
 class ParallelFanout(unittest.TestCase):
     """The batch must run analyses concurrently, honour the worker cap, and still
