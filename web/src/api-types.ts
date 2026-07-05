@@ -202,6 +202,32 @@ export interface RebalancePlan {
   staged?: { has_draft?: boolean; pending?: number; previewing_draft?: boolean } | null;
 }
 
+// ---- funding assistant (POST /api/rebalance/funding) -----------------------
+// Deterministic funding suggestions when a plan's buys outrun its trims:
+// funding_order first, then untargeted names, each capped at its headroom and
+// tax-annotated server-side. Advice — lands as editable plan inputs.
+export interface FundingCandidate {
+  symbol: string;
+  source: "funding_order" | "untargeted";
+  current_pct: number;
+  floor_pct: number | null;
+  available_czk: number;
+  suggest_czk: number;
+  suggest_pct: number;
+  tax?: {
+    taxable_gain?: number | null;
+    exempt_proceeds?: number | null;
+    harvestable_loss?: number | null;
+    has_lots?: boolean;
+  } | null;
+}
+export interface FundingResponse {
+  needed_czk: number;
+  covered_czk: number;
+  shortfall_czk: number;
+  candidates: FundingCandidate[];
+}
+
 // ---- what-if (POST /api/whatif) -------------------------------------------
 export interface WhatifTrade {
   symbol: string;

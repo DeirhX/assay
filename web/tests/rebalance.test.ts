@@ -3,7 +3,8 @@
 // when a locked price trigger blocks the side) seeds the plan input at 0, so a
 // gated buy/trim isn't staged unless the human types an override.
 import { describe, expect, it } from "vitest";
-import { projectedCash, rebActionClass, rebDefaultDelta } from "../src/rebalance";
+import { fundingCardHtml, fundingNeededCzk, projectedCash, rebActionClass, rebDefaultDelta } from "../src/rebalance";
+import type { FundingCandidate } from "../src/api-types";
 
 describe("rebDefaultDelta", () => {
   it("prefills the band-closing amount for clear buy/trim actions", () => {
@@ -41,6 +42,51 @@ describe("projectedCash (cash-after-plan tile)", () => {
   it("is null when the plan carries no cash block", () => {
     expect(projectedCash(null, 1000)).toBeNull();
     expect(projectedCash(undefined, 0)).toBeNull();
+  });
+});
+
+describe("fundingNeededCzk (when to offer Fund this plan)", () => {
+  const cash = { czk: 60_000, nav: 1_000_000, pct_of_nav: 6, target_pct: 5, band_pp: 2, low: 3, high: 7, status: "IN" };
+
+  it("is zero when trims cover the buys", () => {
+    expect(fundingNeededCzk(5_000, cash)).toBe(0);
+    expect(fundingNeededCzk(0, cash)).toBe(0);
+  });
+
+  it("nets the shortfall against cash headroom above the floor", () => {
+    // Short 50k; 30k sits above the 3% floor (60k - 30k) -> need 20k.
+    expect(fundingNeededCzk(-50_000, cash)).toBe(20_000);
+    // Headroom fully covers a small shortfall.
+    expect(fundingNeededCzk(-20_000, cash)).toBe(0);
+  });
+
+  it("uses the whole shortfall when there is no cash block", () => {
+    expect(fundingNeededCzk(-50_000, null)).toBe(50_000);
+  });
+});
+
+describe("fundingCardHtml", () => {
+  const res = {
+    needed_czk: 100_000, covered_czk: 80_000, shortfall_czk: 20_000,
+    candidates: [] as never[],
+  };
+  const applied: FundingCandidate[] = [
+    { symbol: "BONDS", source: "funding_order", current_pct: 30, floor_pct: 20, available_czk: 100_000, suggest_czk: 50_000, suggest_pct: -5, tax: { taxable_gain: 1_000, exempt_proceeds: 40_000, has_lots: true } },
+    { symbol: "BIG", source: "untargeted", current_pct: 25, floor_pct: null, available_czk: 250_000, suggest_czk: 30_000, suggest_pct: -3, tax: null },
+  ];
+
+  it("lists applied trims with their bucket and tax note", () => {
+    const html = fundingCardHtml(res, applied);
+    expect(html).toContain("2 trims filled in");
+    expect(html).toContain("funding order");
+    expect(html).toContain("untargeted");
+    expect(html).toContain("taxable gain");
+    expect(html).toContain("no lot data");
+  });
+
+  it("flags a remaining shortfall", () => {
+    expect(fundingCardHtml(res, applied)).toContain("short");
+    expect(fundingCardHtml({ ...res, shortfall_czk: 0 }, applied)).not.toContain("out of headroom");
   });
 });
 
