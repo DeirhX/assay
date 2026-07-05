@@ -547,6 +547,7 @@ _POST_EXACT = {
     "/api/optimizer/stage": "_post_optimizer_stage",
     "/api/portfolio-review": "_post_portfolio_review",
     "/api/history/delete": "_post_history_delete",
+    "/api/rebalance/funding": "_post_rebalance_funding",
     "/api/tax-plan": "_post_tax_plan",
     "/api/whatif": "_post_whatif",
     "/api/trade/preview": "_post_trade_preview",
@@ -1321,6 +1322,37 @@ class Handler(BaseHTTPRequestHandler):
             "removed": removed,
             "history": research_pull.history_for(provider_sym),
         })
+
+    def _post_rebalance_funding(self, path):
+        # Deterministic funding suggestions for a plan whose buys outrun its
+        # trims: funding_order first, then untargeted names, each capped at its
+        # headroom and tax-annotated. Advice only — lands as editable inputs.
+        body = self._read_body()
+        holdings = _load(HOLDINGS_JSON)
+        model = target_staging.active_model()
+        if not holdings or not model:
+            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        try:
+            needed = float(body.get("needed_czk"))
+        except (TypeError, ValueError):
+            return self._send_error_json(400, "needed_czk must be a number")
+        exclude = body.get("exclude") if isinstance(body.get("exclude"), list) else []
+        out = rebalance.funding_candidates(model, holdings, needed, exclude=exclude)
+        # Tax view per suggestion: what selling that slice would realize (Czech
+        # 3-year lot selection), so a "cheap" funding source is visible at once.
+        for c in out["candidates"]:
+            try:
+                bd = tax_lots.breakdown_for_symbol(holdings, c["symbol"], float(c["suggest_czk"]))
+                tot = bd.get("totals") or {}
+                c["tax"] = {
+                    "taxable_gain": tot.get("taxable_gain"),
+                    "exempt_proceeds": tot.get("exempt_proceeds"),
+                    "harvestable_loss": tot.get("harvestable_loss"),
+                    "has_lots": bool(bd.get("has_lots")),
+                }
+            except Exception:  # noqa: BLE001 -- tax annotation is best-effort decoration
+                c["tax"] = None
+        return self._send_json(out)
 
     def _post_tax_plan(self, path):
         body = self._read_body()

@@ -1974,12 +1974,19 @@ a.tlink:hover { border-bottom-style: solid; }
 }
 .reb-untargeted { border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel); margin-top: 16px; }
 .reb-untargeted-list {
-  padding: 6px 14px 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 18px;
+  padding: 6px 14px 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 18px;
 }
 .reb-untargeted-row {
   position: relative; padding: 3px 8px; border-radius: 5px;
+  grid-template-columns: minmax(60px, 1fr) auto auto auto auto; align-items: center;
   background: linear-gradient(to right, rgba(130,170,255,.16) var(--w, 0%), transparent var(--w, 0%));
 }
+.reb-untargeted-row .reb-plan-input { width: 58px; }
+.reb-untargeted-row .reb-plan-czk { min-width: 0; }
+/* Fund-this-plan: appears in the Net cash tile only when the plan is short. */
+.reb-fund-btn { margin-top: 4px; font-size: 12px; padding: 3px 10px; align-self: flex-start; }
+.reb-fund-card .reb-fund-row { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.reb-fund-card .reb-fund-row:first-of-type { border-top: none; }
 .reb-untargeted-row .reb-link { color: var(--accent); cursor: pointer; }
 .reb-untargeted-row .reb-link:hover { text-decoration: underline; }
 

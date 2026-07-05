@@ -252,6 +252,61 @@ class Plan(unittest.TestCase):
         self.assertEqual(sofi["suggest_delta_pct"], 0.0)
 
 
+class FundingCandidates(unittest.TestCase):
+    """Deterministic funding suggestions: funding_order first, floors respected,
+    then untargeted largest-first; already-edited names excluded."""
+
+    # Invested book = 1000: BONDS 300 (targeted, floor 20%), BIG 250 and
+    # SMALL 50 untargeted, CORE 400 in a sleeve (never a funding candidate).
+    HOLDINGS = {"positions": [
+        {"symbol": "BONDS", "base_market_value": 300.0},
+        {"symbol": "BIG", "base_market_value": 250.0},
+        {"symbol": "SMALL", "base_market_value": 50.0},
+        {"symbol": "CORE", "base_market_value": 400.0},
+    ]}
+    MODEL = {
+        "targets": {"BONDS": {"low": 20, "high": 35, "rule": "reduce"}},
+        "sleeves": {"core": {"low": 30, "high": 50, "rule": "hold", "members": ["CORE"]}},
+        "funding_order": ["BONDS"],
+    }
+
+    def test_funding_order_leads_then_untargeted_by_size(self):
+        out = rb.funding_candidates(self.MODEL, self.HOLDINGS, 250.0)
+        syms = [(c["symbol"], c["source"]) for c in out["candidates"]]
+        # BONDS can give 100 (30% -> its 20% floor), then BIG covers the rest.
+        self.assertEqual(syms, [("BONDS", "funding_order"), ("BIG", "untargeted")])
+        self.assertEqual(out["candidates"][0]["suggest_czk"], 100)
+        self.assertEqual(out["candidates"][1]["suggest_czk"], 150)
+        self.assertEqual(out["covered_czk"], 250)
+        self.assertEqual(out["shortfall_czk"], 0)
+
+    def test_floor_caps_the_targeted_name(self):
+        out = rb.funding_candidates(self.MODEL, self.HOLDINGS, 50.0)
+        c = out["candidates"][0]
+        self.assertEqual(c["symbol"], "BONDS")
+        self.assertEqual(c["floor_pct"], 20)
+        self.assertEqual(c["suggest_czk"], 50)   # need < headroom -> partial take
+        self.assertEqual(c["available_czk"], 100)
+
+    def test_sleeve_members_are_never_candidates(self):
+        out = rb.funding_candidates(self.MODEL, self.HOLDINGS, 10_000.0)
+        syms = {c["symbol"] for c in out["candidates"]}
+        self.assertNotIn("CORE", syms)
+        # 100 (BONDS) + 250 (BIG) + 50 (SMALL) is all the headroom there is.
+        self.assertEqual(out["covered_czk"], 400)
+        self.assertEqual(out["shortfall_czk"], 9600)
+
+    def test_exclude_skips_names_already_in_the_plan(self):
+        out = rb.funding_candidates(self.MODEL, self.HOLDINGS, 100.0, exclude=["BONDS", "big"])
+        syms = [c["symbol"] for c in out["candidates"]]
+        self.assertEqual(syms, ["SMALL"])
+        self.assertEqual(out["shortfall_czk"], 50)
+
+    def test_suggest_pct_is_a_negative_trim(self):
+        out = rb.funding_candidates(self.MODEL, self.HOLDINGS, 100.0)
+        self.assertEqual(out["candidates"][0]["suggest_pct"], -10.0)  # 100/1000
+
+
 class CashBlock(unittest.TestCase):
     """The first-class cash line: % of NAV vs the cash_target_pct band."""
 

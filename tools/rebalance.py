@@ -541,6 +541,80 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def funding_candidates(model: dict[str, Any], holdings: dict[str, Any],
+                       needed_czk: float, *, exclude: Any = ()) -> dict[str, Any]:
+    """Deterministic funding suggestions when a plan's buys outrun its trims.
+
+    Walks the model's ``funding_order`` first (the human's stated priority),
+    then untargeted held names largest-first — the bucket the model itself says
+    funds the plan. Each candidate can give at most its headroom: down to the
+    band floor for a targeted name, the whole position for an untargeted one.
+    Sleeve members are skipped (they're governed collectively). ``exclude``
+    drops names the user is already trading in the edited plan. Advice only —
+    nothing here creates trades; the amounts land as editable plan inputs."""
+    weights = current_weights(holdings)
+    invested = portfolio.invested_value(holdings.get("positions", []) or [])
+    targets: dict[str, Any] = model.get("targets", {})
+    sleeves: dict[str, Any] = model.get("sleeves", {})
+    sleeve_members = {m for sl in sleeves.values() for m in (sl.get("members") or [])}
+    excl = {str(s or "").strip().upper() for s in (exclude or ())}
+    needed = max(0.0, float(needed_czk or 0.0))
+
+    def czk(pct: float) -> float:
+        return pct / 100.0 * invested if invested else 0.0
+
+    candidates: list[dict[str, Any]] = []
+    remaining = needed
+    seen: set[str] = set()
+
+    def consider(sym: str, source: str) -> None:
+        nonlocal remaining
+        if remaining <= EPS or not sym or sym in seen or sym in excl:
+            return
+        seen.add(sym)
+        cur = weights.get(sym)
+        if cur is None or cur <= EPS:
+            return
+        t = targets.get(sym)
+        floor = None
+        if isinstance(t, dict) and _band_ok(t.get("low"), t.get("high")):
+            floor = float(t["low"])
+            avail_pct = max(0.0, cur - floor)
+        elif sym in sleeve_members:
+            return  # collectively governed; per-member funding is the sleeve UI's job
+        else:
+            avail_pct = cur
+        avail = czk(avail_pct)
+        if avail < 1.0:
+            return
+        take = min(remaining, avail)
+        candidates.append({
+            "symbol": sym,
+            "source": source,
+            "current_pct": round(cur, 2),
+            "floor_pct": floor,
+            "available_czk": round(avail),
+            "suggest_czk": round(take),
+            "suggest_pct": round(-(take / invested * 100.0), 2) if invested else 0.0,
+        })
+        remaining -= take
+
+    for sym in model.get("funding_order", []) or []:
+        consider(str(sym or "").strip().upper(), "funding_order")
+    managed = set(targets) | sleeve_members
+    for sym, w in sorted(weights.items(), key=lambda kv: -kv[1]):
+        if sym not in managed:
+            consider(sym, "untargeted")
+
+    covered = needed - remaining
+    return {
+        "needed_czk": round(needed),
+        "covered_czk": round(covered),
+        "shortfall_czk": round(max(0.0, remaining)),
+        "candidates": candidates,
+    }
+
+
 def report(findings: list[Finding], strict: bool) -> int:
     findings.sort(key=lambda f: (SEV_RANK.get(f.severity, 9), f.area))
     for f in findings:

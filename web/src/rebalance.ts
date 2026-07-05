@@ -1,6 +1,6 @@
 import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { CashBlock, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
+import type { CashBlock, FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -35,6 +35,43 @@ export function projectedCash(cash: CashBlock | null | undefined, netCzk: number
   const pct = (czk / cash.nav) * 100;
   const cls = pct < cash.low - 0.01 ? "bad" : pct > cash.high + 0.01 ? "warn" : "good";
   return { czk, pct, cls };
+}
+
+// How much fresh cash the edited plan still needs: the net shortfall (buys
+// minus trims) less whatever cash sits above the cash-band floor. 0 = the plan
+// self-funds. Exported for tests.
+export function fundingNeededCzk(netCzk: number | null, cash: CashBlock | null | undefined): number {
+  const shortfall = -(netCzk || 0);
+  if (shortfall <= 0) return 0;
+  const headroom = cash && typeof cash.nav === "number" && cash.nav > 0
+    ? Math.max(0, cash.czk - (cash.low / 100) * cash.nav)
+    : 0;
+  return Math.max(0, Math.round(shortfall - headroom));
+}
+
+// The applied-funding summary card (pure; exported for tests): which trims got
+// filled in, from which bucket, and what each would realize tax-wise.
+export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[]): string {
+  const rows = applied.map((c) => {
+    const isOrder = c.source === "funding_order";
+    const t = c.tax;
+    const tax = t && t.has_lots
+      ? ((t.taxable_gain ? `taxable gain ${fmtCZK(t.taxable_gain)}` : "no taxable gain") +
+         (t.exempt_proceeds ? ` · ${fmtCZK(t.exempt_proceeds)} already 3y-exempt` : ""))
+      : "no lot data";
+    return `<div class="reb-fund-row"><strong>${esc(c.symbol)}</strong>` +
+      `<span class="chip ${isOrder ? "good" : "muted"}">${isOrder ? "funding order" : "untargeted"}</span>` +
+      `<span>${sensitive(`−${fmtCZK(c.suggest_czk)} CZK`, "funding trim")}</span>` +
+      `<small class="muted">${tax}</small></div>`;
+  }).join("");
+  const short = res.shortfall_czk || 0;
+  return `<div class="whatif-card reb-fund-card">` +
+    `<div class="whatif-title">Funding plan — ${applied.length} trim${applied.length === 1 ? "" : "s"} filled in</div>` +
+    (rows || `<div class="hint">No candidates had headroom.</div>`) +
+    (short > 0
+      ? `<div class="hint bad">Still ${sensitive(`${fmtCZK(short)} CZK`, "funding shortfall")} short — funding_order and the untargeted bucket are out of headroom.</div>`
+      : "") +
+    `<div class="hint">Amounts were filled into the plan inputs above (band floors respected — trims stop at each name's floor). Edit to taste, then Simulate basket.</div></div>`;
 }
 
 // ---- position track --------------------------------------------------------
@@ -291,7 +328,9 @@ function renderRebalance(plan: RebPlan) {
       `<div class="reb-stat-bar"><span class="freed" id="reb-bar-raised"></span></div></div>` +
     `<div class="reb-stat"><span class="reb-stat-k">Cash needed for buys</span><span class="reb-stat-v" id="reb-stat-spent">—</span>` +
       `<div class="reb-stat-bar"><span class="need" id="reb-bar-spent"></span></div></div>` +
-    `<div class="reb-stat"><span class="reb-stat-k">Net cash</span><span class="reb-stat-v" id="reb-stat-net">—</span></div>` +
+    `<div class="reb-stat"><span class="reb-stat-k">Net cash</span><span class="reb-stat-v" id="reb-stat-net">—</span>` +
+      `<button class="ghost reb-fund-btn" id="reb-fund" type="button" hidden ` +
+      `title="Fill in suggested trims — funding order first, then untargeted names — until the buys are covered">Fund this plan</button></div>` +
     (plan.cash
       ? `<div class="reb-stat" title="Current cash plus the plan's net CZK, as % of NAV, vs your cash target band">` +
         `<span class="reb-stat-k">Cash after plan</span><span class="reb-stat-v" id="reb-stat-cash">—</span>` +
@@ -554,14 +593,18 @@ function renderRebalance(plan: RebPlan) {
 
   // Untargeted names carry no band/action/conviction, so the omnifilter only
   // text-matches them; an active categorical facet hides the whole section.
+  // Each row still carries an editable amount: the model's own docs say this
+  // bucket funds the plan, so its trims must be stageable like any other.
   const untargetedItems: { row: HTMLElement; name: string }[] = [];
-  let untargetedDet: HTMLElement | null = null;
+  interface UntargetedCell { symbol: string; input: HTMLInputElement; czk: HTMLElement; }
+  const untargetedCells: UntargetedCell[] = [];
+  let untargetedDet: HTMLDetailsElement | null = null;
   if (plan.untargeted && plan.untargeted.length) {
-    const det = el("details", "reb-untargeted");
+    const det = el("details", "reb-untargeted") as HTMLDetailsElement;
     untargetedDet = det;
     det.appendChild(el("summary", null,
       `Untargeted holdings — ${plan.untargeted.length} names, ` +
-      `${plan.untargeted_pct.toFixed(1)}% of NAV (no band; not in the plan)`));
+      `${plan.untargeted_pct.toFixed(1)}% of NAV (no band; candidate funding)`));
     const list = el("div", "reb-untargeted-list");
     // Shared scale so the fill behind each name reads as its relative size — the
     // 6% names stand out from the 0.x% dust at a glance.
@@ -575,6 +618,19 @@ function renderRebalance(plan: RebPlan) {
         `<span>${u.current_pct.toFixed(2)}%</span>` +
         `<small>${sensitive(`${fmtCZK(u.current_czk)} CZK`, "position value")}</small>`;
       r.querySelector(".reb-link").addEventListener("click", () => analyzeFromAnywhere(u.symbol));
+      const wrap = el("div", "reb-plan-input-wrap");
+      const input = el("input", "reb-plan-input") as HTMLInputElement;
+      input.type = "number";
+      input.step = "0.1";
+      input.value = "0";
+      input.title = "No band governs this name — type a trim (negative) to fund the plan, or use “Fund this plan”";
+      wrap.appendChild(input);
+      wrap.appendChild(el("span", "reb-unit", "%"));
+      r.appendChild(wrap);
+      const czk = el("small", "reb-plan-czk");
+      r.appendChild(czk);
+      input.addEventListener("input", recompute);
+      untargetedCells.push({ symbol: u.symbol, input, czk });
       list.appendChild(r);
       untargetedItems.push({ row: r, name: String(u.symbol || "").toLowerCase() });
     });
@@ -586,7 +642,8 @@ function renderRebalance(plan: RebPlan) {
     "Suggested amounts move each name to the nearest band edge (the minimal action). " +
     "Edit any Plan amount to simulate; \u201cReset to suggested\u201d restores them. " +
     "Cash totals include the sleeves' suggested buys/sells (fixed — you allocate those across members). " +
-    "Net cash > 0 means trims fund the buys; < 0 means you'd need fresh cash (e.g. from the untargeted bucket)."));
+    "Net cash > 0 means trims fund the buys; < 0 means you'd need fresh cash — " +
+    "“Fund this plan” fills suggested trims (funding order first, then untargeted names) to cover it."));
 
   // ---- omnifilter: ticker search + status / action / confidence facets -----
   // Pills within a facet OR together; facets AND together; the search box ANDs
@@ -741,6 +798,17 @@ function renderRebalance(plan: RebPlan) {
       pos.conn.classList.toggle("sell", sum < -0.001);
     });
 
+    // Untargeted names have no band to project against; their edited amounts
+    // still move the cash math (that's their whole role: funding).
+    untargetedCells.forEach((uc) => {
+      let d = parseFloat(uc.input.value);
+      if (!Number.isFinite(d)) d = 0;
+      if (d < 0) raised += -d; else spent += d;
+      uc.czk.innerHTML = d
+        ? sensitive(`${d > 0 ? "+" : "−"}${fmtCZK(Math.abs(pctToCzk(d, base)))} CZK`, "planned trade size")
+        : "";
+    });
+
     const raisedCzk = pctToCzk(raised, base);
     const spentCzk = pctToCzk(spent, base);
     const net = raised - spent;
@@ -755,6 +823,14 @@ function renderRebalance(plan: RebPlan) {
       `<small>${fmtSignedWeight(net)}</small>`;
     netEl.classList.toggle("good", net >= -0.01);
     netEl.classList.toggle("bad", net < -0.01);
+    // Offer funding only when the plan genuinely needs fresh cash (beyond the
+    // headroom above the cash floor).
+    const fundBtn = $<HTMLButtonElement>("#reb-fund");
+    if (fundBtn) {
+      const needed = fundingNeededCzk(netCzk, plan.cash);
+      fundBtn.hidden = needed <= 0;
+      fundBtn.dataset.needed = String(needed);
+    }
     const closedEl = $("#reb-stat-closed");
     closedEl.textContent = `${closed}/${total}`;
     closedEl.classList.toggle("good", total > 0 && closed === total);
@@ -795,7 +871,52 @@ function renderRebalance(plan: RebPlan) {
     reset.onclick = () => {
       cells.forEach(({ r, input }) => { input.value = String(rebDefaultDelta(r)); });
       sleeveUnits.forEach(({ members }) => members.forEach((mc) => { mc.input.value = String(r1(mc.def)); }));
+      untargetedCells.forEach((uc) => { uc.input.value = "0"; });
       recompute();
+    };
+  }
+
+  // "Fund this plan": ask the server which names to trim (funding_order first,
+  // then untargeted, floors respected, tax-annotated), fill the amounts into
+  // the same editable inputs as any hand edit, and summarise what was applied.
+  const nonZero = (input: HTMLInputElement) => {
+    const d = parseFloat(input.value);
+    return Number.isFinite(d) && Math.abs(d) > 0.001;
+  };
+  const fundBtnEl = $<HTMLButtonElement>("#reb-fund");
+  if (fundBtnEl) {
+    fundBtnEl.onclick = async () => {
+      const needed = parseInt(fundBtnEl.dataset.needed || "0", 10);
+      if (!needed) return;
+      // Names the user is already trading keep their edits — never overwrite.
+      const exclude: string[] = [];
+      cells.forEach(({ r, input }) => { if (nonZero(input)) exclude.push(r.name); });
+      sleeveUnits.forEach(({ members }) => members.forEach((mc) => { if (nonZero(mc.input)) exclude.push(mc.symbol); }));
+      untargetedCells.forEach((uc) => { if (nonZero(uc.input)) exclude.push(uc.symbol); });
+      const box = $("#reb-whatif");
+      fundBtnEl.disabled = true;
+      box.innerHTML = `<div class="status">Finding funding…</div>`;
+      try {
+        const res = await api<FundingResponse>("/api/rebalance/funding", "POST",
+          { needed_czk: needed, exclude });
+        const byName: Record<string, HTMLInputElement> = {};
+        cells.forEach((c) => { byName[c.r.name] = c.input; });
+        untargetedCells.forEach((uc) => { byName[uc.symbol] = uc.input; });
+        const applied: FundingCandidate[] = [];
+        (res.candidates || []).forEach((c) => {
+          const input = byName[c.symbol];
+          if (!input || !c.suggest_pct) return;
+          input.value = String(r1(c.suggest_pct));
+          applied.push(c);
+        });
+        if (untargetedDet && applied.some((c) => c.source === "untargeted")) untargetedDet.open = true;
+        recompute();
+        box.innerHTML = fundingCardHtml(res, applied);
+      } catch (e) {
+        box.innerHTML = `<div class="status err">Funding lookup failed: ${esc((e as Error).message)}</div>`;
+      } finally {
+        fundBtnEl.disabled = false;
+      }
     };
   }
 
@@ -819,6 +940,15 @@ function renderRebalance(plan: RebPlan) {
         if (czk == null || czk === 0) return;
         trades.push({ symbol: mc.symbol, delta_czk: czk });
       }));
+      // Untargeted funding trims are trades like any other — the simulator and
+      // trade desk don't care that no band governs the name.
+      untargetedCells.forEach((uc) => {
+        const d = parseFloat(uc.input.value);
+        if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
+        const czk = pctToCzk(d, base);
+        if (czk == null || czk === 0) return;
+        trades.push({ symbol: uc.symbol, delta_czk: czk });
+      });
       // Share the staged basket with the Trade desk so it can preview/place the
       // exact same trades you just simulated here. Persisted server-side too, so
       // it survives a reload / navigation instead of living only in this tab.
