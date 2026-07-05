@@ -311,8 +311,8 @@ def suggest_for_position(
     # protective-put suggestion. Use the furthest-out exemption date so the hedge
     # / guard covers every deferred lot.
     defer_lots = layers.get("defer_lots") or []
-    exempt_dates = [dt.date.fromisoformat(l["exempt_on"]) for l in defer_lots
-                    if isinstance(l.get("exempt_on"), str) and _safe_iso(l["exempt_on"])]
+    exempt_dates = [dt.date.fromisoformat(lot["exempt_on"]) for lot in defer_lots
+                    if isinstance(lot.get("exempt_on"), str) and _safe_iso(lot["exempt_on"])]
     guard_after = max(exempt_dates) if exempt_dates else None
     tax_saved = float(layers.get("tax_saved_by_waiting") or 0.0)
 
