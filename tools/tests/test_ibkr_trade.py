@@ -7,6 +7,7 @@ touching the real Client Portal Gateway."""
 from __future__ import annotations
 
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -223,6 +224,12 @@ class ReplyLoop(unittest.TestCase):
 class TradeServiceGuards(unittest.TestCase):
     def setUp(self):
         ibt._conid_cache.clear()
+        trade_service._preview_issued.clear()
+
+    @staticmethod
+    def _arm_preview(token: str, age_s: float = 0.0) -> None:
+        """Register a preview time for a token, as _trade_preview would."""
+        trade_service._preview_issued[token] = time.time() - age_s
 
     def test_basket_token_is_stable_and_account_bound(self):
         basket = trade_service._normalize_basket([{"symbol": "amd", "delta_czk": 100}])
@@ -279,10 +286,13 @@ class TradeServiceGuards(unittest.TestCase):
                 # so the desk can't re-offer an already-submitted basket.
                 trade_service.save_basket([{"symbol": "AMD", "delta_czk": 1000}])
                 self.assertTrue(staged.exists())
+                self._arm_preview(token)
                 res = trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
                                                   "account": "DU1", "confirm": True, "token": token})
                 self.assertFalse(staged.exists())
                 self.assertEqual(trade_service.load_basket(), [])
+                # The preview token is consumed with the basket.
+                self.assertNotIn(token, trade_service._preview_issued)
         self.assertEqual(res["account"], "DU1")
         self.assertEqual(res["placed"], [{"order_id": "1"}])
         self.assertTrue(res["staged_basket_cleared"])
@@ -304,11 +314,44 @@ class TradeServiceGuards(unittest.TestCase):
                     mock.patch.object(ibt, "place_orders",
                                       side_effect=ibt.CPAPIError("gateway down")):
                 trade_service.save_basket([{"symbol": "AMD", "delta_czk": 1000}])
+                self._arm_preview(token)
                 with self.assertRaises(apierror.BadGateway):
                     trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
                                                 "account": "DU1", "confirm": True, "token": token})
                 # Placement never reached IBKR — the basket stays available to retry.
                 self.assertTrue(staged.exists())
+
+    def test_place_rejects_expired_or_unknown_preview(self):
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("DU1", basket)
+        body = {"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                "account": "DU1", "confirm": True, "token": token}
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]):
+            # Never previewed on this server run (e.g. a restart) -> expired.
+            with self.assertRaises(ValueError) as ctx:
+                trade_service._trade_place(dict(body))
+            self.assertIn("expired", str(ctx.exception))
+            # Previewed too long ago -> expired.
+            self._arm_preview(token, age_s=trade_service.PREVIEW_TTL_S + 1)
+            with self.assertRaises(ValueError) as ctx2:
+                trade_service._trade_place(dict(body))
+            self.assertIn("expired", str(ctx2.exception))
+
+    def test_preview_registers_token_and_flags_stale_snapshot(self):
+        order = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
+                 "orderType": "MKT", "tif": "DAY"}
+        stale = {"generated_at": "2020-01-01T00:00:00+00:00", "positions": []}
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                mock.patch.object(ibt, "preview_orders", return_value={}), \
+                mock.patch.object(trade_service, "_load", return_value=stale):
+            res = trade_service._trade_preview({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                                "account": "DU1"})
+        self.assertEqual(res["preview_ttl_s"], trade_service.PREVIEW_TTL_S)
+        self.assertIn(res["token"], trade_service._preview_issued)
+        self.assertTrue(any("snapshot is" in w and "days old" in w for w in res["warnings"]))
 
 
 if __name__ == "__main__":
