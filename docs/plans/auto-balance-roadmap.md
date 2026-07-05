@@ -1,9 +1,30 @@
 # Auto-balance roadmap
 
-Status: proposal · Scope: making the rebalancer's automation *mean what it says*
-and closing the loop on the trade desk. This is a planning document, not a
-commitment; every execution-touching item stays supervised and opt-in, in
-keeping with the project's "not a robo-broker" stance.
+Status: **in progress** (updated 2026-07-05) · Scope: making the rebalancer's
+automation *mean what it says* and closing the loop on the trade desk. This is
+a planning document, not a commitment; every execution-touching item stays
+supervised and opt-in, in keeping with the project's "not a robo-broker"
+stance.
+
+Landed so far:
+
+- **Phase 1 — cash target real**: done (#127). `rebalance.cash_block()` grades
+  cash (% of NAV) against `cash_target_pct ± cash_band_pp`; `check_model`
+  WARNs on drift, the what-if flags a breached floor, the planner shows a live
+  "Cash after plan" tile.
+- **Phase 2 — sleeve member sizing**: done (#124, before this doc's phases were
+  numbered). **Close the loop after a fill**: done (#126) — placement retires
+  the staged basket and the desk offers resync + journal next steps.
+  *Still open: untargeted-funding suggestions and wiring `funding_order` /
+  `member_caps` into sizing.*
+- **Phase 3 — preview freshness**: done (#129) — preview tokens expire
+  (10 min TTL, consumed on place) and the preview warns on a stale holdings
+  snapshot. *Still open: surfacing IBKR confirmation prompts, order-type
+  policy beyond locked-level limits, partial-fill reconciliation.*
+
+Adjacent (from the 2026-07 app audit, not in the original phases): the Today
+cockpit + next-step banner (#125), and the portfolio review covering basket
+picks so discoveries compete on researched conviction (#128).
 
 ## Where the app actually sits today
 
@@ -19,7 +40,7 @@ automation ladder:
 | 4. Simulate consequences | what-if weights, cash, Czech tax lots | **Automatic** (`tools/whatif.py`, `tools/tax_lots.py`) |
 | 5. Decide / approve | — | Human (always) |
 | 6. Execute orders | gated, paper-first IBKR CPAPI trade desk | **Present since #36** (`tools/ibkr_trade.py`, `web/src/trade.ts`) — supervised, preview→token→confirm |
-| 7. Close the loop | resync holdings after trading | **Manual** |
+| 7. Close the loop | resync holdings after trading | **Prompted** since #126: placement retires the basket and offers resync + journal |
 
 The recent trade desk (#36) is the important change: rung 6 is no longer
 missing. It places live orders via the IBKR Client Portal Web API but is gated
