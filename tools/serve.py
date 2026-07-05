@@ -53,6 +53,7 @@ import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import risk  # noqa: E402
 import tax_lots  # noqa: E402
+import exit_plan  # noqa: E402  -- advisory graceful-exit planner (tax-timed scale-out)
 import whatif  # noqa: E402
 import journal  # noqa: E402
 import jobs  # noqa: E402
@@ -467,6 +468,23 @@ _MAX_BODY_BYTES = 5 * 1024 * 1024
 # growing a 100-line if/elif chain. Prefix handlers read their own tail (symbol,
 # segment, stem) off the path exactly as the old inline branches did.
 # --------------------------------------------------------------------------- #
+def _exit_cfg_from_query(query: dict) -> dict:
+    """Pull the exit-planner knobs out of a GET query string, ignoring anything
+    non-numeric so a fat-fingered param falls back to the module defaults."""
+    cfg: dict[str, float | int] = {}
+    for key, cast in (("horizon_days", int), ("adv_slice_pct", float),
+                      ("near_exempt_days", int), ("tax_rate", float),
+                      ("default_tranches", int)):
+        raw = (query.get(key) or [None])[0]
+        if raw is None:
+            continue
+        try:
+            cfg[key] = cast(raw)
+        except (TypeError, ValueError):
+            pass
+    return cfg
+
+
 _GET_EXACT = {
     "/api/dev/livereload": "_get_livereload",
     "/api/holdings": "_get_holdings",
@@ -474,6 +492,7 @@ _GET_EXACT = {
     "/api/portfolio-history": "_get_portfolio_history",
     "/api/ibkr/status": "_get_ibkr_status",
     "/api/rebalance": "_get_rebalance",
+    "/api/exit-plan": "_get_exit_plan",
     "/api/risk": "_get_risk",
     "/api/journal": "_get_journal",
     "/api/segments": "_get_segments",
@@ -548,6 +567,7 @@ _POST_EXACT = {
     "/api/portfolio-review": "_post_portfolio_review",
     "/api/history/delete": "_post_history_delete",
     "/api/tax-plan": "_post_tax_plan",
+    "/api/exit-plan/stage": "_post_exit_plan_stage",
     "/api/whatif": "_post_whatif",
     "/api/trade/preview": "_post_trade_preview",
     "/api/trade/place": "_post_trade_place",
@@ -781,6 +801,25 @@ class Handler(BaseHTTPRequestHandler):
         }
         payload["next_step"] = overview.next_step(payload)
         return self._send_json(payload)
+
+    def _get_exit_plan(self, path, query):
+        # Advisory scale-out for the trim set (plans against the working draft when
+        # one exists, exactly like the rebalance planner). Optional query params:
+        # include=SYM,SYM (also exit these untargeted names), full=SYM,SYM (force
+        # to zero), and the config knobs horizon_days/adv_slice_pct/near_exempt_days/
+        # tax_rate.
+        model = target_staging.active_model()
+        holdings = _load(HOLDINGS_JSON)
+        if not model:
+            return self._send_error_json(404, "no target model — data/target-model.json missing")
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        include = [s for s in (query.get("include") or [""])[0].split(",") if s.strip()]
+        full = [s for s in (query.get("full") or [""])[0].split(",") if s.strip()]
+        cfg = _exit_cfg_from_query(query)
+        with _PULL_LOCK:
+            plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
+        return self._send_json(plan)
 
     def _get_risk(self, path, query):
         holdings = _load(HOLDINGS_JSON)
@@ -1336,6 +1375,32 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return self._send_error_json(400, "amount_czk must be a number")
         return self._send_json(tax_lots.breakdown_for_symbol(holdings, sym, amount))
+
+    def _post_exit_plan_stage(self, path):
+        # Rebuild the plan server-side (it's ephemeral) with the same params the
+        # client used, then merge the requested tranche into the staged basket so
+        # the trade desk picks it up. Never trusts a client-supplied share/CZK size.
+        body = self._read_body()
+        model = target_staging.active_model()
+        holdings = _load(HOLDINGS_JSON)
+        if not model or not holdings:
+            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        symbol = str(body.get("symbol") or "").strip()
+        if not symbol:
+            return self._send_error_json(400, "symbol is required")
+        try:
+            index = int(body.get("index"))
+        except (TypeError, ValueError):
+            return self._send_error_json(400, "index must be an integer tranche number")
+        include = body.get("include") if isinstance(body.get("include"), list) else []
+        full = body.get("full_exit") if isinstance(body.get("full_exit"), list) else []
+        cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else None
+        with _PULL_LOCK:
+            plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
+        try:
+            return self._send_json(exit_plan.stage_tranche(plan, symbol, index))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
 
     def _post_whatif(self, path):
         body = self._read_body()

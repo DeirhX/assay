@@ -167,11 +167,14 @@ def price_history_from_chart(result: dict[str, Any], *, rng: str, interval: str)
     ts = result.get("timestamp") or []
     quote = (result.get("indicators", {}).get("quote") or [{}])[0]
     closes = quote.get("close") or []
+    # Daily traded volume rides alongside the closes so downstream liquidity math
+    # (ADV -> child-slice caps in the exit planner) doesn't need a second fetch.
+    volumes = quote.get("volume") or []
     # Intraday intervals (5m/30m/1h...) keep the time-of-day so the UI can label
     # and span a sub-day window; daily+ intervals stay date-only as before.
     intraday = interval[-1:] in ("m", "h")
     points: list[dict[str, Any]] = []
-    for timestamp, close in zip(ts, closes):
+    for i, (timestamp, close) in enumerate(zip(ts, closes)):
         if timestamp is None or close is None:
             continue
         try:
@@ -179,7 +182,11 @@ def price_history_from_chart(result: dict[str, Any], *, rng: str, interval: str)
         except (OSError, OverflowError, TypeError, ValueError):
             continue
         stamp = moment.isoformat() if intraday else moment.date().isoformat()
-        points.append({"date": stamp, "close": round(float(close), 4)})
+        point: dict[str, Any] = {"date": stamp, "close": round(float(close), 4)}
+        vol = volumes[i] if i < len(volumes) else None
+        if isinstance(vol, (int, float)):
+            point["volume"] = int(vol)
+        points.append(point)
     if not points:
         return None
     return {
@@ -335,4 +342,113 @@ def fundamentals(symbol: str) -> dict[str, Any]:
         "revenue_ttm_usd_b": metric(usd_b(rev), src),
         "gross_margin_pct": metric(gross_margin * 100 if gross_margin else None, src),
         "rev_growth_yoy_pct": metric(rev_growth * 100 if rev_growth else None, src),
+    }
+
+
+def _opt_contract(node: dict[str, Any]) -> dict[str, Any] | None:
+    """Flatten one Yahoo option contract to the fields the overlay math needs.
+
+    Yahoo already unwraps these to bare numbers on ``/v7/finance/options`` (unlike
+    quoteSummary), so no ``raw`` peeling -- but bid/ask can be absent on thin
+    strikes, in which case ``lastPrice`` is the only usable mark.
+    """
+    strike = node.get("strike")
+    if not isinstance(strike, (int, float)):
+        return None
+    bid = node.get("bid")
+    ask = node.get("ask")
+    last = node.get("lastPrice")
+    def _num(x: Any) -> float | None:
+        return float(x) if isinstance(x, (int, float)) else None
+    return {
+        "contract": node.get("contractSymbol"),
+        "strike": float(strike),
+        "bid": _num(bid),
+        "ask": _num(ask),
+        "last": _num(last),
+        "implied_vol": _num(node.get("impliedVolatility")),
+        "open_interest": node.get("openInterest") if isinstance(node.get("openInterest"), int) else None,
+        "volume": node.get("volume") if isinstance(node.get("volume"), int) else None,
+        "in_the_money": bool(node.get("inTheMoney")) if node.get("inTheMoney") is not None else None,
+    }
+
+
+def option_chain(symbol: str, *, max_expiries: int = 4) -> dict[str, Any] | None:
+    """Option chain for ``symbol`` across the nearest ``max_expiries`` expiries.
+
+    Hits ``/v7/finance/options`` (crumb-authenticated, same session as
+    ``fundamentals``). First call returns the near expiry plus the full
+    ``expirationDates`` list; we then fetch each subsequent expiry by its epoch.
+    Returns ``{"symbol","currency","underlying_price","expiries":[{expiry,
+    calls,puts}]}`` or ``None`` when the name has no listed options (common for
+    non-US tickers) so the caller can fall back to the Black-Scholes estimate.
+    """
+    opener, crumb = _session()
+
+    def _fetch(date_epoch: int | None) -> dict[str, Any] | None:
+        url = (
+            f"https://query2.finance.yahoo.com/v7/finance/options/"
+            f"{urllib.parse.quote(symbol)}?crumb={urllib.parse.quote(crumb, safe='')}"
+        )
+        if date_epoch is not None:
+            url += f"&date={date_epoch}"
+        try:
+            data = get_json(url, opener=opener)
+        except ProviderError:
+            return None
+        results = (data.get("optionChain", {}) or {}).get("result") or []
+        return results[0] if results else None
+
+    root = _fetch(None)
+    if root is None:  # crumb may be stale; rebuild once and retry the near expiry
+        reset_session()
+        opener, crumb = _session()
+        root = _fetch(None)
+    if root is None:
+        return None
+
+    exp_dates = [d for d in (root.get("expirationDates") or []) if isinstance(d, int)]
+    quote = root.get("quote") or {}
+    underlying = _raw(quote.get("regularMarketPrice")) or quote.get("regularMarketPrice")
+    currency = quote.get("currency")
+
+    expiries: list[dict[str, Any]] = []
+
+    def _add(res: dict[str, Any] | None) -> None:
+        if not res:
+            return
+        options = (res.get("options") or [{}])[0]
+        expiry_epoch = options.get("expirationDate")
+        if not isinstance(expiry_epoch, int):
+            return
+        calls = [c for c in (_opt_contract(n) for n in (options.get("calls") or [])) if c]
+        puts = [p for p in (_opt_contract(n) for n in (options.get("puts") or [])) if p]
+        if not calls and not puts:
+            return
+        expiries.append({
+            "expiry": dt.datetime.fromtimestamp(expiry_epoch, dt.timezone.utc).date().isoformat(),
+            "expiry_epoch": expiry_epoch,
+            "calls": sorted(calls, key=lambda c: c["strike"]),
+            "puts": sorted(puts, key=lambda p: p["strike"]),
+        })
+
+    _add(root)
+    fetched_epochs = {e for e in exp_dates[:1]}
+    for epoch in exp_dates:
+        if len(expiries) >= max_expiries:
+            break
+        if epoch in fetched_epochs:
+            continue
+        fetched_epochs.add(epoch)
+        _add(_fetch(epoch))
+
+    if not expiries:
+        return None
+    expiries.sort(key=lambda e: e["expiry_epoch"])
+    return {
+        "source": "yahoo",
+        "symbol": symbol.upper(),
+        "currency": currency,
+        "underlying_price": round(float(underlying), 4) if isinstance(underlying, (int, float)) else None,
+        "expiries": expiries[:max_expiries],
     }

@@ -81,6 +81,39 @@ class SelectLots(unittest.TestCase):
         out = tl.select_lots(lots, 100.0, as_of=AS_OF)
         self.assertAlmostEqual(out["lots"][0]["gain"], 40.0)  # cost inferred as 60
 
+    def test_foreign_lot_cost_converted_to_base_currency(self):
+        # Mirrors a real KRW lot: base_market_value is CZK, but cost_basis_money
+        # and market_value are KRW. Naive mv - cost would report a ~-21M "loss";
+        # the FX ratio makes it the true small CZK gain (~pnl * fx).
+        lots = [{
+            "symbol": "005930.KS", "quantity": 70,
+            "base_market_value": 333409.23,   # CZK
+            "market_value": 24255000.0,       # KRW
+            "cost_basis_money": 21257747.0,    # KRW
+            "unrealized_pnl": 2997253.0,       # KRW
+            "open_datetime": "2026-06-08T00:00:00Z",
+        }]
+        out = tl.select_lots(lots, 333409.23, as_of=AS_OF)
+        fx = 333409.23 / 24255000.0
+        self.assertAlmostEqual(out["lots"][0]["gain"], 2997253.0 * fx, places=2)
+        self.assertGreater(out["totals"]["taxable_gain"], 0.0)   # a gain, not a phantom loss
+        self.assertLess(out["totals"]["taxable_gain"], 333409.23)  # and bounded by proceeds
+
+    def test_pnl_fallback_also_converted_to_base(self):
+        # No cost_basis_money -> infer from local unrealized_pnl, still FX-scaled.
+        lots = [{"symbol": "ARM", "quantity": 26,
+                 "base_market_value": 228741.15, "market_value": 10890.88,
+                 "unrealized_pnl": 7752.46, "open_datetime": "2020-01-01T00:00:00Z"}]
+        out = tl.select_lots(lots, 228741.15, as_of=AS_OF)
+        fx = 228741.15 / 10890.88
+        self.assertAlmostEqual(out["lots"][0]["gain"], 7752.46 * fx, places=2)
+
+    def test_domestic_lot_without_market_value_is_unchanged(self):
+        # Base-currency lots (no local market_value) keep cost as-is (fx = 1).
+        lots = [lot("CEZ", 10, 100.0, 60.0, "2025-06-01T00:00:00Z")]
+        out = tl.select_lots(lots, 100.0, as_of=AS_OF)
+        self.assertAlmostEqual(out["lots"][0]["gain"], 40.0)
+
 
 class BreakdownAndEnrich(unittest.TestCase):
     def _holdings(self):

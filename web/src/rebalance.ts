@@ -405,9 +405,12 @@ function renderRebalance(plan: RebPlan) {
   const buildRow = (r: RebRow) => {
     const row = el("div", "reb-row reb-data-row");
     const sym = el("span", "reb-sym", esc(r.name));
-    if (r.kind === "target" && r.held) {
+    // Every single name opens its dossier — held or not (a not-yet-owned buy
+    // candidate is exactly what you want to research). Sleeves are baskets, not
+    // one ticker, so their row header stays non-clickable (members link below).
+    if (r.kind === "target") {
       sym.classList.add("reb-link");
-      sym.title = "Open dossier";
+      sym.title = r.held ? "Open dossier" : "Open dossier (not held yet)";
       sym.addEventListener("click", () => analyzeFromAnywhere(r.name));
     }
     const nameCell = el("div", "reb-c reb-name");

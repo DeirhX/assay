@@ -11,6 +11,7 @@ import { initOptimizer, loadOptimizer } from "./optimizer";
 import { initOverview, loadOverview } from "./overview";
 import { loadRebalance, openTicker } from "./rebalance";
 import { initRiskControls, loadRisk } from "./risk";
+import { loadExit } from "./exit";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
 import { initStaging, loadStaging } from "./staging";
@@ -137,7 +138,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "exit", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
 
 // Two-level navigation: the header exposes three top-level GROUPS, each of which
 // fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
@@ -150,7 +151,7 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   deepdive: "deepdive",
   analyses: "research", pipeline: "research", segment: "research",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", optimizer: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
+  today: "portfolio", holdings: "portfolio", history: "portfolio", optimizer: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", exit: "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
 };
@@ -158,7 +159,7 @@ const VIEW_GROUP: Record<string, string> = {
 // one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
 const VIEW_SUBTAB: Record<string, string> = {
   analyses: "analyses", pipeline: "pipeline",
-  today: "today", holdings: "positions", history: "positions", optimizer: "optimizer", rebalance: "rebalance", "working-draft": "working-draft", trade: "trade", risk: "risk", journal: "journal",
+  today: "today", holdings: "positions", history: "positions", optimizer: "optimizer", rebalance: "rebalance", "working-draft": "working-draft", exit: "exit", trade: "trade", risk: "risk", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
@@ -299,6 +300,7 @@ function setActiveView(view: string) {
   if (active === "optimizer") loadOptimizer();
   if (active === "rebalance") loadRebalance();
   if (active === "working-draft") loadStaging();
+  if (active === "exit") loadExit();
   if (active === "trade") loadTrade();
   if (active === "risk") { initRiskControls(); loadRisk(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }

@@ -106,7 +106,15 @@ def lots_for_symbol(holdings: dict[str, Any], symbol: str) -> list[dict[str, Any
 
 
 def _lot_economics(lot: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize a raw IBKR lot into the fields the selector needs."""
+    """Normalize a raw IBKR lot into the fields the selector needs.
+
+    IBKR reports ``base_market_value`` in the account base currency but
+    ``cost_basis_money`` / ``market_value`` / ``unrealized_pnl`` in the *lot's
+    own* currency (e.g. KRW for 005930.KS, USD for ARM). Converting the cost to
+    base with the lot's FX ratio (base_market_value / market_value) keeps the
+    gain a like-for-like subtraction — otherwise a foreign lot's gain is a
+    CZK-minus-KRW nonsense that shows up as a huge phantom loss.
+    """
     qty = lot.get("quantity")
     mv = lot.get("base_market_value")
     cost = lot.get("cost_basis_money")
@@ -114,10 +122,15 @@ def _lot_economics(lot: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if not isinstance(mv, (int, float)):
         return None
-    if not isinstance(cost, (int, float)):
-        # Fall back to market value minus reported P/L if cost is absent.
+    local_mv = lot.get("market_value")
+    fx = (mv / local_mv) if isinstance(local_mv, (int, float)) and abs(local_mv) > EPS else 1.0
+    if isinstance(cost, (int, float)):
+        cost = cost * fx                      # local cost basis -> base currency
+    else:
+        # Fall back to market value minus reported P/L (also lot-local) if cost
+        # is absent.
         pnl = lot.get("unrealized_pnl")
-        cost = (mv - pnl) if isinstance(pnl, (int, float)) else None
+        cost = (mv - pnl * fx) if isinstance(pnl, (int, float)) else None
     if not isinstance(cost, (int, float)):
         return None
     price = mv / qty if qty else 0.0
@@ -128,6 +141,62 @@ def _bucket(exempt: bool, gain: float) -> str:
     if exempt:
         return "exempt_gain" if gain >= 0 else "exempt_loss"
     return "taxable_gain" if gain >= 0 else "taxable_loss"
+
+
+def _candidates(lots: list[dict[str, Any]], as_of: dt.datetime) -> list[dict[str, Any]]:
+    """Normalize raw lots into economics-and-tax-classified candidates.
+
+    Shared by :func:`select_lots` (which then sorts + fills a trim amount) and
+    :func:`classify_lots` (which returns them as-is for the exit planner's tax
+    layering). One place computes exemption, days-to-exempt, gain and bucket so
+    the two callers can never disagree.
+    """
+    out: list[dict[str, Any]] = []
+    for lot in lots:
+        econ = _lot_economics(lot)
+        if econ is None or econ["mv"] <= EPS:
+            continue
+        open_dt = _parse_open(lot.get("open_datetime"))
+        exempt = is_exempt(open_dt, as_of)
+        gain = econ["mv"] - econ["cost"]
+        out.append({
+            "open_datetime": lot.get("open_datetime"),
+            "open_dt": open_dt,
+            "exempt": exempt,
+            "held_days": held_days(open_dt, as_of),
+            "days_to_exempt": (None if exempt or open_dt is None
+                               else max(0, (add_years(open_dt.date(), EXEMPT_YEARS) - as_of.date()).days)),
+            "exempt_on": (None if exempt or open_dt is None
+                          else add_years(open_dt.date(), EXEMPT_YEARS).isoformat()),
+            "qty": econ["qty"],
+            "mv": econ["mv"],
+            "cost": econ["cost"],
+            "price": econ["price"],
+            "gain": gain,
+            "bucket": _bucket(exempt, gain),
+        })
+    return out
+
+
+def classify_lots(
+    holdings: dict[str, Any],
+    symbol: str,
+    *,
+    as_of: dt.datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Every lot for ``symbol``, tax-classified (bucket, days_to_exempt, gain).
+
+    The exit planner uses this to decide, per lot, sell-now vs defer -- it needs
+    the *full* picture, not just the subset :func:`select_lots` would consume for
+    a given trim amount. Sorted newest-open first so near-exempt gain lots (the
+    ones worth waiting on) surface at the top.
+    """
+    as_of = _as_of(as_of)
+    cands = _candidates(lots_for_symbol(holdings, symbol), as_of)
+    for c in cands:
+        c.pop("open_dt", None)  # datetime isn't JSON-serializable; drop the internal
+    cands.sort(key=lambda c: (c.get("days_to_exempt") is None, -(c.get("days_to_exempt") or 0)))
+    return cands
 
 
 def select_lots(
@@ -144,28 +213,7 @@ def select_lots(
     as_of = _as_of(as_of)
     trim_money = abs(float(trim_money or 0.0))
 
-    candidates: list[dict[str, Any]] = []
-    for lot in lots:
-        econ = _lot_economics(lot)
-        if econ is None or econ["mv"] <= EPS:
-            continue
-        open_dt = _parse_open(lot.get("open_datetime"))
-        exempt = is_exempt(open_dt, as_of)
-        gain = econ["mv"] - econ["cost"]
-        candidates.append({
-            "open_datetime": lot.get("open_datetime"),
-            "open_dt": open_dt,
-            "exempt": exempt,
-            "held_days": held_days(open_dt, as_of),
-            "days_to_exempt": (None if exempt or open_dt is None
-                               else max(0, (add_years(open_dt.date(), EXEMPT_YEARS) - as_of.date()).days)),
-            "qty": econ["qty"],
-            "mv": econ["mv"],
-            "cost": econ["cost"],
-            "price": econ["price"],
-            "gain": gain,
-            "bucket": _bucket(exempt, gain),
-        })
+    candidates = _candidates(lots, as_of)
 
     def sort_key(c: dict[str, Any]):
         prio = _BUCKET_PRIORITY[c["bucket"]]
