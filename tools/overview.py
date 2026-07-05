@@ -100,6 +100,9 @@ def plan_summary(plan: dict) -> dict:
         "gates_open": gates_open,
         "untargeted": len(plan.get("untargeted") or []),
         "untargeted_pct": plan.get("untargeted_pct"),
+        # First-class cash line (rebalance.cash_block) passed through so the
+        # cockpit can flag a breached cash band alongside position drift.
+        "cash": plan.get("cash"),
         "snapshot": plan.get("snapshot"),
     }
 

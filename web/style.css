@@ -1745,6 +1745,7 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-stat-v.good { color: var(--good); }
 .reb-stat-v.warn { color: var(--warn); }
 .reb-stat-v.bad { color: var(--bad); }
+.reb-stat-sub { font-size: 11px; color: var(--muted); }
 .reb-stat-bar { margin-top: 6px; height: 5px; border-radius: 3px; background: var(--panel); overflow: hidden; }
 .reb-stat-bar > span { display: block; height: 100%; width: 0; border-radius: 3px; transition: width .15s ease; }
 .reb-stat-bar > span.freed { background: var(--good); }

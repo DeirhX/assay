@@ -58,6 +58,16 @@ describe("planCard", () => {
     expect(html).toContain('data-goto="strategy"');
     expect(html).toContain('data-goto="optimizer"');
   });
+
+  it("flags a breached cash band", () => {
+    const html = planCard({
+      rows: 5, out_of_band: 0, buy: 0, trim: 0, review: 0, actionable: 0,
+      conflicts: 0, gates_waiting: 0, gates_open: 0, untargeted: 0,
+      cash: { pct_of_nav: 1.4, target_pct: 5, low: 3, high: 7, status: "BELOW" },
+    });
+    expect(html).toContain("Cash is 1.4% of NAV");
+    expect(html).toContain("under its 3–7% band");
+  });
 });
 
 describe("in-flight cards hide when there is nothing in flight", () => {

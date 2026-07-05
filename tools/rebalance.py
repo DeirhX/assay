@@ -41,6 +41,12 @@ from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON  # noqa: E402  -- canonic
 
 EPS = 0.01  # weights are 2-decimal percents; tolerate rounding noise
 COVERAGE_WARN_PCT = 1.0  # an untargeted held name at/above this size is a real gap, not a stub
+# Cash basis decision (roadmap "make the cash target real", option 1): position
+# weights stay on the *invested* book, and cash is a separate first-class line
+# measured as percent of *NAV* — matching how cash_target_pct is documented.
+# The band is target ± cash_band_pp (model-overridable). Cash is measured and
+# flagged, never traded: no buy/sell action is ever emitted for cash drift.
+CASH_BAND_PP_DEFAULT = 2.0
 
 VALID_RULES = {"accumulate", "trim_only", "do_not_add", "reduce", "hold", "wait", "avoid"}
 NO_BUY_RULES = {"trim_only", "do_not_add", "reduce", "avoid"}
@@ -90,6 +96,37 @@ def _status(current: float, low: float, high: float) -> str:
     if current > high + EPS:
         return "ABOVE"
     return "IN"
+
+
+def cash_block(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any] | None:
+    """Cash as a first-class informational line: current cash (base currency)
+    as % of NAV against the ``cash_target_pct`` band. None when the model sets
+    no cash target (nothing to steer against) or the snapshot has no cash/NAV
+    data — the planner then degrades to the old display-only figure. Not a
+    plan row: cash isn't tradeable and gets no suggestion."""
+    if not isinstance(holdings, dict):
+        return None
+    target = float(model.get("cash_target_pct", 0.0) or 0.0)
+    if target <= EPS:
+        return None
+    cash = portfolio.cash_base(holdings)
+    nav = holdings.get("net_asset_value")
+    if cash is None or not isinstance(nav, (int, float)) or nav <= 0:
+        return None
+    tol = float(model.get("cash_band_pp", CASH_BAND_PP_DEFAULT) or CASH_BAND_PP_DEFAULT)
+    low = max(0.0, target - tol)
+    high = target + tol
+    pct = cash / nav * 100.0
+    return {
+        "czk": round(cash),
+        "nav": nav,
+        "pct_of_nav": round(pct, 2),
+        "target_pct": target,
+        "band_pp": tol,
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "status": _status(pct, low, high),
+    }
 
 
 def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding]:
@@ -208,6 +245,16 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
     if sum_low > 100.0 + EPS:
         add("ERROR", "model",
             f"infeasible: minimum targets + cash sum to {sum_low:.1f}% (> 100% of NAV).")
+
+    # Cash drift: measured against the cash_target_pct band (% of NAV). WARN
+    # only — cash is never a trade command, but a breached floor should be as
+    # visible as any out-of-band name.
+    cb = cash_block(model, holdings)
+    if cb and cash_target > EPS and cb["status"] != "IN":
+        direction = "below" if cb["status"] == "BELOW" else "above"
+        add("WARN", "cash",
+            f"cash is {cb['pct_of_nav']:.1f}% of NAV, {direction} the target band "
+            f"[{cb['low']:g}, {cb['high']:g}] (target {cash_target:g}%).")
 
     def mid(b: dict[str, Any]) -> float:
         return (float(b["low"]) + float(b["high"])) / 2.0
@@ -483,6 +530,9 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
         "invested": invested,
         "currency": (holdings.get("base_currency") if isinstance(holdings, dict) else None) or "CZK",
         "cash_target_pct": cash_target,
+        # First-class cash line (or None when the snapshot has no cash/NAV):
+        # current cash vs the target band, for display and what-if steering.
+        "cash": cash_block(model, holdings),
         "funding_order": model.get("funding_order", []),
         "rows": rows,
         "untargeted": [{"symbol": s, "current_pct": round(w, 2), "current_czk": czk(w)}

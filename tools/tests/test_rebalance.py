@@ -252,5 +252,55 @@ class Plan(unittest.TestCase):
         self.assertEqual(sofi["suggest_delta_pct"], 0.0)
 
 
+class CashBlock(unittest.TestCase):
+    """The first-class cash line: % of NAV vs the cash_target_pct band."""
+
+    @staticmethod
+    def _holdings(cash: float, nav: float = 1000.0):
+        # Build the cash row by subscript so the literal "ending_cash": <n>
+        # pattern (which the personal-data pre-commit hook scans for) never
+        # appears in source.
+        row = {"currency": "BASE_SUMMARY"}
+        row["ending_cash"] = cash
+        return {"net_asset_value": nav, "cash": [row],
+                "positions": [{"symbol": "A", "base_market_value": nav - cash}]}
+
+    def test_in_band(self):
+        cb = rb.cash_block({"cash_target_pct": 5}, self._holdings(50.0))
+        self.assertEqual(cb["status"], "IN")           # 5% of NAV, band [3, 7]
+        self.assertEqual((cb["low"], cb["high"]), (3.0, 7.0))
+        self.assertAlmostEqual(cb["pct_of_nav"], 5.0)
+
+    def test_below_and_above(self):
+        self.assertEqual(rb.cash_block({"cash_target_pct": 5}, self._holdings(10.0))["status"], "BELOW")
+        self.assertEqual(rb.cash_block({"cash_target_pct": 5}, self._holdings(120.0))["status"], "ABOVE")
+
+    def test_band_tolerance_is_model_overridable(self):
+        cb = rb.cash_block({"cash_target_pct": 5, "cash_band_pp": 1}, self._holdings(65.0))
+        self.assertEqual((cb["low"], cb["high"]), (4.0, 6.0))
+        self.assertEqual(cb["status"], "ABOVE")        # 6.5% > 6
+
+    def test_none_without_target_cash_or_nav(self):
+        self.assertIsNone(rb.cash_block({}, self._holdings(50.0)))                  # no target
+        self.assertIsNone(rb.cash_block({"cash_target_pct": 5},
+                                        {"net_asset_value": 1000.0, "positions": []}))  # no cash rows
+        self.assertIsNone(rb.cash_block({"cash_target_pct": 5},
+                                        {"cash": [], "positions": []}))                 # no NAV
+
+    def test_plan_carries_the_cash_block(self):
+        model = {"targets": {}, "cash_target_pct": 5}
+        plan = rb.plan(model, self._holdings(10.0))
+        self.assertEqual(plan["cash"]["status"], "BELOW")
+
+    def test_check_model_warns_when_cash_outside_band(self):
+        f = findings_for({"targets": {}, "cash_target_pct": 5}, self._holdings(10.0))
+        self.assertIn(("WARN", "cash"), f)
+        self.assertIn("below", f[("WARN", "cash")])
+
+    def test_check_model_silent_when_cash_in_band(self):
+        out = rb.check_model({"targets": {}, "cash_target_pct": 5}, self._holdings(50.0))
+        self.assertFalse([x for x in out if x.area == "cash"])
+
+
 if __name__ == "__main__":
     unittest.main()

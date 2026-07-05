@@ -1,6 +1,6 @@
 import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
+import type { CashBlock, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -24,6 +24,18 @@ const pctToCzk = (pct: number | null | undefined, base: number | null | undefine
 // trim/buy actions. "review" (accumulate over ceiling) and untargeted names are
 // judgement calls, so they start at zero — the human decides.
 const rebDefaultDelta = (r: Pick<RebRow, "action" | "suggest_delta_pct">) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
+
+// Projected cash after the currently-edited plan: current cash plus the plan's
+// net CZK, graded against the cash band (% of NAV). The cash target used to be
+// display-only; this is what makes "this basket leaves you under your cash
+// floor" visible while you edit. Exported for tests. Null = no cash data.
+export function projectedCash(cash: CashBlock | null | undefined, netCzk: number | null) {
+  if (!cash || typeof cash.nav !== "number" || cash.nav <= 0) return null;
+  const czk = cash.czk + (netCzk || 0);
+  const pct = (czk / cash.nav) * 100;
+  const cls = pct < cash.low - 0.01 ? "bad" : pct > cash.high + 0.01 ? "warn" : "good";
+  return { czk, pct, cls };
+}
 
 // ---- position track --------------------------------------------------------
 // A horizontal weight axis shared by every row so a 2% band and an 8% band are
@@ -280,6 +292,11 @@ function renderRebalance(plan: RebPlan) {
     `<div class="reb-stat"><span class="reb-stat-k">Cash needed for buys</span><span class="reb-stat-v" id="reb-stat-spent">—</span>` +
       `<div class="reb-stat-bar"><span class="need" id="reb-bar-spent"></span></div></div>` +
     `<div class="reb-stat"><span class="reb-stat-k">Net cash</span><span class="reb-stat-v" id="reb-stat-net">—</span></div>` +
+    (plan.cash
+      ? `<div class="reb-stat" title="Current cash plus the plan's net CZK, as % of NAV, vs your cash target band">` +
+        `<span class="reb-stat-k">Cash after plan</span><span class="reb-stat-v" id="reb-stat-cash">—</span>` +
+        `<small class="reb-stat-sub" id="reb-stat-cash-sub"></small></div>`
+      : "") +
     `<div class="reb-stat"><span class="reb-stat-k">Target bands closed</span><span class="reb-stat-v" id="reb-stat-closed">—</span>` +
       `<div class="reb-stat-bar"><span class="closed" id="reb-bar-closed"></span></div></div>` +
     `</div>`;
@@ -742,6 +759,26 @@ function renderRebalance(plan: RebPlan) {
     closedEl.textContent = `${closed}/${total}`;
     closedEl.classList.toggle("good", total > 0 && closed === total);
 
+    // Cash after plan: slide with every edit so a basket that breaches the
+    // cash floor announces itself before it's ever simulated or staged.
+    const cashEl = $("#reb-stat-cash");
+    const proj = projectedCash(plan.cash, netCzk);
+    if (cashEl && proj && plan.cash) {
+      cashEl.innerHTML =
+        `${sensitive(`${fmtCZK(Math.round(proj.czk))} ${esc(plan.currency)}`, "projected cash")} ` +
+        `<small>${proj.pct.toFixed(1)}% of NAV</small>`;
+      cashEl.classList.remove("good", "warn", "bad");
+      cashEl.classList.add(proj.cls);
+      const sub = $("#reb-stat-cash-sub");
+      if (sub) {
+        sub.textContent = proj.cls === "good"
+          ? `in the ${plan.cash.low}–${plan.cash.high}% target band`
+          : proj.cls === "bad"
+            ? `under your ${plan.cash.low}% cash floor (target ${plan.cash.target_pct}%)`
+            : `above the ${plan.cash.high}% band ceiling (target ${plan.cash.target_pct}%)`;
+      }
+    }
+
     // Funding bars: freed vs needed on a shared scale, so a glance shows whether
     // trims cover the buys (freed ≥ needed) or you'd need fresh cash.
     const fundMax = Math.max(raised, spent, 0.01);
@@ -824,9 +861,18 @@ function renderWhatif(wf: Whatif) {
     `${s.bands_in_before} \u2192 ${s.bands_in_after} / ${s.bands_total}`,
     s.bands_in_after >= s.bands_in_before ? "good" : "bad"));
   const cashAfter = wf.cash ? wf.cash.after : null;
+  // Grade against the cash target band when the server computed one; a basket
+  // that dips under the cash floor reads amber/red even while cash stays > 0.
+  const ct = wf.cash && wf.cash.target;
+  const cashCls = cashAfter == null ? "muted"
+    : cashAfter < 0 ? "bad"
+    : ct ? (ct.status_after === "BELOW" ? "bad" : ct.status_after === "ABOVE" ? "warn" : "good")
+    : "good";
   stats.appendChild(whatifStat("Cash after",
-    cashAfter == null ? "n/a" : sensitive(`${fmtCZK(cashAfter)} ${esc(ccy)}`, "cash after"),
-    cashAfter == null ? "muted" : cashAfter < 0 ? "bad" : "good"));
+    cashAfter == null ? "n/a"
+      : sensitive(`${fmtCZK(cashAfter)} ${esc(ccy)}`, "cash after") +
+        (ct ? ` <small>${ct.after_pct.toFixed(1)}% of NAV · target ${ct.target_pct}%</small>` : ""),
+    cashCls));
   stats.appendChild(whatifStat("Net cash",
     sensitive(`${s.net_cash_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(s.net_cash_czk))} ${esc(ccy)}`, "net cash"),
     s.net_cash_czk >= 0 ? "good" : "bad"));

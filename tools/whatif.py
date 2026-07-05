@@ -33,18 +33,9 @@ def _coerce_trades(trades: Any) -> dict[str, float]:
     return portfolio.normalize_basket(trades)
 
 
-def _cash_base(holdings: dict[str, Any]) -> float | None:
-    rows = holdings.get("cash") or []
-    for c in rows:
-        if c.get("currency") == "BASE_SUMMARY" and isinstance(c.get("ending_cash"), (int, float)):
-            return float(c["ending_cash"])
-    total = 0.0
-    found = False
-    for c in rows:
-        if isinstance(c.get("ending_cash"), (int, float)):
-            total += float(c["ending_cash"])
-            found = True
-    return total if found else None
+# Canonical cash extraction lives in portfolio.cash_base; keep the old private
+# name as an alias so existing callers/tests stay valid.
+_cash_base = portfolio.cash_base
 
 
 def _after_positions(holdings: dict[str, Any], deltas: dict[str, float]) -> list[dict[str, Any]]:
@@ -109,6 +100,22 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
     cash_before = _cash_base(holdings)
     cash_after = None if cash_before is None else round(cash_before - net_delta, 2)
 
+    # Cash vs the model's target band (% of NAV). Trades swap cash for
+    # positions, so pre-trade NAV is the right denominator for the after
+    # picture too. None when the snapshot has no cash/NAV data.
+    cash_band = rebalance.cash_block(model, holdings)
+    cash_target = None
+    if cash_band and cash_after is not None:
+        after_pct = round(cash_after / cash_band["nav"] * 100.0, 2)
+        cash_target = {
+            "target_pct": cash_band["target_pct"],
+            "low": cash_band["low"],
+            "high": cash_band["high"],
+            "before_pct": cash_band["pct_of_nav"],
+            "after_pct": after_pct,
+            "status_after": rebalance._status(after_pct, cash_band["low"], cash_band["high"]),
+        }
+
     in_before, n_before = _in_band_count(before_plan)
     in_after, n_after = _in_band_count(after_plan)
 
@@ -121,6 +128,11 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
     if cash_after is not None and cash_after < -EPS:
         caveats.insert(0, "Cash goes negative after these trades — you would need "
                           "margin or more sells to fund the buys.")
+    elif (cash_target and cash_target["target_pct"] > EPS
+          and cash_target["after_pct"] < cash_target["low"] - EPS):
+        caveats.insert(0, f"This basket leaves cash at {cash_target['after_pct']:.1f}% of NAV, "
+                          f"under your {cash_target['low']:g}% floor "
+                          f"(target {cash_target['target_pct']:g}%).")
 
     return {
         "as_of": model.get("as_of"),
@@ -131,7 +143,8 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
         "before_status": {r["name"]: r["status"]
                           for r in before_plan.get("rows", []) if r.get("kind") == "target"},
         "cash": {"before": cash_before, "after": cash_after,
-                 "currency": holdings.get("base_currency") or "CZK"},
+                 "currency": holdings.get("base_currency") or "CZK",
+                 "target": cash_target},
         "tax": {"totals": tax_total, "per_symbol": per_symbol},
         "summary": {
             "spend_czk": spend,
