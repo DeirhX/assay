@@ -111,6 +111,25 @@ def invested_value(positions: list[dict[str, Any]]) -> float:
     )
 
 
+def cash_base(holdings: dict[str, Any]) -> float | None:
+    """Total cash in base currency from the snapshot's ``cash`` rows: the
+    broker's BASE_SUMMARY line when present, else the sum of per-currency
+    ``ending_cash``. None when the snapshot carries no cash data. Single source
+    of truth for "the cash" — the what-if simulator and the planner's cash
+    block must never disagree about it."""
+    rows = holdings.get("cash") or []
+    for c in rows:
+        if c.get("currency") == "BASE_SUMMARY" and isinstance(c.get("ending_cash"), (int, float)):
+            return float(c["ending_cash"])
+    total = 0.0
+    found = False
+    for c in rows:
+        if isinstance(c.get("ending_cash"), (int, float)):
+            total += float(c["ending_cash"])
+            found = True
+    return total if found else None
+
+
 def position_weight_pct(position: dict[str, Any], invested: float) -> float | None:
     """Weight by actual market value over invested value.
 

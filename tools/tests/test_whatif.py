@@ -104,5 +104,33 @@ class Simulate(unittest.TestCase):
         self.assertEqual(h["positions"][0]["base_market_value"], before)
 
 
+class CashTargetBand(unittest.TestCase):
+    """Cash-vs-target steering: the simulator grades post-trade cash against
+    the model's cash band and flags a breached floor as a caveat."""
+
+    MODEL_WITH_CASH = dict(MODEL, cash_target_pct=9)  # cash 100/1100 ≈ 9.1% of NAV
+
+    def test_after_pct_and_status(self):
+        # Trim frees 100 CZK: cash 100 -> 200 = 18.2% of NAV, above the 7–11 band.
+        wf = whatif.simulate(holdings(), self.MODEL_WITH_CASH, [{"symbol": "AMD", "delta_czk": -100}])
+        t = wf["cash"]["target"]
+        self.assertEqual(t["target_pct"], 9)
+        self.assertEqual((t["low"], t["high"]), (7.0, 11.0))
+        self.assertAlmostEqual(t["after_pct"], 18.18, places=2)
+        self.assertEqual(t["status_after"], "ABOVE")
+
+    def test_floor_breach_is_a_caveat(self):
+        # Spend 50: cash 100 -> 50 = 4.5% of NAV, under the 7% floor (but > 0,
+        # so the louder negative-cash caveat must NOT fire instead).
+        wf = whatif.simulate(holdings(), self.MODEL_WITH_CASH, [{"symbol": "REST", "delta_czk": 50}])
+        self.assertEqual(wf["cash"]["target"]["status_after"], "BELOW")
+        self.assertTrue(any("floor" in c for c in wf["caveats"]))
+        self.assertFalse(any("goes negative" in c for c in wf["caveats"]))
+
+    def test_no_target_no_band(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "AMD", "delta_czk": -100}])
+        self.assertIsNone(wf["cash"]["target"])
+
+
 if __name__ == "__main__":
     unittest.main()

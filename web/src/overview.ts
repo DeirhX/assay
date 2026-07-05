@@ -32,6 +32,7 @@ interface PlanSum {
   gates_open: number;
   untargeted: number;
   untargeted_pct?: number | null;
+  cash?: { pct_of_nav: number; target_pct: number; low: number; high: number; status: string } | null;
 }
 interface DraftSum { has_draft: boolean; pending: number }
 interface StagedBasketSum { count: number; buys: number; sells: number; total_abs_czk: number }
@@ -118,6 +119,10 @@ export function planCard(p: PlanSum | null | undefined): string {
   if (p.gates_open) bits.push(`<span class="today-warn-text">${p.gates_open} price trigger${p.gates_open === 1 ? "" : "s"} met and actionable.</span>`);
   if (p.gates_waiting) bits.push(`${p.gates_waiting} price gate${p.gates_waiting === 1 ? "" : "s"} still waiting.`);
   if (p.conflicts) bits.push(`<span class="today-warn-text">${p.conflicts} plan-vs-thesis conflict${p.conflicts === 1 ? "" : "s"}.</span>`);
+  if (p.cash && p.cash.status !== "IN") {
+    bits.push(`<span class="today-warn-text">Cash is ${p.cash.pct_of_nav.toFixed(1)}% of NAV, ` +
+      `${p.cash.status === "BELOW" ? "under" : "over"} its ${p.cash.low}–${p.cash.high}% band (target ${p.cash.target_pct}%).</span>`);
+  }
   if (p.untargeted) bits.push(`${p.untargeted} held name${p.untargeted === 1 ? "" : "s"} (${(p.untargeted_pct ?? 0).toFixed(1)}%) ride with no band.`);
   return card(tone, "Standing plan", chip, bits.join(" "), goBtn("rebalance", "Rebalance →"));
 }

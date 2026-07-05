@@ -171,6 +171,20 @@ export interface PlanRow {
   tax?: TaxInfo | null;
 }
 
+// First-class cash line (rebalance.cash_block): current cash vs the
+// cash_target_pct band, measured as % of NAV. Null when the snapshot has no
+// cash/NAV data. Informational — cash is never a tradeable row.
+export interface CashBlock {
+  czk: number;
+  nav: number;
+  pct_of_nav: number;
+  target_pct: number;
+  band_pp: number;
+  low: number;
+  high: number;
+  status: string;
+}
+
 export interface RebalancePlan {
   as_of: string | null;
   snapshot: string | null;
@@ -178,6 +192,7 @@ export interface RebalancePlan {
   invested: number;
   currency: string;
   cash_target_pct: number;
+  cash?: CashBlock | null;
   funding_order: string[];
   rows: PlanRow[];
   untargeted: PlanMember[];
@@ -205,7 +220,13 @@ export interface Whatif {
   summary?: WhatifSummary;
   currency?: string;
   trades?: WhatifTrade[];
-  cash?: { after?: number | null } | null;
+  cash?: {
+    after?: number | null;
+    target?: {
+      target_pct: number; low: number; high: number;
+      before_pct: number; after_pct: number; status_after: string;
+    } | null;
+  } | null;
   after?: { rows?: PlanRow[] } | null;
   before_status?: Record<string, string>;
   tax?: { totals?: Record<string, number> } | null;
