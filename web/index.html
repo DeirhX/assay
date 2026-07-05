@@ -34,6 +34,7 @@
         <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
         <button class="subtab" data-view="working-draft" type="button" role="tab">Working draft</button>
+        <button class="subtab" data-view="exit" type="button" role="tab">Exit</button>
         <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
         <button class="subtab" data-view="journal" type="button" role="tab">Journal</button>
@@ -414,6 +415,20 @@
       </div>
       <div class="status" id="stage-status"></div>
       <div id="stage-body"></div>
+    </section>
+
+    <!-- EXIT (advisory graceful-exit planner) -->
+    <section class="view" id="view-exit">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Exit planner</h2>
+          <p class="hint">A graceful way out of the names the rebalance planner wants to shrink: tax-optimal lot sequencing (Czech 3-year rule), a liquidity-aware multi-day scale-out with a suggested GTC limit ladder, and an options overlay (covered call / protective-put collar). Everything is <strong>advisory</strong> — "Stage tranche" only drops a slice into the Trade desk basket, which you still preview and place yourself. No option orders are ever placed.</p>
+        </div>
+        <div class="reb-head-actions" id="exit-controls"></div>
+      </div>
+      <div class="status" id="exit-status"></div>
+      <div id="exit-summary"></div>
+      <div id="exit-body"></div>
     </section>
 
     <!-- BASKET (cross-surface shortlist) -->

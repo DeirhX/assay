@@ -1,0 +1,333 @@
+// Exit view: the advisory graceful-exit planner (tools/exit_plan.py).
+//
+// For every name the rebalance planner wants to shrink, this renders a
+// tax-timed, liquidity-aware scale-out: which lots to sell now vs defer past the
+// Czech 3-year exemption, a suggested GTC limit ladder split into tranches, and
+// an options overlay (covered call / protective-put collar). Nothing here trades
+// — "Stage tranche" just drops one slice into the shared trade-desk basket, which
+// you still preview and place by hand on the Trade view.
+import {
+  $, api, el, esc, fmtCZK, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
+} from "./core";
+import type {
+  ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
+} from "./api-types";
+import { openTicker } from "./rebalance";
+import { pushNav, setActiveView } from "./shell";
+
+// Config knobs (mirror exit_plan.py defaults); tunable from the header and sent
+// back on every (re)build and stage so the server rebuilds an identical plan.
+const cfg = { horizon_days: 10, adv_slice_pct: 0.12, near_exempt_days: 120, tax_rate: 0.15 };
+
+const czk = (v: number | null | undefined) => (v == null ? "n/a" : sensitive(fmtCZK(v)));
+const pct = (v: number | null | undefined, digits = 1) => (v == null ? "n/a" : `${Number(v).toFixed(digits)}%`);
+
+const END_STATE_LABEL: Record<string, string> = {
+  zero: "Full exit → 0%",
+  ceiling: "Trim to ceiling",
+  stub: "Trim to stub",
+};
+
+export async function loadExit(): Promise<void> {
+  const token = nextToken("exit");
+  const status = $("#exit-status");
+  setLoading(status, "Building exit plans…", true);
+  const summary = $("#exit-summary");
+  const body = $("#exit-body");
+  if (summary) summary.innerHTML = "";
+  if (body) body.innerHTML = "";
+  try {
+    const data = await api<ExitPlanResponse>(`/api/exit-plan?${cfgQuery()}`);
+    if (isStaleToken("exit", token)) return;
+    renderExit(data);
+    if (status) status.textContent = "";
+  } catch (e) {
+    if (isStaleToken("exit", token)) return;
+    if (summary) summary.innerHTML = "";
+    if (body) body.innerHTML = "";
+    loadError(status, "Could not build exit plan", e);
+  }
+}
+
+function cfgQuery(): string {
+  const p = new URLSearchParams();
+  p.set("horizon_days", String(cfg.horizon_days));
+  p.set("adv_slice_pct", String(cfg.adv_slice_pct));
+  p.set("near_exempt_days", String(cfg.near_exempt_days));
+  p.set("tax_rate", String(cfg.tax_rate));
+  return p.toString();
+}
+
+function renderExit(data: ExitPlanResponse): void {
+  renderControls();
+  renderSummary(data);
+  const body = $("#exit-body");
+  if (!body) return;
+  body.innerHTML = "";
+  if (!data.positions.length) {
+    body.innerHTML =
+      `<div class="empty-state">Nothing to exit — every targeted name is within its band. ` +
+      `Names appear here when the rebalance planner marks them <strong>reduce</strong>, ` +
+      `<strong>trim only</strong>, <strong>hold-don't-add</strong>, or <strong>avoid</strong> above the band.</div>`;
+    return;
+  }
+  data.positions.forEach((p) => body.appendChild(positionCard(p, data.currency)));
+}
+
+// ---- header config controls ------------------------------------------------
+function renderControls(): void {
+  const host = $("#exit-controls");
+  if (!host || host.dataset.wired === "1") return;
+  host.dataset.wired = "1";
+  host.innerHTML =
+    `<label>Horizon <input id="exit-horizon" type="number" min="1" max="60" step="1" value="${cfg.horizon_days}"> d</label>` +
+    `<label>ADV slice <input id="exit-adv" type="number" min="1" max="100" step="1" value="${Math.round(cfg.adv_slice_pct * 100)}"> %</label>` +
+    `<label>Near-exempt <input id="exit-near" type="number" min="0" max="400" step="5" value="${cfg.near_exempt_days}"> d</label>` +
+    `<label>Tax rate <input id="exit-tax" type="number" min="0" max="60" step="1" value="${Math.round(cfg.tax_rate * 100)}"> %</label>`;
+  const rebuild = () => {
+    cfg.horizon_days = clampNum($<HTMLInputElement>("#exit-horizon")?.value, 1, 60, cfg.horizon_days);
+    cfg.adv_slice_pct = clampNum($<HTMLInputElement>("#exit-adv")?.value, 1, 100, cfg.adv_slice_pct * 100) / 100;
+    cfg.near_exempt_days = clampNum($<HTMLInputElement>("#exit-near")?.value, 0, 400, cfg.near_exempt_days);
+    cfg.tax_rate = clampNum($<HTMLInputElement>("#exit-tax")?.value, 0, 60, cfg.tax_rate * 100) / 100;
+    loadExit();
+  };
+  host.querySelectorAll("input").forEach((i) => i.addEventListener("change", rebuild));
+}
+
+function clampNum(raw: string | undefined, lo: number, hi: number, fallback: number): number {
+  const n = parseFloat(raw ?? "");
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(hi, Math.max(lo, n));
+}
+
+// ---- summary ---------------------------------------------------------------
+function renderSummary(data: ExitPlanResponse): void {
+  const host = $("#exit-summary");
+  if (!host) return;
+  host.innerHTML = "";
+  const strip = el("div", "reb-stats");
+  strip.appendChild(statTile("Names to exit", String(data.positions.length)));
+  strip.appendChild(statTile("Total to sell", czk(data.totals.exit_czk), { html: true }));
+  strip.appendChild(statTile("Sell now", czk(data.totals.sell_now_czk), { html: true, cls: "good", title: "Tax-free / loss-harvest lots that can go immediately" }));
+  strip.appendChild(statTile("Deferred", czk(data.totals.defer_czk), { html: true, cls: data.totals.defer_czk > 0 ? "warn" : "muted", title: "Held back on near-exempt taxable-gain lots" }));
+  strip.appendChild(statTile("Tax cost now", czk(data.totals.tax_cost_now), { html: true, cls: data.totals.tax_cost_now > 0 ? "bad" : "muted" }));
+  strip.appendChild(statTile("Tax saved by waiting", czk(data.totals.tax_saved_by_waiting), { html: true, cls: data.totals.tax_saved_by_waiting > 0 ? "good" : "muted" }));
+  host.appendChild(strip);
+}
+
+// ---- per-position card -----------------------------------------------------
+function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
+  const card = el("div", "card exit-card");
+
+  const head = el("div", "exit-head");
+  const title = el("div", "exit-title");
+  const sym = el("button", "exit-sym tlink-btn");
+  sym.type = "button";
+  sym.textContent = p.symbol;
+  sym.title = `Open ${p.symbol} analysis`;
+  sym.addEventListener("click", () => openTicker(p.symbol));
+  title.appendChild(sym);
+  const state_ = el("span", "exit-state " + (p.end_state === "zero" ? "bad" : "warn"));
+  state_.textContent = END_STATE_LABEL[p.end_state] || p.end_state;
+  title.appendChild(state_);
+  if (p.rule) {
+    const rule = el("span", "exit-rule muted");
+    rule.textContent = p.rule.replace(/_/g, " ");
+    title.appendChild(rule);
+  }
+  head.appendChild(title);
+
+  const meta = el("div", "exit-meta");
+  meta.innerHTML =
+    `<span>${pct(p.current_pct, 2)} → <strong>${pct(p.target_pct, 2)}</strong></span>` +
+    `<span title="Total market value to sell to reach the end state">sell ${czk(p.exit_czk)} · ${fmtNum(p.exit_shares)} sh</span>`;
+  head.appendChild(meta);
+  card.appendChild(head);
+
+  card.appendChild(taxBlock(p));
+  card.appendChild(scheduleBlock(p, baseCcy));
+  const opt = optionsBlock(p);
+  if (opt) card.appendChild(opt);
+  return card;
+}
+
+function fmtNum(v: number | null | undefined): string {
+  if (v == null) return "n/a";
+  return Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+// ---- tax layering ----------------------------------------------------------
+function taxBlock(p: ExitPosition): HTMLElement {
+  const box = el("div", "exit-section");
+  box.appendChild(el("h3", "exit-h3", "Tax layering"));
+  const t = p.tax;
+
+  const bars = el("div", "exit-taxbars");
+  const total = Math.max(1, t.sell_now_czk + t.defer_czk);
+  bars.appendChild(taxBar("Sell now", t.sell_now_czk, total, "good"));
+  bars.appendChild(taxBar("Defer", t.defer_czk, total, "warn"));
+  box.appendChild(bars);
+
+  const notes = el("div", "exit-taxnotes hint");
+  const parts: string[] = [];
+  if (t.exempt_gain_now > 0) parts.push(`banks ${czk(t.exempt_gain_now)} of tax-free (3y+) gain`);
+  if (t.harvested_loss_now > 0) parts.push(`harvests ${czk(t.harvested_loss_now)} of loss`);
+  if (t.taxable_gain_now > 0) parts.push(`realizes ${czk(t.taxable_gain_now)} taxable gain (~${czk(t.tax_cost_now)} tax)`);
+  notes.innerHTML = parts.length ? "Selling now " + parts.join("; ") + "." : "Sell-now leg carries no tax cost.";
+  box.appendChild(notes);
+
+  if (t.defer_lots.length) {
+    const defer = el("div", "exit-defer");
+    defer.innerHTML =
+      `<div class="exit-defer-head warn">Hold back ${czk(t.defer_czk)} on near-exempt lots ` +
+      `— waiting saves ~${czk(t.tax_saved_by_waiting)} in tax:</div>`;
+    const ul = el("ul", "exit-defer-list");
+    t.defer_lots.forEach((l) => {
+      const li = el("li");
+      const days = l.days_to_exempt == null ? "" : ` (${l.days_to_exempt}d)`;
+      li.innerHTML =
+        `${fmtNum(l.shares)} sh · gain ${czk(l.gain)} · tax if sold now ${czk(l.tax_if_sold_now)} · ` +
+        `<strong>${esc(l.note)}${days}</strong>`;
+      ul.appendChild(li);
+    });
+    defer.appendChild(ul);
+    box.appendChild(defer);
+  }
+  return box;
+}
+
+function taxBar(label: string, value: number, total: number, cls: string): HTMLElement {
+  const w = Math.max(0, Math.min(100, (value / total) * 100));
+  const row = el("div", "exit-taxbar");
+  row.innerHTML =
+    `<span class="exit-taxbar-k">${esc(label)}</span>` +
+    `<span class="exit-taxbar-track"><span class="exit-taxbar-fill ${esc(cls)}" style="width:${w.toFixed(1)}%"></span></span>` +
+    `<span class="exit-taxbar-v">${czk(value)}</span>`;
+  return row;
+}
+
+// ---- schedule --------------------------------------------------------------
+function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
+  const box = el("div", "exit-section");
+  const s = p.schedule;
+  const advNote = s.adv
+    ? `sized to ~${Math.round(cfg.adv_slice_pct * 100)}% of ${fmtNum(s.adv)} ADV (≤${fmtNum(s.max_shares_per_day)} sh/day)`
+    : "even time-slices (no volume data)";
+  box.innerHTML = `<h3 class="exit-h3">Scale-out schedule <span class="muted exit-h3-sub">${esc(advNote)}</span></h3>`;
+
+  if (!s.tranches.length) {
+    box.appendChild(el("div", "hint", "Nothing to schedule now — the whole exit is on deferred near-exempt lots."));
+    return box;
+  }
+
+  const tbl = el("table", "exit-sched");
+  tbl.innerHTML =
+    `<thead><tr><th>#</th><th>Date</th><th>Shares</th><th>${esc(baseCcy)}</th><th>GTC limit</th><th></th></tr></thead>`;
+  const tbody = el("tbody");
+  s.tranches.forEach((tr) => {
+    const row = el("tr");
+    const limit = tr.limit_price == null
+      ? `<span class="muted">market</span>`
+      : `${fmtNum(tr.limit_price)} ${esc(tr.limit_currency || "")}`;
+    row.innerHTML =
+      `<td>${tr.index}</td><td>${esc(tr.date)}</td>` +
+      `<td>${fmtNum(tr.shares)}</td><td>${czk(tr.czk)}</td>` +
+      `<td>${limit}${tr.over_adv_cap ? ` <span class="warn" title="Above the liquidity cap — thin name, slice may move the market">⚠</span>` : ""}</td>` +
+      `<td></td>`;
+    const btnCell = row.lastElementChild as HTMLElement;
+    const btn = el("button", "ghost exit-stage-btn");
+    btn.type = "button";
+    btn.textContent = "Stage →";
+    btn.title = "Drop this tranche into the Trade desk basket (you still preview & place it)";
+    btn.addEventListener("click", () => stageTranche(p.symbol, tr.index, btn));
+    btnCell.appendChild(btn);
+    tbody.appendChild(row);
+  });
+  tbl.appendChild(tbody);
+  box.appendChild(tbl);
+  return box;
+}
+
+async function stageTranche(symbol: string, index: number, btn: HTMLButtonElement): Promise<void> {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Staging…";
+  try {
+    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", { symbol, index, cfg });
+    state.stagedBasket = resp.basket.slice();
+    btn.textContent = "Staged ✓";
+    // Jump to the trade desk so the human can preview/place the accumulated basket.
+    pushNav({ view: "trade" });
+    setActiveView("trade");
+  } catch (e) {
+    btn.textContent = "Failed";
+    btn.title = (e as Error)?.message || "stage failed";
+    setTimeout(() => { btn.disabled = false; btn.textContent = prev; }, 1500);
+  }
+}
+
+// ---- options overlay -------------------------------------------------------
+function optionsBlock(p: ExitPosition): HTMLElement | null {
+  const o = p.options;
+  if (!o || (!o.covered_call && !o.protective_put)) return null;
+  const box = el("div", "exit-section exit-options");
+  box.appendChild(el("h3", "exit-h3", "Options overlay <span class=\"muted exit-h3-sub\">analysis only — no option orders are placed</span>"));
+
+  if (o.covered_call) box.appendChild(coveredCallCard(o.covered_call, o.currency));
+  if (o.protective_put) box.appendChild(protectivePutCard(o.protective_put, o.currency));
+
+  if (o.notes.length) {
+    const notes = el("ul", "exit-opt-notes hint");
+    o.notes.forEach((n) => { const li = el("li"); li.textContent = n; notes.appendChild(li); });
+    box.appendChild(notes);
+  }
+  return box;
+}
+
+function estimateBadge(estimate: boolean): string {
+  return estimate
+    ? `<span class="exit-est" title="Black-Scholes estimate — no live chain for this name">estimate</span>`
+    : `<span class="exit-live" title="From a live-ish Yahoo option chain (delayed/mid)">indicative</span>`;
+}
+
+function coveredCallCard(c: ExitCoveredCall, ccy: string | null): HTMLElement {
+  const card = el("div", "exit-opt-card");
+  const cur = ccy || "";
+  card.innerHTML =
+    `<div class="exit-opt-title">Covered call ${estimateBadge(c.estimate)}` +
+    (c.assignment_guard ? ` <span class="warn" title="Pushed far-OTM / post-exemption to protect a deferred lot">tax-guarded</span>` : "") +
+    `</div>` +
+    `<div class="exit-opt-grid">` +
+      kv("Sell", `${c.contracts}× ${fmtNum(c.strike)} ${esc(cur)} call`) +
+      kv("Expiry", `${esc(c.expiry)} (${c.dte}d)`) +
+      kv("Premium", `${fmtNum(c.premium)} ${esc(cur)} · ${czk(c.premium_czk)}`) +
+      kv("Effective exit", `${fmtNum(c.effective_exit)} ${esc(cur)}`) +
+      kv("Ann. yield", c.premium_yield_annual_pct == null ? "n/a" : pct(c.premium_yield_annual_pct, 1)) +
+      kv("Assignment", c.assignment_prob_pct == null ? "n/a" : `~${pct(c.assignment_prob_pct, 0)}`) +
+    `</div>`;
+  return card;
+}
+
+function protectivePutCard(pp: ExitProtectivePut, ccy: string | null): HTMLElement {
+  const card = el("div", "exit-opt-card");
+  const cur = ccy || "";
+  const net = pp.net_collar_premium;
+  const collar = net == null ? "n/a"
+    : (net >= 0 ? `${fmtNum(net)} ${esc(cur)} debit` : `${fmtNum(-net)} ${esc(cur)} credit`) + ` · ${czk(pp.net_collar_czk)}`;
+  card.innerHTML =
+    `<div class="exit-opt-title">Protective put / collar ${estimateBadge(pp.estimate)}</div>` +
+    `<div class="exit-opt-grid">` +
+      kv("Buy put", `${pp.contracts}× ${fmtNum(pp.put_strike)} ${esc(cur)}`) +
+      kv("Expiry", `${esc(pp.expiry)} (${pp.dte}d · after ${esc(pp.exempt_on)})`) +
+      kv("Put cost", `${fmtNum(pp.put_premium)} ${esc(cur)} · ${czk(pp.put_cost_czk)}`) +
+      kv("Protected floor", `${fmtNum(pp.protected_floor)} ${esc(cur)}`) +
+      kv("Collar (sell call)", `${fmtNum(pp.collar_call_strike)} ${esc(cur)} → ${collar}`) +
+      kv("Tax saved by waiting", czk(pp.tax_saved_by_waiting_czk)) +
+    `</div>` +
+    `<div class="hint">Hedges the ${pp.days_to_exempt}-day wait until the near-exempt gain turns tax-free on ${esc(pp.exempt_on)}.</div>`;
+  return card;
+}
+
+function kv(k: string, v: string): string {
+  return `<div class="exit-kv"><span class="exit-kv-k">${esc(k)}</span><span class="exit-kv-v">${v}</span></div>`;
+}

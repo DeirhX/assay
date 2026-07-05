@@ -392,6 +392,155 @@ export interface PriceLevelsResponse {
   levels: Record<string, PriceLevel>;
 }
 
+// ---- exit plan (GET /api/exit-plan, POST /api/exit-plan/stage) ------------
+// Advisory tax-timed scale-out for unwanted positions. Money is base currency
+// (CZK) unless a field says otherwise; limit prices are in the instrument's
+// trading currency.
+export interface ExitSellNowLot {
+  bucket: string;
+  shares: number;
+  proceeds: number;
+  gain: number;
+  exempt: boolean;
+  days_to_exempt: number | null;
+  open_datetime: string | null;
+}
+
+export interface ExitDeferLot {
+  bucket: string;
+  shares: number;
+  market_value: number;
+  gain: number;
+  days_to_exempt: number | null;
+  exempt_on: string | null;
+  tax_if_sold_now: number;
+  note: string;
+}
+
+export interface ExitTaxLayers {
+  sell_now_czk: number;
+  defer_czk: number;
+  sell_now_lots: ExitSellNowLot[];
+  defer_lots: ExitDeferLot[];
+  taxable_gain_now: number;
+  exempt_gain_now: number;
+  harvested_loss_now: number;
+  tax_cost_now: number;
+  tax_saved_by_waiting: number;
+}
+
+export interface ExitTranche {
+  index: number;
+  date: string;
+  shares: number;
+  czk: number;
+  limit_price: number | null;
+  limit_currency: string | null;
+  over_adv_cap: boolean;
+}
+
+export interface ExitSchedule {
+  tranches: ExitTranche[];
+  n: number;
+  adv: number | null;
+  max_shares_per_day: number | null;
+}
+
+export interface ExitCoveredCall {
+  type: "covered_call";
+  source: string;
+  contracts: number;
+  expiry: string;
+  dte: number;
+  strike: number;
+  premium: number;
+  premium_czk: number;
+  effective_exit: number;
+  premium_yield_annual_pct: number | null;
+  assignment_prob_pct: number | null;
+  vol_used: number;
+  estimate: boolean;
+  assignment_guard?: boolean;
+}
+
+export interface ExitProtectivePut {
+  type: "protective_put";
+  source: string;
+  contracts: number;
+  expiry: string;
+  dte: number;
+  days_to_exempt: number;
+  exempt_on: string;
+  put_strike: number;
+  put_premium: number;
+  put_cost_czk: number;
+  protected_floor: number;
+  collar_call_strike: number;
+  collar_call_premium: number | null;
+  net_collar_premium: number | null;
+  net_collar_czk: number | null;
+  tax_saved_by_waiting_czk: number;
+  vol_used: number;
+  estimate: boolean;
+}
+
+export interface ExitOptionsOverlay {
+  symbol: string;
+  underlying: number;
+  currency: string | null;
+  source: string;
+  covered_call: ExitCoveredCall | null;
+  protective_put: ExitProtectivePut | null;
+  notes: string[];
+}
+
+export interface ExitPosition {
+  symbol: string;
+  source: string;
+  rule: string | null;
+  currency: string | null;
+  mark_price: number | null;
+  quantity: number;
+  current_pct: number;
+  current_czk: number;
+  end_state: "ceiling" | "stub" | "zero";
+  target_pct: number;
+  exit_czk: number;
+  exit_shares: number;
+  sell_now_shares: number;
+  tax: ExitTaxLayers;
+  schedule: ExitSchedule;
+  options?: ExitOptionsOverlay | null;
+}
+
+export interface ExitPlanResponse {
+  as_of: string;
+  snapshot: string | null;
+  currency: string;
+  invested: number | null;
+  config: {
+    horizon_days: number;
+    adv_slice_pct: number;
+    near_exempt_days: number;
+    tax_rate: number;
+  };
+  positions: ExitPosition[];
+  totals: {
+    exit_czk: number;
+    sell_now_czk: number;
+    defer_czk: number;
+    tax_cost_now: number;
+    tax_saved_by_waiting: number;
+  };
+}
+
+export interface ExitStageResponse {
+  staged: boolean;
+  basket: Array<{ symbol: string; delta_czk: number }>;
+  tranche: ExitTranche;
+  symbol: string;
+}
+
 // ---- error envelope (any non-2xx) -----------------------------------------
 export interface ApiError {
   error: string;
