@@ -27,7 +27,7 @@ BASKET_JSON = DATA_DIR / "basket.json"
 
 # Where a pick was starred from. Free-form would rot; an unknown source is
 # coerced to "manual" so the provenance label stays meaningful.
-_SOURCES = {"manual", "deepdive", "rebalance", "strategy", "analyses", "suggestion"}
+_SOURCES = {"manual", "deepdive", "rebalance", "strategy", "analyses", "suggestion", "segment"}
 
 # Interest tier. The basket is now the optimizer's candidate pool: "want" is a
 # real intent to size into the plan, "curious" is parked (sized only when the

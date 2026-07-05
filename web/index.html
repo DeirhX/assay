@@ -29,6 +29,7 @@
     </button>
     <div class="subbar" id="subbar" hidden>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
+        <button class="subtab" data-view="today" type="button" role="tab">Today</button>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
@@ -350,6 +351,21 @@
     </section>
 
     <!-- REBALANCE -->
+    <!-- TODAY (portfolio cockpit: process state + next step) -->
+    <section class="view" id="view-today">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Today</h2>
+          <p class="hint">Where the whole loop stands — holdings freshness, plan drift, anything staged mid-flight, and the research funnel — with the single most useful next step on top. Everything here is a summary; each card links to the view that owns it.</p>
+        </div>
+        <div class="reb-head-actions">
+          <button class="ghost" id="today-refresh" type="button" title="Recompute the overview">Refresh</button>
+        </div>
+      </div>
+      <div class="status" id="today-status"></div>
+      <div id="today-body"></div>
+    </section>
+
     <section class="view" id="view-rebalance">
       <div class="reb-head">
         <div class="reb-head-text">
