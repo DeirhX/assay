@@ -303,6 +303,10 @@ def _trade_place(body: dict) -> dict:
         placed = ibkr_trade.place_orders(account_id, orders)
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
+    # Close the loop: the staged basket was just submitted, so stop offering it
+    # for re-placement — double-placing the same persisted basket is the worst
+    # failure mode of the planner→desk hand-off. Stage a fresh basket any time.
+    save_basket([])
     return {
         "account": account_id,
         "kind": ibkr_trade.account_kind(account_id),
@@ -310,6 +314,7 @@ def _trade_place(body: dict) -> dict:
         "orders": orders,
         "warnings": warnings,
         "placed": placed,
+        "staged_basket_cleared": True,
     }
 
 

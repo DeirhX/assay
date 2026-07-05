@@ -1,4 +1,6 @@
 import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, simpleTable, state } from "./core";
+import { pollDeepJob } from "./errors";
+import { openJournalWith } from "./journal";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -63,6 +65,9 @@ interface LiveOrder {
 
 let _status: TradeStatus | null = null;   // last /api/trade/status
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
+// The basket as it was placed — snapshotted before the staged store is cleared,
+// so the "Log to journal" next step can still describe the executed trades.
+let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
 
 const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
@@ -291,13 +296,20 @@ async function doPlace(btn: HTMLButtonElement) {
   if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> placing\u2026`; }
   if (btn) btn.disabled = true;
   try {
-    const res = await api("/api/trade/place", "POST", {
+    // Snapshot the basket for the journal next-step before anything clears it.
+    _placedBasket = (state.stagedBasket || []).slice();
+    const res = await api<PlaceResult>("/api/trade/place", "POST", {
       trades: _preview.trades,
       account: _preview.account,
       token: _preview.token,
       confirm: true,
     });
     if (status) status.textContent = "";
+    // The server cleared the staged basket on success; mirror it and reset the
+    // view so the desk stops offering the just-placed basket, then append the
+    // outcome + loop-closing next steps.
+    if (res.staged_basket_cleared) state.stagedBasket = [];
+    renderBasket();
     renderPlaceResult(res);
     loadLiveOrders();
   } catch (e) {
@@ -310,6 +322,68 @@ interface PlaceResult {
   placed?: Array<Record<string, any>>;
   kind?: string;
   account?: string;
+  staged_basket_cleared?: boolean;
+}
+
+// Pure HTML for the placement-outcome card: an acknowledgement banner, the
+// loop-closing next steps (resync holdings, log the decision), and the raw
+// IBKR response tucked into a collapsed drawer instead of a wall of JSON.
+// Exported for tests.
+export function placeResultHtml(res: PlaceResult): string {
+  const placed = res.placed || [];
+  const ok = placed.filter((o) => o && (o.order_id || o.orderId || o.order_status)).length;
+  const banner = `<div class="trade-bnr ${ok ? "paper" : "warn"}">` +
+    `${ok} order(s) acknowledged by IBKR on ${esc(res.kind)} account ${esc(res.account)}.</div>`;
+  const cleared = res.staged_basket_cleared
+    ? `<span class="muted">The staged basket was cleared so it can't be placed twice.</span>` : "";
+  const next = `<div class="trade-next">
+    <div class="subhead">Close the loop</div>
+    <ol class="trade-next-list">
+      <li><strong>Resync holdings</strong> so the planner works from your new positions, not the pre-trade snapshot.
+        <button class="ghost" type="button" data-trade-next="resync">Resync from IBKR</button></li>
+      <li><strong>Log the decision</strong> while the reasoning is fresh — outcomes get scored later.
+        <button class="ghost" type="button" data-trade-next="journal">Log to journal</button></li>
+    </ol>
+    ${cleared}
+  </div>`;
+  const raw = `<details class="trade-raw-det"><summary>Raw IBKR response</summary>` +
+    `<pre class="trade-raw">${esc(JSON.stringify(placed, null, 2))}</pre></details>`;
+  return banner + next + raw;
+}
+
+async function resyncAfterPlace(btn: HTMLButtonElement, status: HTMLElement | null) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  if (status) {
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
+  }
+  try {
+    const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
+    await pollDeepJob(job.id, status, async () => {
+      if (status) status.textContent = "Holdings resynced — the planner now sees the post-trade book.";
+      btn.textContent = "Resynced ✓";
+    }, "IBKR sync");
+  } catch (e) {
+    if (status) { status.classList.add("err"); status.textContent = "Sync failed: " + (e as Error).message; }
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+function logPlacedToJournal(res: PlaceResult) {
+  const trades = _placedBasket;
+  const first = trades[0] || ({} as { symbol?: string; delta_czk?: number });
+  const summary = trades
+    .map((t) => `${t.symbol} ${t.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(t.delta_czk))}`)
+    .join(", ");
+  openJournalWith({
+    symbol: first.symbol || "",
+    action: (first.delta_czk || 0) < 0 ? "trim" : "buy",
+    size_czk: first.delta_czk != null ? Math.abs(first.delta_czk) : "",
+    thesis: `Placed basket on ${res.kind} account ${res.account}: ${summary || "(see IBKR)"}.`,
+  });
 }
 
 function renderPlaceResult(res: PlaceResult) {
@@ -318,13 +392,17 @@ function renderPlaceResult(res: PlaceResult) {
   wrap.querySelectorAll(".trade-result-card").forEach((n) => n.remove());
   const card = el("div", "card trade-result-card");
   card.appendChild(el("div", "trade-card-title", "Placement result"));
-  const placed = res.placed || [];
-  const ok = placed.filter((o) => o && (o.order_id || o.orderId || o.order_status));
-  card.appendChild(el("div", ok.length ? "trade-bnr paper" : "trade-bnr warn",
-    `${ok.length} order(s) acknowledged by IBKR on ${esc(res.kind)} account ${esc(res.account)}.`));
-  const pre = el("pre", "trade-raw");
-  pre.textContent = JSON.stringify(placed, null, 2);
-  card.appendChild(pre);
+  const body = el("div");
+  body.innerHTML = placeResultHtml(res);
+  const status = el("div", "status");
+  body.querySelectorAll<HTMLButtonElement>("[data-trade-next]").forEach((b) => {
+    b.addEventListener("click", () => {
+      if (b.dataset.tradeNext === "resync") void resyncAfterPlace(b, status);
+      else if (b.dataset.tradeNext === "journal") logPlacedToJournal(res);
+    });
+  });
+  card.appendChild(body);
+  card.appendChild(status);
   wrap.appendChild(card);
 }
 

@@ -260,21 +260,55 @@ class TradeServiceGuards(unittest.TestCase):
             with self.assertRaises(ValueError):
                 trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}], "token": "x"})
 
-    def test_happy_path_places_on_paper(self):
+    def test_happy_path_places_on_paper_and_clears_staged_basket(self):
+        import tempfile
+        from pathlib import Path
         basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
         token = trade_service._basket_token("DU1", basket)
         order = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
                  "orderType": "MKT", "tif": "DAY"}
-        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
-                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
-                mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
-                mock.patch.object(ibt, "place_orders",
-                                  return_value=[{"order_id": "1"}]) as place:
-            res = trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
-                                              "account": "DU1", "confirm": True, "token": token})
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged), \
+                    mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                    mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                    mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                    mock.patch.object(ibt, "place_orders",
+                                      return_value=[{"order_id": "1"}]) as place:
+                # The planner staged this basket; a successful place must retire it
+                # so the desk can't re-offer an already-submitted basket.
+                trade_service.save_basket([{"symbol": "AMD", "delta_czk": 1000}])
+                self.assertTrue(staged.exists())
+                res = trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                                  "account": "DU1", "confirm": True, "token": token})
+                self.assertFalse(staged.exists())
+                self.assertEqual(trade_service.load_basket(), [])
         self.assertEqual(res["account"], "DU1")
         self.assertEqual(res["placed"], [{"order_id": "1"}])
+        self.assertTrue(res["staged_basket_cleared"])
         place.assert_called_once()
+
+    def test_failed_place_keeps_staged_basket(self):
+        import tempfile
+        from pathlib import Path
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("DU1", basket)
+        order = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
+                 "orderType": "MKT", "tif": "DAY"}
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged), \
+                    mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                    mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                    mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                    mock.patch.object(ibt, "place_orders",
+                                      side_effect=ibt.CPAPIError("gateway down")):
+                trade_service.save_basket([{"symbol": "AMD", "delta_czk": 1000}])
+                with self.assertRaises(apierror.BadGateway):
+                    trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                                                "account": "DU1", "confirm": True, "token": token})
+                # Placement never reached IBKR — the basket stays available to retry.
+                self.assertTrue(staged.exists())
 
 
 if __name__ == "__main__":
