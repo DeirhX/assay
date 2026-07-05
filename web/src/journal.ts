@@ -1,4 +1,5 @@
 import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive, statTile } from "./core";
+import { pushNav, setActiveView } from "./shell";
 
 // ---- decision journal + calibration ----------------------------------------
 const correctClass = (c: boolean | null) => (c === true ? "good" : c === false ? "bad" : "muted");
@@ -185,11 +186,13 @@ async function submitEntry() {
   }
 }
 
-// Pre-fill the journal form from elsewhere (e.g. a simulated basket), navigating
-// to the tab via its button so we avoid importing shell (cycle-free).
+// Pre-fill the journal form from elsewhere (a simulated basket, a placed
+// order). Navigates via shell directly: the old `.tab[data-view="journal"]`
+// button click found nothing once journal moved to a portfolio *sub*-tab, so
+// the prefill silently landed on a view that never opened.
 function openJournalWith(prefill: Record<string, unknown>) {
-  const tab = document.querySelector<HTMLElement>('.tab[data-view="journal"]');
-  if (tab) tab.click();
+  pushNav({ view: "journal" });
+  setActiveView("journal");
   setTimeout(() => {
     initJournalControls();
     const set = (id: string, v: unknown) => {

@@ -2569,6 +2569,12 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 /* A limit order from a locked price trigger stands out from plain MKT lines. */
 .trade-lmt { color: var(--accent); font-weight: 700; }
 .trade-raw { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; max-height: 320px; }
+/* Post-placement loop-close: the next steps lead; the raw response collapses. */
+.trade-next { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-soft); background: rgba(130,170,255,.05); padding: 12px 14px; margin: 12px 0; }
+.trade-next-list { margin: 8px 0 6px; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.trade-next-list button { margin-left: 8px; font-size: 12px; padding: 3px 12px; }
+.trade-raw-det { margin-top: 10px; }
+.trade-raw-det summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
 .trade-live-row { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
 .trade-live-status { color: var(--muted); }
