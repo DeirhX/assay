@@ -115,7 +115,7 @@ from rebalance_overlay import (  # noqa: E402  -- research overlay + price gate 
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
-    _trade_place, _trade_preview, _trade_status,
+    _trade_place, _trade_preview, _trade_reconnect, _trade_status, _trade_tickle,
     load_basket as _load_basket, save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
@@ -510,6 +510,7 @@ _GET_EXACT = {
     "/api/setup/status": "_get_setup_status",
     "/api/analysis-models": "_get_analysis_models",
     "/api/trade/status": "_get_trade_status",
+    "/api/trade/tickle": "_get_trade_tickle",
     "/api/trade/orders": "_get_trade_orders",
     "/api/trade/basket": "_get_trade_basket",
     "/api/deep-research/login-status": "_get_login_status",
@@ -577,6 +578,7 @@ _POST_EXACT = {
     "/api/tax-plan": "_post_tax_plan",
     "/api/exit-plan/stage": "_post_exit_plan_stage",
     "/api/whatif": "_post_whatif",
+    "/api/trade/reconnect": "_post_trade_reconnect",
     "/api/trade/preview": "_post_trade_preview",
     "/api/trade/place": "_post_trade_place",
     "/api/trade/cancel": "_post_trade_cancel",
@@ -935,6 +937,11 @@ class Handler(BaseHTTPRequestHandler):
     def _get_trade_status(self, path, query):
         # Never errors: a down/locked gateway is a normal state the UI renders.
         return self._send_json(_trade_status())
+
+    def _get_trade_tickle(self, path, query):
+        # Keepalive for an open Trade view; returns live session booleans and
+        # never errors (a dropped session is a normal state the UI reflects).
+        return self._send_json(_trade_tickle())
 
     def _get_trade_orders(self, path, query):
         return self._send_json(_trade_orders())
@@ -1480,6 +1487,11 @@ class Handler(BaseHTTPRequestHandler):
         if not holdings or not model:
             return self._send_error_json(404, "need both a holdings snapshot and a target model")
         return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
+
+    def _post_trade_reconnect(self, path):
+        # Re-establish the brokerage session (ssodh/init) without a browser
+        # login; returns the refreshed status so the banner updates in one call.
+        return self._send_json(_trade_reconnect())
 
     def _post_trade_preview(self, path):
         return self._send_json(_trade_preview(self._read_body()))

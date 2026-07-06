@@ -388,5 +388,63 @@ class TradeServiceGuards(unittest.TestCase):
         self.assertTrue(any("snapshot is" in w and "days old" in w for w in res["warnings"]))
 
 
+class SessionLifecycle(unittest.TestCase):
+    """Reconnect + keepalive: session ops, gated like the rest of the desk, that
+    never let a gateway hiccup turn into a 5xx (the whole point is to recover
+    from / report a dropped connection, not crash on it)."""
+
+    def test_reconnect_refused_when_trading_disabled(self):
+        with mock.patch.object(ibt, "trading_enabled", return_value=False):
+            with self.assertRaises(apierror.Forbidden):
+                trade_service._trade_reconnect()
+
+    def test_reconnect_reauths_and_returns_status(self):
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "reauthenticate", return_value={"authenticated": True}) as reauth, \
+                mock.patch.object(ibt, "auth_status",
+                                  return_value={"authenticated": True, "connected": True}), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]):
+            res = trade_service._trade_reconnect()
+        reauth.assert_called_once()
+        self.assertTrue(res["authenticated"])
+        self.assertIsNone(res["reconnect_error"])
+        self.assertEqual(res["accounts"], [{"id": "DU1", "kind": "paper"}])
+
+    def test_reconnect_reports_failure_in_band(self):
+        # A gateway that can't re-init (expired SSO) must surface as a clean
+        # 'not connected' + reconnect_error, never as an exception.
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "reauthenticate",
+                                  side_effect=ibt.CPAPIError("cannot reach the gateway")), \
+                mock.patch.object(ibt, "auth_status", return_value={}):
+            res = trade_service._trade_reconnect()
+        self.assertFalse(res["authenticated"])
+        self.assertIn("cannot reach the gateway", res["reconnect_error"])
+
+    def test_tickle_disabled_shape(self):
+        with mock.patch.object(ibt, "trading_enabled", return_value=False):
+            res = trade_service._trade_tickle()
+        self.assertEqual(res, {"trading_enabled": False, "authenticated": False,
+                               "connected": False, "competing": False})
+
+    def test_tickle_parses_session_from_response(self):
+        payload = {"iserver": {"authStatus": {"authenticated": True, "connected": True,
+                                              "competing": False}}}
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "tickle", return_value=payload) as t:
+            res = trade_service._trade_tickle()
+        t.assert_called_once()
+        self.assertTrue(res["authenticated"])
+        self.assertTrue(res["connected"])
+        self.assertFalse(res["competing"])
+
+    def test_tickle_survives_gateway_error(self):
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "tickle", side_effect=ibt.CPAPIError("down")):
+            res = trade_service._trade_tickle()
+        self.assertFalse(res["authenticated"])
+        self.assertTrue(res["trading_enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()
