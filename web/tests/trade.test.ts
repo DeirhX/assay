@@ -212,6 +212,26 @@ describe("trade desk safety gates", () => {
     expect(document.querySelectorAll(".trade-collide-note")).toHaveLength(1);
   });
 
+  it("renders an effect-on-band track per order and flags an out-of-band land", async () => {
+    await previewWith(PAPER_STATUS, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [order({ symbol: "AMD", side: "SELL" }), order({ symbol: "MSFT" })],
+      order_bands: {
+        AMD: { low: 5, high: 7, before_pct: 8.2, after_pct: 6.5, status_after: "IN" },
+        MSFT: { low: 3, high: 4, before_pct: 2.0, after_pct: 2.4, status_after: "BELOW" },
+      },
+    });
+    const rows = [...document.querySelectorAll("#trade-result .trade-band-row")];
+    expect(rows).toHaveLength(2);
+    // AMD lands back inside its band; MSFT is still below -> flagged out.
+    const amd = rows.find((r) => (r.textContent || "").includes("inside 5–7%"));
+    expect(amd).toBeTruthy();
+    expect(amd!.textContent).toContain("8.2% → 6.5%");
+    const out = document.querySelector("#trade-result .trade-band-row.out");
+    expect(out).toBeTruthy();
+    expect(out!.textContent).toContain("out of band");
+  });
+
   it("locks Place behind the stale-snapshot gate until stale marks are accepted", async () => {
     await previewWith(PAPER_STATUS, {
       is_paper: true, live_allowed: true, account: "DU1", warnings: ["snapshot old"],

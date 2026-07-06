@@ -22,6 +22,7 @@ import ibkr_trade
 import order_peg
 import overview
 import price_levels
+import rebalance
 import whatif
 from apierror import BadGateway as _BadGateway, Forbidden as _Forbidden
 from config import DATA_DIR
@@ -246,6 +247,33 @@ def _trade_status() -> dict:
     return status
 
 
+def _order_band_context(model: dict, holdings: dict, after_plan: dict | None) -> dict[str, dict]:
+    """Per-target-name band context so the preview can show each order's effect on
+    its band: {SYMBOL: {low, high, before_pct, after_pct, status_after}}. Uses the
+    same rebalance.plan the what-if runs on, so the before/after weights can never
+    disagree with the rest of the app. Only single-ticker target rows are included
+    (a sleeve or untargeted name has no per-symbol band to move within). Empty when
+    there's no model/holdings/after-plan to reconcile."""
+    if not model or not holdings or not after_plan:
+        return {}
+    before = {r["name"]: r for r in rebalance.plan(model, holdings).get("rows", [])
+              if r.get("kind") == "target"}
+    out: dict[str, dict] = {}
+    for r in after_plan.get("rows", []):
+        if r.get("kind") != "target":
+            continue
+        name = r.get("name")
+        br = before.get(name)
+        out[str(name)] = {
+            "low": r.get("low"),
+            "high": r.get("high"),
+            "before_pct": br.get("current_pct") if br else None,
+            "after_pct": r.get("current_pct"),
+            "status_after": r.get("status"),
+        }
+    return out
+
+
 def _trade_preview(body: dict) -> dict:
     """Resolve + price + size a basket and ask IBKR for its margin/commission
     impact, WITHOUT placing anything. Also returns the local what-if so the two
@@ -308,6 +336,7 @@ def _trade_preview(body: dict) -> dict:
         "warnings": warnings,
         "ibkr_preview": ibkr_preview,
         "local_whatif": local,
+        "order_bands": _order_band_context(model, holdings, local.get("after") if local else None),
         "snapshot_age_days": age,
         "snapshot_stale": snapshot_stale,
         "stale_after_days": STALE_SNAPSHOT_DAYS,
