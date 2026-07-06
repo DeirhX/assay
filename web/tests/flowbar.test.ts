@@ -16,8 +16,9 @@ const data = (over: Partial<FlowData> = {}): FlowData => ({
 });
 
 describe("stageForView", () => {
-  it("maps trade to Orders and everything else to Plan changes", () => {
+  it("maps trade to Orders, target-state to stage 4, the rest to Plan changes", () => {
     expect(stageForView("trade")).toBe(3);
+    expect(stageForView("target-state")).toBe(4);
     for (const v of ["rebalance", "optimizer", "working-draft", "exit"]) {
       expect(stageForView(v)).toBe(2);
     }
@@ -62,11 +63,8 @@ describe("flowStages", () => {
     expect(cashOff.sub).toContain("cash off target");
   });
 
-  it("routes stage 4 to the working draft when changes are pending", () => {
-    expect(flowStages(data())[3].view).toBe("working-draft");
-    const noDraft = data();
-    noDraft.ov!.draft = { pending: 0 };
-    expect(flowStages(noDraft)[3].view).toBe("rebalance");
+  it("routes stage 4 to the Target state comparison view", () => {
+    expect(flowStages(data())[3].view).toBe("target-state");
   });
 
   it("degrades to setup guidance without a snapshot", () => {
