@@ -50,6 +50,28 @@ describe("snapshotCard", () => {
     expect(html).toContain('data-goto="setup"');
   });
 
+  it("flags ledger drift red even on a fresh snapshot and names what moved", () => {
+    const drift = {
+      checked: true, stale_vs_ledger: true, n_trades_after: 2, last_trade_at: "2026-06-12T09:00:00+00:00",
+      by_symbol: [{ symbol: "NVDA", net_qty: -10, buys: 0, sells: 1 },
+                  { symbol: "AMD", net_qty: 5, buys: 1, sells: 0 }],
+    };
+    const html = snapshotCard({ exists: true, age_days: 1, stale: false, positions: 30 }, undefined, drift);
+    expect(html).toContain("today-bad");                 // harder than a stale warn
+    expect(html).toContain("Behind the trade ledger");
+    expect(html).toContain("2 executions postdate");
+    expect(html).toContain("10 NVDA sold");
+    expect(html).toContain("5 AMD bought");
+  });
+
+  it("ignores drift when the ledger check is clean", () => {
+    const drift = { checked: true, stale_vs_ledger: false, n_trades_after: 0,
+      by_symbol: [] as { symbol: string; net_qty: number; buys: number; sells: number }[] };
+    const html = snapshotCard({ exists: true, age_days: 2, stale: false, positions: 30 }, undefined, drift);
+    expect(html).not.toContain("Behind the trade ledger");
+    expect(html).not.toContain("today-bad");
+  });
+
   it("reassures instead of nagging when auto-resync is armed", () => {
     const auto = {
       enabled: true, any_ran: true,

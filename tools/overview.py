@@ -271,6 +271,17 @@ def next_step(payload: dict) -> dict:
         return {"id": "resync", "view": "holdings",
                 "label": "Resync holdings from IBKR",
                 "reason": f"The broker snapshot is {snap.get('age_days')} days old — everything below is computed from it."}
+    drift = payload.get("drift") or {}
+    if drift.get("stale_vs_ledger"):
+        # Even a calendar-fresh snapshot can be behind the ledger: a fill (possibly
+        # placed outside the app) postdates it, so the plan is sizing off a
+        # pre-trade book. This ranks above in-flight decisions because it means the
+        # ground truth itself is wrong.
+        n = drift.get("n_trades_after") or 0
+        return {"id": "drift-resync", "view": "holdings",
+                "label": "Resync — trades postdate your snapshot",
+                "reason": f"{n} execution{'s' if n != 1 else ''} in the ledger are newer than the holdings "
+                          "snapshot — the book (and every number below) predates them."}
     if draft.get("pending"):
         n = draft["pending"]
         return {"id": "commit-draft", "view": "working-draft",

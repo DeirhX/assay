@@ -187,6 +187,21 @@ class TestNextStep(unittest.TestCase):
             draft={"has_draft": True, "pending": 1}, plan={"actionable": 5, "gates_open": 2}))
         self.assertEqual(step["id"], "commit-draft")
 
+    def test_ledger_drift_outranks_in_flight_decisions(self):
+        # A fresh snapshot that's still behind the ledger: ground truth is wrong,
+        # so it outranks a pending draft/basket but not a calendar-stale snapshot.
+        step = overview.next_step(self._payload(
+            drift={"stale_vs_ledger": True, "n_trades_after": 2},
+            draft={"has_draft": True, "pending": 3}))
+        self.assertEqual(step["id"], "drift-resync")
+        self.assertIn("2 executions", step["reason"])
+
+    def test_calendar_stale_outranks_ledger_drift(self):
+        step = overview.next_step(self._payload(
+            snapshot={"exists": True, "stale": True, "age_days": 12},
+            drift={"stale_vs_ledger": True, "n_trades_after": 1}))
+        self.assertEqual(step["id"], "resync")
+
 
 class TestAutomationSummary(unittest.TestCase):
     TASKS = [
