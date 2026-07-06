@@ -1,6 +1,7 @@
 import { ensureTickerSet } from "./analyses";
 import { $, api, applyPrivacyMode, state } from "./core";
-import { clearErrors, recordError, refreshLoginStatus, renderErrorCenter, toggleErrorPanel } from "./errors";
+import { clearErrors, recordError, renderErrorCenter, toggleErrorPanel } from "./errors";
+import { refreshLoginStatus, registerPipelineJobHandlers } from "./pipeline";
 import "./livereload";
 import { initShell, navFromUrl, parseSearch, restoreNav, urlForNav } from "./shell";
 import { startTaskCenter } from "./tasks";
@@ -33,6 +34,10 @@ renderErrorCenter();
 
 initShell();
 applyPrivacyMode(state.privacyMode);
+// Wire the pipeline's needs-login recovery into the shared job poller now that
+// every module is fully evaluated (see registerPipelineJobHandlers for why this
+// can't happen at pipeline module-init time).
+registerPipelineJobHandlers();
 const initialNav = navFromUrl();
 boot();
 

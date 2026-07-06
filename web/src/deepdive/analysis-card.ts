@@ -6,7 +6,7 @@
 //   - openAnalysisConfig: the modal to edit CLI backend order/models/web policy.
 // Extracted from deepdive.ts; all I/O via /api/*, all rendering self-contained.
 import { api, el, esc } from "../core";
-import { pollDeepJob } from "../errors";
+import { pollDeepJob } from "../jobs";
 import { ensureTickerSet, linkifyTickers, mdToHtml } from "../analyses";
 import { modelLabel, downloadText, pushNav, setActiveView } from "../shell";
 import { decorateAnalysis, decorateSources } from "./decorate";

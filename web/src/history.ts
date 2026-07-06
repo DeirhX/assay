@@ -1,5 +1,5 @@
 import { $, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
-import { pollDeepJob } from "./errors";
+import { pollDeepJob } from "./jobs";
 import { groupActivity, groupBySector, type ActivityRow, type Trade } from "./history/data";
 import { ccyTag, fmtMoney, fmtSigned } from "./history/format";
 import { legend, navChart, type NavPoint } from "./history/nav-chart";
