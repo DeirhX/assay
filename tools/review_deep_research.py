@@ -116,7 +116,7 @@ def source_bucket(href: str) -> str:
 
 
 def source_summary(sources: list[dict[str, str]]) -> dict[str, Any]:
-    buckets = {bucket: [] for bucket in [*SOURCE_BUCKETS, "other"]}
+    buckets: dict[str, list[dict[str, str]]] = {bucket: [] for bucket in [*SOURCE_BUCKETS, "other"]}
     for src in sources:
         buckets[source_bucket(src["href"])].append(src)
     return {
@@ -350,7 +350,7 @@ def render_markdown(
 
     lines.extend(["", "## Warnings", ""])
     if findings:
-        groups = {
+        groups: dict[str, tuple[str, list[str]]] = {
             "BLOCK": ("Blocking — resolve before applying", []),
             "WARN": ("Warnings — decide deliberately", []),
             "FYI": ("FYI", []),

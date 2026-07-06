@@ -203,7 +203,7 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
 
         cur = weights.get(sym)
         held = cur is not None
-        cur_val = cur if held else 0.0
+        cur_val = cur if cur is not None else 0.0
 
         if rule == "reduce":
             if not held or cur_val <= EPS:

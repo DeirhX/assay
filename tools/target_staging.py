@@ -98,7 +98,7 @@ def load_pins() -> dict:
 
 def is_locked(key: str) -> bool:
     rec = (load_live().get("provenance") or {}).get(_norm_key(key))
-    return bool(_is_pin(rec) and rec.get("locked"))
+    return bool(isinstance(rec, dict) and _is_pin(rec) and rec.get("locked"))
 
 
 def set_pin(key: str, *, stance: str, floor_pct=None, ceiling_pct=None,
@@ -214,6 +214,7 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
     per-key provenance. Pinned names are guarded: a remove/drop of a pinned key
     is skipped unless ``allow_drop_pinned`` (an explicit user override)."""
     staged = load_staged(create=True)
+    assert staged is not None  # create=True always returns a dict
     prov = staged.setdefault("provenance", {})
     pins = load_pins()
     blocked = set(blocked or [])
@@ -301,6 +302,7 @@ def revert_key(key: str) -> dict:
     change / keep my pin' action in the review UI."""
     key = _norm_key(key)
     staged = load_staged(create=True)
+    assert staged is not None  # create=True always returns a dict
     live = load_live()
     lprov = (live.get("provenance") or {}).get(key)
     if key.startswith("["):

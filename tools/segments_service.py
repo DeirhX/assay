@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from pathlib import Path
+from typing import Any
 
 import jobs
 import ticker_analysis
@@ -51,14 +52,14 @@ def validate_definition(raw: dict) -> dict:
         sym = safe_symbol(str(item.get("symbol") or ""))
         sleeve = str(item.get("sleeve") or "other").strip().lower() or "other"
         sleeves.add(sleeve)
-        cleaned = {
+        member_rec = {
             "symbol": sym,
             "sleeve": sleeve,
         }
         for key in ("rationale", "confidence"):
             if item.get(key):
-                cleaned[key] = str(item[key]).strip()
-        cleaned_members.append(cleaned)
+                member_rec[key] = str(item[key]).strip()
+        cleaned_members.append(member_rec)
 
     status = str(raw.get("status") or "draft").strip().lower() or "draft"
     # A hollow segment (no members) is fine as a *draft* you're still filling in,
@@ -71,7 +72,7 @@ def validate_definition(raw: dict) -> dict:
             "(use the LLM prompt, paste/edit members) before approving"
         )
 
-    cleaned = {
+    cleaned: dict[str, Any] = {
         "title": title,
         "kind": raw.get("kind") or "research",
         "status": status,

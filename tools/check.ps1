@@ -1,18 +1,16 @@
 #!/usr/bin/env pwsh
 # One command that mirrors CI, so "is this shippable?" is answerable before you
 # push and eat a full CI round-trip. Runs the exact gating steps CI runs
-# (.github/workflows/tests.yml + guard.yml), plus non-gating signals (mypy) and
-# opt-in stages CI can't run (Playwright e2e; the private-data validators that
-# need the `data` submodule).
+# (.github/workflows/tests.yml + guard.yml), plus opt-in stages CI can't run
+# (Playwright e2e; the private-data validators that need the `data` submodule).
 #
 # Usage:
-#   pwsh tools/check.ps1                # gating checks + mypy signal
+#   pwsh tools/check.ps1                # all gating checks (ruff, mypy, tests, build, leak)
 #   pwsh tools/check.ps1 -E2E           # also run the Playwright e2e suite
 #   pwsh tools/check.ps1 -Data          # also run the private-data validators
 #   pwsh tools/check.ps1 -SkipInstall   # skip `npm install`
 #
-# Exit code is non-zero iff a GATING step failed. Non-gating signals (mypy) and
-# skipped stages never fail the run.
+# Exit code is non-zero iff a GATING step failed. Skipped stages never fail the run.
 
 [CmdletBinding()]
 param(
@@ -61,6 +59,7 @@ if (-not $SkipInstall) {
 
 # --- gating: Python job ----------------------------------------------------
 Invoke-Step "ruff (lint)"        { ruff check tools }
+Invoke-Step "mypy (typecheck)"   { py -3 -m mypy tools }
 Invoke-Step "unittest"           { py -3 -m unittest discover -s tools/tests -t tools/tests }
 
 # --- gating: Frontend job (CI order) ---------------------------------------
@@ -76,11 +75,6 @@ if (Test-Path $gitBash) {
 } else {
     Add-Skip "leak scan (site/)" "git bash not found"
 }
-
-# --- non-gating signal: mypy ----------------------------------------------
-# Deliberately NOT a CI gate (see mypy.ini): the backend has a known type-error
-# backlog we chip away at. Surfaced here as a signal so it can't rot silently.
-Invoke-Step "mypy (signal)" -NonGating { py -3 -m mypy tools }
 
 # --- opt-in: Playwright e2e ------------------------------------------------
 if ($E2E) {

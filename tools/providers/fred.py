@@ -201,7 +201,8 @@ def _prior_year_value(rows: list[tuple[str, float]], latest_date: str) -> float 
         cutoff = dt.date.fromisoformat(latest_date) - dt.timedelta(days=365)
     except ValueError:
         return None
-    candidates = [(d, v) for d, v in rows if _date_or_none(d) and _date_or_none(d) <= cutoff]
+    candidates = [(d, v) for d, v in rows
+                  if (pd := _date_or_none(d)) is not None and pd <= cutoff]
     return candidates[-1][1] if candidates else None
 
 
