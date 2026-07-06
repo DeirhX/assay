@@ -13,6 +13,7 @@ anything (store, the IBKR readers, the HTTP server) can import without cycles.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # tools/config.py -> tools/ -> repo root.
@@ -73,3 +74,43 @@ def read_env_file(path: Path) -> dict[str, str]:
         key, _, val = line.partition("=")
         out[key.strip()] = val.strip().strip('"').strip("'")
     return out
+
+
+def config_value(key: str, default: str = "", *, secrets: Path | None = None) -> str:
+    """Resolve a config flag: live env first, then the gitignored secrets file
+    (``tools/secrets.env`` by default), then ``default`` -- always stripped.
+
+    The one resolver shared by the IBKR integration and the background
+    scheduler, so env-vs-file precedence is defined in exactly one place instead
+    of each module re-rolling it.
+    """
+    val = os.environ.get(key)
+    if val is None:
+        val = read_env_file(secrets or TOOLS_SECRETS).get(key)
+    return (val if val is not None else default).strip()
+
+
+def flag_enabled(key: str, default: str = "0", *, secrets: Path | None = None) -> bool:
+    """Truthy reading of a ``config_value`` flag (``1/true/yes/on``)."""
+    return config_value(key, default, secrets=secrets).lower() in ("1", "true", "yes", "on")
+
+
+def set_secret(key: str, value: str | None, *, secrets: Path | None = None) -> dict[str, str]:
+    """Upsert one ``KEY=VALUE`` in a gitignored secrets file, preserving the
+    others. An empty/None value removes the key. Rewrites the file from the
+    parsed dict (same lossy shape ``save_ibkr_secrets`` already uses -- comments
+    and quoting aren't round-tripped). Returns the resulting key/value map."""
+    path = secrets or TOOLS_SECRETS
+    existing = read_env_file(path)
+    if value in (None, ""):
+        existing.pop(key, None)
+    else:
+        existing[key] = str(value)
+    lines = [
+        "# Gitignored local config -- never commit.",
+        "# Written by the Settings tab; also holds IBKR Flex/CPAPI + ASSAY_* flags.",
+    ]
+    lines += [f"{k}={v}" for k, v in existing.items() if v != ""]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return existing

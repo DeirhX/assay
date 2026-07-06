@@ -46,6 +46,16 @@ interface ResearchSum {
   queue: QueueRow[];
 }
 interface NextStep { id: string; view: string; label: string; reason: string; symbol?: string }
+export interface AutomationTask {
+  name: string;
+  label: string;
+  enabled: boolean;
+  last_run?: string | null;
+  last_result?: string | null;
+  age_days?: number | null;
+  next_eligible?: string | null;
+}
+export interface AutomationSum { enabled: boolean; any_ran: boolean; tasks: AutomationTask[] }
 export interface Overview {
   snapshot: SnapshotSum;
   plan?: PlanSum | null;
@@ -53,6 +63,7 @@ export interface Overview {
   staged_basket: StagedBasketSum;
   journal: JournalSum;
   research: ResearchSum;
+  automation?: AutomationSum;
   next_step: NextStep;
 }
 
@@ -87,19 +98,33 @@ export function nextStepHtml(step: NextStep): string {
 }
 
 // ---- portfolio lane ---------------------------------------------------------
-export function snapshotCard(s: SnapshotSum): string {
+const taskOf = (a: AutomationSum | undefined, name: string): AutomationTask | undefined =>
+  a?.tasks?.find((t) => t.name === name);
+// Deterministic, tz-safe calendar date for "next check by …" copy.
+const onDay = (iso: string | null | undefined) => (iso ? ` by ${esc(iso.slice(0, 10))}` : "");
+
+export function snapshotCard(s: SnapshotSum, auto?: AutomationSum): string {
   if (!s.exists) {
     return card("bad", "Holdings snapshot", `<span class="chip bad">missing</span>`,
       `No broker snapshot yet — every portfolio view below needs one.`,
       goBtn("setup", "Open Setup"));
   }
+  const resync = taskOf(auto, "holdings-resync");
+  const armed = !!(auto?.enabled && resync?.enabled);
   const tone = s.stale ? "warn" : "ok";
   const chip = `<span class="chip ${tone === "ok" ? "good" : "warn"}">synced ${esc(agoText(s.age_days))}</span>`;
-  const body = `${s.positions} position${s.positions === 1 ? "" : "s"} on file.` +
-    (s.stale ? ` <span class="today-warn-text">Plan math below is computed from this stale snapshot.</span>` : "");
+  let body = `${s.positions} position${s.positions === 1 ? "" : "s"} on file.`;
+  if (s.stale && armed) {
+    body += ` <span class="today-auto-text">Stale, but auto-resync is armed — next check${onDay(resync?.next_eligible)}.</span>`;
+  } else if (s.stale) {
+    body += ` <span class="today-warn-text">Plan math below is computed from this stale snapshot.</span>`;
+  } else if (armed) {
+    body += ` <span class="today-auto-text">Auto-resync armed — next check${onDay(resync?.next_eligible)}.</span>`;
+  }
   const actions =
     `<button class="ghost" type="button" data-action="resync">Resync from IBKR</button>` +
-    goBtn("holdings", "Positions →");
+    goBtn("holdings", "Positions →") +
+    (armed ? "" : goBtn("setup", "Enable auto-refresh"));
   return card(tone, "Holdings snapshot", chip, body, actions);
 }
 
@@ -212,7 +237,7 @@ export function segmentsCard(r: ResearchSum): string {
 
 // ---- render + wiring --------------------------------------------------------
 export function overviewHtml(v: Overview): string {
-  const portfolio = [snapshotCard(v.snapshot), planCard(v.plan), draftCard(v.draft),
+  const portfolio = [snapshotCard(v.snapshot, v.automation), planCard(v.plan), draftCard(v.draft),
     stagedBasketCard(v.staged_basket), journalCard(v.journal)].filter(Boolean).join("");
   const research = [basketTriageCard(v.research), queueCard(v.research),
     segmentsCard(v.research)].filter(Boolean).join("");

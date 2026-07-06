@@ -188,5 +188,39 @@ class TestNextStep(unittest.TestCase):
         self.assertEqual(step["id"], "commit-draft")
 
 
+class TestAutomationSummary(unittest.TestCase):
+    TASKS = [
+        {"name": "holdings-resync", "label": "Holdings resync", "enabled": True, "interval_s": 86400},
+        {"name": "gate-quotes", "label": "Gate quotes", "enabled": False, "interval_s": 3600},
+    ]
+
+    def test_disabled_with_no_history(self):
+        out = overview.automation_summary({}, self.TASKS, enabled=False, now=NOW)
+        self.assertFalse(out["enabled"])
+        self.assertFalse(out["any_ran"])
+        self.assertEqual(len(out["tasks"]), 2)
+        self.assertIsNone(out["tasks"][0]["last_run"])
+        self.assertIsNone(out["tasks"][0]["next_eligible"])
+
+    def test_last_run_drives_age_and_next_eligible(self):
+        state = {"holdings-resync": {"last_run": _iso(2), "last_result": "resync spawned #j1"}}
+        out = overview.automation_summary(state, self.TASKS, enabled=True, now=NOW)
+        self.assertTrue(out["enabled"])
+        self.assertTrue(out["any_ran"])
+        row = out["tasks"][0]
+        self.assertEqual(row["label"], "Holdings resync")
+        self.assertEqual(row["age_days"], 2)
+        self.assertEqual(row["last_result"], "resync spawned #j1")
+        # next_eligible = last_run + 24h -> one day after the 2-days-ago stamp.
+        self.assertEqual(row["next_eligible"], (NOW - dt.timedelta(days=1)).isoformat(timespec="seconds"))
+        self.assertTrue(row["enabled"])
+        self.assertFalse(out["tasks"][1]["enabled"])
+
+    def test_tolerates_missing_state_and_tasks(self):
+        out = overview.automation_summary(None, None, enabled=True, now=NOW)
+        self.assertEqual(out["tasks"], [])
+        self.assertFalse(out["any_ran"])
+
+
 if __name__ == "__main__":
     unittest.main()

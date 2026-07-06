@@ -43,6 +43,25 @@ describe("snapshotCard", () => {
     expect(html).toContain("today-bad");
     expect(html).toContain('data-goto="setup"');
   });
+
+  it("nudges toward auto-refresh when automation is off", () => {
+    const html = snapshotCard({ exists: true, age_days: 2, stale: false, positions: 30 });
+    expect(html).toContain("Enable auto-refresh");
+    expect(html).toContain('data-goto="setup"');
+  });
+
+  it("reassures instead of nagging when auto-resync is armed", () => {
+    const auto = {
+      enabled: true, any_ran: true,
+      tasks: [{ name: "holdings-resync", label: "Holdings resync", enabled: true,
+                last_run: "2026-01-04T16:00:00+00:00", next_eligible: "2026-01-05T16:00:00+00:00" }],
+    };
+    const html = snapshotCard({ exists: true, age_days: 12, stale: true, positions: 30 }, auto);
+    expect(html).toContain("auto-resync is armed");
+    expect(html).toContain("next check by 2026-01-05");
+    expect(html).not.toContain("Enable auto-refresh");     // already on -> no nudge
+    expect(html).not.toContain("computed from this stale snapshot");
+  });
 });
 
 describe("planCard", () => {

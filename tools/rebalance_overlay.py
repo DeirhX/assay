@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hygiene
 import price_levels
+import quote_cache
 from config import RESEARCH_DIR
 from store import load
 from symbols import resolve_symbol
@@ -99,9 +100,26 @@ def mark_price_map(holdings: dict | None) -> dict[str, dict]:
     return out
 
 
-def gate_current_price(name: str, provider_sym: str, price_map: dict[str, dict]) -> float | None:
-    """Current instrument price for the gate: the holdings mark first (what the
-    plan was sized on), else the dossier's last spot. None when neither knows."""
+def gate_current_price(
+    name: str,
+    provider_sym: str,
+    price_map: dict[str, dict],
+    *,
+    quotes: dict[str, dict] | None = None,
+) -> float | None:
+    """Current instrument price for the gate, in order of freshness:
+
+    1. a **fresh quote** (≤4h) from the background quote cache -- the only source
+       that moves intraday, so a locked level crossed today is seen within the
+       hour instead of waiting for the next holdings resync,
+    2. the holdings **mark** (what the plan was sized on),
+    3. the dossier's last spot.
+
+    None when nothing knows. ``quotes`` is injectable so the overlay reads the
+    cache once per plan instead of once per row (and tests stay pure)."""
+    fresh = quote_cache.fresh_price(provider_sym, quotes=quotes)
+    if fresh:
+        return fresh["price"]
     held = price_map.get((name or "").upper())
     if held and isinstance(held.get("price"), (int, float)):
         return float(held["price"])
@@ -113,7 +131,13 @@ def gate_current_price(name: str, provider_sym: str, price_map: dict[str, dict])
     return None
 
 
-def apply_price_gate(row: dict, provider_sym: str, price_map: dict[str, dict]) -> None:
+def apply_price_gate(
+    row: dict,
+    provider_sym: str,
+    price_map: dict[str, dict],
+    *,
+    quotes: dict[str, dict] | None = None,
+) -> None:
     """Attach a ``price_gate`` to a target row from its locked level (if any) and
     the current price, and GRADE the suggested move by how much of the ladder the
     price currently unlocks:
@@ -128,7 +152,7 @@ def apply_price_gate(row: dict, provider_sym: str, price_map: dict[str, dict]) -
     level = price_levels.get(provider_sym)
     if not level:
         return
-    current = gate_current_price(row.get("name") or "", provider_sym, price_map)
+    current = gate_current_price(row.get("name") or "", provider_sym, price_map, quotes=quotes)
     gate = price_levels.evaluate(level, current)
     if not gate:
         return
@@ -158,6 +182,7 @@ def attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
     isn't favorable yet). Best-effort: a missing/malformed dossier or level is
     skipped silently so the planner always renders."""
     price_map = mark_price_map(holdings)
+    quotes = quote_cache.load()   # read the fresh-quote cache once for the whole plan
     for row in plan.get("rows") or []:
         if row.get("kind") != "target" or not row.get("held"):
             continue
@@ -173,6 +198,6 @@ def attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
             row["research"] = overlay
             row["research_conflict"] = research_conflict(row.get("action"), overlay["thesis_action"])
         try:
-            apply_price_gate(row, provider_sym, price_map)
+            apply_price_gate(row, provider_sym, price_map, quotes=quotes)
         except Exception:  # noqa: BLE001 - gating is decision support, never fatal
             pass

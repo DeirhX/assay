@@ -13,6 +13,7 @@ from unittest import mock
 
 import _support  # noqa: F401
 import apierror
+import config
 import ibkr_trade as ibt
 import trade_service
 
@@ -58,23 +59,23 @@ class PaperLiveDetection(unittest.TestCase):
 
 class FlagGating(unittest.TestCase):
     def test_trading_disabled_by_default(self):
-        with _env(), mock.patch.object(ibt, "load_env_file", return_value={}):
+        with _env(), mock.patch.object(config, "read_env_file", return_value={}):
             self.assertFalse(ibt.trading_enabled())
             self.assertFalse(ibt.live_allowed())
 
     def test_trading_enabled_via_env(self):
-        with _env(IBKR_TRADING_ENABLED="1"), mock.patch.object(ibt, "load_env_file", return_value={}):
+        with _env(IBKR_TRADING_ENABLED="1"), mock.patch.object(config, "read_env_file", return_value={}):
             self.assertTrue(ibt.trading_enabled())
 
     def test_live_allowed_via_env(self):
-        with _env(IBKR_ALLOW_LIVE="true"), mock.patch.object(ibt, "load_env_file", return_value={}):
+        with _env(IBKR_ALLOW_LIVE="true"), mock.patch.object(config, "read_env_file", return_value={}):
             self.assertTrue(ibt.live_allowed())
 
     def test_gateway_base_default_and_override(self):
-        with _env(), mock.patch.object(ibt, "load_env_file", return_value={}):
+        with _env(), mock.patch.object(config, "read_env_file", return_value={}):
             self.assertEqual(ibt.gateway_base(), ibt.DEFAULT_GATEWAY_BASE)
         with _env(IBKR_GATEWAY_BASE="https://localhost:9999/v1/api/"), \
-                mock.patch.object(ibt, "load_env_file", return_value={}):
+                mock.patch.object(config, "read_env_file", return_value={}):
             self.assertEqual(ibt.gateway_base(), "https://localhost:9999/v1/api")
 
 
