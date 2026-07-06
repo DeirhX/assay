@@ -2568,6 +2568,39 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .trade-warn { color: var(--bad); font-size: 12.5px; margin: 4px 0; }
 /* A limit order from a locked price trigger stands out from plain MKT lines. */
 .trade-lmt { color: var(--accent); font-weight: 700; }
+
+/* Working-order collision: the offending order row is tinted and followed by a
+   full-width blocking-style banner naming the risk. */
+.trade-collide-row td { background: rgba(255,122,122,.09); }
+.trade-collide-note td {
+  background: rgba(255,122,122,.12); border-left: 3px solid var(--bad);
+  color: var(--text); font-size: 12.5px; line-height: 1.5;
+}
+.trade-collide-note strong { color: var(--bad); }
+
+/* Stale-snapshot soft gate: loud message + resync / opt-out that arm Place. */
+.trade-stale-gate {
+  margin: 12px 0; padding: 10px 14px; border-radius: var(--radius-soft);
+  border: 1px solid rgba(240,200,120,.5); border-left: 3px solid var(--warn, #f0c878);
+  background: rgba(240,200,120,.08);
+}
+.trade-stale-msg { font-size: 13px; line-height: 1.5; }
+.trade-stale-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.trade-stale-ack { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+
+/* Last-mile placement confirmation modal (reuses .modal-overlay/.modal). */
+.trade-confirm-modal { max-width: 460px; }
+.trade-cf-facts { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 4px; }
+.trade-cf-row {
+  display: flex; justify-content: space-between; gap: 16px; padding: 7px 2px;
+  border-bottom: 1px solid var(--border); font-size: 13.5px;
+}
+.trade-cf-row > span:first-child { color: var(--muted); }
+.trade-cf-row > span:last-child { font-weight: 600; font-variant-numeric: tabular-nums; }
+.trade-cf-row .bad { color: var(--bad); }
+.trade-cf-arm { margin-top: 14px; font-size: 13px; display: flex; flex-direction: column; gap: 7px; }
+.trade-cf-arm code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 12.5px; }
+.trade-cf-input { padding: 7px 10px; font-size: 14px; letter-spacing: .02em; }
 .trade-raw { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; max-height: 320px; }
 /* Post-placement loop-close: the next steps lead; the raw response collapses. */
 .trade-next { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-soft); background: rgba(130,170,255,.05); padding: 12px 14px; margin: 12px 0; }
