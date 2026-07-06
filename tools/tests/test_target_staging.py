@@ -258,5 +258,53 @@ class CommitDiscard(_StagingCase):
         self.assertEqual(ts.discard_staged()["discarded"], False)  # idempotent
 
 
+class RestoreBackup(_StagingCase):
+    """The visible undo: diff + restore of a pre-apply target-model backup."""
+
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name)
+        # _resolve_backup reads the names imported into target_staging's namespace,
+        # so redirect those too (the base case only patches target_model.*).
+        self._orig[(ts, "REPO_ROOT")] = ts.REPO_ROOT
+        self._orig[(ts, "TARGET_MODEL_BACKUP_DIR")] = ts.TARGET_MODEL_BACKUP_DIR
+        ts.REPO_ROOT = root
+        ts.TARGET_MODEL_BACKUP_DIR = root / "backups"
+
+    def test_diff_then_restore_roundtrip(self):
+        self._seed_live()  # TSM 6–8
+        backup_rel = target_model._backup_target_model()  # snapshot the 6–8 model
+        self.assertIsNotNone(backup_rel)
+        # Move the live band away from the backup.
+        self._seed_live({
+            "as_of": "2026-02-02", "cash_target_pct": 5.0,
+            "targets": {"TSM": {"low": 10, "high": 12, "rule": "accumulate"}},
+            "sleeves": {}, "funding_order": ["TSM"],
+        })
+        diff = ts.diff_backup_vs_live(backup_rel)
+        self.assertEqual(diff["counts"]["total"], 1)
+        row = diff["targets"][0]
+        self.assertEqual(row["change"], "modified")
+        self.assertEqual(row["before"]["low"], 10)  # current live
+        self.assertEqual(row["after"]["low"], 6)     # what restoring lands on
+        res = ts.restore_backup(backup_rel, confirm=True)
+        self.assertTrue(res["restored"])
+        self.assertIsNotNone(res["backup_of_current"])  # restore is itself reversible
+        self.assertEqual(_load(self.live)["targets"]["TSM"]["low"], 6)
+
+    def test_restore_requires_confirm(self):
+        self._seed_live()
+        rel = target_model._backup_target_model()
+        with self.assertRaises(ValueError):
+            ts.restore_backup(rel, confirm=False)
+        self.assertEqual(_load(self.live)["targets"]["TSM"]["low"], 6)  # untouched
+
+    def test_rejects_paths_outside_the_backups_dir(self):
+        self._seed_live()
+        for bad in ("../../etc/passwd", "data/target-model.json", "", "backups/nope.json"):
+            with self.assertRaises(ValueError):
+                ts.diff_backup_vs_live(bad)
+
+
 if __name__ == "__main__":
     unittest.main()
