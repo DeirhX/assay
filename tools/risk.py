@@ -41,6 +41,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- shared weight/holdings layer
 import store  # noqa: E402
+import timeutil  # noqa: E402  -- shared Z-tolerant ISO parse + cache-freshness
 from config import REPO_ROOT  # noqa: E402
 
 CACHE_DIR = REPO_ROOT / "data" / "cache" / "risk"
@@ -365,16 +366,7 @@ def load_price_series(symbol: str, *, rng: str = "1y", fetch: Callable[[str, str
 
 
 def _fresh(iso: str | None) -> bool:
-    if not iso:
-        return False
-    try:
-        when = dt.datetime.fromisoformat(iso)
-    except ValueError:
-        return False
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=dt.timezone.utc)
-    age = (dt.datetime.now(dt.timezone.utc) - when).total_seconds()
-    return 0 <= age < CACHE_TTL_SECONDS
+    return timeutil.cache_fresh(iso, CACHE_TTL_SECONDS)
 
 
 def _yahoo_fetch(symbol: str, rng: str) -> list[dict[str, Any]] | None:

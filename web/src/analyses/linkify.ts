@@ -28,9 +28,14 @@ export async function ensureTickerSet(): Promise<Set<string>> {
   return state.tickerSet;
 }
 
-export function tickerAnchorHtml(raw: string): string {
+// Canonical deep-dive anchor. The global `a.tlink` click handler in shell
+// intercepts it and calls openTicker (live-pulling on a miss); the href is the
+// middle-click / open-in-new-tab fallback. `bold` wraps the label in <strong>
+// for the table/summary surfaces that want the symbol to stand out.
+export function tickerAnchorHtml(raw: string, opts: { bold?: boolean } = {}): string {
   const s = String(raw).toUpperCase();
-  return `<a class="tlink" data-ticker="${esc(s)}" href="?view=deepdive&ticker=${encodeURIComponent(s)}" title="Open ${esc(s)} deep-dive">${esc(raw)}</a>`;
+  const label = opts.bold ? `<strong>${esc(raw)}</strong>` : esc(raw);
+  return `<a class="tlink" data-ticker="${esc(s)}" href="?view=deepdive&ticker=${encodeURIComponent(s)}" title="Open ${esc(s)} deep-dive">${label}</a>`;
 }
 
 // Walk text nodes and turn ticker-shaped tokens into deep-dive links. Skips text

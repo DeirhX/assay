@@ -40,6 +40,7 @@ import rebalance  # noqa: E402
 import risk  # noqa: E402
 import store  # noqa: E402
 import tax_lots  # noqa: E402
+import timeutil  # noqa: E402  -- shared Z-tolerant ISO parse + cache-freshness
 from config import REPO_ROOT  # noqa: E402
 
 # --------------------------------------------------------------------------- #
@@ -505,16 +506,7 @@ def _prewarm_caches(
 
 
 def _cache_fresh(iso: str | None, ttl: int = OPT_CACHE_TTL_SECONDS) -> bool:
-    if not iso:
-        return False
-    try:
-        when = dt.datetime.fromisoformat(iso)
-    except ValueError:
-        return False
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=dt.timezone.utc)
-    age = (dt.datetime.now(dt.timezone.utc) - when).total_seconds()
-    return 0 <= age < ttl
+    return timeutil.cache_fresh(iso, ttl)
 
 
 def _cached_risk_free_rate() -> float | None:

@@ -12,7 +12,6 @@ Stdlib only.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config
+import store
+import timeutil
 
 QUOTES_JSON = config.DATA_DIR / "cache" / "quotes.json"
 # A quote older than this loses to the holdings mark in the gate overlay: it is
@@ -27,38 +28,20 @@ QUOTES_JSON = config.DATA_DIR / "cache" / "quotes.json"
 FRESH_MAX_AGE_SECONDS = 4 * 3600
 
 
-def _now() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
-
-
 def load() -> dict[str, dict]:
     """Every cached quote, keyed by upper-case symbol. Missing/corrupt → {}."""
-    try:
-        data = json.loads(QUOTES_JSON.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    data = store.load(QUOTES_JSON, {})
     return data if isinstance(data, dict) else {}
 
 
 def save(quotes: dict[str, dict]) -> None:
     """Atomic write of the whole quote map (single writer: the scheduler)."""
-    QUOTES_JSON.parent.mkdir(parents=True, exist_ok=True)
-    tmp = QUOTES_JSON.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(quotes, indent=2), encoding="utf-8")
-    tmp.replace(QUOTES_JSON)
+    store.write_json(QUOTES_JSON, quotes)
 
 
 def age_seconds(at: Any, now: dt.datetime | None = None) -> float | None:
     """Seconds since an ISO timestamp (Z-tolerant); None if unparsable."""
-    if not at:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(at).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return max(0.0, ((now or _now()) - parsed).total_seconds())
+    return timeutil.age_seconds(at, now)
 
 
 def fresh_price(

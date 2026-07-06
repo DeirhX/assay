@@ -1555,9 +1555,9 @@ class Handler(BaseHTTPRequestHandler):
             "source_artifact": body.get("source_artifact", ""),
             "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         }
-        (RESEARCH_DIR / f"{provider_sym}.json").write_text(
-            json.dumps(rec, indent=2) + "\n", encoding="utf-8"
-        )
+        # Match research_pull's dossier writer: atomic + locked (Windows-safe),
+        # and deliberately unsorted so re-saving a thesis doesn't churn key order.
+        _write_json(RESEARCH_DIR / f"{provider_sym}.json", rec, sort_keys=False)
         return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
 

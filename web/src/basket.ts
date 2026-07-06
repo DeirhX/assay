@@ -8,6 +8,7 @@
 // Dependency-light (core only) and all DOM wiring is deferred to initBasket(),
 // called once from initShell — same import-cycle discipline as strategy/staging.
 import { $, api, esc, fmtWeight } from "./core";
+import { tickerAnchorHtml } from "./analyses/linkify";
 import { pushNav, setActiveView } from "./shell";
 
 interface BasketBand { low?: number | null; high?: number | null; rule?: string }
@@ -98,10 +99,7 @@ function applyView(v: BasketView): void {
 }
 
 // ---- basket view ----------------------------------------------------------
-const symLink = (sym: string) => {
-  const s = esc(sym);
-  return `<a class="tlink" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(sym)}" title="Open ${s} deep-dive"><strong>${s}</strong></a>`;
-};
+const symLink = (sym: string) => tickerAnchorHtml(sym, { bold: true });
 
 function planCell(it: BasketItem): string {
   if (it.in_sleeve) return `<span class="basket-plan ok" title="Governed via a sleeve">in plan · ${esc(it.in_sleeve)}</span>`;

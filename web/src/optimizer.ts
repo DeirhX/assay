@@ -4,6 +4,7 @@
 // then staged into the working draft via the existing endpoints. The sizing math
 // lives server-side in tools/optimizer.py; this module is the cockpit.
 import { bandBar, scaleMaxFor, type BandRow } from "./band-viz";
+import { tickerAnchorHtml } from "./analyses/linkify";
 import { $, api, esc, fmtWeight } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
@@ -89,7 +90,7 @@ function poolRow(e: PoolEntry): string {
     ? `<span class="muted" title="Excluding a sleeve member here has no effect — its sleeve governs it.">—</span>`
     : `<label class="opt-ex" title="Exclude ${sym} from sizing"><input type="checkbox" aria-label="Exclude ${sym} from sizing" data-opt-exclude="${sym}" ${excluded ? "checked" : ""}></label>`;
   return `<tr class="${excluded ? "opt-row-excluded" : ""} ${managed ? "opt-row-sleeve" : ""}">
-    <td><a class="tlink" data-ticker="${sym}" href="?view=deepdive&ticker=${encodeURIComponent(e.symbol)}"><strong>${sym}</strong></a></td>
+    <td>${tickerAnchorHtml(e.symbol, { bold: true })}</td>
     <td>${sourceChips(e)}</td>
     <td>${convCell(e)}</td>
     <td class="num">${pct(e.held_pct)}</td>

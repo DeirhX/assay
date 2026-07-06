@@ -26,7 +26,6 @@ pulls.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import sys
 import threading
 import time
@@ -45,6 +44,8 @@ import price_levels
 import quote_cache
 import research_pull
 import segments_service
+import store
+import timeutil
 from providers import yahoo
 
 STATE_FILE = config.DATA_DIR / "cache" / "scheduler-state.json"
@@ -92,13 +93,7 @@ def _now() -> dt.datetime:
 
 
 def _parse_iso(stamp: Any) -> dt.datetime | None:
-    if not stamp:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+    return timeutil.parse_iso_utc(stamp)
 
 
 def _throttle_ok(last_run: dt.datetime | None, now: dt.datetime, interval: dt.timedelta) -> bool:
@@ -142,18 +137,12 @@ def in_market_window(now: dt.datetime, spec: str | None = None) -> bool:
 # --------------------------------------------------------------------------- #
 def load_state() -> dict[str, dict]:
     """Persisted run stamps. A missing/corrupt file reads as "never ran"."""
-    try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    data = store.load(STATE_FILE, {})
     return data if isinstance(data, dict) else {}
 
 
 def save_state(state: dict[str, dict]) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    store.write_json(STATE_FILE, state)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,10 +161,7 @@ class Obs:
 
 
 def _load_holdings() -> dict | None:
-    try:
-        return json.loads(config.HOLDINGS_JSON.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    return store.load(config.HOLDINGS_JSON)
 
 
 def observe(now: dt.datetime | None = None) -> Obs:

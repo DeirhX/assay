@@ -1,6 +1,7 @@
 import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type { CashBlock, FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
+import { ruleWord } from "./band-viz";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
@@ -10,10 +11,6 @@ import { cleanSymbol, pushNav, setActiveView } from "./shell";
 // the single source of truth (no local shadows). The aliases keep the call
 // sites below reading in planner vocabulary.
 
-const REB_RULE_LABEL: Record<string, string> = {
-  trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
-  avoid: "avoid", accumulate: "accumulate", hold: "hold", wait: "wait",
-};
 const rebStatusClass = (s: string | null | undefined) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
 const rebActionClass = (a: string | null | undefined) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
 // Weights are percent of the invested book, so size money off invested value
@@ -461,7 +458,7 @@ function renderRebalance(plan: RebPlan) {
     // Star only single tickers — a sleeve row is itself a basket, not one name.
     if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", starHtml(r.name, "rebalance"));
     nameCell.appendChild(sym);
-    nameCell.appendChild(el("span", "reb-rule", esc(REB_RULE_LABEL[r.rule] || r.rule)));
+    nameCell.appendChild(el("span", "reb-rule", esc(ruleWord(r.rule) || r.rule)));
     if (r.kind === "target") nameCells[cleanSymbol(r.name)] = nameCell;
     const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
     if (prov) nameCell.appendChild(prov);
@@ -1199,7 +1196,6 @@ async function openTicker(sym: string | null | undefined) {
 }
 
 export {
-  REB_RULE_LABEL,
   rebStatusClass,
   rebActionClass,
   pctToCzk,
