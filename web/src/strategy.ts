@@ -7,7 +7,7 @@
 import { starHtml } from "./basket";
 import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
-import { ruleWord } from "./band-viz";
+import { bandBar, directionTag, ruleWord, scaleMaxFor, type BandRow } from "./band-viz";
 import { openDeepRunInPipeline, pushNav, setActiveView } from "./shell";
 
 // ---- manifest shapes (GET /api/strategy/{run_id}) -------------------------
@@ -540,6 +540,19 @@ const statusTone = (s: string | null | undefined) => {
 // Positive drift = heavy (trim side); negative = light (buy side). Same colour story.
 const driftTone = (d: number | null | undefined) => (typeof d === "number" && d > 0 ? "caution" : typeof d === "number" && d < 0 ? "pos" : "neutral");
 const bandStr = (t: Band | null | undefined) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
+// A defined band or null (for the band-viz track), so a first-time target reads
+// as "added" and a dropped one as "removed" rather than a phantom 0–0 bar.
+const bandOrNull = (t: Band | null | undefined) =>
+  (t && (t.low != null || t.high != null)) ? { low: t.low ?? undefined, high: t.high ?? undefined, rule: t.rule } : null;
+// Map a Gate-2 change onto the shared before(ghost)→after(solid) band track.
+function changeBandRow(c: Change): BandRow {
+  const before = bandOrNull(c.current_target);
+  const after = bandOrNull(c.proposed_target);
+  const change = !before && after ? "added" : before && !after ? "removed" : "modified";
+  return { change, before, after };
+}
+// directionTag tone (ok/warn/bad) -> the strat-tag colour vocabulary.
+const DIR_TONE: Record<string, string> = { ok: "pos", warn: "caution", bad: "neg" };
 // Render a symbol as a deep-dive link. The global a.tlink click handler in shell
 // intercepts it and calls openTicker (which live-pulls on a miss); the href is a
 // fallback for middle-click / open-in-new-tab.
@@ -584,28 +597,38 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
   $("#strat-approve-prop").addEventListener("click", () => approveProposal(m.run_id));
 }
 
+// Gate 2 is the highest-judgment click in the app (it rewrites target bands), so
+// each change leads with a picture, not a pair of number cells: a shared-axis
+// band track showing the current band (ghost) shifting to the proposed one
+// (solid, colour-coded), with a plain-language direction word and the exact
+// numbers kept as a caption for precision. One axis legend serves the column.
 function changesTable(changes: Change[]) {
+  const bandRows = changes.map(changeBandRow);
+  const scaleMax = scaleMaxFor(bandRows);
   const tbl = el("table", "strat-changes");
   tbl.innerHTML =
     `<thead><tr><th></th><th>Symbol</th><th>Conviction</th><th>Action</th>` +
-    `<th>Current</th><th>Proposed</th><th>Rule</th><th>Rationale</th></tr></thead>`;
+    `<th class="strat-band-col">Band shift <span class="strat-band-axis">0–${scaleMax}%</span></th>` +
+    `<th>Rule</th><th>Rationale</th></tr></thead>`;
   const body = el("tbody");
   if (!changes.length) {
-    body.innerHTML = `<tr><td colspan="8" class="muted">No target changes proposed.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" class="muted">No target changes proposed.</td></tr>`;
   }
-  changes.forEach((c: Change) => {
+  changes.forEach((c: Change, i: number) => {
     const tr = el("tr");
     const conv = c.conviction || "";
     const actRaw = c.action || "";
     const act = actRaw.replace("_target", "");
     const rule = (c.proposed_target && c.proposed_target.rule) || "";
+    const dir = directionTag(bandRows[i]);
     tr.innerHTML =
       `<td class="strat-star-cell">${c.symbol ? starHtml(c.symbol, "strategy") : ""}</td>` +
       `<td>${symLink(c.symbol)}</td>` +
       `<td><span class="strat-conv strat-conv-${esc(conv)}">${esc(conv || "—")}</span></td>` +
       `<td>${act ? `<span class="strat-tag strat-tag-${toneOf(actRaw)}">${esc(act)}</span>` : "—"}</td>` +
-      `<td class="strat-cur">${esc(bandStr(c.current_target))}</td>` +
-      `<td><span class="strat-band">${esc(bandStr(c.proposed_target))}</span></td>` +
+      `<td class="strat-band-cell">${bandBar(bandRows[i], scaleMax, { axis: false })}` +
+        `<span class="strat-band-cap"><span class="strat-tag strat-tag-${DIR_TONE[dir.tone]}">${esc(dir.label)}</span>` +
+        `<span class="strat-band-nums">${esc(bandStr(c.current_target))} → ${esc(bandStr(c.proposed_target))}</span></span></td>` +
       `<td>${rule ? `<span class="strat-tag strat-tag-${toneOf(rule)}">${esc(ruleWord(rule) || rule)}</span>` : "—"}</td>` +
       `<td class="strat-rationale">${esc(c.rationale || "")}</td>`;
     body.appendChild(tr);
