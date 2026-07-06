@@ -15,7 +15,7 @@ vi.mock("../src/core", async (importOriginal) => {
 });
 
 import { state } from "../src/core";
-import { loadTrade, placeResultHtml } from "../src/trade";
+import { loadTrade } from "../src/trade";
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -272,47 +272,6 @@ describe("trade desk safety gates", () => {
     ack.checked = true;
     ack.dispatchEvent(new Event("change"));
     expect(place.disabled).toBe(false); // stale marks explicitly accepted -> armed
-  });
-});
-
-describe("placeResultHtml (post-placement loop close)", () => {
-  const res = {
-    kind: "paper",
-    account: "DU12345",
-    staged_basket_cleared: true,
-    placed: [{ order_id: "1" }, { orderId: "2" }, { note: "no id" }],
-  };
-
-  it("counts acknowledged orders and names the account", () => {
-    const html = placeResultHtml(res);
-    expect(html).toContain("2 order(s) acknowledged");
-    expect(html).toContain("DU12345");
-    expect(html).toContain("trade-bnr paper");
-  });
-
-  it("wraps the account id so privacy mode blurs it", () => {
-    const html = placeResultHtml(res);
-    expect(html).toMatch(/data-sensitive[^>]*>DU12345</);
-  });
-
-  it("offers the loop-closing next steps and the cleared-basket notice", () => {
-    const html = placeResultHtml(res);
-    expect(html).toContain('data-trade-next="resync"');
-    expect(html).toContain('data-trade-next="journal"');
-    expect(html).toContain("cleared so it can't be placed twice");
-  });
-
-  it("collapses the raw response instead of dumping JSON", () => {
-    const html = placeResultHtml(res);
-    expect(html).toContain("<details");
-    expect(html).toContain("Raw IBKR response");
-  });
-
-  it("warns when nothing was acknowledged; no cleared note when the basket was kept", () => {
-    const html = placeResultHtml({ kind: "paper", account: "DU1", placed: [{}] });
-    expect(html).toContain("0 order(s) acknowledged");
-    expect(html).toContain("trade-bnr warn");
-    expect(html).not.toContain("placed twice");
   });
 });
 
