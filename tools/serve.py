@@ -518,6 +518,7 @@ _GET_EXACT = {
     "/api/deep-prompt": "_get_deep_prompt",
     "/api/deep-qa": "_get_deep_qa",
     "/api/target-model": "_get_target_model",
+    "/api/target-model/restore-preview": "_get_restore_preview",
     "/api/symbol-aliases": "_get_symbol_aliases",
     "/api/symbol-search": "_get_symbol_search",
     "/api/strategy/runs": "_get_strategy_runs",
@@ -561,6 +562,7 @@ _POST_EXACT = {
     "/api/target-proposal/apply": "_post_proposal_apply",
     "/api/staging/commit": "_post_staging_commit",
     "/api/staging/discard": "_post_staging_discard",
+    "/api/target-model/restore": "_post_restore_target",
     "/api/staging/edit": "_post_staging_edit",
     "/api/basket/add": "_post_basket_add",
     "/api/basket/tier": "_post_basket_tier",
@@ -987,6 +989,12 @@ class Handler(BaseHTTPRequestHandler):
         rec = _load(TARGET_MODEL_JSON)
         return self._send_json(rec) if rec else self._send_error_json(404, "target model not found")
 
+    def _get_restore_preview(self, path, query):
+        # What restoring a pre-apply backup would change, before the user commits
+        # to it. ValueError (bad/missing backup) becomes a 400 via _dispatch.
+        rel = (query.get("backup") or [""])[0]
+        return self._send_json(target_staging.diff_backup_vs_live(rel))
+
     def _get_symbol_aliases(self, path, query):
         return self._send_json({"aliases": _symbol_aliases()})
 
@@ -1250,6 +1258,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_staging_discard(self, path):
         return self._send_json(target_staging.discard_staged())
+
+    def _post_restore_target(self, path):
+        body = self._read_body()
+        return self._send_json(
+            target_staging.restore_backup(str(body.get("backup") or ""), bool(body.get("confirm"))))
 
     def _post_basket_add(self, path):
         body = self._read_body()

@@ -28,13 +28,16 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+from pathlib import Path
 
 import portfolio
 import rebalance
-from config import DATA_DIR, HOLDINGS_JSON, TARGET_MODEL_JSON
+from config import DATA_DIR, HOLDINGS_JSON, REPO_ROOT, TARGET_MODEL_JSON
 from holdings_sync import regenerate_site as _regenerate_site
 from store import load as _load, safe_symbol as _safe_symbol, write_json as _write_json
-from target_model import _apply_changes_to_model, _backup_target_model
+from target_model import (
+    TARGET_MODEL_BACKUP_DIR, _apply_changes_to_model, _backup_target_model,
+)
 
 # The working draft. Mirrors the live model schema plus a top-level ``provenance``
 # map and a ``_runs`` audit list of contributing strategy runs.
@@ -478,3 +481,59 @@ def commit_staged(confirm: bool) -> dict:
         pass
     site = _regenerate_site()
     return {"committed": True, "backup": backup, "as_of": out["as_of"], "site": site}
+
+
+# --------------------------------------------------------------------------- #
+# Restore from a pre-apply backup (the visible undo for a committed apply)
+# --------------------------------------------------------------------------- #
+def _resolve_backup(rel: str) -> Path:
+    """Validate a client-supplied backup path and return the resolved file. The
+    path comes from a manifest/commit result, but it's still untrusted input, so
+    it must resolve to a ``.json`` INSIDE the backups dir — never an arbitrary
+    file we'd then promote to the live model."""
+    if not rel:
+        raise ValueError("no backup specified")
+    root = TARGET_MODEL_BACKUP_DIR.resolve()
+    target = (REPO_ROOT / rel).resolve()
+    if root not in target.parents or target.suffix != ".json":
+        raise ValueError("invalid backup path")
+    if not target.is_file():
+        raise ValueError("backup file not found (it may have been pruned)")
+    return target
+
+
+def diff_backup_vs_live(rel: str) -> dict:
+    """Whole-book diff of what restoring ``rel`` would change, framed as
+    live(before) -> backup(after) so it renders on the same band tracks as every
+    other diff. Read-only: nothing is written."""
+    backup = _load(_resolve_backup(rel))
+    if not isinstance(backup, dict) or not backup.get("targets"):
+        raise ValueError("backup is not a valid target model")
+    live = load_live()
+    tdiff = _diff_section(live.get("targets") or {}, backup.get("targets") or {}, {}, {}, "target")
+    sdiff = _diff_section(live.get("sleeves") or {}, backup.get("sleeves") or {}, {}, {}, "sleeve")
+    return {
+        "backup": rel,
+        "backup_as_of": backup.get("as_of"),
+        "live_as_of": live.get("as_of"),
+        "targets": tdiff,
+        "sleeves": sdiff,
+        "counts": {"targets": len(tdiff), "sleeves": len(sdiff), "total": len(tdiff) + len(sdiff)},
+    }
+
+
+def restore_backup(rel: str, confirm: bool) -> dict:
+    """Restore the live target model from a pre-apply backup. Backs up the CURRENT
+    live model first, so the restore is itself reversible, then writes the backup
+    over live and refreshes the derived site. The working draft (if any) is left
+    untouched — this is a live-model operation."""
+    if not confirm:
+        raise ValueError("confirm=true is required")
+    backup = _load(_resolve_backup(rel))
+    if not isinstance(backup, dict) or not backup.get("targets"):
+        raise ValueError("backup is not a valid target model")
+    safety = _backup_target_model()  # snapshot current live before overwriting it
+    _write_json(TARGET_MODEL_JSON, backup)
+    site = _regenerate_site()
+    return {"restored": True, "backup": rel, "backup_of_current": safety,
+            "as_of": backup.get("as_of"), "site": site}

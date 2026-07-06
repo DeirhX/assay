@@ -203,6 +203,40 @@ function pendingHtml(rows: DiffRow[]): string {
   }).join("");
 }
 
+// ---- revert-to-pre-commit (the visible undo for a commit) -----------------
+// The restore-preview diff shares the working-draft diff shape minus provenance,
+// framed as live(before) -> backup(after), so it renders on the same band tracks.
+interface RestoreDiffRow { key: string; kind: string; change: "added" | "modified" | "removed"; before: Band; after: Band; }
+interface RestoreDiff { targets?: RestoreDiffRow[]; sleeves?: RestoreDiffRow[]; }
+
+const DIR_CHIP: Record<string, string> = { ok: "good", warn: "warn", bad: "bad" };
+
+// The confirmation panel: every band that reverting would change, as a track, so
+// the undo is reviewed with the same care as the commit that preceded it.
+function revertPanelHtml(diff: RestoreDiff): string {
+  const rows = [...(diff.targets || []), ...(diff.sleeves || [])];
+  if (!rows.length) return `<div class="hint">The live model already matches this backup — nothing to revert.</div>`;
+  const bandRows = rows.map((r) => ({ change: r.change, before: r.before, after: r.after }));
+  const scaleMax = scaleMaxFor(bandRows);
+  const list = rows.map((r, i) => {
+    const dir = directionTag(bandRows[i]);
+    const name = r.kind === "sleeve" ? `[${r.key}]` : r.key;
+    return `<div class="stage-revert-row">`
+      + `<span class="stage-revert-name">${esc(name)}</span>`
+      + `<span class="chip ${DIR_CHIP[dir.tone] || "muted"}">${esc(dir.label)}</span>`
+      + bandBar(bandRows[i], scaleMax, { axis: false })
+      + `<span class="stage-revert-nums">${esc(bandText(r.before))} \u2192 ${esc(bandText(r.after))}</span>`
+      + `</div>`;
+  }).join("");
+  return `<div class="stage-revert-head">Reverting restores the model saved before this commit — `
+    + `${rows.length} band(s) change back:</div>`
+    + `<div class="stage-revert-list">${list}</div>`
+    + `<div class="stage-revert-actions">`
+    + `<button type="button" class="danger" data-revert-go>Confirm revert</button>`
+    + `<button type="button" class="linklike" data-revert-cancel>Cancel</button>`
+    + `<span class="stage-revert-status status"></span></div>`;
+}
+
 function render(s: Staging): void {
   const body = $("#stage-body");
   const commit = $<HTMLButtonElement>("#stage-commit");
@@ -216,9 +250,15 @@ function render(s: Staging): void {
     const head = done
       ? `<div class="stage-committed"><strong>&#10003; Committed to your live plan.</strong> `
         + `Your model is now <code>as_of ${esc(done.as_of || "today")}</code>`
-        + (done.backup ? ` and a reversible backup was saved (<code>${esc(done.backup)}</code>)` : "")
+        + (done.backup ? ` and a reversible backup was saved` : "")
         + `.<br>The working draft is empty again &mdash; that's expected after a commit. `
-        + `<button type="button" class="linklike" id="stage-go-trade">Go to Trade &rarr;</button> to place the orders, or start a new strategy run to build the next plan.</div>`
+        + `<button type="button" class="linklike" id="stage-go-trade">Go to Trade &rarr;</button> to place the orders, or start a new strategy run to build the next plan.`
+        + (done.backup
+            ? `<div class="stage-revert-affordance">`
+              + `<button type="button" class="linklike" id="stage-revert-commit" data-backup="${esc(done.backup)}">&#8617; Revert this commit</button>`
+              + `<div id="stage-revert-panel"></div></div>`
+            : "")
+        + `</div>`
       : `<div class="empty"><strong>No working draft yet.</strong><br>`
         + `Run a strategy and choose <em>"Add to working draft"</em>, or stage changes from the Rebalance planner. They'll collect here so you can review the whole book and commit once.</div>`;
     body.innerHTML = head
@@ -306,6 +346,49 @@ function initStaging(): void {
     if (goTrade) {
       const tab = document.querySelector<HTMLElement>('.subtab[data-view="trade"], .tab[data-view="trade"]');
       if (tab) tab.click();
+      return;
+    }
+    // Post-commit revert: open the diff preview, then confirm/cancel. The backup
+    // path rides on the button/panel dataset so it survives re-renders.
+    const revertOpen = (e.target as HTMLElement).closest<HTMLElement>("#stage-revert-commit");
+    if (revertOpen) {
+      const backup = revertOpen.dataset.backup;
+      const panel = document.querySelector<HTMLElement>("#stage-revert-panel");
+      if (!backup || !panel) return;
+      revertOpen.setAttribute("disabled", "true");
+      panel.innerHTML = `<div class="hint"><span class="spinner"></span> computing what reverting changes…</div>`;
+      try {
+        const diff = await api<RestoreDiff>("/api/target-model/restore-preview?backup=" + encodeURIComponent(backup));
+        panel.innerHTML = revertPanelHtml(diff);
+        panel.dataset.backup = backup;
+      } catch (err: any) {
+        panel.innerHTML = `<div class="stage-warn">Could not preview revert: ${esc((err && err.message) || String(err))}</div>`;
+      } finally {
+        revertOpen.removeAttribute("disabled");
+      }
+      return;
+    }
+    if ((e.target as HTMLElement).closest<HTMLElement>("[data-revert-cancel]")) {
+      const panel = document.querySelector<HTMLElement>("#stage-revert-panel");
+      if (panel) { panel.innerHTML = ""; delete panel.dataset.backup; }
+      return;
+    }
+    const revertGo = (e.target as HTMLElement).closest<HTMLElement>("[data-revert-go]");
+    if (revertGo) {
+      const panel = document.querySelector<HTMLElement>("#stage-revert-panel");
+      const backup = panel && panel.dataset.backup;
+      if (!panel || !backup) return;
+      const st = panel.querySelector<HTMLElement>(".stage-revert-status");
+      revertGo.setAttribute("disabled", "true");
+      if (st) { st.classList.remove("err"); st.innerHTML = `<span class="spinner"></span> reverting…`; }
+      try {
+        await api("/api/target-model/restore", "POST", { backup, confirm: true });
+        if (status) { status.classList.remove("err"); status.textContent = "Reverted to the pre-commit target model."; }
+        await loadStaging();
+      } catch (err: any) {
+        if (st) { st.textContent = "Revert failed: " + ((err && err.message) || String(err)); st.classList.add("err"); }
+        revertGo.removeAttribute("disabled");
+      }
       return;
     }
     const btn = (e.target as HTMLElement).closest<HTMLElement>(".stage-revert");
