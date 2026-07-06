@@ -117,6 +117,25 @@ class ShouldTaxAlerts(unittest.TestCase):
             scheduler.notify.configured_sinks = orig
 
 
+class ShouldJournalScore(unittest.TestCase):
+    def test_fires_when_a_horizon_is_due(self):
+        self.assertTrue(scheduler._should_journal_score(None, obs(journal_due=2)))
+
+    def test_skips_when_nothing_is_due(self):
+        self.assertFalse(scheduler._should_journal_score(None, obs(journal_due=0)))
+
+    def test_daily_throttle(self):
+        o = obs(journal_due=1)
+        self.assertFalse(scheduler._should_journal_score(NOW - dt.timedelta(hours=2), o))
+        self.assertTrue(scheduler._should_journal_score(NOW - dt.timedelta(hours=25), o))
+
+    def test_default_on_under_the_master(self):
+        # Read-only data provider + journal write, same risk class as the other
+        # freshness tasks, so it runs when the master switch is on.
+        task = next(t for t in scheduler.TASKS if t.name == "journal-score")
+        self.assertEqual(task.flag_default, "1")
+
+
 class ShouldOrderWatch(unittest.TestCase):
     def test_fires_in_the_market_window(self):
         self.assertTrue(scheduler._should_order_watch(None, obs(market_open=True)))
