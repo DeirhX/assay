@@ -9,6 +9,8 @@ plus a cross-segment aggregate), honestly flagging thin comparison samples.
 
 from __future__ import annotations
 
+from typing import Any
+
 from config import RESEARCH_DIR, SEGMENT_DEF_DIR
 from store import load as _load, safe_symbol as _safe_symbol
 
@@ -32,8 +34,10 @@ def _metric_value(rec: dict, key: str):
     Metric nodes are usually {value, source, ...} but tolerate a bare number."""
     try:
         node = (rec.get("metrics") or {}).get(key)
-        v = node.get("value") if isinstance(node, dict) else node
-        v = float(v)
+        raw = node.get("value") if isinstance(node, dict) else node
+        if raw is None:
+            return None
+        v = float(raw)
     except (TypeError, ValueError, AttributeError):
         return None
     return v if v == v and v not in (float("inf"), float("-inf")) else None
@@ -58,7 +62,7 @@ def _peer_stats(symbol: str) -> dict:
     """
     sym = _safe_symbol(symbol)
     segs = _segments_for_symbol(sym)
-    result = {"symbol": sym, "segments": [s[0] for s in segs], "metrics": {}}
+    result: dict[str, Any] = {"symbol": sym, "segments": [s[0] for s in segs], "metrics": {}}
     if not segs:
         return result
 

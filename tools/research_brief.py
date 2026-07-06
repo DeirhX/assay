@@ -105,7 +105,7 @@ def _worst_check_message(checks: Any) -> str:
     flagged = [c for c in checks if isinstance(c, dict) and c.get("severity") in rank]
     if not flagged:
         return ""
-    worst = min(flagged, key=lambda c: rank.get(c.get("severity"), 9))
+    worst = min(flagged, key=lambda c: rank.get(c.get("severity", ""), 9))
     return str(worst.get("message") or "").strip()[:160]
 
 

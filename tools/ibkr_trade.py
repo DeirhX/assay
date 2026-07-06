@@ -219,7 +219,7 @@ def _pick_stock_conid(rows: list[dict], symbol: str) -> int | None:
     best = None
     for row in rows:
         conid = row.get("conid")
-        if conid in (None, ""):
+        if conid is None or conid == "":
             continue
         sections = row.get("sections") or []
         is_stk = any((s.get("secType") or s.get("secturetype")) == "STK" for s in sections)
@@ -288,9 +288,13 @@ def tick_for_price(rules: Any, price: float, *, default: float = 0.01) -> float:
         for b in bands:
             if not isinstance(b, dict):
                 continue
+            edge_raw = b.get("lowerEdge")
+            inc_raw = b.get("increment")
+            if edge_raw is None or inc_raw is None:
+                continue
             try:
-                edge = float(b.get("lowerEdge"))
-                inc = float(b.get("increment"))
+                edge = float(edge_raw)
+                inc = float(inc_raw)
             except (TypeError, ValueError):
                 continue
             if inc > 0 and edge <= float(price):
@@ -298,8 +302,9 @@ def tick_for_price(rules: Any, price: float, *, default: float = 0.01) -> float:
         if applicable:
             best = max(applicable, key=lambda e: e[0])[1]
     if best is None:
+        inc_raw = node.get("increment")
         try:
-            inc = float(node.get("increment"))
+            inc = float(inc_raw) if inc_raw is not None else 0.0
             best = inc if inc > 0 else None
         except (TypeError, ValueError):
             best = None
@@ -352,9 +357,12 @@ def build_orders(
     warnings: list[str] = []
     for trade in basket:
         sym = str(trade.get("symbol") or "").strip().upper()
+        delta_raw = trade.get("delta_czk")
         try:
-            delta = float(trade.get("delta_czk"))
+            delta = float(delta_raw) if delta_raw is not None else None
         except (TypeError, ValueError):
+            delta = None
+        if delta is None:
             warnings.append(f"{sym or '?'}: non-numeric delta_czk, skipped")
             continue
         if not sym or abs(delta) < 1.0:

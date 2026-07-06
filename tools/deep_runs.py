@@ -24,7 +24,7 @@ from store import (
 
 
 def deep_runs() -> list[dict]:
-    runs = {}
+    runs: dict[str, dict] = {}
     for path in sorted(DEEP_DIR.glob("*")):
         if not path.is_file():
             continue

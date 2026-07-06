@@ -45,7 +45,7 @@ def http_get(
         try:
             req = urllib.request.Request(url, headers=hdrs)
             fn = opener.open if opener else urllib.request.urlopen
-            with fn(req, timeout=timeout) as resp:  # type: ignore[operator]
+            with fn(req, timeout=timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             if exc.code == 404:

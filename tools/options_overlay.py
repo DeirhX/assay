@@ -61,7 +61,8 @@ def _years_between(target: dt.date, base: dt.date) -> float:
 
 def _vol_from_series(series: list[dict[str, Any]] | None) -> tuple[float, bool]:
     """(annualized_vol, is_estimate_fallback)."""
-    closes = [p.get("close") for p in (series or []) if isinstance(p.get("close"), (int, float))]
+    closes = [float(c) for p in (series or [])
+              if isinstance((c := p.get("close")), (int, float))]
     vol = options_math.annualized_vol(closes) if len(closes) >= 3 else None
     if vol and vol > 0:
         return vol, False

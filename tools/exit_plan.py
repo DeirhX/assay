@@ -77,7 +77,8 @@ def average_daily_volume(points: list[dict[str, Any]] | None, *, window: int = A
     price point. Returns None when no session has a usable volume (foreign names
     where Yahoo omits it), so the caller falls back to even time-slices.
     """
-    vols = [p.get("volume") for p in (points or []) if isinstance(p.get("volume"), (int, float)) and p.get("volume")]
+    vols = [float(v) for p in (points or [])
+            if isinstance((v := p.get("volume")), (int, float)) and v]
     if not vols:
         return None
     tail = vols[-window:] if window > 0 else vols

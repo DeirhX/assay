@@ -543,7 +543,9 @@ def normalize(account: str, trades: dict[str, dict], nav: dict[str, dict],
             "by_symbol": sorted(by_symbol.values(), key=lambda r: -r["n"]),
         },
     }
-    return enrich_history_payload(payload)
+    enriched = enrich_history_payload(payload)
+    assert enriched is not None  # payload is a dict, so enrich never returns None
+    return enriched
 
 
 def enrich_history_payload(payload: dict | None) -> dict | None:

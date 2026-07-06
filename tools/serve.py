@@ -633,7 +633,7 @@ class Handler(BaseHTTPRequestHandler):
         # Single funnel for unexpected handler failures (GET and POST): log the
         # full traceback to the terminal so we can actually debug, but hand the
         # browser a clean JSON envelope the frontend's error center understands.
-        if isinstance(exc, research_pull.ProviderError):  # type: ignore[attr-defined]
+        if isinstance(exc, research_pull.ProviderError):
             # An upstream data source (Yahoo/SEC/FMP) misbehaved -- that's an
             # expected external hiccup (and "ticker not found" lives here too),
             # not one of our incidents, so it stays out of the error log.
@@ -967,7 +967,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_deep_run(self, path, query):
         stem = _slugify(path.rsplit("/", 1)[-1])
-        payload = {"stem": stem}
+        payload: dict[str, object] = {"stem": stem}
         for suffix, rel in {
             "report": DEEP_DIR / f"{stem}.md",
             "sources": DEEP_DIR / f"{stem}.sources.json",
