@@ -344,7 +344,7 @@ function paintConnection(token?: number) {
     const acct = s.default_account || (s.accounts[0] && s.accounts[0].id) || "?";
     const kind = s.accounts.find((a) => a.id === acct)?.kind || "?";
     const cls = kind === "live" ? "live" : "paper";
-    bits.push(`<div class="trade-bnr ${cls}"><strong>${kind === "live" ? "LIVE" : "Paper"} account ${esc(acct)}</strong>` +
+    bits.push(`<div class="trade-bnr ${cls}"><strong>${kind === "live" ? "LIVE" : "Paper"} account ${sensitive(esc(acct), "account id")}</strong>` +
       (kind === "live"
         ? (s.live_allowed ? " — live orders are unlocked. Real money." : " — live placement is <strong>locked</strong>. Validate on paper, then set <code>IBKR_ALLOW_LIVE=1</code>.")
         : " — safe simulated account.") +
@@ -469,7 +469,7 @@ function renderPreview() {
   const liveBlocked = isLive && !p.live_allowed;
 
   card.appendChild(el("div", "trade-card-title",
-    `Preview \u2014 ${isLive ? "LIVE" : "paper"} account ${esc(p.account)}`));
+    `Preview \u2014 ${isLive ? "LIVE" : "paper"} account ${sensitive(esc(p.account), "account id")}`));
 
   (p.warnings || []).forEach((w) =>
     card.appendChild(el("div", "trade-warn", esc(w))));
@@ -732,7 +732,7 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
     panel.innerHTML =
       `<div class="modal-head"><h2 class="section">${isLive ? "Place LIVE orders \u2014 real money" : "Place paper orders"}</h2></div>` +
       `<div class="trade-cf-facts">` +
-      `<div class="trade-cf-row"><span>Account</span><span class="${isLive ? "bad" : ""}">${isLive ? "LIVE" : "paper"} ${esc(p.account)}</span></div>` +
+      `<div class="trade-cf-row"><span>Account</span><span class="${isLive ? "bad" : ""}">${isLive ? "LIVE" : "paper"} ${sensitive(esc(p.account), "account id")}</span></div>` +
       `<div class="trade-cf-row"><span>Orders</span><span>${n}</span></div>` +
       `<div class="trade-cf-row"><span>Gross buys</span><span>${sensitive(fmtCZK(facts.buy) + " CZK", "gross buys")}</span></div>` +
       `<div class="trade-cf-row"><span>Gross sells</span><span>${sensitive(fmtCZK(facts.sell) + " CZK", "gross sells")}</span></div>` +
@@ -825,7 +825,7 @@ export function placeResultHtml(res: PlaceResult): string {
   const placed = res.placed || [];
   const ok = placed.filter((o) => o && (o.order_id || o.orderId || o.order_status)).length;
   const banner = `<div class="trade-bnr ${ok ? "paper" : "warn"}">` +
-    `${ok} order(s) acknowledged by IBKR on ${esc(res.kind)} account ${esc(res.account)}.</div>`;
+    `${ok} order(s) acknowledged by IBKR on ${esc(res.kind)} account ${sensitive(esc(res.account), "account id")}.</div>`;
   const cleared = res.staged_basket_cleared
     ? `<span class="muted">The staged basket was cleared so it can't be placed twice.</span>` : "";
   const next = `<div class="trade-next">

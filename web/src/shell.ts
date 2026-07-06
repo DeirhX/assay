@@ -369,7 +369,10 @@ async function restoreNav(nav: NavState) {
   } else if (active === "deepdive") {
     await renderViewedTickers();
   }
-  if (active === "deepdive") $<HTMLInputElement>("#ticker-input").focus();
+  // preventScroll: focusing the ticker input on a deep-link load would otherwise
+  // scroll the input into view mid-layout, stranding the topbar in the middle of
+  // the viewport. Landing at the top is handled by goToView for tab switches.
+  if (active === "deepdive") $<HTMLInputElement>("#ticker-input").focus({ preventScroll: true });
 }
 
 // ---- tabs / app shell wiring ----------------------------------------------
@@ -409,6 +412,10 @@ function initShell() {
   const goToView = (view: string) => {
     pushNav(navForView(view));
     restoreNav(navFromUrl());
+    // A forward view switch always starts at the top. Not done inside restoreNav
+    // because popstate (back/forward) also routes through it and should keep the
+    // browser's restored scroll position.
+    window.scrollTo(0, 0);
   };
 
   // Direct view targets: the settings gear (.tab) and the secondary sub-tabs.
