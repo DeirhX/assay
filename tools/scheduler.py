@@ -22,7 +22,7 @@ the human already placed and reacts (resync-on-fill, notifications) -- it never
 places, modifies, or cancels anything.
 
 Design: one daemon thread started from serve.py's main path (same discipline as
-``_reload_watcher``). The thread ticks every 60s, evaluates each task's pure
+``devreload.reload_watcher``). The thread ticks every 60s, evaluates each task's pure
 ``should_run(last_run, obs)`` predicate against freshly gathered observations,
 and dispatches real work. Persisted stamps in ``data/cache/scheduler-state.json``
 survive the reload supervisor's respawns so an edit-reload doesn't re-trigger
