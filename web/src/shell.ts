@@ -140,33 +140,39 @@ function wireTickerSearch(input: HTMLInputElement) {
 // ---- location state --------------------------------------------------------
 const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "exit", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
 
-// Two-level navigation: the header exposes three top-level GROUPS, each of which
-// fans out to a set of VIEWS via a secondary sub-tab bar. The URL still carries
-// the flat `view` (so deep links + history stay stable); the group is derived.
-// `segment` is intentionally absent from any sub-tab bar -- it's folded into the
-// research flow (reached via the pipeline's deterministic pull or a segment row)
-// rather than being a destination of its own. `setup` (the gear) sits outside
-// the group bar entirely.
+// The guided Plan flow is the dominant path, so it is the landing view and the
+// one omitted from the URL (a bare "/" means Plan). Every other view carries an
+// explicit ?view=.
+const DEFAULT_VIEW = "strategy";
+
+// Two-level navigation: the header exposes five workflow-ordered top-level GROUPS
+// (Plan -> Research -> Rebalance -> Portfolio -> Watchlist), each of which fans
+// out to a set of VIEWS via a secondary sub-tab bar. The URL still carries the
+// flat `view` (so deep links + history stay stable); the group is derived.
+// `pipeline` is intentionally absent from any sub-tab bar -- it's the "New run"
+// sub-page of Research, reached via a button and left via its Back button.
+// `setup` (the gear) sits outside the group bar entirely.
 const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
-  deepdive: "deepdive",
-  analyses: "research", pipeline: "research", segment: "research",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", optimizer: "portfolio", rebalance: "portfolio", "working-draft": "portfolio", exit: "portfolio", trade: "portfolio", risk: "portfolio", journal: "portfolio",
+  deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
+  rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", exit: "rebalance", trade: "rebalance",
+  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
 };
-// Which sub-tab lights up for a given view. Holdings + History are merged behind
-// one "positions" sub-tab (toggled Now/Over-time inside the views themselves).
+// Which sub-tab lights up for a given view. With History promoted to its own
+// sub-tab, the data-view of each sub-tab button maps 1:1 to its key here.
 const VIEW_SUBTAB: Record<string, string> = {
-  analyses: "analyses", pipeline: "pipeline",
-  today: "today", holdings: "positions", history: "positions", optimizer: "optimizer", rebalance: "rebalance", "working-draft": "working-draft", exit: "exit", trade: "trade", risk: "risk", journal: "journal",
+  deepdive: "deepdive", analyses: "analyses", segment: "segment",
+  rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade",
+  today: "today", holdings: "holdings", history: "history", risk: "risk", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
-const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "today", basket: "basket" };
+const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", research: "deepdive", rebalance: "rebalance", portfolio: "today", basket: "basket" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { strategy: "strategy", deepdive: "deepdive", research: "analyses", portfolio: "today", basket: "basket" };
+const lastViewByGroup: Record<string, string> = { strategy: "strategy", research: "deepdive", rebalance: "rebalance", portfolio: "today", basket: "basket" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -214,7 +220,7 @@ function parseSearch(search = window.location.search) {
 
 function navFromUrl() {
   const params = parseSearch();
-  const view = VIEWS.has(params.get("view")) ? params.get("view") : "deepdive";
+  const view = VIEWS.has(params.get("view")) ? params.get("view") : DEFAULT_VIEW;
   return {
     view,
     ticker: cleanSymbol(params.get("ticker")),
@@ -227,7 +233,7 @@ function urlForNav(nav: NavState) {
   const url = new URL(window.location.href);
   url.search = "";
   url.hash = "";
-  if (nav.view && nav.view !== "deepdive") url.searchParams.set("view", nav.view);
+  if (nav.view && nav.view !== DEFAULT_VIEW) url.searchParams.set("view", nav.view);
   if (nav.ticker) url.searchParams.set("ticker", cleanSymbol(nav.ticker));
   if (nav.segment) url.searchParams.set("segment", cleanSlug(nav.segment));
   if (nav.run) url.searchParams.set("run", cleanSlug(nav.run));
@@ -259,35 +265,30 @@ function navForView(view: string) {
   return nav;
 }
 
-// Sync the header chrome (group buttons, sub-tab bar, positions toggle) to the
-// active view. Kept separate from data loading so navigation logic stays legible.
+// Sync the header chrome (group buttons + sub-tab bar) to the active view.
+// Kept separate from data loading so navigation logic stays legible.
 function updateChrome(active: string) {
-  const group = VIEW_GROUP[active] || "deepdive";
-  // Research has no sub-tab bar: "New run" (pipeline) is a sub-page reached via the
-  // button and left via its Back button, so the Research group header always
-  // returns to Reports rather than remembering pipeline as the last view.
-  if (lastViewByGroup[group]) lastViewByGroup[group] = (group === "research") ? "analyses" : active;
+  const group = VIEW_GROUP[active] || GROUP_DEFAULT[active] || "strategy";
+  // Remember the last real view per group so re-clicking a group header returns
+  // you where you were. `pipeline` is the one exception: it's the "New run"
+  // sub-page of Research, so we don't remember it (the header returns to the
+  // last real Research view instead of stranding you mid-wizard).
+  if (lastViewByGroup[group] && active !== "pipeline") lastViewByGroup[group] = active;
 
   document.querySelectorAll<HTMLElement>(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
   document.querySelectorAll<HTMLElement>(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
 
-  // The sub-tab bar only exists for groups that fan out (research, portfolio).
+  // The sub-tab bar only exists for groups that fan out into multiple views.
   const subbar = $("#subbar");
-  const groupHasSubtabs = group === "portfolio";
+  const groupHasSubtabs = group === "research" || group === "rebalance" || group === "portfolio";
   if (subbar) subbar.hidden = !groupHasSubtabs;
   document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
   document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
-
-  // Positions (holdings + history) share a Now / Over-time toggle in-content.
-  document.querySelectorAll<HTMLElement>(".pos-toggle button").forEach((b) => {
-    const isNow = b.dataset.pos === "now";
-    b.classList.toggle("active", (isNow && active === "holdings") || (!isNow && active === "history"));
-  });
 }
 
 function setActiveView(view: string) {
-  const active = VIEWS.has(view) ? view : "deepdive";
+  const active = VIEWS.has(view) ? view : DEFAULT_VIEW;
   updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $("#view-" + active).classList.add("active");
@@ -340,7 +341,7 @@ export async function openDeepRunInPipeline(stem: string): Promise<void> {
 }
 
 async function restoreNav(nav: NavState) {
-  const active = setActiveView(nav.view ?? "deepdive");
+  const active = setActiveView(nav.view ?? DEFAULT_VIEW);
   if (nav.ticker) $<HTMLInputElement>("#ticker-input").value = nav.ticker;
   if (nav.segment || nav.run || active === "segment" || active === "pipeline") {
     await loadSegmentList();
@@ -410,7 +411,7 @@ function initShell() {
   document.querySelectorAll<HTMLElement>(".group").forEach((btn) => {
     btn.addEventListener("click", () => {
       const group = btn.dataset.group;
-      goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || "deepdive");
+      goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || DEFAULT_VIEW);
     });
   });
 
@@ -424,15 +425,6 @@ function initShell() {
   initBasket();
   initOptimizer();
   initOverview();
-
-  // Positions Now / Over-time toggle: two views (holdings, history) behind one
-  // sub-tab. Delegated so it works for the toggle in either section.
-  document.addEventListener("click", (e) => {
-    const tgt = e.target as HTMLElement;
-    const b = tgt.closest ? tgt.closest<HTMLElement>(".pos-toggle button") : null;
-    if (!b) return;
-    goToView(b.dataset.pos === "over" ? "history" : "holdings");
-  });
 
   window.addEventListener("popstate", (event) => {
     restoreNav(event.state || navFromUrl());

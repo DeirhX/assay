@@ -217,7 +217,8 @@ function render(s: Staging): void {
       ? `<div class="stage-committed"><strong>&#10003; Committed to your live plan.</strong> `
         + `Your model is now <code>as_of ${esc(done.as_of || "today")}</code>`
         + (done.backup ? ` and a reversible backup was saved (<code>${esc(done.backup)}</code>)` : "")
-        + `.<br>The working draft is empty again &mdash; that's expected after a commit. Start a new strategy run or stage from the Rebalance planner to build the next one.</div>`
+        + `.<br>The working draft is empty again &mdash; that's expected after a commit. `
+        + `<button type="button" class="linklike" id="stage-go-trade">Go to Trade &rarr;</button> to place the orders, or start a new strategy run to build the next plan.</div>`
       : `<div class="empty"><strong>No working draft yet.</strong><br>`
         + `Run a strategy and choose <em>"Add to working draft"</em>, or stage changes from the Rebalance planner. They'll collect here so you can review the whole book and commit once.</div>`;
     body.innerHTML = head
@@ -272,6 +273,9 @@ function initStaging(): void {
     commit.disabled = true;
     try {
       const res = await api<{ as_of?: string; backup?: string }>("/api/staging/commit", "POST", { confirm: true });
+      // Stash the result so the next render shows a persistent confirmation (with
+      // the Trade hand-off) instead of the bare empty state -- loadStaging()
+      // clears the status line, so a transient message there wouldn't survive.
       _committed = { as_of: res.as_of, backup: res.backup };
       await loadStaging();
     } catch (e: any) {
@@ -292,9 +296,18 @@ function initStaging(): void {
     }
   });
 
-  // Per-row Revert (delegated).
+  // Post-commit "Go to Trade →" hand-off + per-row Revert (both delegated so
+  // they survive re-renders). The hand-off completes the guided spine: a fresh
+  // live model is exactly when you'd go place the orders. Clicking the Trade
+  // sub-tab routes through the shell's nav; staging.ts stays import-cycle-free.
   const bodyHost = $("#view-working-draft");
   if (bodyHost) bodyHost.addEventListener("click", async (e) => {
+    const goTrade = (e.target as HTMLElement).closest<HTMLElement>("#stage-go-trade");
+    if (goTrade) {
+      const tab = document.querySelector<HTMLElement>('.subtab[data-view="trade"], .tab[data-view="trade"]');
+      if (tab) tab.click();
+      return;
+    }
     const btn = (e.target as HTMLElement).closest<HTMLElement>(".stage-revert");
     if (!btn) return;
     const key = btn.dataset.key;
