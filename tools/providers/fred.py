@@ -116,6 +116,41 @@ def macro_snapshot() -> dict[str, Any]:
     return out
 
 
+def snapshot_for(ids: "list[str] | tuple[str, ...]") -> dict[str, Any]:
+    """Source-stamped snapshot for an arbitrary set of series ids, fanned out
+    concurrently. Ids outside :data:`SERIES` fall back to a bare spec (label ==
+    id). Shaped exactly like :func:`macro_snapshot` so callers (e.g. the regime
+    strip) can pick their own compact panel without paying for the full set."""
+    specs = [
+        next((s for s in SERIES if s["id"] == i),
+             {"id": i, "label": i, "category": "", "unit": "", "note": ""})
+        for i in ids
+    ]
+    out: dict[str, Any] = {
+        "source": "fred",
+        "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "series": {},
+        "errors": [],
+    }
+    results: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    if specs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(6, len(specs)))) as pool:
+            futures = {pool.submit(_series_snapshot, spec): spec for spec in specs}
+            for future in concurrent.futures.as_completed(futures):
+                spec = futures[future]
+                try:
+                    results[spec["id"]] = future.result()
+                except ProviderError as exc:
+                    errors[spec["id"]] = f"{spec['id']}: {exc}"
+    for spec in specs:
+        if spec["id"] in results:
+            out["series"][spec["id"]] = results[spec["id"]]
+        if spec["id"] in errors:
+            out["errors"].append(errors[spec["id"]])
+    return out
+
+
 def series_snapshot(series_id: str) -> dict[str, Any]:
     """Snapshot for a single FRED series, shaped like :func:`macro_snapshot` so a
     caller that needs just one number (e.g. the options overlay's ``DGS10``

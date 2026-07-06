@@ -2087,6 +2087,23 @@ a.tlink:hover { border-bottom-style: solid; }
   font-size: 13px;
 }
 
+/* Regime strip: a compact, descriptive macro backdrop above the segment
+   leaderboard. Intentionally low-key — context, not a call to action. */
+.regime-strip { margin: 10px 0 14px; }
+.regime-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.regime-chip {
+  display: flex; align-items: baseline; gap: 8px; padding: 6px 12px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2);
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.regime-k { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.regime-v { font-weight: 600; }
+/* Direction only — colour would imply good/bad, and this strip is descriptive
+   context, not a signal. The glyph carries the trend; the tint stays neutral. */
+.regime-arrow { font-weight: 700; color: var(--muted); }
+.regime-chg { color: var(--muted); font-size: 12px; }
+.regime-caption { margin-top: 6px; color: var(--muted); font-size: 11px; }
+
 /* Vol as a bar so high-vol names pop instead of hiding in a column of numbers. */
 .risk-vol-cell { display: flex; align-items: center; gap: 10px; }
 .risk-vol-track { position: relative; flex: 1; height: 8px; min-width: 60px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
