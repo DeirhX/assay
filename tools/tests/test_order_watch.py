@@ -140,6 +140,53 @@ class PollSession(_PollCase):
         self.assertEqual(self.notices, [])
 
 
+class PollDryRun(_PollCase):
+    """The safe live-path verification: real reads, zero side effects."""
+
+    def test_dry_run_reports_transitions_without_acting(self):
+        self._poll([_order(status="Submitted")])            # seed real state
+        before = store.load(self.state)
+        res = order_watch.poll_once(
+            now=NOW, fetch_orders=lambda: [_order(status="Filled", filled=10)],
+            fetch_auth=lambda: {"authenticated": True},
+            notifier=self._notifier, resync=self._resync, state_path=self.state,
+            dry_run=True,
+        )
+        self.assertTrue(res["dry_run"])
+        self.assertEqual(res["fills"], 1)
+        self.assertTrue(res["would_resync"])
+        self.assertEqual(res["event_detail"][0]["kind"], "filled")
+        # ...but nothing actually happened: no notice, no resync, state untouched.
+        self.assertEqual(self.notices, [])
+        self.assertEqual(self.resyncs, 0)
+        self.assertFalse(res["resynced"])
+        self.assertEqual(store.load(self.state), before)
+
+    def test_dry_run_reports_session_down_without_alerting(self):
+        self._poll([_order(status="Submitted")])            # a working order exists
+        res = order_watch.poll_once(
+            now=NOW, fetch_orders=lambda: [], fetch_auth=lambda: {"authenticated": False},
+            notifier=self._notifier, resync=self._resync, state_path=self.state,
+            dry_run=True,
+        )
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["would_alert_session_down"])
+        self.assertEqual(self.notices, [])                  # not actually fired
+        # The dedupe flag stays as the seed left it (False) -- a real poll would
+        # flip it to True after alerting; the dry-run must not.
+        self.assertFalse(store.load(self.state).get("session_down_notified"))
+
+    def test_render_is_readable(self):
+        text = order_watch._render({
+            "ok": True, "authenticated": True, "orders": 2, "would_resync": True,
+            "event_detail": [{"kind": "filled", "symbol": "NVDA", "side": "SELL",
+                              "filled": 10, "total": 10}],
+        })
+        self.assertIn("WOULD act on", text)
+        self.assertIn("resync WOULD be kicked", text)
+        self.assertIn("no state written", text)
+
+
 class PollGatewayError(_PollCase):
     def test_gateway_error_is_handled(self):
         def boom():

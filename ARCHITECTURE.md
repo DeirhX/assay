@@ -183,6 +183,10 @@ and work survives navigation.
   gateway session drops while orders are working it alerts once. It is strictly
   read-only w.r.t. the market: it never places, modifies, or cancels an order. The
   transition logic is pure/unit-tested; the IBKR IO sits behind injectable seams.
+  `poll_once(dry_run=True)` (also `python tools/order_watch.py`) exercises the real
+  gateway reads but suppresses every side effect — no notify, resync, or state
+  write — and prints the transitions it *would* act on: the safe way to verify the
+  live path against a real Client Portal Gateway before arming it.
 - **`tools/notify.py`** — the outbound channel (also default-off, `ASSAY_NOTIFY=1`
   plus a sink). Turns supervision from "remember to check" into "get interrupted".
   Sinks: an ntfy-compatible webhook (`ASSAY_NOTIFY_WEBHOOK`, stdlib `urllib`) and a

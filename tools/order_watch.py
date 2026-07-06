@@ -162,10 +162,17 @@ def poll_once(
     notifier: Callable[..., list[str]] | None = None,
     resync: Callable[[], dict] | None = None,
     state_path: Path | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """One watch cycle. Reads the gateway session + working orders, diffs against
     last-seen state, reacts to transitions, and persists the new state. Returns a
-    small summary dict; never raises (the scheduler stamps its result string)."""
+    small summary dict; never raises (the scheduler stamps its result string).
+
+    ``dry_run`` exercises the exact same gateway *reads* and transition logic but
+    suppresses every side effect -- no notify, no resync, no state write -- and
+    returns the transitions it *would* have acted on. It's the safe way to point
+    the watcher at a live Client Portal Gateway and see what it does before arming
+    it for real (the live path is otherwise only ever exercised through mocks)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     fetch_orders = fetch_orders or ibkr_trade.live_orders
     fetch_auth = fetch_auth or ibkr_trade.auth_status
@@ -181,7 +188,8 @@ def poll_once(
     # session silently stops the peg and hides fills) -- fire it once, not every tick.
     auth = fetch_auth() or {}
     if not auth.get("authenticated"):
-        if prev_map and not state.get("session_down_notified"):
+        would_alert = bool(prev_map and not state.get("session_down_notified"))
+        if would_alert and not dry_run:
             notifier(
                 "IBKR session down",
                 f"{len(prev_map)} order(s) were working, but the gateway session isn't "
@@ -190,20 +198,25 @@ def poll_once(
             )
             state["session_down_notified"] = True
             store.write_json(state_path, state)
-        return {"ok": False, "reason": "session not authenticated"}
-    state["session_down_notified"] = False
+        return {"ok": False, "reason": "session not authenticated", "dry_run": dry_run,
+                "authenticated": False, "would_alert_session_down": would_alert,
+                "working_orders": len(prev_map)}
+    if not dry_run:
+        state["session_down_notified"] = False
 
     try:
         orders = fetch_orders()
     except ibkr_trade.CPAPIError as exc:
-        store.write_json(state_path, state)
-        return {"ok": False, "reason": f"gateway error: {exc}"}
+        if not dry_run:
+            store.write_json(state_path, state)
+        return {"ok": False, "reason": f"gateway error: {exc}", "dry_run": dry_run,
+                "authenticated": True}
 
     events, new_map = diff_orders(prev_map, orders)
     fills = [e for e in events if e["kind"] in ("filled", "partial")]
 
     resynced = False
-    if fills:
+    if fills and not dry_run:
         try:
             resync()
             resynced = True
@@ -212,18 +225,79 @@ def poll_once(
         except Exception as exc:  # noqa: BLE001 -- a resync failure must not lose the events
             sys.stderr.write(f"[order-watch] resync failed: {exc}\n")
 
-    for ev in events:
-        title, body, tags, priority = _event_message(ev)
-        notifier(title, body, tags=tags, priority=priority)
+    if not dry_run:
+        for ev in events:
+            title, body, tags, priority = _event_message(ev)
+            notifier(title, body, tags=tags, priority=priority)
 
-    if fills:
-        recent = state.get("recent_fills") or []
-        for e in fills:
-            recent.append({**e, "at": now.isoformat(timespec="seconds")})
-        state["recent_fills"] = recent[-RECENT_FILLS_CAP:]
+        if fills:
+            recent = state.get("recent_fills") or []
+            for e in fills:
+                recent.append({**e, "at": now.isoformat(timespec="seconds")})
+            state["recent_fills"] = recent[-RECENT_FILLS_CAP:]
 
-    state["orders"] = new_map
-    state["updated_at"] = now.isoformat(timespec="seconds")
-    store.write_json(state_path, state)
-    return {"ok": True, "events": len(events), "fills": len(fills),
-            "resynced": resynced, "orders": len(new_map)}
+        state["orders"] = new_map
+        state["updated_at"] = now.isoformat(timespec="seconds")
+        store.write_json(state_path, state)
+
+    summary: dict[str, Any] = {"ok": True, "events": len(events), "fills": len(fills),
+                               "resynced": resynced, "orders": len(new_map), "dry_run": dry_run}
+    if dry_run:
+        # The diagnostic wants the transitions themselves and what it *would* do.
+        summary["authenticated"] = True
+        summary["event_detail"] = events
+        summary["would_resync"] = bool(fills)
+        summary["would_notify"] = len(events)
+    return summary
+
+
+# --------------------------------------------------------------------------- #
+# CLI: a read-only diagnostic poll (always dry-run -- never touches state or
+# fires side effects). The scheduler owns the real, side-effecting polling.
+# --------------------------------------------------------------------------- #
+def _render(res: dict) -> str:
+    lines: list[str] = []
+    if not res.get("authenticated", res.get("ok")):
+        lines.append("Gateway session: NOT AUTHENTICATED.")
+        if res.get("working_orders"):
+            lines.append(f"  {res['working_orders']} order(s) were working when last seen -- "
+                         "the live watcher would fire a 'session down' alert here.")
+        else:
+            lines.append("  No orders known as working, so no alert would fire.")
+        return "\n".join(lines)
+    if not res.get("ok"):
+        lines.append(f"Gateway read failed: {res.get('reason')}")
+        return "\n".join(lines)
+    events = res.get("event_detail") or []
+    lines.append("Gateway session: authenticated.")
+    lines.append(f"Working orders seen this poll: {res.get('orders', 0)}.")
+    if not events:
+        lines.append("No new transitions since last-seen state -- nothing would fire.")
+    else:
+        lines.append(f"{len(events)} transition(s) the live watcher WOULD act on:")
+        for ev in events:
+            _t, body, _tags, prio = _event_message(ev)
+            lines.append(f"  [{ev.get('kind')}/{prio}] {body}")
+        if res.get("would_resync"):
+            lines.append("  -> a holdings resync WOULD be kicked (a fill was detected).")
+    lines.append("")
+    lines.append("(dry-run: no notification sent, no resync kicked, no state written.)")
+    return "\n".join(lines)
+
+
+def _main() -> int:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(
+        description="Order/fill watcher: one read-only diagnostic poll (dry-run, no side effects).")
+    parser.add_argument("--json", action="store_true", help="Emit the raw summary as JSON.")
+    args = parser.parse_args()
+
+    res = poll_once(dry_run=True)
+    print(json.dumps(res, indent=2, default=str) if args.json else _render(res))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
