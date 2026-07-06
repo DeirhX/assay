@@ -274,6 +274,53 @@ def _order_band_context(model: dict, holdings: dict, after_plan: dict | None) ->
     return out
 
 
+def _trade_reconnect() -> dict:
+    """Best-effort re-establish the brokerage session without a browser round-trip.
+
+    Calls the gateway's ``ssodh/init`` (``ibkr_trade.reauthenticate``), which
+    works only while the gateway still holds the SSO cookie from an earlier
+    browser login and does NOT clear 2FA -- an SSO that has fully expired still
+    needs a real login at the gateway page. The refreshed trade status is
+    returned so the UI re-renders its banner in one round-trip; a failure is
+    reported in-band as ``reconnect_error`` rather than as a 5xx, because
+    'not connected' is exactly the state the user is trying to fix."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to use the trade desk")
+    reconnect_error: str | None = None
+    try:
+        ibkr_trade.reauthenticate()
+    except Exception as exc:  # noqa: BLE001 - a reconnect attempt must never 500
+        reconnect_error = str(exc)
+    status = _trade_status()
+    status["reconnect_error"] = reconnect_error
+    return status
+
+
+def _trade_tickle() -> dict:
+    """Keepalive for an open Trade view. The brokerage session idles out after a
+    few minutes; a periodic tickle holds it warm during an active sitting. The
+    tickle response carries the current session booleans, so we return them (no
+    second call) and the UI can flip its banner the moment the link drops. Never
+    raises: a failed tickle reads as not-authenticated."""
+    if not ibkr_trade.trading_enabled():
+        return {"trading_enabled": False, "authenticated": False,
+                "connected": False, "competing": False}
+    auth: dict = {}
+    try:
+        res = ibkr_trade.tickle()
+        iserver = res.get("iserver") if isinstance(res, dict) else None
+        if isinstance(iserver, dict) and isinstance(iserver.get("authStatus"), dict):
+            auth = iserver["authStatus"]
+    except Exception:  # noqa: BLE001
+        auth = {}
+    return {
+        "trading_enabled": True,
+        "authenticated": bool(auth.get("authenticated")),
+        "connected": bool(auth.get("connected")),
+        "competing": bool(auth.get("competing")),
+    }
+
+
 def _trade_preview(body: dict) -> dict:
     """Resolve + price + size a basket and ask IBKR for its margin/commission
     impact, WITHOUT placing anything. Also returns the local what-if so the two

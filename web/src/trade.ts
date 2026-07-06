@@ -23,6 +23,17 @@ interface TradeStatus {
   accounts?: TradeAccount[];
   live_allowed?: boolean;
   competing?: boolean;
+  // Present only on a /api/trade/reconnect response: the reason a reconnect
+  // attempt failed (e.g. the saved SSO login expired), else null.
+  reconnect_error?: string | null;
+}
+
+// /api/trade/tickle: the lightweight session-only shape used by the keepalive.
+interface TradeTickle {
+  trading_enabled?: boolean;
+  authenticated?: boolean;
+  connected?: boolean;
+  competing?: boolean;
 }
 
 // One sized order inside a /api/trade/preview response.
@@ -118,6 +129,12 @@ let _workingSymbols = new Set<string>();
 // show without the user hitting Refresh. Cleared when no peg is active.
 let _pegPollTimer: ReturnType<typeof setInterval> | null = null;
 const PEG_POLL_MS = 5000;
+// While the Trade view is open, tickle the gateway so the brokerage session
+// (which idles out after a few minutes) stays warm, and so a silent drop shows
+// up without a manual refresh. Scoped to the view: the tick self-cancels once
+// #view-trade is no longer active.
+let _tickleTimer: ReturnType<typeof setInterval> | null = null;
+const TICKLE_MS = 60000;
 
 const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
@@ -196,7 +213,10 @@ async function loadTrade() {
   const wrap = $("#trade-result");
   if (wrap) wrap.innerHTML = "";
   const refresh = $("#trade-refresh");
-  if (refresh) refresh.onclick = () => loadTrade();
+  // "Refresh connection" actively re-establishes the brokerage session (not just
+  // a status re-read) so a session that idled out can recover without a browser
+  // login, as long as the gateway still holds the SSO cookie.
+  if (refresh) refresh.onclick = () => void reconnect();
   // Rehydrate the basket the planner persisted server-side so it survives a
   // reload or navigating away and back — it used to live only in browser memory.
   try {
@@ -221,7 +241,31 @@ async function renderConnection(token?: number) {
     return;
   }
   if (token != null && isStaleToken("trade", token)) return;
+  paintConnection(token);
+}
+
+// Attempt to re-establish the brokerage session, then repaint. Falls back to a
+// plain status read when reconnect is refused (e.g. trading disabled -> 403).
+async function reconnect(): Promise<void> {
+  const token = nextToken("trade");
+  const banner = $("#trade-banner");
+  if (banner) banner.innerHTML = `<div class="trade-bnr warn"><span class="spinner"></span> reconnecting to the IBKR gateway\u2026</div>`;
+  try {
+    _status = await api<TradeStatus>("/api/trade/reconnect", "POST");
+  } catch (_e) {
+    if (isStaleToken("trade", token)) return;
+    return void renderConnection(token);
+  }
+  if (isStaleToken("trade", token)) return;
+  paintConnection(token);
+}
+
+// Render the banner + basket + working orders from the current _status, and
+// (re)start the keepalive. Pure UI; callers own fetching _status.
+function paintConnection(token?: number) {
+  const banner = $("#trade-banner");
   const s = _status;
+  if (!s) return;
   const bits = [];
 
   if (!s.trading_enabled) {
@@ -230,6 +274,9 @@ async function renderConnection(token?: number) {
   if (!s.authenticated) {
     const origin = gatewayOrigin(s.gateway_base);
     bits.push(`<div class="trade-bnr warn"><strong>Gateway not connected.</strong> Start the IBKR Client Portal Gateway, log in (with 2FA) at <a href="${esc(origin)}" target="_blank" rel="noopener">${esc(origin)}</a>, then press <em>Refresh connection</em>.</div>`);
+    if (s.reconnect_error) {
+      bits.push(`<div class="trade-bnr bad">Reconnect failed: ${esc(s.reconnect_error)}. The saved login has likely expired \u2014 log in at the gateway page above.</div>`);
+    }
   } else {
     const acct = s.default_account || (s.accounts[0] && s.accounts[0].id) || "?";
     const kind = s.accounts.find((a) => a.id === acct)?.kind || "?";
@@ -245,6 +292,35 @@ async function renderConnection(token?: number) {
 
   renderBasket();
   void renderLiveOrders(token);
+  startKeepalive();
+}
+
+function startKeepalive() {
+  stopKeepalive();
+  if (!(_status && _status.trading_enabled)) return;  // nothing to keep warm
+  _tickleTimer = setInterval(() => void keepaliveTick(), TICKLE_MS);
+}
+
+function stopKeepalive() {
+  if (_tickleTimer) { clearInterval(_tickleTimer); _tickleTimer = null; }
+}
+
+async function keepaliveTick() {
+  // Self-terminate once the user has navigated off the Trade view (no teardown
+  // hook exists; the view just loses its .active class).
+  const view = document.getElementById("view-trade");
+  if (!view || !view.classList.contains("active")) return stopKeepalive();
+  let t: TradeTickle;
+  try {
+    t = await api<TradeTickle>("/api/trade/tickle");
+  } catch (_e) {
+    return;  // transient; the next tick tries again
+  }
+  // If the session state flipped since the last paint (a silent drop, or a
+  // recovery), re-read + repaint so the banner reflects reality without a click.
+  if (_status && (t.authenticated !== _status.authenticated || t.competing !== _status.competing)) {
+    void renderConnection();
+  }
 }
 
 function renderBasket() {
