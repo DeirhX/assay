@@ -56,7 +56,7 @@ def _profile(p: dict[str, Any]) -> dict[str, Any] | None:
     can merge them field-by-field. Returns None when nothing usable came back."""
     employees = p.get("fullTimeEmployees")
     try:
-        employees = int(employees) if employees not in (None, "") else None
+        employees = int(employees) if employees is not None and employees != "" else None
     except (TypeError, ValueError):
         employees = None
     out = {

@@ -209,7 +209,8 @@ def analyze(
         diag_var += (wa * va) ** 2
         for b in included:
             wb, vb = norm.get(b, 0.0), ann_vol[b]
-            corr = matrix[a][b] if matrix[a][b] is not None else 0.0
+            c = matrix[a][b]
+            corr = c if c is not None else 0.0
             port_var += wa * wb * corr * va * vb
     port_vol = math.sqrt(port_var) if port_var > 0 else 0.0
 
@@ -292,7 +293,7 @@ def _stress(
     for sc in scenarios:
         factor = sc.get("factor")
         shock = float(sc.get("shock_pct", 0.0))
-        fmap = factor_maps.get(factor, {})
+        fmap = factor_maps.get(factor, {}) if factor is not None else {}
         contributions: list[dict[str, Any]] = []
         total = 0.0
         measurable = bool(fmap)

@@ -913,7 +913,7 @@ def _run_with_fallback(prompt: str, cfg: dict,
     for provider in _ordered_providers(cfg):
         if not provider.get("enabled"):
             continue
-        pid = provider.get("id")
+        pid = str(provider.get("id") or "")
         runner = _RUNNERS.get(pid)
         if not runner:
             continue
@@ -1137,7 +1137,9 @@ def _finish_claude_json(pid: str, provider: dict, proc: subprocess.CompletedProc
         blob = err or raw or f"exit {proc.returncode}"
         return {"ok": False, "fatal": not _is_transient_failure(blob),
                 "error": f"{PROVIDER_LABELS[pid]}: {blob.splitlines()[-1] if blob.splitlines() else blob}"}
-    text, usage, sid = raw, {}, session_id
+    text = raw
+    usage: dict[str, Any] = {}
+    sid = session_id
     try:
         data = json.loads(raw)
     except ValueError:
@@ -1313,8 +1315,8 @@ if __name__ == "__main__":
     import argparse
 
     try:  # Windows consoles default to cp1252; reports use em-dashes etc.
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     except Exception:  # noqa: BLE001
         pass
 

@@ -141,7 +141,7 @@ def _text(el: ET.Element, child: str) -> str | None:
 
 def _dec(val: str | None) -> float:
     try:
-        return float(val) if val not in (None, "") else 0.0
+        return float(val) if val is not None and val != "" else 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -288,7 +288,7 @@ def _positions_from_lots(lots: list[Lot], nav: float | None) -> list[Position]:
         cost_basis_money = sum(lot.cost_basis_money for lot in lot_group)
         unrealized_pnl = sum(lot.unrealized_pnl for lot in lot_group)
         percent_of_nav = (
-            (base_market_value / nav) * 100 if nav not in (None, 0) else None
+            (base_market_value / nav) * 100 if nav else None
         )
         positions.append(Position(
             symbol=first.symbol,

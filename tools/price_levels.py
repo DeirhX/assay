@@ -293,7 +293,7 @@ def evaluate(level: dict | None, current_price: float | None) -> dict | None:
     if norm is None:
         return None
     known = isinstance(current_price, (int, float))
-    cur = float(current_price) if known else None
+    cur = float(current_price) if isinstance(current_price, (int, float)) else None
     buy = _side_state(norm["buy_ladder"], cur, True)
     trim = _side_state(norm["trim_ladder"], cur, False)
     return {

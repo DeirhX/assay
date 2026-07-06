@@ -276,9 +276,11 @@ def start_peg(
     side = _order_side(order)
     if side not in ("BUY", "SELL"):
         raise apierror.BadRequest(f"order {oid} has no usable side")
-    conid = order.get("conid")
+    conid_raw = order.get("conid")
+    if conid_raw is None:
+        raise apierror.BadRequest(f"order {oid} has no contract id to price against")
     try:
-        conid = int(conid)
+        conid = int(conid_raw)
     except (TypeError, ValueError):
         raise apierror.BadRequest(f"order {oid} has no contract id to price against")
     limit = _order_price(order)
@@ -322,10 +324,9 @@ def stop_peg(order_id: str) -> dict[str, Any]:
     oid = str(order_id or "").strip()
     with _LOCK:
         rec = _ACTIVE.get(oid)
-        job_id = rec["job_id"] if rec else None
     if not rec:
         return {"stopped": False}
-    jobs.cancel_job(job_id)
+    jobs.cancel_job(rec["job_id"])
     return {"stopped": True}
 
 

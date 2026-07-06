@@ -462,9 +462,9 @@ Flagged so future-you doesn't trust a stale line:
 CI runs two workflows. `.github/workflows/tests.yml` has three jobs (branch
 protection needs them green before merge):
 
-- **Python lint + unittest suite:** pinned `ruff check tools` (rules frozen in
-  `ruff.toml`) then `python -m unittest discover -s tools/tests`
-  (stdlib-only, offline, ~1s).
+- **Python lint + typecheck + unittest suite:** pinned `ruff check tools` (rules
+  frozen in `ruff.toml`), pinned `mypy tools` (lenient baseline in `mypy.ini`),
+  then `python -m unittest discover -s tools/tests` (stdlib-only, offline, ~1s).
 - **Frontend typecheck + tests + build:** `npm ci && npm run lint && npm run
   typecheck && npm test && npm run build`.
 - **Playwright e2e (hermetic):** `npm run e2e` — the suite intercepts `/api/**`,
@@ -475,10 +475,11 @@ protection needs them green before merge):
 All jobs are least-privilege (`permissions: contents: read`) and time-boxed.
 
 **Local mirror:** `pwsh tools/check.ps1` (or `npm run check:all`) runs the exact
-gating steps CI runs and prints a pass/fail table, plus `mypy` as a **non-gating
-signal** (the backend has a known type-error backlog CI deliberately does *not*
-gate — see `mypy.ini`). `-E2E` adds the Playwright suite; `-Data` adds the
-private-data validators (`rebalance --check`, `verify_claims`,
+gating steps CI runs (ruff, mypy, unittest, eslint, tsc, vitest, build, leak
+scan) and prints a pass/fail table. `mypy` is a **gate**, but under a lenient
+`mypy.ini` baseline — a green run means "no errors under those settings", not
+"type-safe" (tighten incrementally). `-E2E` adds the Playwright suite; `-Data`
+adds the private-data validators (`rebalance --check`, `verify_claims`,
 `generate_site --check`) that CI can never run.
 
 ---

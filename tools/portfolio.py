@@ -58,8 +58,11 @@ def normalize_basket(trades: Any) -> dict[str, float]:
         sym = clean_symbol(t.get("symbol"))
         if not sym:
             raise ValueError("each trade needs a symbol")
+        raw = t.get("delta_czk")
+        if raw is None:
+            raise ValueError(f"trade for {sym} needs a numeric delta_czk")
         try:
-            delta = float(t.get("delta_czk"))
+            delta = float(raw)
         except (TypeError, ValueError):
             raise ValueError(f"trade for {sym} needs a numeric delta_czk")
         netted[sym] = netted.get(sym, 0.0) + delta

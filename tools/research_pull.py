@@ -390,7 +390,7 @@ def _research_score(rec: dict[str, Any], worst: str) -> int:
     metrics = rec.get("metrics", {})
     portfolio = rec.get("portfolio", {})
     target = portfolio.get("target", {})
-    score = 50
+    score = 50.0
 
     rule = target.get("rule")
     status = portfolio.get("status")

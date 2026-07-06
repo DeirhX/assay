@@ -185,7 +185,7 @@ def research_summary(basket_items: list[dict] | None, ticker_index: list[dict] |
         return bool(index.get(sym.upper(), {}).get("has_analysis"))
 
     # Basket triage: picks with no saved analysis, oldest first.
-    unresearched = []
+    unresearched: list[dict[str, Any]] = []
     for it in basket_items:
         sym = str(it.get("symbol") or "")
         if not sym or researched(sym):

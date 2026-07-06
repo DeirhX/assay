@@ -30,6 +30,13 @@ jobs:
         run: |
           pip install --quiet ruff==0.15.17
           ruff check --output-format=github tools
+      # Pin mypy: type-check behaviour shifts between releases, so an unpinned
+      # bump could red-wall a PR that never touched the offending code. Config
+      # lives in mypy.ini (lenient baseline; tighten incrementally).
+      - name: Type-check (mypy)
+        run: |
+          pip install --quiet mypy==2.1.0
+          mypy tools
       - name: Run tests
         run: python -m unittest discover -s tools/tests -t tools/tests -v
 
