@@ -213,7 +213,7 @@ flowchart TB
   end
   subgraph narrative [Narrative]
     PPLX["pplx_deep_research.py"] --> REPORT["data/research/deep/*.md"]
-    TA["ticker_analysis.py (LLM notes + price levels)"]
+    TA["ticker_analysis.py (LLM runner) + analysis_prompts / analysis_report"]
   end
   subgraph judgement [Human judgement]
     THESIS["thesis blocks (POST /api/thesis)"]
