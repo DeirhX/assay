@@ -19,6 +19,7 @@ import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
 import { initStaging, loadStaging } from "./staging";
 import { initStrategy, loadStrategy } from "./strategy";
+import { initTaxControls, loadTax } from "./tax";
 import { initTargetState, loadTargetState } from "./targetstate";
 import { loadTrade } from "./trade";
 import { getViewedMap, renderViewedTickers } from "./viewed";
@@ -142,7 +143,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "tax", "journal", "holdings", "history", "basket", "setup"]);
 
 // The guided Plan flow is the dominant path, so it is the landing view and the
 // one omitted from the URL (a bare "/" means Plan). Every other view carries an
@@ -160,7 +161,7 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", journal: "portfolio",
+  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", tax: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
 };
@@ -169,7 +170,7 @@ const VIEW_GROUP: Record<string, string> = {
 const VIEW_SUBTAB: Record<string, string> = {
   deepdive: "deepdive", analyses: "analyses", segment: "segment",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade",
-  today: "today", holdings: "holdings", history: "history", risk: "risk", journal: "journal",
+  today: "today", holdings: "holdings", history: "history", risk: "risk", tax: "tax", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
@@ -314,6 +315,7 @@ function setActiveView(view: string) {
   if (active === "exit") loadExit();
   if (active === "trade") loadTrade();
   if (active === "risk") { initRiskControls(); loadRisk(); }
+  if (active === "tax") { initTaxControls(); loadTax(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }
   if (active === "basket") loadBasket();
   if (active === "setup") loadSetup();

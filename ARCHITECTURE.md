@@ -146,7 +146,7 @@ Resolution order for any key: **`os.environ` → `tools/secrets.env` → default
 `HOLDINGS_JSON`, `TARGET_MODEL_JSON`, `DEEP_DIR`, `ANALYSIS_DIR`,
 `SEGMENT_DEF_DIR`, `SEGMENT_OUT_DIR`, …) all live here. Notable env knobs:
 `SEC_USER_AGENT`, `FMP_API_KEY`, the `IBKR_*` trading flags, `ASSAY_AUTO_*` /
-`ASSAY_ORDER_WATCH` scheduler flags, `ASSAY_NOTIFY*` (notification channel),
+  `ASSAY_ORDER_WATCH` / `ASSAY_TAX_ALERTS` scheduler flags, `ASSAY_NOTIFY*` (notification channel),
 `PPLX_*` automation settings, `REBAL_CLAUDE_CLI` / `REBAL_CURSOR_CLI`.
 
 ### 4.3 The job / task system
@@ -336,7 +336,10 @@ status (`BELOW/IN/ABOVE`), and suggested band-closing deltas in CZK.
 `rebalance_overlay` decorates rows with research context (`decision`,
 `thesis_lean`, conflict flags) and **price gates** — a locked buy-below/trim-above
 level (`price_levels.py`) degrades a buy to "wait" until the price is favorable.
-`tax_lots.py` (Czech 3-year-exempt-aware lot selection), `whatif.py` (post-trade
+`tax_lots.py` (Czech 3-year-exempt-aware lot selection; a trim reaching a
+near-exempt gain lot gets a `wait` annotation), `tax_calendar.py` (the forward
+per-lot exemption calendar — gain lots to wait on, loss lots to harvest before
+their deadline, a year-end rollup, and opt-in scheduler alerts), `whatif.py` (post-trade
 recompute), `exit_plan.py` (tax-timed, liquidity-aware scale-out ladders with an
 options overlay), and `risk.py` (correlation / effective-bets / factor-shock
 stress) all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
@@ -427,7 +430,7 @@ sub-tabs; `lastViewByGroup` remembers where you were per group.
 | **Plan** | `strategy` | — (single guided view) |
 | **Research** | `deepdive` | Ticker (`deepdive`), Reports (`analyses`), Segments (`segment`); `pipeline` is a sub-page |
 | **Rebalance** | `rebalance` | Rebalance, Optimizer, Working draft, Exit, Trade (+ `target-state` in-group) |
-| **Portfolio** | `today` | Today (`overview`), Positions (`holdings`), History, Risk, Journal |
+| **Portfolio** | `today` | Today (`overview`), Positions (`holdings`), History, Risk, Tax, Journal |
 | **Watchlist** | `basket` | — |
 
 The URL is the persistence layer: `?view=`, `?ticker=`, `?segment=`, `?run=`

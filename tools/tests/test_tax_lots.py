@@ -115,6 +115,32 @@ class SelectLots(unittest.TestCase):
         self.assertAlmostEqual(out["lots"][0]["gain"], 40.0)
 
 
+class WaitHint(unittest.TestCase):
+    def test_wait_hint_when_trim_reaches_a_near_exempt_gain(self):
+        # Exempt gain sells first (tax-free); a big enough trim then reaches the
+        # near-exempt taxable-gain lot, which should raise a "wait" annotation.
+        lots = [
+            lot("X", 10, 50.0, 20.0, "2020-01-01T00:00:00Z"),   # exempt gain, sold first
+            lot("X", 10, 100.0, 40.0, "2023-07-01T00:00:00Z"),  # taxable gain, ~18d to exempt
+        ]
+        out = tl.select_lots(lots, 120.0, as_of=AS_OF)
+        self.assertIn("wait", out)
+        self.assertGreater(out["wait"]["tax_saved"], 0.0)
+        self.assertLessEqual(out["wait"]["max_days_to_exempt"], tl.NEAR_EXEMPT_DAYS)
+        self.assertTrue(out["wait"]["exempt_on"])
+
+    def test_no_wait_hint_for_a_clean_exempt_trim(self):
+        lots = [lot("X", 10, 100.0, 60.0, "2020-01-01T00:00:00Z")]  # exempt gain only
+        out = tl.select_lots(lots, 50.0, as_of=AS_OF)
+        self.assertNotIn("wait", out)
+
+    def test_no_wait_hint_when_taxable_gain_is_far_from_exempt(self):
+        # A taxable gain opened yesterday is years from the mark: no nudge.
+        lots = [lot("X", 10, 100.0, 40.0, "2026-06-12T00:00:00Z")]
+        out = tl.select_lots(lots, 100.0, as_of=AS_OF)
+        self.assertNotIn("wait", out)
+
+
 class BreakdownAndEnrich(unittest.TestCase):
     def _holdings(self):
         return {

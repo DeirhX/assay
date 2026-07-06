@@ -95,6 +95,28 @@ class ShouldQuotes(unittest.TestCase):
         self.assertTrue(scheduler._should_quotes(NOW - dt.timedelta(minutes=61), o))
 
 
+class ShouldTaxAlerts(unittest.TestCase):
+    def test_skips_without_a_notify_sink(self):
+        orig = scheduler.notify.configured_sinks
+        scheduler.notify.configured_sinks = lambda: []
+        try:
+            self.assertFalse(scheduler._should_tax_alerts(None, obs()))
+        finally:
+            scheduler.notify.configured_sinks = orig
+
+    def test_fires_when_a_sink_is_configured_and_due(self):
+        orig = scheduler.notify.configured_sinks
+        scheduler.notify.configured_sinks = lambda: ["webhook"]
+        try:
+            self.assertTrue(scheduler._should_tax_alerts(None, obs()))
+            recent = NOW - dt.timedelta(hours=5)
+            self.assertFalse(scheduler._should_tax_alerts(recent, obs()))
+            old = NOW - dt.timedelta(hours=25)
+            self.assertTrue(scheduler._should_tax_alerts(old, obs()))
+        finally:
+            scheduler.notify.configured_sinks = orig
+
+
 class ShouldOrderWatch(unittest.TestCase):
     def test_fires_in_the_market_window(self):
         self.assertTrue(scheduler._should_order_watch(None, obs(market_open=True)))

@@ -13,9 +13,14 @@ exactly like a user-initiated one.
 
 Off by default; opt in with ``ASSAY_AUTO_REFRESH=1`` (env or tools/secrets.env).
 Granular kill switches under the master: ``ASSAY_AUTO_RESYNC``,
-``ASSAY_AUTO_SEGMENTS``, ``ASSAY_GATE_WATCH`` (each default on when the master is
-on), and ``ASSAY_ORDER_WATCH`` (the order/fill watcher -- default OFF even under
-the master, since it polls the trading gateway rather than a data provider).
+``ASSAY_AUTO_SEGMENTS``, ``ASSAY_GATE_WATCH``, ``ASSAY_TAX_ALERTS`` (each default
+on when the master is on), and ``ASSAY_ORDER_WATCH`` (the order/fill watcher --
+default OFF even under the master, since it polls the trading gateway rather than
+a data provider).
+
+The tax-alerts task only fires when a notification sink is actually configured
+(it pushes 3-year-exemption reminders through ``notify``); it reads the snapshot's
+lots and never trades.
 
 The order watcher is still strictly read-only: it observes the state of orders
 the human already placed and reacts (resync-on-fill, notifications) -- it never
@@ -44,6 +49,7 @@ import apierror
 import config
 import holdings_sync
 import jobs
+import notify
 import order_watch
 import overview
 import price_levels
@@ -51,10 +57,12 @@ import quote_cache
 import research_pull
 import segments_service
 import store
+import tax_calendar
 import timeutil
 from providers import yahoo
 
 STATE_FILE = config.DATA_DIR / "cache" / "scheduler-state.json"
+TAX_ALERT_FILE = config.DATA_DIR / "cache" / "tax-alerts.json"
 
 TICK_SECONDS = 60
 STARTUP_DELAY_SECONDS = 90       # let an edit-reload storm settle before touching providers
@@ -71,6 +79,9 @@ QUOTES_MIN_INTERVAL = dt.timedelta(hours=1)
 # Order/fill watching is an event loop, not a freshness pull, so it ticks far more
 # often than the others -- but only inside the market window (see _should_order_watch).
 ORDER_WATCH_MIN_INTERVAL = dt.timedelta(minutes=2)
+# The tax calendar barely moves day to day; a daily check is plenty and, with the
+# per-lot dedup in tax_calendar, keeps alerts from becoming noise.
+TAX_ALERT_MIN_INTERVAL = dt.timedelta(hours=24)
 
 # Negative-quote suppression: a symbol that just failed to price is not re-hit
 # until this lapses, so a delisted/renamed name doesn't burn a provider call
@@ -235,6 +246,14 @@ def _should_quotes(last_run: dt.datetime | None, obs: Obs) -> bool:
     )
 
 
+def _should_tax_alerts(last_run: dt.datetime | None, obs: Obs) -> bool:
+    # Only worth running when a notification sink is actually wired -- otherwise
+    # the alerts would be computed and dropped. Gating here (rather than on the
+    # master notify flag alone) means "enabled but no sink configured" doesn't
+    # burn a daily holdings read for nothing.
+    return bool(notify.configured_sinks()) and _throttle_ok(last_run, obs.now, TAX_ALERT_MIN_INTERVAL)
+
+
 def _should_order_watch(last_run: dt.datetime | None, obs: Obs) -> bool:
     # Only inside the market window: fills land during regular hours, and a dropped
     # session off-hours is the expected daily re-auth (alerting on it would be
@@ -292,6 +311,34 @@ def _run_quotes(obs: Obs) -> str:
         return "no gated names due for a quote"
     job = jobs.spawn("gate_quotes", _quotes_worker, batch)
     return f"quote sweep spawned for {len(batch)} name(s) #{job.get('id', '?')}"
+
+
+def _run_tax_alerts(obs: Obs) -> str:
+    # Read-only: build the exemption calendar from the snapshot's lots, push the
+    # due events to the notification channel, and stamp only the ones actually
+    # delivered so a disabled/failing sink doesn't silently suppress them later.
+    holdings = _load_holdings()
+    if not holdings:
+        return "skipped: no holdings snapshot"
+    state = store.load(TAX_ALERT_FILE, {}) or {}
+    notified = dict(state.get("notified") or {})
+    alerts = tax_calendar.pending_alerts(holdings, notified, as_of=obs.now)
+    if not alerts:
+        return "no tax events due"
+    today = obs.now.date().isoformat()
+    sent = 0
+    for a in alerts:
+        fired = notify.notify(a["title"], a["body"], tags=tuple(a.get("tags") or ()),
+                              priority=a.get("priority", "default"))
+        if fired:
+            notified[a["key"]] = today
+            sent += 1
+    if sent:
+        store.write_json(TAX_ALERT_FILE, {
+            "notified": notified,
+            "updated_at": obs.now.isoformat(timespec="seconds"),
+        })
+    return f"tax alerts: {len(alerts)} due, {sent} sent"
 
 
 def _run_order_watch(obs: Obs) -> str:
@@ -362,6 +409,8 @@ TASKS: list[Task] = [
          label="Segment refresh", interval=SEGMENT_MIN_INTERVAL),
     Task("gate-quotes", "ASSAY_GATE_WATCH", _should_quotes, _run_quotes,
          label="Gate quotes", interval=QUOTES_MIN_INTERVAL),
+    Task("tax-alerts", "ASSAY_TAX_ALERTS", _should_tax_alerts, _run_tax_alerts,
+         label="Tax exemption alerts", interval=TAX_ALERT_MIN_INTERVAL),
     Task("order-watch", "ASSAY_ORDER_WATCH", _should_order_watch, _run_order_watch,
          label="Order/fill watch", interval=ORDER_WATCH_MIN_INTERVAL, flag_default="0"),
 ]
