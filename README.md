@@ -214,7 +214,8 @@ this software. Validate on a paper account first. Use at your own risk.
 
 ## For developers
 
-This README covers running and configuring the app. For the command-line tools
-(rebalance checks, claim verification, static page generation, IBKR readers),
-the architecture, the Vite + TypeScript frontend workflow, tests, and the project
-Cursor skills, see **`ORIENTATION.md`** and **`tools/README.md`**.
+This README covers running and configuring the app. For the internal design
+(layers, data flow, the request lifecycle, the domain model, and the invariants
+that keep it honest), see **`ARCHITECTURE.md`**. For the operator workflows
+("what lives where", refresh/research/trade) see **`ORIENTATION.md`**, and for
+per-module CLI notes and the Deep Research setup see **`tools/README.md`**.
