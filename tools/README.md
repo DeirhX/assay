@@ -274,8 +274,18 @@ from IO so the tests run offline.
   amount to raise, it picks specific lots to minimize tax: realize 3y-exempt gains
   first, then harvestable losses, then taxable gains. Uses `open_datetime` for the
   3-year test (never IBKR's ST/LT). `enrich_plan(...)` attaches a lot breakdown to
-  each single-name trim in a rebalance plan. API: `POST /api/tax-plan`; also folded
-  into `GET /api/rebalance`.
+  each single-name trim in a rebalance plan. A trim that reaches a taxable-gain
+  lot within `NEAR_EXEMPT_DAYS` of the 3-year mark also carries a `wait` block
+  (proceeds/gain/tax_saved/exempt_on) so the planner can nudge "wait N days ~=
+  save Y". API: `POST /api/tax-plan`; also folded into `GET /api/rebalance`.
+- `tax_calendar.py` -- **forward 3-year-exemption calendar**. Inverts `tax_lots`
+  from reactive (per-trim) to proactive (whole book): every not-yet-exempt lot on
+  a timeline. `build_calendar(...)` returns `exemptions` (taxable-gain lots going
+  tax-free -- wait), `harvest` (taxable-loss lots whose usable-loss window closes
+  at exemption -- act before the deadline), totals, and a year-end rollup.
+  `pending_alerts(holdings, notified, ...)` is a pure alert generator (per-lot
+  dedup) the scheduler's `tax-alerts` task pushes to the notification channel.
+  Pure, no network. API: `GET /api/tax-calendar` (Portfolio -> Tax).
 - `whatif.py` -- **staged-trade simulator**. Recomputes the resulting portfolio for
   a basket of trades: post-trade weights/band status (reusing `rebalance`), cash,
   and realized tax (via `tax_lots`). Pure recompute; never writes holdings or

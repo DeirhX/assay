@@ -20,7 +20,8 @@ private data repo).
 | Holdings summary | `tools/generate_site.py` | Regenerates the markdown holdings summary from the snapshot JSON. |
 | Rebalance validator | `tools/rebalance.py` | Compares current weights against `data/target-model.json`. |
 | Risk lens | `tools/risk.py` | Correlation, volatility, effective-bets, and factor-shock stress over held names (`GET /api/risk`). |
-| Tax-lot planner | `tools/tax_lots.py` | Czech 3-year-aware lot selection for a trim; enriches the rebalance plan (`POST /api/tax-plan`). |
+| Tax-lot planner | `tools/tax_lots.py` | Czech 3-year-aware lot selection for a trim; enriches the rebalance plan (`POST /api/tax-plan`). A trim that reaches a near-exempt gain lot carries a `wait` hint. |
+| Tax calendar | `tools/tax_calendar.py` | Forward per-lot 3-year-exemption calendar: gain lots going tax-free (wait) and loss lots whose harvest window is closing (act), plus a year-end rollup (`GET /api/tax-calendar`, Portfolio → Tax). Optional scheduler alerts (`ASSAY_TAX_ALERTS`) via the notification channel. |
 | Price-level triggers | `tools/price_levels.py`, `data/price-levels.json` (gitignored) | Human-confirmed per-symbol buy-below/trim-above levels (instrument currency). Suggested by `ticker_analysis` (`## Price levels` → `parse_price_levels` → analysis `.meta.json`), locked from the deep dive (`GET/POST /api/price-levels[/lock|/clear]`). A locked level gates the rebalance suggestion in `serve._attach_research_overlay` (blocked side → `action: "wait"` + `row.price_gate`) and becomes the order's limit price via `ibkr_trade.build_orders` `limit_lookup` (`LMT`/`GTC`, resolved server-side in `trade_service._locked_limit`). |
 | What-if simulator | `tools/whatif.py` | Recomputes post-trade weights/cash/realized-tax for a staged basket (`POST /api/whatif`). |
 | Decision journal | `tools/journal.py`, `data/journal.json` (submodule) | Append-only decisions + outcome calibration (`GET/POST /api/journal`). |

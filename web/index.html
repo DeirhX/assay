@@ -45,6 +45,7 @@
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="history" type="button" role="tab">History</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
+        <button class="subtab" data-view="tax" type="button" role="tab">Tax</button>
         <button class="subtab" data-view="journal" type="button" role="tab">Journal</button>
       </div>
     </div>
@@ -508,6 +509,26 @@
       </div>
       <div class="status" id="risk-status"></div>
       <div id="risk-result"></div>
+    </section>
+
+    <!-- TAX -->
+    <section class="view" id="view-tax">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Tax calendar</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">The Czech 3-year exemption is the one return with no market risk. This lays every lot on a forward calendar: taxable-gain lots approaching the mark (wait a few weeks and the gain is tax-free) and taxable-loss lots whose harvest window is closing (a realized loss stops offsetting gains once the lot turns exempt). Base currency; the clock is each lot's open date, never IBKR's ST/LT code. Analysis, not tax advice.</p></details>
+        </div>
+        <label class="risk-range-label">Soon window
+          <select id="tax-soon">
+            <option value="30">30d</option>
+            <option value="60" selected>60d</option>
+            <option value="90">90d</option>
+            <option value="180">180d</option>
+          </select>
+        </label>
+      </div>
+      <div class="status" id="tax-status"></div>
+      <div id="tax-result"></div>
     </section>
 
     <!-- JOURNAL -->

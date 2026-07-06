@@ -51,6 +51,7 @@ import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import risk  # noqa: E402
 import tax_lots  # noqa: E402
+import tax_calendar  # noqa: E402  -- forward 3-year-exemption calendar (proactive tax lever)
 import exit_plan  # noqa: E402  -- advisory graceful-exit planner (tax-timed scale-out)
 import whatif  # noqa: E402
 import journal  # noqa: E402
@@ -265,6 +266,7 @@ _GET_EXACT = {
     "/api/rebalance": "_get_rebalance",
     "/api/exit-plan": "_get_exit_plan",
     "/api/risk": "_get_risk",
+    "/api/tax-calendar": "_get_tax_calendar",
     "/api/journal": "_get_journal",
     "/api/segments": "_get_segments",
     "/api/peer-stats": "_get_peer_stats",
@@ -611,6 +613,19 @@ class Handler(BaseHTTPRequestHandler):
         rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
         with _PULL_LOCK:
             return self._send_json(risk.risk_report(holdings, rng=rng))
+
+    def _get_tax_calendar(self, path, query):
+        # Forward view of every lot's Czech 3-year exemption date: gain lots going
+        # tax-free (wait) and loss lots whose harvest window is closing (act).
+        # Pure over the snapshot's tax lots -- no network, so no _PULL_LOCK.
+        holdings = _load(HOLDINGS_JSON)
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        try:
+            soon = int((query.get("soon_days") or ["60"])[0])
+        except (TypeError, ValueError):
+            soon = tax_calendar.SOON_DAYS
+        return self._send_json(tax_calendar.build_calendar(holdings, soon_days=soon))
 
     def _get_journal(self, path, query):
         entries = journal.load_entries()

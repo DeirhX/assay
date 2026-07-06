@@ -40,6 +40,13 @@ import portfolio  # noqa: E402
 EXEMPT_YEARS = 3
 EPS = 1e-6
 
+# Czech personal income tax on securities gains, and the window at which a
+# taxable-gain lot is close enough to the 3-year mark that the planner should
+# annotate a trim with "wait N days ~= save Y" rather than silently realizing it.
+# Shared so the exemption calendar and the trim annotation agree.
+CZ_TAX_RATE = 0.15
+NEAR_EXEMPT_DAYS = 120
+
 # Bucket -> selection priority (lower sells first). The order is the whole point:
 # realize tax-free gains and harvest usable losses before touching taxable gains.
 _BUCKET_PRIORITY = {
@@ -246,6 +253,7 @@ def select_lots(
             "bucket": c["bucket"],
             "held_days": c["held_days"],
             "days_to_exempt": c["days_to_exempt"],
+            "exempt_on": c.get("exempt_on"),
             "shares": round(shares, 6),
             "proceeds": round(proceeds, 2),
             "cost": round(cost_portion, 2),
@@ -255,6 +263,7 @@ def select_lots(
         remaining -= take_mv
 
     proceeds_total = sum(s["proceeds"] for s in selected)
+    wait = _wait_hint(selected)
     taxable_gain = sum(s["gain"] for s in selected if not s["exempt"])
     exempt_gain = sum(s["gain"] for s in selected if s["exempt"])
     harvestable_loss = -sum(min(0.0, s["gain"]) for s in selected if not s["exempt"])
@@ -262,7 +271,7 @@ def select_lots(
     exempt_proceeds = sum(s["proceeds"] for s in selected if s["exempt"])
     taxable_proceeds = sum(s["proceeds"] for s in selected if not s["exempt"])
 
-    return {
+    result = {
         "as_of": as_of.date().isoformat(),
         "requested": round(trim_money, 2),
         "available": round(available, 2),
@@ -282,6 +291,32 @@ def select_lots(
             "exempt_gain": round(exempt_gain, 2),
             "harvestable_loss": round(harvestable_loss, 2),
         },
+    }
+    if wait:
+        result["wait"] = wait
+    return result
+
+
+def _wait_hint(selected: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """If this trim reaches taxable-gain lots that are near the 3-year exemption,
+    describe the tax that waiting would save -- the planner surfaces it as a
+    "wait N days ~= save Y" nudge. None when no selected lot is near-exempt, so
+    a clean trim carries no annotation."""
+    near = [
+        s for s in selected
+        if s["bucket"] == "taxable_gain" and s["gain"] > EPS
+        and isinstance(s.get("days_to_exempt"), int) and s["days_to_exempt"] <= NEAR_EXEMPT_DAYS
+    ]
+    if not near:
+        return None
+    exempt_dates = [s["exempt_on"] for s in near if s.get("exempt_on")]
+    return {
+        "proceeds": round(sum(s["proceeds"] for s in near), 2),
+        "gain": round(sum(s["gain"] for s in near), 2),
+        "tax_saved": round(sum(s["gain"] for s in near) * CZ_TAX_RATE, 2),
+        "max_days_to_exempt": max(s["days_to_exempt"] for s in near),
+        "exempt_on": max(exempt_dates) if exempt_dates else None,
+        "n_lots": len(near),
     }
 
 
