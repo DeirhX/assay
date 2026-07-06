@@ -205,7 +205,9 @@ lives in the private `data/` submodule, not here.
 **Private `data/` submodule:** all portfolio data lives there —
 `current-holdings.json`/`.md` (after sanitization), `target-model.json`,
 `research-claims.json`, `research/<SYMBOL>.json`, `segments/*.json`, and reviewed
-`research/deep/*` artifacts.
+`research/deep/*` artifacts. This history is irreplaceable — back it up encrypted
+and actually drill the restore: `pwsh tools/backup-data.ps1 -Verify` (see
+`docs/backup-restore.md`).
 
 Never commit anywhere:
 
