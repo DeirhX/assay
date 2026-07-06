@@ -28,6 +28,7 @@ private data repo).
 | Claim validator | `tools/verify_claims.py`, `data/research-claims.json` (submodule) | Checks valuation claims for arithmetic consistency and snapshot drift. |
 | Trade desk (GATED) | `tools/ibkr_trade.py`, Trade view (`web/src/trade.ts`) | The ONLY order-placing surface. CPAPI client over the local Client Portal Gateway; off unless `IBKR_TRADING_ENABLED`, paper-first, preview-then-confirm (`POST /api/trade/preview`, `/place`, `/cancel`). |
 | Research Console | `tools/serve.py`, `tools/research_pull.py`, `web/` | Local live research UI/API using Yahoo, SEC EDGAR, optional FMP. |
+| MCP server (read-only) | `tools/mcp_server.py` | Stdio MCP adapter exposing an allowlisted read-only slice of the API to LLM clients (`claude mcp add assay -- py -3 tools/mcp_server.py`). No trade routes, by construction. |
 | Research segments | `data/segments/*.json` (submodule) | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
 | Deep Research artifacts | `data/research/deep/` (submodule) | Perplexity reports, source sidecars, review-gate output, and target proposals. |
 | Project skills | `.cursor/skills/` | Cursor instructions for future chats. |
