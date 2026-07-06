@@ -55,6 +55,9 @@ interface TradePreview {
   snapshot_age_days?: number | null;
   snapshot_stale?: boolean;
   stale_after_days?: number;
+  // Per-target-symbol band context (before/after weight vs band) from the local
+  // what-if, so each order can show its effect on its band at confirm time.
+  order_bands?: Record<string, OrderBand>;
 }
 
 // One live working order from /api/trade/orders. Field names vary by IBKR
@@ -118,6 +121,70 @@ const PEG_POLL_MS = 5000;
 
 const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
+
+// Per-order band context (from the server's what-if recompute): where this
+// name's weight sits before/after the trade, relative to its target band.
+interface OrderBand {
+  low?: number | null;
+  high?: number | null;
+  before_pct?: number | null;
+  after_pct?: number | null;
+  status_after?: string | null;
+}
+
+const r1 = (n: number) => Math.round(n * 10) / 10;
+
+// Shared axis max across the previewed names' bands, rounded to a friendly
+// multiple of 5 (10% floor) so every track is comparable on one scale.
+function weightScaleMax(bands: OrderBand[]): number {
+  let max = 0;
+  for (const b of bands) {
+    for (const v of [b.high, b.before_pct, b.after_pct]) {
+      if (typeof v === "number") max = Math.max(max, v);
+    }
+  }
+  return Math.max(10, Math.ceil(max / 5) * 5);
+}
+
+// A compact "weight moving within its band" track: the band as a fixed zone, a
+// muted current tick, and a bright projected tick coloured by whether the trade
+// lands the name inside its band (green) or leaves it out (amber). Reuses the
+// rebalance planner's .reb-* track styling so the two surfaces read identically.
+function weightBandTrackHtml(sym: string, b: OrderBand, scaleMax: number): string {
+  const low = typeof b.low === "number" ? b.low : 0;
+  const high = typeof b.high === "number" ? b.high : low;
+  const toP = (v: number) => Math.max(0, Math.min(100, (v / scaleMax) * 100));
+  const before = typeof b.before_pct === "number" ? b.before_pct : null;
+  const after = typeof b.after_pct === "number" ? b.after_pct : null;
+  const inBand = String(b.status_after || "").toUpperCase() === "IN";
+  const zL = toP(low), zW = Math.max(1.5, toP(high) - zL);
+  const dir = before != null && after != null && after < before ? "sell" : "buy";
+  const conn = before != null && after != null
+    ? `<span class="reb-conn ${dir}" style="left:${r1(Math.min(toP(before), toP(after)))}%;width:${r1(Math.abs(toP(after) - toP(before)))}%"></span>`
+    : "";
+  const curMark = before != null
+    ? `<span class="reb-cur-mark" style="left:${r1(toP(before))}%" title="current ${before.toFixed(2)}%"></span>` : "";
+  const projMark = after != null
+    ? `<span class="reb-proj-mark ${inBand ? "in" : "out"}" style="left:${r1(toP(after))}%" title="after ${after.toFixed(2)}%"></span>` : "";
+  const aria = `${sym}: ${before != null ? before.toFixed(1) + "%" : "?"} to ${after != null ? after.toFixed(1) + "%" : "?"} vs band ${low.toFixed(1)}–${high.toFixed(1)}%`;
+  return `<div class="reb-track" role="img" aria-label="${esc(aria)}">` +
+    `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>${conn}${curMark}${projMark}</div>`;
+}
+
+// The caption under a band track: "8.2% → 6.9% · back inside 5–7%" (or a red
+// "still out of band" flag), tying the order back to its reason at confirm time.
+function weightBandCaption(b: OrderBand): string {
+  const before = typeof b.before_pct === "number" ? `${b.before_pct.toFixed(1)}%` : "?";
+  const after = typeof b.after_pct === "number" ? `${b.after_pct.toFixed(1)}%` : "?";
+  const low = typeof b.low === "number" ? b.low : null;
+  const high = typeof b.high === "number" ? b.high : null;
+  const band = low != null && high != null ? `${low}–${high}%` : "band";
+  const inBand = String(b.status_after || "").toUpperCase() === "IN";
+  const verdict = inBand
+    ? `<span class="trade-band-ok">inside ${esc(band)}</span>`
+    : `<span class="trade-band-bad">\u26a0 out of band (${esc(band)})</span>`;
+  return `<span class="trade-band-move">${esc(before)} \u2192 ${esc(after)}</span> \u00b7 ${verdict}`;
+}
 
 function gatewayOrigin(base: string | null | undefined) {
   return String(base || "").replace(/\/v1\/api\/?$/, "") || "https://localhost:5000";
@@ -324,6 +391,10 @@ function renderPreview() {
   const table = el("table", "trade-orders-table");
   table.innerHTML = `<thead><tr><th>Confirm</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th>Type</th><th>conid</th></tr></thead>`;
   const tbody = el("tbody");
+  // One shared axis for every band track, sized to the previewed names only.
+  const bands = p.order_bands || {};
+  const bandScale = weightScaleMax(
+    p.orders.map((o) => bands[String(o.symbol || "").trim().toUpperCase()]).filter(Boolean) as OrderBand[]);
   p.orders.forEach((o, i) => {
     const tr = el("tr");
     const cb = el("input");
@@ -353,6 +424,20 @@ function renderPreview() {
         `placing this could double-trade. Cancel or reconcile the existing order (see Working orders below) before you tick this.`;
       note.appendChild(cell);
       tbody.appendChild(note);
+    }
+    // Effect-on-band track: ties this order back to its reason — where it moves
+    // the name's weight relative to its target band. Out-of-band lands are a red
+    // flag the plain qty/price row can't show.
+    const band = bands[sym];
+    if (band && (band.before_pct != null || band.after_pct != null)) {
+      const brow = el("tr", "trade-band-row" +
+        (String(band.status_after || "").toUpperCase() === "IN" ? "" : " out"));
+      const cell = el("td");
+      cell.colSpan = 6;
+      cell.innerHTML = `<div class="trade-band-wrap">${weightBandTrackHtml(sym, band, bandScale)}` +
+        `<span class="trade-band-cap">${weightBandCaption(band)}</span></div>`;
+      brow.appendChild(cell);
+      tbody.appendChild(brow);
     }
   });
   table.appendChild(tbody);
