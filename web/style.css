@@ -3104,3 +3104,106 @@ table.exit-sched th { color: var(--muted); font-weight: 600; font-size: 11px; te
 .exit-live { color: var(--muted); border: 1px solid var(--border); }
 .exit-opt-notes { margin: 6px 0 0; padding-left: 18px; }
 .exit-opt-notes li { margin: 3px 0; }
+
+/* ---- Rebalance flow bar (current book -> plan changes -> orders -> target) ---- */
+/* One persistent strip above every rebalance-group view: numbered stages with
+   live counts, connected by hairlines, the active stage lit. Turns five sibling
+   sub-tabs into a legible pipeline. */
+.flowbar {
+  display: flex; align-items: stretch; gap: 0;
+  margin: 0 0 18px; padding: 8px 10px;
+  background: linear-gradient(180deg, rgba(130,170,255,.045), transparent 70%), var(--panel);
+  border: 1px solid var(--border); border-radius: var(--radius-card);
+  box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 6px 18px rgba(0,0,0,.10);
+  overflow-x: auto;
+}
+.flow-stage {
+  display: flex; align-items: center; gap: 10px; flex: 1 1 0; min-width: 150px;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-soft);
+  padding: 8px 12px; cursor: pointer; text-align: left; color: var(--muted);
+  transition: background .12s, border-color .12s, color .12s;
+}
+.flow-stage:hover { background: var(--panel-2); border-color: var(--border); color: var(--text); }
+.flow-stage.active {
+  background: var(--panel-2); border-color: rgba(130,170,255,.55); color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(130,170,255,.15);
+}
+.flow-dot {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+}
+.flow-stage.active .flow-dot { background: var(--accent); border-color: transparent; color: #0c1322; }
+.flow-ok .flow-dot { border-color: rgba(107,211,138,.55); color: var(--good); }
+.flow-warn .flow-dot { border-color: rgba(245,199,107,.6); color: var(--warn); }
+.flow-stage.active.flow-warn .flow-dot, .flow-stage.active.flow-ok .flow-dot { color: #0c1322; }
+.flow-text { display: flex; flex-direction: column; min-width: 0; }
+.flow-label { font-size: 13px; font-weight: 700; line-height: 1.2; }
+.flow-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flow-warn .flow-sub { color: var(--warn); }
+.flow-link {
+  flex: none; width: 22px; align-self: center; height: 1px; margin: 0 2px;
+  background: linear-gradient(to right, var(--border), rgba(130,170,255,.45));
+  position: relative;
+}
+.flow-link::after {
+  content: ""; position: absolute; right: -1px; top: -3px;
+  border: 3.5px solid transparent; border-left-color: rgba(130,170,255,.55);
+}
+
+/* ---- "How this works" expanders (view help + in-view mechanics) ---- */
+/* Long explainers matter on the first few visits, then become noise. Collapse
+   them to a quiet toggle that reads as documentation, not chrome. */
+.view-help { margin: 4px 0 6px; }
+.view-help > summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer; list-style: none; user-select: none;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  padding: 2px 10px; border: 1px solid transparent; border-radius: 999px;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.view-help > summary::-webkit-details-marker { display: none; }
+.view-help > summary::before { content: "?"; font-size: 11px; font-weight: 800;
+  width: 15px; height: 15px; border-radius: 50%; display: inline-grid; place-items: center;
+  border: 1px solid currentColor; opacity: .8; }
+.view-help > summary:hover { color: var(--text); background: var(--panel-2); border-color: var(--border); }
+.view-help[open] > summary { color: var(--text); }
+.view-help > .hint, .view-help > p.hint { margin-top: 8px; }
+
+/* Rebalance filter facets tuck behind the same quiet-summary pattern. */
+.reb-filter-facets > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 2px;
+}
+.reb-filter-facets > summary::-webkit-details-marker { display: none; }
+.reb-filter-facets > summary:hover { color: var(--text); }
+.reb-filter-facets[open] > summary { color: var(--text); }
+.reb-filter.filtering .reb-filter-facets > summary { color: var(--warn); }
+.reb-meta-hint { cursor: help; border-bottom: 1px dotted var(--muted); }
+
+/* Working-order badge on a plan row: an unfilled IBKR order already moves this
+   name — visible where the suggestion is judged, not only on the Trade tab. */
+.reb-working { font-size: 11px; cursor: help; }
+
+/* ---- polish pass: cards, tiles, and primary actions ---- */
+.card, .trade-card, .whatif-card, .opt-card, .today-card, .strat-start {
+  box-shadow: 0 1px 2px rgba(0,0,0,.22), 0 5px 16px rgba(0,0,0,.08);
+}
+.reb-stat, .stat-tile {
+  transition: border-color .12s, transform .12s;
+}
+.reb-stat:hover, .stat-tile:hover { border-color: rgba(130,170,255,.35); }
+button.primary {
+  background: linear-gradient(180deg, #93b6ff, var(--accent));
+  box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 3px 10px rgba(130,170,255,.18);
+  transition: filter .12s, box-shadow .12s;
+}
+button.primary:hover { filter: brightness(1.06); box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(130,170,255,.28); }
+button.ghost { transition: color .12s, border-color .12s, background .12s; }
+
+@media (max-width: 860px) {
+  .flowbar { flex-wrap: wrap; }
+  .flow-link { display: none; }
+  .flow-stage { flex: 1 1 46%; }
+}
