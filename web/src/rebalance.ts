@@ -2,8 +2,8 @@ import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type { CashBlock, FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
-import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { openJournalWith } from "./journal";
+import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 
 // ---- rebalance planner -----------------------------------------------------
@@ -1161,40 +1161,6 @@ function taxDetails(r: RebRow) {
   return det;
 }
 
-function analyzeFromAnywhere(sym: string | null | undefined) {
-  const ticker = cleanSymbol(sym);
-  if (!ticker) return;
-  pushNav({ view: "deepdive", ticker });
-  setActiveView("deepdive");
-  $<HTMLInputElement>("#ticker-input").value = ticker;
-  pullTicker(ticker, { push: false });
-}
-
-// Cache-first open for in-report ticker links: show what we already have
-// instantly, and only hit the network (live pull) when there's no cached
-// dossier. Browsing a report shouldn't trigger a slow pull per click.
-async function openTicker(sym: string | null | undefined) {
-  const ticker = cleanSymbol(sym);
-  if (!ticker) return;
-  pushNav({ view: "deepdive", ticker });
-  setActiveView("deepdive");
-  $<HTMLInputElement>("#ticker-input").value = ticker;
-  const status = $("#dd-status");
-  status.classList.remove("err");
-  status.textContent = `Loading ${ticker}…`;
-  try {
-    const rec = await api("/api/research/" + encodeURIComponent(ticker));
-    status.textContent = `Cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()} — press Analyze to refresh`;
-    // Paint everything that's already on file now; the recent-pulls change log is
-    // a separate fetch that streams in under its own progress bar (see below).
-    // Opening a ticker anchors on its price history (nav already pushed above).
-    renderDeepDive(rec, { anchorChart: true });
-    hydrateHistory(rec);
-  } catch (_e) {
-    await pullTicker(ticker, { push: false, anchor: true });  // nothing cached -> pull live
-  }
-}
-
 export {
   rebStatusClass,
   rebActionClass,
@@ -1202,6 +1168,4 @@ export {
   rebDefaultDelta,
   loadRebalance,
   renderRebalance,
-  analyzeFromAnywhere,
-  openTicker,
 };

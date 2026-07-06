@@ -10,7 +10,7 @@ import { $, api, esc, fmtCZK, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { pollDeepJob } from "./errors";
 import { pushNav, setActiveView } from "./shell";
-import { openTicker } from "./rebalance";
+import { openTicker } from "./ticker-nav";
 import { loadCachedSegment } from "./segment";
 
 // ---- payload shapes (GET /api/overview) ------------------------------------
