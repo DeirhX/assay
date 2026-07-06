@@ -244,6 +244,17 @@ def _run_history_sync_job(job_id: str, full: bool = False) -> None:
                f"points since {upd['previous_to_date'] or 'last pull'}")
     else:
         msg = f"reconstructed {s.get('n_trades', 0)} trades over {s.get('windows', 0)} window(s)"
+    # The daily FX panel is the currency companion to this NAV/trade history, so
+    # top it up in the same job -- attribution then always has same-vintage rates
+    # without a second scheduled task. Best-effort by design: a Yahoo hiccup must
+    # never fail (nor roll back) an IBKR history sync that already succeeded.
+    try:
+        import fx_history  # lazy: keeps the Yahoo dependency off history's callers
+        panel = fx_history.update_panel()
+        days = len(fx_history.pair_series(panel, fx_history.DEFAULT_PAIRS[0]))
+        msg += f"; FX panel {days} {fx_history.DEFAULT_PAIRS[0]} days" if days else ""
+    except Exception as exc:  # noqa: BLE001 - FX top-up is advisory, never gates history
+        msg += f"; FX top-up skipped ({type(exc).__name__})"
     _update_job(job_id, state="done", message=msg,
                 result={"summary": s, "from_date": payload.get("from_date"),
                         "to_date": payload.get("to_date")})
