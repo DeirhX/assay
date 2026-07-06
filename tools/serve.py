@@ -80,6 +80,7 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
 import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
 import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
 import overview  # noqa: E402  -- "Today" cockpit: pure lane summaries + next-step pick
+import reconcile  # noqa: E402  -- ledger-vs-snapshot drift (pure)
 import optimizer  # noqa: E402  -- whole-book global sizer over the candidate pool
 from target_model import preview_plan_for_proposal as _preview_plan  # noqa: E402
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
@@ -570,9 +571,14 @@ class Handler(BaseHTTPRequestHandler):
         segs = _segments_list()
         seg_records = [rec for s in segs if s.get("cached")
                        and (rec := _load(SEGMENT_OUT_DIR / f"{s['name']}.json"))]
+        # Ledger drift: does the execution ledger contain trades the snapshot
+        # predates? Cheap read of the already-cached history; degrades to
+        # "not checked" when history has never been pulled.
+        drift = reconcile.drift_report(holdings, _history_payload())
         payload = {
             "generated_at": now.isoformat(timespec="seconds"),
             "snapshot": snap,
+            "drift": drift,
             "plan": plan_sum,
             "draft": draft,
             "staged_basket": overview.staged_basket_summary(_load_basket()),

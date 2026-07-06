@@ -35,6 +35,14 @@ interface PlanSum {
   untargeted_pct?: number | null;
   cash?: { pct_of_nav: number; target_pct: number; low: number; high: number; status: string } | null;
 }
+interface DriftBySymbol { symbol: string; net_qty: number; buys: number; sells: number }
+interface DriftSum {
+  checked: boolean;
+  stale_vs_ledger: boolean;
+  n_trades_after: number;
+  last_trade_at?: string | null;
+  by_symbol: DriftBySymbol[];
+}
 interface DraftSum { has_draft: boolean; pending: number }
 interface StagedBasketSum { count: number; buys: number; sells: number; total_abs_czk: number }
 interface JournalSum { total: number; pending_outcomes: number; oldest_pending_days?: number | null; review_due: number }
@@ -59,6 +67,7 @@ export interface AutomationTask {
 export interface AutomationSum { enabled: boolean; any_ran: boolean; tasks: AutomationTask[] }
 export interface Overview {
   snapshot: SnapshotSum;
+  drift?: DriftSum | null;
   plan?: PlanSum | null;
   draft: DraftSum;
   staged_basket: StagedBasketSum;
@@ -86,7 +95,7 @@ function card(tone: "ok" | "warn" | "bad" | "muted", title: string, chip: string
 
 // ---- next-step banner -------------------------------------------------------
 export function nextStepHtml(step: NextStep): string {
-  const urgent = ["setup", "resync", "commit-draft", "place-basket", "gates-open"].includes(step.id);
+  const urgent = ["setup", "resync", "drift-resync", "commit-draft", "place-basket", "gates-open"].includes(step.id);
   const tone = step.id === "all-clear" ? "ok" : urgent ? "warn" : "info";
   const go = step.id === "all-clear" ? "" :
     `<button class="primary" type="button" data-goto="${esc(step.view)}"` +
@@ -103,7 +112,17 @@ const taskOf = (a: AutomationSum | undefined, name: string): AutomationTask | un
 // Deterministic, tz-safe calendar date for "next check by …" copy.
 const onDay = (iso: string | null | undefined) => (iso ? ` by ${esc(iso.slice(0, 10))}` : "");
 
-export function snapshotCard(s: SnapshotSum, auto?: AutomationSum): string {
+// "3 NVDA sold, 5 AMD bought" — plain-language summary of what the ledger shows
+// moving since the snapshot, so the drift warning names the culprit.
+function driftMoves(rows: DriftBySymbol[]): string {
+  return rows.slice(0, 4).map((r) => {
+    const q = Math.abs(r.net_qty);
+    const verb = r.net_qty < 0 ? "sold" : "bought";
+    return `${q % 1 === 0 ? q : q.toFixed(2)} ${esc(r.symbol)} ${verb}`;
+  }).join(", ");
+}
+
+export function snapshotCard(s: SnapshotSum, auto?: AutomationSum, drift?: DriftSum | null): string {
   if (!s.exists) {
     return card("bad", "Holdings snapshot", `<span class="chip bad">missing</span>`,
       `No broker snapshot yet — every portfolio view below needs one.`,
@@ -111,10 +130,18 @@ export function snapshotCard(s: SnapshotSum, auto?: AutomationSum): string {
   }
   const resync = taskOf(auto, "holdings-resync");
   const armed = !!(auto?.enabled && resync?.enabled);
-  const tone = s.stale ? "warn" : "ok";
-  const chip = `<span class="chip ${tone === "ok" ? "good" : "warn"}">synced ${esc(agoText(s.age_days))}</span>`;
+  // Ledger drift is a harder failure than calendar-staleness: the snapshot may be
+  // young yet already behind a fill, so it drives the card tone red on its own.
+  const behindLedger = !!drift?.stale_vs_ledger;
+  const tone = behindLedger ? "bad" : s.stale ? "warn" : "ok";
+  const chip = `<span class="chip ${tone === "ok" ? "good" : tone}">synced ${esc(agoText(s.age_days))}</span>`;
   let body = `${s.positions} position${s.positions === 1 ? "" : "s"} on file.`;
-  if (s.stale && armed) {
+  if (behindLedger) {
+    const moves = driftMoves(drift!.by_symbol || []);
+    body += ` <span class="today-warn-text">Behind the trade ledger: ${drift!.n_trades_after} execution`
+      + `${drift!.n_trades_after === 1 ? "" : "s"} postdate this snapshot`
+      + `${moves ? ` (${moves})` : ""} — resync before sizing any trade.</span>`;
+  } else if (s.stale && armed) {
     body += ` <span class="today-auto-text">Stale, but auto-resync is armed — next check${onDay(resync?.next_eligible)}.</span>`;
   } else if (s.stale) {
     body += ` <span class="today-warn-text">Plan math below is computed from this stale snapshot.</span>`;
@@ -237,7 +264,7 @@ export function segmentsCard(r: ResearchSum): string {
 
 // ---- render + wiring --------------------------------------------------------
 export function overviewHtml(v: Overview): string {
-  const portfolio = [snapshotCard(v.snapshot, v.automation), planCard(v.plan), draftCard(v.draft),
+  const portfolio = [snapshotCard(v.snapshot, v.automation, v.drift), planCard(v.plan), draftCard(v.draft),
     stagedBasketCard(v.staged_basket), journalCard(v.journal)].filter(Boolean).join("");
   const research = [basketTriageCard(v.research), queueCard(v.research),
     segmentsCard(v.research)].filter(Boolean).join("");

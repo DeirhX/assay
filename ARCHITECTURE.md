@@ -518,7 +518,7 @@ adds the private-data validators (`rebalance --check`, `verify_claims`,
 1. **One weight definition** — `portfolio.holdings_weights` / `rebalance.current_weights`; never trust the broker's `percent_of_nav` for options.
 2. **One basket definition** — `portfolio.normalize_basket`, shared by what-if and the trade desk.
 3. **Draft vs live** — planner/what-if/exit read `target_staging.active_model()`; live is written only by `commit_staged`.
-4. **Advice ≠ orders** — `rebalance.plan`, `funding_candidates`, `exit_plan`, `whatif` are advisory until `trade_service` + explicit human confirmation.
+4. **Advice ≠ orders** — `rebalance.plan`, `funding_candidates`, `exit_plan`, `whatif` are advisory until `trade_service` + explicit human confirmation. `reconcile.drift_report` guards the *input* to all of it: if the Flex execution ledger holds trades newer than the holdings snapshot, the Today cockpit flags the book as behind reality (a fill — possibly placed outside the app — the snapshot predates) and makes resync the next step, rather than sizing off a quietly-wrong book. It deliberately does not net the ledger into absolute positions (a rolling window can't, and would cry wolf on any older holding).
 5. **Facts ≠ judgement** — providers write numbers + `cross_checks`; humans write `thesis`/locked levels; re-pulls never clobber judgement.
 6. **Trading stays gated** — preview-token binding, server-side order re-derivation, `IBKR_TRADING_ENABLED` + `IBKR_ALLOW_LIVE`, paper-first.
 7. **Local-only** — loopback binding; no portfolio data in the public repo; the pre-commit hook is the backstop.
