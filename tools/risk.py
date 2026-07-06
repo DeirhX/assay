@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fx_history  # noqa: E402  -- currency exposure + FX-clean daily panel
 import portfolio  # noqa: E402  -- shared weight/holdings layer
 import store  # noqa: E402
 import timeutil  # noqa: E402  -- shared Z-tolerant ISO parse + cache-freshness
@@ -454,6 +455,11 @@ def risk_report(
     report["currency"] = holdings.get("base_currency") or "CZK"
     report["nav"] = holdings.get("net_asset_value")
     report["invested"] = portfolio.invested_value(holdings.get("positions", []))
+    # Currency lens: how much of the book is non-base, and how much of the CZK
+    # move over the window was FX rather than stock-picking. Read-only over the
+    # cached FX panel (kept warm by the holdings-history top-up), so it never adds
+    # a network hop to the risk path.
+    report["fx"] = fx_history.window_report(holdings, rng=rng)
     missing_factors = [sc.get("factor") for sc in scenarios if sc.get("factor") not in factor_series]
     if missing_factors:
         report["caveats"].append(

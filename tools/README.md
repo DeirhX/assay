@@ -269,7 +269,24 @@ from IO so the tests run offline.
   and a factor-shock stress test (e.g. `SOXX -25%`) via each holding's beta.
   `analyze(...)` is pure; `risk_report(holdings, ...)` does the fetching. Loud
   caveats: correlation from free daily closes is regime-dependent and converges
-  to 1.0 in a crash -- a decision aid, not a risk oracle. API: `GET /api/risk`.
+  to 1.0 in a crash -- a decision aid, not a risk oracle. Also returns an `fx`
+  block (from `fx_history`): non-base currency exposure and the window's FX move /
+  estimated CZK contribution per currency. API: `GET /api/risk`.
+- `fx_history.py` -- **daily FX-rate panel** (the FX-clean spine for currency
+  attribution). A CZK-base book holding USD names earns two returns: the stock's
+  and the exchange rate's; splitting them needs a *daily* rate series, not a
+  point-in-time one. IBKR carries only per-trade rates and FRED has no clean daily
+  USD/CZK, so the panel is built from Yahoo `<CCY><BASE>=X` pairs (behind a
+  swappable `fetch` seam) and cached at `data/cache/fx-history.json`
+  (`series["USDCZK"][date]` = base per 1 unit of foreign; incremental merge like
+  `ibkr_history.extend_history`, stale-beats-nothing on a failed pull). API:
+  `update_panel` / `load_panel` / `pair_series` / `rate_on` (as-of lookup tolerant
+  of weekend/holiday gaps). Topped up alongside the IBKR history sync
+  (`holdings_sync`), so attribution always has same-vintage rates. The **currency
+  lens** on top -- `exposure_by_currency` (non-base share of the book) and
+  `window_report` (each currency's FX move + estimated CZK contribution over the
+  window) -- is read-only over the cached panel and feeds `risk.risk_report`'s
+  `fx` block.
 - `tax_lots.py` -- **Czech tax-lot-aware sell planner**. Given a symbol and an
   amount to raise, it picks specific lots to minimize tax: realize 3y-exempt gains
   first, then harvestable losses, then taxable gains. Uses `open_datetime` for the

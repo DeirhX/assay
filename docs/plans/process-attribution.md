@@ -1,10 +1,20 @@
 # Process attribution — "is this system earning its keep?"
 
-Status: proposal · Scope: turn the data Assay already stores (the full trade
-ledger + daily NAV, per-band **provenance**, sleeves/segments, the journal) into
-a verdict on the *process itself* — not "is this stock up" but "did rebalancing,
-this optimizer, these overrides, add value over doing nothing." Deterministic
-over stored data; **read-only, never trades**.
+Status: **in progress** · Scope: turn the data Assay already stores (the full
+trade ledger + daily NAV, per-band **provenance**, sleeves/segments, the journal)
+into a verdict on the *process itself* — not "is this stock up" but "did
+rebalancing, this optimizer, these overrides, add value over doing nothing."
+Deterministic over stored data; **read-only, never trades**.
+
+> **Progress (reconciled against `main`).** Phase 1 — the **FX spine** — has
+> shipped in two parts: the panel (`tools/fx_history.py` + a `holdings_sync`
+> top-up fold-in, PR #175) and its first consumer, a **currency-exposure +
+> FX-effect tile on the Risk view** (`fx_history.exposure_by_currency` /
+> `window_report` → `/api/risk → fx`, this PR). What remains: the provenance
+> timeline (phase 2), the pure counterfactual engine + `/api/attribution`
+> (phase 3), the full NAV `decompose_fx` local/FX/residual split (phase 4), and
+> by-source / by-group attribution (phase 5). Two open questions are now **settled
+> by ground truth** — see the notes inline.
 
 Currency attribution (recommendation #3) is **folded into this data model from
 day one**: a CZK-base investor holding mostly USD assets sees a chunk of every
@@ -61,10 +71,19 @@ they do, because nothing joins the ledger to the intent behind it.
 Two things we store are too thin to attribute against, and the plan's first
 commits fix them:
 
-1. **No daily FX panel.** History stores per-*trade* `fx_rate_to_base` at
-   execution and base-converted NAV — but no `USDCZK`/`EURCZK` *time series*. You
-   cannot split a NAV move into local-price vs FX, nor convert a benchmark's USD
-   curve into CZK correctly, without one. → new `fx_history.py` + cache.
+1. ~~**No daily FX panel.**~~ **CLOSED (phase 1, PR #175 + this PR).** History
+   stores per-*trade* `fx_rate_to_base` at execution and base-converted NAV — but
+   no `USDCZK`/`EURCZK` *time series*. You cannot split a NAV move into local-price
+   vs FX, nor convert a benchmark's USD curve into CZK correctly, without one. →
+   `tools/fx_history.py` builds an incremental daily panel at
+   `data/cache/fx-history.json` (`series["USDCZK"][date]` = base per 1 unit of the
+   foreign currency), topped up alongside the IBKR history sync in `holdings_sync`
+   (the plan's "no new task"), with `rate_on` as-of lookup; this PR adds the first
+   consumer (`exposure_by_currency` + `window_report` → `/api/risk`). **Source
+   note:** IBKR only carries point-in-time trade rates (no daily series) and FRED
+   has no clean daily USD/CZK, so the panel is sourced from **Yahoo `<CCY><BASE>=X`
+   pairs** — behind the `fetch` seam so the provider swaps without touching
+   consumers; IBKR trade rates can later *anchor/validate* the panel on trade dates.
 2. **Provenance has no history.** `provenance[key]` is point-in-time (the *current*
    source per band); `commit_staged` strips the staging `_runs` audit and only
    drops a sparse dated `target-model-*.json` backup. "Followed every suggestion"
@@ -158,13 +177,13 @@ existing `_PULL_LOCK` + thread pool (mirroring `exit_plan._prewarm_caches`).
 
 | File | Change | Est. |
 |---|---|---|
-| `tools/fx_history.py` | **new** — incremental daily FX panel (provider + cache) | ~150 |
-| `tools/attribution.py` | **new** — the pure engine (TWR, 3 counterfactuals, FX split, 2 attributions) | ~300 |
+| `tools/fx_history.py` | ✅ **shipped (#175)** — incremental daily FX panel (Yahoo pairs + cache, `rate_on`); this PR adds `exposure_by_currency` + `window_report` | ~350 |
+| `tools/holdings_sync.py` | ✅ **shipped (#175)** — FX top-up folded into the history sync job (no new task) | ~11 |
+| `tools/attribution.py` | **new** — the pure engine (TWR, 3 counterfactuals, full FX split, 2 attributions) | ~300 |
 | `tools/target_staging.py` | append to `provenance-log.jsonl` in `commit_staged`; a `backfill_provenance_log()` over existing backups | ~40 |
 | `tools/serve.py` | `GET /api/attribution` handler + route; import | ~30 |
-| `tools/scheduler.py` | fold FX top-up into `history-topup` (no new task) | ~15 |
 | `web/src/attribution.ts` + `index.html` + `style.css` + `shell.ts` | the view + nav wiring | ~260 |
-| `web/src/risk.ts` | optional "% USD" exposure tile | ~30 |
+| `tools/risk.py` + `web/src/risk.ts` + `style.css` | ✅ **shipped (this PR)** — `fx` block on `/api/risk` + currency exposure/FX-effect tile & table | ~90 |
 | `tools/tests/test_attribution.py`, `test_fx_history.py`, `test_target_staging.py` (log) | fixtures for TWR, each counterfactual, FX split, source/group attribution, log append | ~350 |
 | docs (`ORIENTATION`, `ARCHITECTURE`, `tools/README`) | new modules + endpoint + view | ~30 |
 
@@ -186,31 +205,63 @@ existing `_PULL_LOCK` + thread pool (mirroring `exit_plan._prewarm_caches`).
 
 ## Rollout (commit-by-commit)
 
-1. `fx_history.py` + cache + `history-topup` fold-in + tests — the FX spine.
+1. ✅ **Shipped.** `fx_history.py` + `data/cache/fx-history.json` + the top-up
+   folded into the `holdings_sync` history job + tests (PR #175) — the FX spine.
+   Then pulled forward from the original step 4: the **currency-exposure +
+   FX-effect tile on Risk** (`exposure_by_currency` / `window_report` → `/api/risk
+   → fx`, this PR), which surfaces "% non-base" and a window FX-contribution
+   estimate on the *current* book (labelled an approximation, not a realized-return
+   statement). *(No new scheduler task: FX rides the existing history top-up, so
+   attribution always sees same-vintage rates.)*
 2. `provenance-log.jsonl` writer in `commit_staged` + backfill + tests — the
    decision timeline (nothing consumes it yet).
 3. `attribution.py`: TWR + `never-rebalanced` + `benchmark` counterfactuals +
-   `/api/attribution` + a minimal view. **The 80% that answers "beats doing
-   nothing?"**
-4. `decompose_fx` + the FX strip + optional Risk "% USD" tile.
+   `/api/attribution` + a minimal view, reading the existing cached history dict.
+   **The 80% that answers "beats doing nothing?"**
+4. `decompose_fx` — the *full* per-period NAV split into local-price + FX +
+   residual over the whole `nav_series` (the phase-1 tile is the current-holdings
+   FX-effect shortcut; this is the exact, flow-aware version) + the FX strip on the
+   Attribution view.
 5. `attribute_by_source` + `attribute_by_group` + the tables + Today verdict.
 
-## Open questions (settle before implementing)
+## Open questions
 
-1. **FX source.** Yahoo FX pairs (`USDCZK=X`) reuse existing plumbing but are
-   Yahoo-quality; ECB/FRED are cleaner but add a provider path. Recommend Yahoo
-   first, behind the `fx_history` seam so it can be swapped.
-2. **Dividends/fees in TWR.** Treat dividends as internal return (part of the
-   book) and deposits/withdrawals as the only external flows — confirm against
-   how IBKR types them in `cash_transactions`.
-3. **Benchmark set.** SPY + QQQ to start; ACWI/VT for a "whole-market" honest
-   baseline given the book's home bias?
-4. **Provenance backfill depth.** The log is truthful only from ship-date
-   forward; dated backups give a sparse, best-effort past. Accept the partial
-   history and label pre-log periods, or invest in reconstructing from strategy
-   run manifests (`data/research/strategy/<run_id>.json`)?
+1. ~~**FX source.**~~ **Settled: Yahoo `=X` pairs.** Ground truth (see the
+   phase-1 gap note above): IBKR Flex stores only per-trade point-in-time rates —
+   no daily series — and FRED has no clean daily USD/CZK. Yahoo `<CCY><BASE>=X` is
+   the only source here that yields a continuous daily panel, so it is the default,
+   kept behind the `fx_history` seam. IBKR's trade rates remain the authority on
+   trade dates and are the natural later cross-check.
+2. **Dividends/fees in TWR.** Decision: dividends are **internal** return (part of
+   the book), only deposits/withdrawals are external flows. `cash_transactions[]`
+   in `portfolio-history.json` carries a `type` and `base_amount` per row — the TWR
+   flow filter keys off `type` (deposit/withdrawal vs dividend/fee). Confirm the
+   exact `type` strings against a live report before phase 3.
+3. **Benchmark set.** SPY + QQQ to start (converted to CZK through the FX panel —
+   the fold-in in action). ACWI/VT remains a candidate for a home-bias-honest
+   whole-market baseline.
+4. **Provenance backfill depth.** The log is truthful only from ship-date forward;
+   dated backups give a sparse, best-effort past. Lean: accept the partial history
+   and label pre-log periods rather than reconstructing from strategy run
+   manifests (`data/research/strategy/<run_id>.json`).
 5. **"Follow every suggestion" semantics.** Rebalance to band *midpoint* at
-   `set_at`, or to the *edge* the rule implies? Midpoint is simplest and neutral.
+   `set_at`. Midpoint is simplest and neutral.
+
+## Reconciliation with `main` (reuse, don't rebuild)
+
+- **Trade ledger reading is solved.** `tools/reconcile.py` already reads the
+  `portfolio-history.json → trades[]` ledger (Z-tolerant parse via `timeutil`,
+  `portfolio.clean_symbol`) for snapshot-vs-ledger drift. The attribution engine
+  reads the *same* `trades[]`/`nav_series`/`cash_transactions` — no new Flex reader
+  is needed; phase 3 consumes the cached history dict directly.
+- **Journal auto-scoring already exists.** The `journal-score` scheduler task
+  (`journal.score_outcomes`) stamps fixed-horizon outcomes on individual *calls*.
+  Attribution scores the *system*; `attribute_by_source` should **complement** the
+  journal's per-decision calibration, not re-derive it — link the two in the view
+  rather than duplicating horizon logic.
+- **Refactors landed.** `rebalance-model.ts`, `ticker_directory.py`, and the
+  analysis prompt/report split reshaped files this plan references; re-grep before
+  editing rather than trusting old line-level assumptions.
 
 ## Verification (every phase)
 

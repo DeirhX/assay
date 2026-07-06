@@ -147,5 +147,87 @@ class LoadPanel(unittest.TestCase):
             self.assertEqual(fx_history.load_panel(path)["series"], {})
 
 
+# --------------------------------------------------------------------------- #
+# Currency lens (exposure + FX window) -- the risk-view consumer
+# --------------------------------------------------------------------------- #
+class ExposureByCurrency(unittest.TestCase):
+    def test_base_excluded_weights_and_order(self):
+        holdings = {"base_currency": "CZK", "positions": [
+            {"currency": "USD", "base_market_value": 6000.0},
+            {"currency": "EUR", "base_market_value": 2000.0},
+            {"currency": "CZK", "base_market_value": 2000.0},
+            {"currency": "USD", "base_market_value": 0.0},
+        ]}
+        exp = fx_history.exposure_by_currency(holdings, "CZK")
+        self.assertEqual([e["currency"] for e in exp], ["USD", "EUR"])
+        self.assertAlmostEqual(exp[0]["weight_pct"], 60.0)   # 6000 / 10000
+        self.assertAlmostEqual(exp[1]["weight_pct"], 20.0)
+
+    def test_no_foreign_is_empty(self):
+        holdings = {"base_currency": "CZK", "positions": [
+            {"currency": "CZK", "base_market_value": 5000.0}]}
+        self.assertEqual(fx_history.exposure_by_currency(holdings, "CZK"), [])
+
+
+class WindowMove(unittest.TestCase):
+    def _panel(self):
+        return {"base": "CZK", "series": {"USDCZK": {
+            "2024-01-02": 20.0, "2024-09-01": 22.0, "2025-01-01": 23.0}}}
+
+    def test_hand_computed_over_year(self):
+        mv = fx_history.window_move(self._panel(), "USDCZK", days=365,
+                                    today=dt.date(2025, 1, 1))
+        self.assertAlmostEqual(mv["return"], 23.0 / 20.0 - 1.0)
+        self.assertEqual(mv["from"], "2024-01-02")
+        self.assertEqual(mv["to"], "2025-01-01")
+
+    def test_asof_picks_last_on_or_before_open(self):
+        # 90-day window off 2025-01-01 opens ~2024-10-03; nearest prior is 09-01.
+        mv = fx_history.window_move(self._panel(), "USDCZK", days=90,
+                                    today=dt.date(2025, 1, 1))
+        self.assertEqual(mv["from"], "2024-09-01")
+        self.assertAlmostEqual(mv["return"], 23.0 / 22.0 - 1.0)
+
+    def test_untracked_or_thin_is_none(self):
+        self.assertIsNone(fx_history.window_move(self._panel(), "GBPCZK", days=365))
+        thin = {"base": "CZK", "series": {"USDCZK": {"2025-01-01": 23.0}}}
+        self.assertIsNone(fx_history.window_move(thin, "USDCZK", days=365,
+                                                 today=dt.date(2025, 1, 1)))
+
+
+class WindowReport(unittest.TestCase):
+    def _panel(self):
+        return {"base": "CZK", "fetched_at": "2025-01-01T00:00:00+00:00", "series": {
+            "USDCZK": {"2024-01-02": 20.0, "2024-12-31": 23.0}}}
+
+    def test_usd_only_move_is_all_fx(self):
+        holdings = {"base_currency": "CZK", "positions": [
+            {"currency": "USD", "base_market_value": 10000.0}]}
+        rep = fx_history.window_report(holdings, rng="1y", panel=self._panel(),
+                                       today=dt.date(2025, 1, 1))
+        self.assertAlmostEqual(rep["foreign_pct"], 100.0)
+        row = rep["window"][0]
+        self.assertEqual(row["currency"], "USD")
+        self.assertAlmostEqual(row["fx_return_pct"], 15.0)
+        self.assertAlmostEqual(row["contribution_pct"], 15.0)   # 100% weight
+
+    def test_no_foreign_has_no_window(self):
+        holdings = {"base_currency": "CZK", "positions": [
+            {"currency": "CZK", "base_market_value": 5000.0}]}
+        rep = fx_history.window_report(holdings, rng="1y", panel=self._panel())
+        self.assertEqual(rep["exposure"], [])
+        self.assertEqual(rep["window"], [])
+        self.assertEqual(rep["foreign_pct"], 0.0)
+
+    def test_uncovered_currency_degrades_with_caveat(self):
+        holdings = {"base_currency": "CZK", "positions": [
+            {"currency": "EUR", "base_market_value": 10000.0}]}   # panel has no EURCZK
+        rep = fx_history.window_report(holdings, rng="1y", panel=self._panel(),
+                                       today=dt.date(2025, 1, 1))
+        self.assertAlmostEqual(rep["foreign_pct"], 100.0)         # exposure still exact
+        self.assertEqual(rep["window"], [])
+        self.assertTrue(any("No FX history" in c for c in rep["caveats"]))
+
+
 if __name__ == "__main__":
     unittest.main()
