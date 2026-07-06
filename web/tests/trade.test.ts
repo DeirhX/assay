@@ -212,6 +212,59 @@ describe("trade desk working orders", () => {
   });
 });
 
+describe("trade desk order pegging", () => {
+  const LIMIT = {
+    orderId: "o-9", ticker: "NVDA", side: "SELL", remainingQuantity: 10,
+    orderType: "LMT", price: 180, tif: "GTC", status: "Submitted",
+  };
+
+  it("offers Keep at top on a limit order and arms a peg against the account", async () => {
+    await loadWith(PAPER_STATUS, [LIMIT]);
+    const keep = [...document.querySelectorAll<HTMLButtonElement>(".trade-live-card button")]
+      .find((b) => (b.textContent || "") === "Keep at top");
+    expect(keep).toBeTruthy();
+    keep!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/peg", "POST",
+      expect.objectContaining({ order_id: "o-9", account: "DU1" }),
+    );
+  });
+
+  it("does not offer a peg on a non-limit order", async () => {
+    await loadWith(PAPER_STATUS, [{ orderId: "o-3", ticker: "AMD", side: "SELL",
+      orderType: "MKT", status: "Submitted" }]);
+    const keep = [...document.querySelectorAll<HTMLButtonElement>(".trade-live-card button")]
+      .find((b) => (b.textContent || "") === "Keep at top");
+    expect(keep).toBeFalsy();
+  });
+
+  it("badges an active peg and offers Stop, which calls /api/trade/peg/stop", async () => {
+    let active = true;
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/orders")
+        return Promise.resolve({ orders: [LIMIT], pegs: active
+          ? [{ order_id: "o-9", state: "running", reprices: 3, message: "3 reprice(s), resting @ 179.9" }] : [] });
+      if (path === "/api/trade/peg/stop") { active = false; return Promise.resolve({ stopped: true }); }
+      return Promise.resolve({ trades: [] });
+    });
+    await loadTrade();
+    await flush();
+
+    const card = document.querySelector(".trade-live-card")!;
+    expect(card.querySelector(".trade-peg-badge")).toBeTruthy();
+    const stop = [...card.querySelectorAll<HTMLButtonElement>("button")]
+      .find((b) => (b.textContent || "") === "Stop peg");
+    expect(stop).toBeTruthy();
+    stop!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/peg/stop", "POST", expect.objectContaining({ order_id: "o-9" }),
+    );
+  });
+});
+
 describe("trade desk connection banner", () => {
   it("blocks preview and explains when trading is disabled", async () => {
     apiMock.mockResolvedValue({ trading_enabled: false, authenticated: false, accounts: [] });
