@@ -1,7 +1,7 @@
 import type { SegmentSummary } from "./api-types";
 import { $, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
-import { ensureTickerSet, linkifyTickers } from "./analyses/linkify";
+import { ensureTickerSet, linkifyTickers, tickerAnchorHtml } from "./analyses/linkify";
 import { buildReportToc, mdToHtml } from "./analyses/markdown";
 import { starHtml } from "./basket";
 
@@ -58,10 +58,9 @@ const _ACTION_TONE: Record<string, string> = {
 };
 
 function discoveredRow(c: DiscoveredCandidate): string {
-  const sym = esc(c.symbol);
   const action = (c.action || "mentioned").toLowerCase();
   const tone = _ACTION_TONE[action] || "";
-  const link = `<a class="tlink" data-ticker="${sym}" href="?view=deepdive&ticker=${encodeURIComponent(c.symbol)}" title="Open ${sym} deep-dive"><strong>${sym}</strong></a>`;
+  const link = tickerAnchorHtml(c.symbol, { bold: true });
   const star = starHtml(c.symbol, "analyses", { tier: "curious", segment: c.segment, run: c.run });
   return `<div class="disc-row">` +
     `<span class="disc-sym">${link}</span>` +

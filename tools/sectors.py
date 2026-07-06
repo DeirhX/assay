@@ -22,10 +22,13 @@ never exercised in tests.
 
 from __future__ import annotations
 
-import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import store  # noqa: E402  -- shared forgiving/atomic JSON IO
 
 # How long to trust a prior "couldn't resolve this" before trying the network
 # again -- tickers get listed/relisted, and Yahoo's handshake is moody.
@@ -48,10 +51,7 @@ def normalize(symbol: str) -> str:
 def load_cache(path: Path) -> dict:
     """Read the cache file into ``{"updated_at": ..., "map": {SYM: entry}}``.
     A missing or corrupt file yields an empty, well-shaped cache."""
-    try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"updated_at": None, "map": {}}
+    raw = store.load(Path(path))
     if not isinstance(raw, dict):
         return {"updated_at": None, "map": {}}
     cmap = raw.get("map")
@@ -62,9 +62,7 @@ def load_cache(path: Path) -> dict:
 
 def save_cache(path: Path, cache: dict) -> None:
     cache["updated_at"] = _now_iso()
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+    store.write_json(Path(path), cache)
 
 
 def seed_from_research(cache: dict, research_dir: Path) -> int:
@@ -74,9 +72,8 @@ def seed_from_research(cache: dict, research_dir: Path) -> int:
     cmap = cache.setdefault("map", {})
     seeded = 0
     for path in sorted(Path(research_dir).glob("*.json")):
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        rec = store.load(path)
+        if not isinstance(rec, dict):
             continue
         sector = ((rec.get("profile") or {}).get("sector") or "").strip()
         if not sector:

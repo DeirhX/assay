@@ -6,6 +6,8 @@
 // GET /api/strategy/{run_id}, polled while a leg is running.
 import { starHtml } from "./basket";
 import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
+import { tickerAnchorHtml } from "./analyses/linkify";
+import { ruleWord } from "./band-viz";
 import { openDeepRunInPipeline, pushNav, setActiveView } from "./shell";
 
 // ---- manifest shapes (GET /api/strategy/{run_id}) -------------------------
@@ -519,10 +521,6 @@ async function approveSegment(runId: string) {
 }
 
 // ---- gate 2: approve the synthesized target changes -----------------------
-const RULE_LABEL: Record<string, string> = {
-  trim_only: "trim only", do_not_add: "don't add", reduce: "reduce",
-  avoid: "avoid", accumulate: "accumulate", hold: "hold", wait: "wait",
-};
 // Semantic tone for an action/rule token so buy- / hold- / sell-leaning cells
 // read at a glance (green / grey / amber / red) instead of as identical text.
 const TONE: Record<string, string> = {
@@ -545,11 +543,7 @@ const bandStr = (t: Band | null | undefined) => (t && t.low != null ? `${t.low}�
 // Render a symbol as a deep-dive link. The global a.tlink click handler in shell
 // intercepts it and calls openTicker (which live-pulls on a miss); the href is a
 // fallback for middle-click / open-in-new-tab.
-const symLink = (sym: string | null | undefined) => {
-  if (!sym) return "—";
-  const s = esc(sym);
-  return `<a class="tlink" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(sym)}" title="Open ${s} deep-dive"><strong>${s}</strong></a>`;
-};
+const symLink = (sym: string | null | undefined) => (sym ? tickerAnchorHtml(sym, { bold: true }) : "—");
 
 function renderProposalGate(m: Manifest, panel: HTMLElement) {
   const proposal: Proposal = m.proposal || {};
@@ -612,7 +606,7 @@ function changesTable(changes: Change[]) {
       `<td>${act ? `<span class="strat-tag strat-tag-${toneOf(actRaw)}">${esc(act)}</span>` : "—"}</td>` +
       `<td class="strat-cur">${esc(bandStr(c.current_target))}</td>` +
       `<td><span class="strat-band">${esc(bandStr(c.proposed_target))}</span></td>` +
-      `<td>${rule ? `<span class="strat-tag strat-tag-${toneOf(rule)}">${esc(RULE_LABEL[rule] || rule)}</span>` : "—"}</td>` +
+      `<td>${rule ? `<span class="strat-tag strat-tag-${toneOf(rule)}">${esc(ruleWord(rule) || rule)}</span>` : "—"}</td>` +
       `<td class="strat-rationale">${esc(c.rationale || "")}</td>`;
     body.appendChild(tr);
   });

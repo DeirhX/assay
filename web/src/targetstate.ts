@@ -9,7 +9,7 @@
 // would look like if you simply took every suggestion). With nothing on the
 // table it degrades to "current book vs its bands" — every tick single.
 // Read-only: this view stages nothing and never trades.
-import { $, api, esc, fmtCZK, sensitive } from "./core";
+import { $, api, esc, fmtCZK, sensitive, statTile } from "./core";
 import type { PlanRow, RebalancePlan, Whatif, WhatifTrade } from "./api-types";
 import { pushNav, setActiveView } from "./shell";
 
@@ -109,10 +109,11 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
 }
 
 // ---- rendering ---------------------------------------------------------------
-function tile(label: string, valueHtml: string, cls = ""): string {
-  return `<div class="reb-stat"><span class="reb-stat-k">${esc(label)}</span>` +
-    `<span class="reb-stat-v ${cls}">${valueHtml}</span></div>`;
-}
+// Thin string adapter over core's element-based statTile: this view assembles
+// its tiles into an HTML string, so serialize the shared tile rather than
+// re-implementing its markup (same `reb-stat` family, so the output is identical).
+const tile = (label: string, valueHtml: string, cls = ""): string =>
+  statTile(label, valueHtml, { html: true, cls }).outerHTML;
 
 function summaryTiles(plan: RebalancePlan, wf: Whatif | null, rows: CompareRow[]): string {
   const total = rows.length;

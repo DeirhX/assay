@@ -7,6 +7,7 @@
 // initOverview()/loadOverview() (same import-cycle discipline as the peers).
 import { starHtml } from "./basket";
 import { $, api, esc, fmtCZK, sensitive } from "./core";
+import { tickerAnchorHtml } from "./analyses/linkify";
 import { pollDeepJob } from "./errors";
 import { pushNav, setActiveView } from "./shell";
 import { openTicker } from "./rebalance";
@@ -68,8 +69,7 @@ export interface Overview {
 }
 
 // ---- tiny shared bits -------------------------------------------------------
-const tlink = (sym: string) =>
-  `<a class="tlink" data-ticker="${esc(sym)}" href="?view=deepdive&ticker=${encodeURIComponent(sym)}"><strong>${esc(sym)}</strong></a>`;
+const tlink = (sym: string) => tickerAnchorHtml(sym, { bold: true });
 const goBtn = (view: string, label: string, cls = "ghost") =>
   `<button class="${cls}" type="button" data-goto="${esc(view)}">${label}</button>`;
 const agoText = (days: number | null | undefined) =>

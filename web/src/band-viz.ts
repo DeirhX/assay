@@ -14,14 +14,18 @@ export interface BandRow {
   after: Band;
 }
 
-// Turn the model's terse rule verbs into plain words. Unknown verbs just get
-// their underscores spaced out.
+// Turn the model's terse rule verbs into plain words -- the single source of
+// truth for rule wording across the planner, staging, optimizer, and strategy
+// surfaces (they used to each carry their own near-identical map, and drifted:
+// `do_not_add` read "don't add" in some and "hold, don't add" in others). Unknown
+// verbs just get their underscores spaced out.
 const RULE_WORDS: Record<string, string> = {
   accumulate: "accumulate",
   hold: "hold",
   wait: "wait",
   buy: "buy",
   avoid: "avoid",
+  reduce: "reduce",
   trim_only: "trim only",
   do_not_add: "hold, don't add",
 };

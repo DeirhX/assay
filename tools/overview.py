@@ -18,6 +18,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+import timeutil
+
 # Freshness thresholds (days). Advisory, not enforcement: they decide when the
 # cockpit nags, not what the user is allowed to do.
 STALE_SNAPSHOT_DAYS = 7     # don't size trades off a holdings pull older than this
@@ -34,25 +36,11 @@ def _now(now: dt.datetime | None = None) -> dt.datetime:
 
 def age_days(stamp: Any, now: dt.datetime | None = None) -> int | None:
     """Whole days since an ISO timestamp (Z-suffix tolerant); None if unparsable."""
-    if not stamp:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return max(0, int((_now(now) - parsed).total_seconds() // 86400))
+    return timeutil.age_days(stamp, now)
 
 
 def _parse_dt(stamp: Any) -> dt.datetime | None:
-    if not stamp:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+    return timeutil.parse_iso_utc(stamp)
 
 
 def automation_summary(
