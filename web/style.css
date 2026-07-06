@@ -107,14 +107,6 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .subtab:hover { color: var(--text); }
 .subtab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
-/* Now / Over-time toggle shared by the merged Positions views. */
-.pos-toggle { display: inline-flex; gap: 0; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
-.pos-toggle button {
-  background: transparent; color: var(--muted); border: 0;
-  padding: 5px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
-}
-.pos-toggle button:hover { color: var(--text); }
-.pos-toggle button.active { color: var(--text); background: var(--panel-2); }
 .tab.settings-cog {
   width: var(--control-h); height: var(--control-h); padding: 0;
   display: inline-flex; align-items: center; justify-content: center;

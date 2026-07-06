@@ -1,7 +1,7 @@
 import type { DeepRun, Job } from "./api-types";
 import { $, api, el, esc, relAge, sectionCard, setErrorSink, state } from "./core";
 import { parseJsonField, pipeSegment, refreshPipeLocks, setPipeStep, setRepMode, updateExistingReportNotice, updateRepSubstate, updateStep2LoginGate } from "./pipeline";
-import { pushNav } from "./shell";
+import { pushNav, setActiveView } from "./shell";
 import { mdToHtml, openRunInAnalyses } from "./analyses";
 import { kickTaskPoll } from "./tasks";
 
@@ -594,14 +594,24 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
     status.classList.add("err");
     return;
   }
-  if (!window.confirm("Apply this target-model proposal? This changes target-model.json, not trades.")) return;
+  // Parity with Strategy/Optimizer: this stages into the working draft rather
+  // than writing the live model, so nothing is irreversible until the user
+  // commits the draft. The confirm + follow-up reflect that safety model.
+  if (!window.confirm("Stage this proposal to your working draft? Nothing touches your live target model until you commit there.")) return;
   status.classList.remove("err");
-  status.textContent = "applying proposal...";
+  status.textContent = "staging proposal…";
   try {
     const rec = await api("/api/target-proposal/apply", "POST", { segment, date, confirm: true });
-    status.textContent = `applied: ${rec.applied.join(", ") || "none"}; skipped: ${rec.skipped.length}`;
+    const n = rec.staged_count ?? (rec.applied ? rec.applied.length : 0);
+    const skipped = (rec.skipped && rec.skipped.length) ? ` (${rec.skipped.length} skipped)` : "";
+    status.textContent = `Staged ${n} change${n === 1 ? "" : "s"} to the working draft${skipped}. `;
+    const go = el("button", "linklike") as HTMLButtonElement;
+    go.type = "button";
+    go.textContent = "Review working draft →";
+    go.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
+    status.appendChild(go);
   } catch (e) {
-    status.textContent = "apply failed: " + e.message;
+    status.textContent = "staging failed: " + e.message;
     status.classList.add("err");
   }
 });

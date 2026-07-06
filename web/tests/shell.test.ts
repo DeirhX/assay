@@ -10,8 +10,8 @@ const setUrl = (search: string) => {
 describe("navFromUrl", () => {
   beforeEach(() => setUrl(""));
 
-  it("defaults to the deepdive view", () => {
-    expect(navFromUrl()).toEqual({ view: "deepdive", ticker: "", segment: "", run: "" });
+  it("defaults to the guided Plan (strategy) view", () => {
+    expect(navFromUrl()).toEqual({ view: "strategy", ticker: "", segment: "", run: "" });
   });
 
   it("parses a full deep link", () => {
@@ -23,7 +23,7 @@ describe("navFromUrl", () => {
 
   it("rejects unknown views", () => {
     setUrl("view=adminpanel");
-    expect(navFromUrl().view).toBe("deepdive");
+    expect(navFromUrl().view).toBe("strategy");
   });
 
   it("uppercases and trims tickers", () => {
@@ -67,7 +67,7 @@ describe("urlForNav", () => {
   beforeEach(() => setUrl(""));
 
   it("omits the default view from the URL", () => {
-    const url = urlForNav({ view: "deepdive", ticker: "", segment: "", run: "" });
+    const url = urlForNav({ view: "strategy", ticker: "", segment: "", run: "" });
     expect(url.search).toBe("");
   });
 

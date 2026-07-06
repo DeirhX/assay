@@ -10,11 +10,11 @@
   <header class="topbar">
     <h1>Research Console</h1>
     <div class="groups" role="tablist" aria-label="Sections">
-      <button class="group active" data-group="deepdive" type="button" role="tab">Ticker</button>
-      <button class="group" data-group="strategy" type="button" role="tab">Planner</button>
+      <button class="group active" data-group="strategy" type="button" role="tab">Plan</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
+      <button class="group" data-group="rebalance" type="button" role="tab">Rebalance</button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
-      <button class="group" data-group="basket" type="button" role="tab">Basket <span class="group-badge" id="basket-count" hidden></span></button>
+      <button class="group" data-group="basket" type="button" role="tab">Watchlist <span class="group-badge" id="basket-count" hidden></span></button>
     </div>
     <div class="topsearch">
       <input id="top-ticker" placeholder="Search ticker…" autocomplete="off" spellcheck="false" aria-label="Search any ticker" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="top-ticker-menu">
@@ -28,14 +28,22 @@
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
     <div class="subbar" id="subbar" hidden>
-      <div class="subtabs" data-group="portfolio" role="tablist" hidden>
-        <button class="subtab" data-view="today" type="button" role="tab">Today</button>
-        <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
-        <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
+      <div class="subtabs" data-group="research" role="tablist" hidden>
+        <button class="subtab" data-view="deepdive" type="button" role="tab">Ticker</button>
+        <button class="subtab" data-view="analyses" type="button" role="tab">Reports</button>
+        <button class="subtab" data-view="segment" type="button" role="tab">Segments</button>
+      </div>
+      <div class="subtabs" data-group="rebalance" role="tablist" hidden>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
+        <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
         <button class="subtab" data-view="working-draft" type="button" role="tab">Working draft</button>
         <button class="subtab" data-view="exit" type="button" role="tab">Exit</button>
         <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
+      </div>
+      <div class="subtabs" data-group="portfolio" role="tablist" hidden>
+        <button class="subtab" data-view="today" type="button" role="tab">Today</button>
+        <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
+        <button class="subtab" data-view="history" type="button" role="tab">History</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
         <button class="subtab" data-view="journal" type="button" role="tab">Journal</button>
       </div>
@@ -66,10 +74,10 @@
 
   <main>
     <!-- STRATEGY (guided Direction -> Rebalance) -->
-    <section class="view" id="view-strategy">
+    <section class="view active" id="view-strategy">
       <div class="strat-head">
         <h2>Direction → Rebalance</h2>
-        <p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. This is the guided path; the Research and Portfolio tabs hold the same steps as standalone tools.</p>
+        <p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. This is the guided path; the Research and Rebalance tabs hold the same steps as standalone tools.</p>
       </div>
       <ol class="strat-stages" id="strat-stages" hidden>
         <li data-stage="draft">Draft</li>
@@ -93,7 +101,7 @@
     </section>
 
     <!-- DEEP DIVE -->
-    <section class="view active" id="view-deepdive">
+    <section class="view" id="view-deepdive">
       <div class="searchbar">
         <input id="ticker-input" placeholder="Enter a ticker (e.g. NVDA, TSM, AMD) and press Enter" autocomplete="off" spellcheck="false">
         <button class="primary" id="ticker-go">Analyze</button>
@@ -435,7 +443,7 @@
     <section class="view" id="view-basket">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Basket</h2>
+          <h2>Watchlist</h2>
           <p class="hint">A shortlist of tickers you're interested in, starred from anywhere — a deep-dive, a rebalance row, a strategy proposal. It's just interest, not a decision: nothing here is sized or committed. The next step turns your picks into a drafted rebalance plan (with LLM suggestions for names that would round it out).</p>
         </div>
         <div class="reb-head-actions">
@@ -524,10 +532,6 @@
 
     <!-- HOLDINGS -->
     <section class="view" id="view-holdings">
-      <div class="pos-toggle" role="tablist" aria-label="Positions view">
-        <button type="button" class="active" data-pos="now" role="tab">Now</button>
-        <button type="button" data-pos="over" role="tab">Over time</button>
-      </div>
       <div class="hold-controls">
         <button class="primary" id="hold-sync" type="button">Resync from IBKR</button>
         <span class="hint" id="hold-synced"></span>
@@ -539,10 +543,6 @@
 
     <!-- HISTORY -->
     <section class="view" id="view-history">
-      <div class="pos-toggle" role="tablist" aria-label="Positions view">
-        <button type="button" data-pos="now" role="tab">Now</button>
-        <button type="button" class="active" data-pos="over" role="tab">Over time</button>
-      </div>
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio history</h2>
