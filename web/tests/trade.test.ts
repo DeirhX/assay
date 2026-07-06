@@ -290,6 +290,11 @@ describe("placeResultHtml (post-placement loop close)", () => {
     expect(html).toContain("trade-bnr paper");
   });
 
+  it("wraps the account id so privacy mode blurs it", () => {
+    const html = placeResultHtml(res);
+    expect(html).toMatch(/data-sensitive[^>]*>DU12345</);
+  });
+
   it("offers the loop-closing next steps and the cleared-basket notice", () => {
     const html = placeResultHtml(res);
     expect(html).toContain('data-trade-next="resync"');
@@ -428,5 +433,16 @@ describe("trade desk connection banner", () => {
     expect(document.querySelector("#trade-banner")!.textContent).toContain("Trading is disabled");
     const preview = byText((t) => t.includes("Preview"));
     expect(preview!.disabled).toBe(true); // can't preview without an enabled, connected gateway
+  });
+
+  it("wraps the account id in the connected banner so privacy mode blurs it", async () => {
+    apiMock.mockImplementation((path: string) =>
+      Promise.resolve(path === "/api/trade/status" ? PAPER_STATUS : { orders: [] }));
+    await loadTrade();
+    await flush();
+
+    const banner = document.querySelector("#trade-banner")!;
+    expect(banner.textContent).toContain("Paper account DU1");
+    expect(banner.querySelector("[data-sensitive]")!.textContent).toBe("DU1");
   });
 });
