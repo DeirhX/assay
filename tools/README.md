@@ -312,6 +312,27 @@ from IO so the tests run offline.
 
 All recommendations are analysis, not financial or tax advice.
 
+## mcp_server.py (read-only MCP adapter)
+
+Lets an MCP client (Claude Code, Claude Desktop, ...) act as a conversational
+analyst over live portfolio state — "which underweights have the best
+momentum?" — by exposing a hard-allowlisted, read-only subset of the local API
+as MCP tools over stdio. Stdlib-only, no SDK: it speaks the stable MCP core
+(initialize / tools/list / tools/call) as newline-delimited JSON-RPC.
+
+- **Cannot trade by construction**: the tool registry is the only route table;
+  nothing under `/api/trade/` exists in it and the sole POST (`/api/whatif`)
+  is a pure recompute. The upstream base must be loopback.
+- **Thin adapter**: every tool proxies to the running `serve.py`
+  (`ASSAY_API_BASE`, default `http://127.0.0.1:6060`); if the console is down,
+  tools return a clear "start serve.py" error instead of guessing.
+- Tools: overview, holdings, rebalance plan, target model, risk report,
+  portfolio history, journal, price levels, segments (list + peer tables),
+  ticker research, price history, exit plan, and the what-if simulator.
+- Register with Claude Code: `claude mcp add assay -- py -3 tools/mcp_server.py`
+- Privacy: connecting an LLM client shares portfolio values with that model's
+  provider — the same trust decision as the built-in LLM analysis jobs.
+
 ## generate_site.py
 
 Single source of truth for portfolio numbers is `data/current-holdings.json`
