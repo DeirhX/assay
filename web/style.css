@@ -3059,14 +3059,33 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .exit-h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; font-weight: 700; }
 .exit-h3-sub { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 8px; font-size: 12px; }
 
-.exit-taxbars { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-.exit-taxbar { display: grid; grid-template-columns: 70px 1fr auto; align-items: center; gap: 10px; font-size: 12px; }
-.exit-taxbar-k { color: var(--muted); }
-.exit-taxbar-track { height: 12px; background: var(--panel-2); border-radius: 6px; overflow: hidden; }
-.exit-taxbar-fill { display: block; height: 100%; border-radius: 6px; }
-.exit-taxbar-fill.good { background: var(--good, #4caf82); }
-.exit-taxbar-fill.warn { background: var(--warn, #d9a441); }
-.exit-taxbar-v { font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; }
+/* Headline recommendation: lead with "do this", math on demand. */
+.exit-reco { margin: 12px 0 6px; padding: 11px 13px; background: var(--panel-2); border-radius: 8px; border-left: 3px solid var(--accent); }
+.exit-reco-lead { font-size: 14px; line-height: 1.5; }
+.exit-reco-verb { font-weight: 700; }
+.exit-reco-sub { margin-top: 5px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.exit-reco-cta { margin-top: 11px; font-size: 12px; padding: 5px 14px; }
+.exit-details { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.exit-details-summary { cursor: pointer; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; padding: 3px 0; list-style: revert; }
+.exit-details-summary:hover { color: var(--text); }
+.exit-details[open] .exit-details-summary { margin-bottom: 6px; }
+.exit-details[open] > .exit-section:first-of-type { margin-top: 4px; }
+
+/* One stacked bar over the whole position: sell-now (green) + defer (amber)
+   leave, the muted remainder stays — so a partial trim reads as partial. */
+.exit-posbar-wrap { margin-bottom: 8px; }
+.exit-posbar { display: flex; height: 14px; background: var(--panel-2); border-radius: 7px; overflow: hidden; }
+.exit-posbar-seg { display: block; height: 100%; }
+.exit-posbar-seg.good { background: var(--good, #4caf82); }
+.exit-posbar-seg.warn { background: var(--warn, #d9a441); }
+.exit-posbar-seg.keep { background: var(--border, #3a3f4b); }
+.exit-posbar-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.exit-legend { display: inline-flex; align-items: center; gap: 6px; }
+.exit-legend b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.exit-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.exit-dot.good { background: var(--good, #4caf82); }
+.exit-dot.warn { background: var(--warn, #d9a441); }
+.exit-dot.keep { background: var(--border, #3a3f4b); }
 .exit-taxnotes { margin: 6px 0; }
 .exit-defer { margin-top: 8px; padding: 8px 12px; background: color-mix(in srgb, var(--warn, #d9a441) 8%, transparent); border-radius: 8px; }
 .exit-defer-head { font-size: 12px; font-weight: 600; margin-bottom: 4px; }

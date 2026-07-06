@@ -90,11 +90,83 @@ describe("Exit planner rendering", () => {
     expect(body).toContain("wait until 2026-09-29");
   });
 
+  it("leads with a plain recommendation and hides the math in a collapsed expander", async () => {
+    apiMock.mockResolvedValue(planFixture());
+    await loadExit();
+    await flush();
+
+    const reco = document.querySelector("#exit-body .exit-reco");
+    expect(reco).toBeTruthy();
+    const recoText = reco!.textContent || "";
+    expect(recoText).toContain("Reduce to 3.00%");
+    expect(recoText).toContain("Keeps 4% of the position");
+    // Primary CTA stages the first slice.
+    const cta = document.querySelector<HTMLButtonElement>("#exit-body .exit-reco-cta");
+    expect(cta).toBeTruthy();
+    expect(cta!.textContent).toContain("Stage first slice");
+
+    // The detail sections live inside a <details> that is closed by default.
+    const details = document.querySelector<HTMLDetailsElement>("#exit-body details.exit-details");
+    expect(details).toBeTruthy();
+    expect(details!.open).toBe(false);
+    expect(details!.querySelector("table.exit-sched")).toBeTruthy();       // schedule moved inside
+    expect(details!.querySelector(".exit-posbar")).toBeTruthy();           // tax bar moved inside
+  });
+
+  it("the headline CTA stages the first tranche", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith("/api/exit-plan?")) return Promise.resolve(planFixture());
+      if (path === "/api/exit-plan/stage") {
+        return Promise.resolve({ staged: true, symbol: "EXITME", basket: [], tranche: null });
+      }
+      return Promise.resolve({ orders: [] });
+    });
+    await loadExit();
+    await flush();
+    document.querySelector<HTMLButtonElement>("#exit-body .exit-reco-cta")!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/exit-plan/stage", "POST",
+      expect.objectContaining({ symbol: "EXITME", index: 1, cfg: expect.any(Object) }),
+    );
+  });
+
   it("shows an empty state when nothing needs exiting", async () => {
     apiMock.mockResolvedValue(planFixture({ positions: [] }));
     await loadExit();
     await flush();
     expect(document.querySelector("#exit-body .empty-state")).toBeTruthy();
+  });
+
+  it("a partial reduce renders a Keep segment sized to the kept remainder", async () => {
+    // Fixture keeps 30k of an 800k position — the bar must NOT read as a full exit.
+    apiMock.mockResolvedValue(planFixture());
+    await loadExit();
+    await flush();
+    const segs = [...document.querySelectorAll<HTMLElement>("#exit-body .exit-posbar-seg")];
+    const keep = segs.find((s) => s.classList.contains("keep"));
+    expect(keep).toBeTruthy();
+    // keep = (800k-770k)/800k = 3.75% of the position.
+    expect(keep!.style.width).toBe("3.8%");
+    // Sell-now slice is only half the position, never full.
+    const sellNow = segs.find((s) => s.classList.contains("good"))!;
+    expect(sellNow.style.width).toBe("50.0%");
+    // Header spells out the partial nature.
+    const body = document.querySelector("#exit-body")!.textContent || "";
+    expect(body).toContain("keeping 4%");
+  });
+
+  it("a full exit keeps nothing (no keep segment)", async () => {
+    const full = planFixture();
+    full.positions[0].end_state = "zero";
+    full.positions[0].exit_czk = 800_000;      // sell the whole position
+    await apiMock.mockResolvedValue(full);
+    await loadExit();
+    await flush();
+    const keep = document.querySelector("#exit-body .exit-posbar-seg.keep");
+    expect(keep).toBeFalsy();
+    const body = document.querySelector("#exit-body")!.textContent || "";
+    expect(body).toContain("full exit — nothing kept");
   });
 
   it("stages a tranche to the trade desk with only symbol/index/cfg", async () => {

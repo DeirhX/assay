@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import http.cookiejar
+import threading
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -24,6 +25,9 @@ from typing import Any
 from .common import ProviderError, get_json, http_get, metric, usd_b
 
 _SESSION: tuple[urllib.request.OpenerDirector, str] | None = None
+# Guards lazy session creation so concurrent callers (the parallel risk/exit
+# fetches) share one crumb handshake instead of each racing to build their own.
+_SESSION_LOCK = threading.Lock()
 
 
 _SEED_URLS = (
@@ -77,7 +81,9 @@ def _new_session() -> tuple[urllib.request.OpenerDirector, str]:
 def _session() -> tuple[urllib.request.OpenerDirector, str]:
     global _SESSION
     if _SESSION is None:
-        _SESSION = _new_session()
+        with _SESSION_LOCK:
+            if _SESSION is None:   # double-checked: only the first thread pays the handshake
+                _SESSION = _new_session()
     return _SESSION
 
 

@@ -127,6 +127,32 @@ class RiskReport(unittest.TestCase):
         self.assertEqual(out["correlation"]["matrix"]["A"]["B"], -1.0)
         self.assertIsNotNone(out["metrics"]["portfolio_vol_pct"])
 
+    def test_fetch_series_many_dedups_and_fans_out(self):
+        import tempfile
+        import threading
+        from pathlib import Path
+        from unittest import mock
+
+        calls: list[str] = []
+        seen_threads: set[int] = set()
+        lock = threading.Lock()
+
+        def fake_fetch(symbol, rng):
+            with lock:
+                calls.append(symbol)
+                seen_threads.add(threading.get_ident())
+            return closes_from_logrets(BASE)
+
+        # Isolate from the real on-disk cache so a prior test's write can't
+        # short-circuit the fetch and skew the call count.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(risk, "CACHE_DIR", Path(tmp)):
+                # "A" is requested twice; the loader must fetch each provider once.
+                out = risk._fetch_series_many(["A", "B", "A", "C"], rng="1y", fetch=fake_fetch)
+        self.assertEqual(set(out), {"A", "B", "C"})
+        self.assertEqual(sorted(calls), ["A", "B", "C"])  # no duplicate fetch for A
+        self.assertGreater(len(seen_threads), 1)  # actually ran off the calling thread
+
     def test_options_and_unfetchable_names_excluded(self):
         holdings = {
             "generated_at": "2026-06-13T10:00:00+00:00",

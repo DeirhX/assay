@@ -53,6 +53,7 @@ NEAR_EXEMPT_DAYS = 120      # a taxable-gain lot this close to exemption is "def
 CZ_TAX_RATE = 0.15          # Czech personal income tax on securities gains
 STUB_PCT = 0.5              # residual weight left when end-state is "stub"
 LADDER_RUNGS_PCT = (0.0, 0.02, 0.04)  # default GTC limit rungs above the mark
+FETCH_WORKERS = 8           # cold cache: fan per-name series + option-chain pulls out
 
 EPS = 1e-6
 
@@ -393,6 +394,11 @@ def build_exit_plan(
     if with_options and cands:
         opt_rate = _cached_risk_free_rate()
 
+    # Warm the per-name caches (ADV price series + option chain) concurrently so
+    # the assembly loop below is all disk hits. Cold, this is the difference
+    # between N serial crumb+chain round-trips and one parallel batch.
+    _prewarm_caches(cands, posidx, with_options=with_options, fetch=fetch)
+
     positions: list[dict[str, Any]] = []
     for cand in cands:
         sym = cand["symbol"]
@@ -466,6 +472,38 @@ def build_exit_plan(
     }
 
 
+def _prewarm_caches(
+    cands: list[dict[str, Any]],
+    posidx: dict[str, dict[str, Any]],
+    *,
+    with_options: bool,
+    fetch: Any,
+) -> None:
+    """Populate the ADV price-series and option-chain disk caches for every held
+    candidate, in parallel. After this returns, ``build_exit_plan``'s serial loop
+    hits warm caches instead of paying each name's network cost in sequence.
+    Best-effort: a failed warm just leaves that name cold for the loop to retry."""
+    providers = list(dict.fromkeys(
+        portfolio.provider_symbol_for(c["symbol"]) for c in cands
+        if (posidx.get(c["symbol"]) or {}).get("mv_base", 0.0) > EPS
+    ))
+    if not providers:
+        return
+
+    def warm(provider: str) -> None:
+        try:
+            if fetch is not False:
+                risk.load_price_series(provider, fetch=fetch)
+            if with_options:
+                _cached_option_chain(provider)
+        except Exception:  # noqa: BLE001 -- warming is opportunistic, never fatal
+            pass
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(providers))) as pool:
+        list(pool.map(warm, providers))
+
+
 def _cache_fresh(iso: str | None, ttl: int = OPT_CACHE_TTL_SECONDS) -> bool:
     if not iso:
         return False
@@ -491,7 +529,10 @@ def _cached_risk_free_rate() -> float | None:
             return float(val)
     try:
         import options_math
-        rate = options_math.risk_free_rate()
+        from providers import fred
+        # Only DGS10 is needed here; fetch that one series instead of FRED's full
+        # nine-series macro snapshot so a cold Exit view isn't gated on ~8 CSVs.
+        rate = options_math.risk_free_rate(snapshot=fred.series_snapshot("DGS10"))
     except Exception:  # noqa: BLE001
         rate = None
     if isinstance(rate, (int, float)):
