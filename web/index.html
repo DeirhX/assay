@@ -429,6 +429,21 @@
       <div id="stage-body"></div>
     </section>
 
+    <!-- TARGET STATE (flow-bar stage 4: current vs projected book) -->
+    <section class="view" id="view-target-state">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Target state</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">If you execute what's on the table, where does the book land? Every targeted name and sleeve drawn on its band track — a ghost tick for now, a solid tick for after — with the headline deltas (bands closed, cash vs its band, net cash, realized Czech tax) up top. Projects the staged basket when one exists, else the plan's suggested amounts. Read-only: nothing here stages or places anything.</p></details>
+        </div>
+        <div class="reb-head-actions">
+          <button class="ghost" id="tstate-refresh" type="button" title="Recompute the projection">Refresh</button>
+        </div>
+      </div>
+      <div class="status" id="tstate-status"></div>
+      <div id="tstate-body"></div>
+    </section>
+
     <!-- EXIT (advisory graceful-exit planner) -->
     <section class="view" id="view-exit">
       <div class="reb-head">

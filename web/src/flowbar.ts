@@ -50,6 +50,7 @@ export function invalidateFlowData(): void { _cacheAt = 0; }
 // Which pipeline stage a rebalance-group view belongs to.
 export function stageForView(view: string): 1 | 2 | 3 | 4 {
   if (view === "trade") return 3;
+  if (view === "target-state") return 4;
   return 2;  // rebalance / optimizer / working-draft / exit: deciding the changes
 }
 
@@ -96,10 +97,10 @@ export function flowStages(d: FlowData): Stage[] {
   const rows = plan?.rows || 0;
   const inBand = rows - (plan?.out_of_band || 0);
   const cashOff = plan?.cash && plan.cash.status && plan.cash.status !== "IN";
-  const s4: Stage = { n: 4, label: "Target state", view: pending ? "working-draft" : "rebalance",
+  const s4: Stage = { n: 4, label: "Target state", view: "target-state",
     tone: rows && inBand === rows && !cashOff ? "ok" : "muted",
     sub: rows ? `${inBand}/${rows} bands in${cashOff ? " · cash off target" : ""}` : "—",
-    title: "The goal: every targeted name inside its band and cash on target. Simulate a basket to preview this state" };
+    title: "Current vs projected book, side by side — where placing what's on the table lands you" };
 
   return [s1, s2, s3, s4];
 }

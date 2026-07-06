@@ -17,6 +17,7 @@ import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
 import { initStaging, loadStaging } from "./staging";
 import { initStrategy, loadStrategy } from "./strategy";
+import { initTargetState, loadTargetState } from "./targetstate";
 import { loadTrade } from "./trade";
 import { getViewedMap, renderViewedTickers } from "./viewed";
 
@@ -139,7 +140,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "exit", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "journal", "holdings", "history", "basket", "setup"]);
 
 // The guided Plan flow is the dominant path, so it is the landing view and the
 // one omitted from the URL (a bare "/" means Plan). Every other view carries an
@@ -156,7 +157,7 @@ const DEFAULT_VIEW = "strategy";
 const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
-  rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", exit: "rebalance", trade: "rebalance",
+  rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
   today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
@@ -307,6 +308,7 @@ function setActiveView(view: string) {
   if (active === "optimizer") loadOptimizer();
   if (active === "rebalance") loadRebalance();
   if (active === "working-draft") loadStaging();
+  if (active === "target-state") loadTargetState();
   if (active === "exit") loadExit();
   if (active === "trade") loadTrade();
   if (active === "risk") { initRiskControls(); loadRisk(); }
@@ -432,6 +434,7 @@ function initShell() {
   initOptimizer();
   initOverview();
   initFlowBar();
+  initTargetState();
 
   window.addEventListener("popstate", (event) => {
     restoreNav(event.state || navFromUrl());
