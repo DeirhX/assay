@@ -2449,6 +2449,13 @@ a.tlink:hover { border-bottom-style: solid; }
 .strat-cur { color: var(--muted); font-variant-numeric: tabular-nums; }
 .strat-band { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 
+/* Gate-2 band-shift column: the visual track leads, numbers are the caption. */
+.strat-band-col { min-width: 220px; }
+.strat-band-axis { color: var(--muted); font-weight: 600; font-size: 11px; margin-left: 6px; }
+.strat-band-cell .band-viz { margin-top: 0; max-width: none; }
+.strat-band-cap { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 11.5px; }
+.strat-band-nums { color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* Conviction pills: filled tints so high / medium / low read at a glance. */
 .strat-conv { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 800; text-transform: capitalize; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
 .strat-conv-high { color: var(--good); border-color: rgba(107,211,138,.55); background: rgba(107,211,138,.12); }
