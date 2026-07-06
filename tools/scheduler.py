@@ -13,10 +13,14 @@ exactly like a user-initiated one.
 
 Off by default; opt in with ``ASSAY_AUTO_REFRESH=1`` (env or tools/secrets.env).
 Granular kill switches under the master: ``ASSAY_AUTO_RESYNC``,
-``ASSAY_AUTO_SEGMENTS``, ``ASSAY_GATE_WATCH``, ``ASSAY_TAX_ALERTS`` (each default
-on when the master is on), and ``ASSAY_ORDER_WATCH`` (the order/fill watcher --
-default OFF even under the master, since it polls the trading gateway rather than
-a data provider).
+``ASSAY_AUTO_SEGMENTS``, ``ASSAY_GATE_WATCH``, ``ASSAY_TAX_ALERTS``,
+``ASSAY_JOURNAL_SCORE`` (each default on when the master is on), and
+``ASSAY_ORDER_WATCH`` (the order/fill watcher -- default OFF even under the master,
+since it polls the trading gateway rather than a data provider).
+
+The journal-score task stamps fixed-horizon (30/90/365-day) outcomes on directional
+decisions from historical closes, so the calibration loop stops starving on manual
+outcomes; it reads Yahoo history (cached) and writes only ``data/journal.json``.
 
 The tax-alerts task only fires when a notification sink is actually configured
 (it pushes 3-year-exemption reminders through ``notify``); it reads the snapshot's
@@ -49,6 +53,7 @@ import apierror
 import config
 import holdings_sync
 import jobs
+import journal
 import notify
 import order_watch
 import overview
@@ -82,6 +87,10 @@ ORDER_WATCH_MIN_INTERVAL = dt.timedelta(minutes=2)
 # The tax calendar barely moves day to day; a daily check is plenty and, with the
 # per-lot dedup in tax_calendar, keeps alerts from becoming noise.
 TAX_ALERT_MIN_INTERVAL = dt.timedelta(hours=24)
+# Journal outcome scoring stamps fixed horizons (30/90/365d) that only come due
+# once a day at most; a daily pass is ample and its per-horizon idempotence makes
+# re-runs cheap no-ops.
+JOURNAL_SCORE_MIN_INTERVAL = dt.timedelta(hours=24)
 
 # Negative-quote suppression: a symbol that just failed to price is not re-hit
 # until this lapses, so a delisted/renamed name doesn't burn a provider call
@@ -176,6 +185,7 @@ class Obs:
     snapshot_age_days: int | None = None
     stale_segments: list[str] = field(default_factory=list)   # names, oldest first
     gated_symbols: list[str] = field(default_factory=list)
+    journal_due: int = 0        # directional entries with a due, unscored horizon
     market_open: bool = False
     is_running: Callable[[str], bool] = jobs.running
 
@@ -201,6 +211,8 @@ def observe(now: dt.datetime | None = None) -> Obs:
 
     gated = sorted(str(k).upper() for k in price_levels.load_all().keys())
 
+    journal_due = sum(1 for e in journal.load_entries() if journal.due_horizons(e, now))
+
     return Obs(
         now=now,
         ibkr_configured=bool(status.get("configured")),
@@ -208,6 +220,7 @@ def observe(now: dt.datetime | None = None) -> Obs:
         snapshot_age_days=snap.get("age_days"),
         stale_segments=stale_names,
         gated_symbols=gated,
+        journal_due=journal_due,
         market_open=in_market_window(now),
         is_running=jobs.running,
     )
@@ -252,6 +265,12 @@ def _should_tax_alerts(last_run: dt.datetime | None, obs: Obs) -> bool:
     # master notify flag alone) means "enabled but no sink configured" doesn't
     # burn a daily holdings read for nothing.
     return bool(notify.configured_sinks()) and _throttle_ok(last_run, obs.now, TAX_ALERT_MIN_INTERVAL)
+
+
+def _should_journal_score(last_run: dt.datetime | None, obs: Obs) -> bool:
+    # Only when a directional entry has actually crossed a horizon it hasn't been
+    # scored at yet -- otherwise the daily pass is skipped without touching Yahoo.
+    return obs.journal_due > 0 and _throttle_ok(last_run, obs.now, JOURNAL_SCORE_MIN_INTERVAL)
 
 
 def _should_order_watch(last_run: dt.datetime | None, obs: Obs) -> bool:
@@ -341,6 +360,15 @@ def _run_tax_alerts(obs: Obs) -> str:
     return f"tax alerts: {len(alerts)} due, {sent} sent"
 
 
+def _run_journal_score(obs: Obs) -> str:
+    # Read-only w.r.t. the market: fetches historical closes and stamps fixed-
+    # horizon outcomes on the decision journal. Writes only data/journal.json.
+    res = journal.score_outcomes(now=obs.now)
+    return (f"journal scoring: {res['stamped']} horizon(s) across "
+            f"{res['entries_touched']} entr{'y' if res['entries_touched'] == 1 else 'ies'} "
+            f"({res['symbols']} symbol(s) checked)")
+
+
 def _run_order_watch(obs: Obs) -> str:
     res = order_watch.poll_once(now=obs.now)
     if not res.get("ok"):
@@ -411,6 +439,8 @@ TASKS: list[Task] = [
          label="Gate quotes", interval=QUOTES_MIN_INTERVAL),
     Task("tax-alerts", "ASSAY_TAX_ALERTS", _should_tax_alerts, _run_tax_alerts,
          label="Tax exemption alerts", interval=TAX_ALERT_MIN_INTERVAL),
+    Task("journal-score", "ASSAY_JOURNAL_SCORE", _should_journal_score, _run_journal_score,
+         label="Journal outcome scoring", interval=JOURNAL_SCORE_MIN_INTERVAL),
     Task("order-watch", "ASSAY_ORDER_WATCH", _should_order_watch, _run_order_watch,
          label="Order/fill watch", interval=ORDER_WATCH_MIN_INTERVAL, flag_default="0"),
 ]

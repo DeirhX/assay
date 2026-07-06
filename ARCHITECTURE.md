@@ -146,7 +146,7 @@ Resolution order for any key: **`os.environ` → `tools/secrets.env` → default
 `HOLDINGS_JSON`, `TARGET_MODEL_JSON`, `DEEP_DIR`, `ANALYSIS_DIR`,
 `SEGMENT_DEF_DIR`, `SEGMENT_OUT_DIR`, …) all live here. Notable env knobs:
 `SEC_USER_AGENT`, `FMP_API_KEY`, the `IBKR_*` trading flags, `ASSAY_AUTO_*` /
-  `ASSAY_ORDER_WATCH` / `ASSAY_TAX_ALERTS` scheduler flags, `ASSAY_NOTIFY*` (notification channel),
+  `ASSAY_ORDER_WATCH` / `ASSAY_TAX_ALERTS` / `ASSAY_JOURNAL_SCORE` scheduler flags, `ASSAY_NOTIFY*` (notification channel),
 `PPLX_*` automation settings, `REBAL_CLAUDE_CLI` / `REBAL_CURSOR_CLI`.
 
 ### 4.3 The job / task system
@@ -169,7 +169,10 @@ and work survives navigation.
 - **`tools/scheduler.py`** — an **opt-in, read-only** freshness daemon
   (`ASSAY_AUTO_REFRESH=1`). It reuses the same button-equivalent jobs on a timer:
   holdings resync (stale > N days), history top-up, stale segment refresh, a
-  market-hours gate-quote sweep, and (default-off, opt-in via `ASSAY_ORDER_WATCH`)
+  market-hours gate-quote sweep, **journal outcome scoring** (stamps 30/90/365-day
+  outcomes on directional decisions from historical closes — `journal.score_outcomes`,
+  so `calibrate` stops starving on manual outcomes and stops scoring old buys
+  against today's bull-market mark), and (default-off, opt-in via `ASSAY_ORDER_WATCH`)
   an **order/fill watcher**. It **never** trades, calls an LLM, runs Perplexity,
   or writes the target model. Each task is a pure `should_run(last_run, obs)`
   predicate plus an action that dispatches through `jobs.spawn`; `tick()` is fully
