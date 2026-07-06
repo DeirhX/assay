@@ -114,7 +114,8 @@ from rebalance_overlay import (  # noqa: E402  -- research overlay + price gate 
 )
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
-    _trade_cancel, _trade_orders, _trade_place, _trade_preview, _trade_status,
+    _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
+    _trade_place, _trade_preview, _trade_status,
     load_basket as _load_basket, save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
@@ -577,6 +578,8 @@ _POST_EXACT = {
     "/api/trade/preview": "_post_trade_preview",
     "/api/trade/place": "_post_trade_place",
     "/api/trade/cancel": "_post_trade_cancel",
+    "/api/trade/peg": "_post_trade_peg",
+    "/api/trade/peg/stop": "_post_trade_peg_stop",
     "/api/trade/basket": "_post_trade_basket",
     "/api/journal": "_post_journal",
     "/api/journal/outcome": "_post_journal_outcome",
@@ -1473,6 +1476,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_trade_cancel(self, path):
         return self._send_json(_trade_cancel(self._read_body()))
+
+    def _post_trade_peg(self, path):
+        return self._send_json(_trade_peg_start(self._read_body()))
+
+    def _post_trade_peg_stop(self, path):
+        return self._send_json(_trade_peg_stop(self._read_body()))
 
     def _post_trade_basket(self, path):
         # Persist (or clear) the planner-staged basket. Normalizes server-side and

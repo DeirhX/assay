@@ -269,6 +269,62 @@ def shares_for(delta_czk: float, price_in_ccy: float, fx_to_base: float) -> int:
     return int(round(float(delta_czk) / price_in_base))
 
 
+def tick_for_price(rules: Any, price: float, *, default: float = 0.01) -> float:
+    """Minimum price increment ("tick") applicable at ``price`` from a CPAPI
+    contract-rules payload.
+
+    IBKR quotes increments in price bands: ``incrementRules`` is a list of
+    ``{lowerEdge, increment}`` and the tick that applies is the band with the
+    greatest ``lowerEdge`` <= ``price``. Falls back to a flat ``increment`` field,
+    then to ``default``. Pure and defensive: strings are coerced, malformed rows
+    skipped, and the result is never <= 0 (a zero tick would let the peg race)."""
+    node = rules if isinstance(rules, dict) else {}
+    if isinstance(node.get("rules"), dict):   # accept the whole info-and-rules dict
+        node = node["rules"]
+    best: float | None = None
+    bands = node.get("incrementRules")
+    if isinstance(bands, list):
+        applicable: list[tuple[float, float]] = []
+        for b in bands:
+            if not isinstance(b, dict):
+                continue
+            try:
+                edge = float(b.get("lowerEdge"))
+                inc = float(b.get("increment"))
+            except (TypeError, ValueError):
+                continue
+            if inc > 0 and edge <= float(price):
+                applicable.append((edge, inc))
+        if applicable:
+            best = max(applicable, key=lambda e: e[0])[1]
+    if best is None:
+        try:
+            inc = float(node.get("increment"))
+            best = inc if inc > 0 else None
+        except (TypeError, ValueError):
+            best = None
+    return best if best and best > 0 else default
+
+
+def contract_rules(conid: int, *, is_buy: bool = True) -> dict:
+    """Order rules for a contract (price-increment bands, order types, ...), via
+    ``/iserver/contract/{conid}/info-and-rules``. Best-effort: returns the
+    ``rules`` sub-dict when present, else the raw response, else ``{}`` so the
+    peg falls back to a default tick instead of erroring."""
+    try:
+        res = _request(
+            "GET",
+            f"/iserver/contract/{int(conid)}/info-and-rules?"
+            + urllib.parse.urlencode({"isBuy": str(bool(is_buy)).lower()}),
+        )
+    except CPAPIError:
+        return {}
+    if not isinstance(res, dict):
+        return {}
+    rules = res.get("rules")
+    return rules if isinstance(rules, dict) else res
+
+
 def build_orders(
     basket: list[dict],
     *,
@@ -398,3 +454,30 @@ def live_orders() -> list[dict]:
 def cancel_order(account_id: str, order_id: str) -> dict:
     return _request("DELETE",
                     f"/iserver/account/{urllib.parse.quote(account_id)}/order/{urllib.parse.quote(str(order_id))}")
+
+
+def modify_order(account_id: str, order_id: str, changes: dict, *,
+                 max_replies: int = 8, auto_confirm: bool = True) -> list[dict]:
+    """Modify a live order in place -- the peg's reprice primitive.
+
+    CPAPI reuses the placement protocol for modifications: a POST to the order's
+    own path answers with either order acknowledgements or the same
+    ``{id, message[...]}`` confirmation prompts, which we clear by replying
+    ``confirmed: true`` (exactly like ``place_orders``). ``changes`` is a partial
+    order dict; only the CPAPI-recognized keys are sent (price, orderType, ...).
+    Modifying keeps the order id, so it does not needlessly forfeit queue time."""
+    body = _cpapi_order(changes)
+    resp = _request(
+        "POST",
+        f"/iserver/account/{urllib.parse.quote(account_id)}/order/{urllib.parse.quote(str(order_id))}",
+        body,
+    )
+    for _ in range(max_replies):
+        prompts = _reply_prompts(resp)
+        if not prompts:
+            break
+        if not auto_confirm:
+            return resp if isinstance(resp, list) else [resp]
+        resp = _request("POST", f"/iserver/reply/{urllib.parse.quote(str(prompts[0]))}",
+                        {"confirmed": True})
+    return resp if isinstance(resp, list) else [resp]

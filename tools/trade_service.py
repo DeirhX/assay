@@ -18,6 +18,7 @@ import json
 import time
 
 import ibkr_trade
+import order_peg
 import overview
 import price_levels
 import whatif
@@ -361,7 +362,9 @@ def _trade_orders() -> dict:
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled")
     try:
-        return {"orders": ibkr_trade.live_orders()}
+        # Fold in the active pegs so the UI can badge which working orders are
+        # being kept at the top of book (and offer a Stop) in a single call.
+        return {"orders": ibkr_trade.live_orders(), "pegs": order_peg.active_pegs()}
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
 
@@ -377,3 +380,45 @@ def _trade_cancel(body: dict) -> dict:
         return {"cancelled": ibkr_trade.cancel_order(account_id, order_id)}
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
+
+
+def _parse_worst_price(raw) -> float | None:
+    """Optional worst-acceptable price for a peg: None (use the order's own
+    limit), a number, or a numeric string. Anything else is a client error."""
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("worst_price must be a number")
+
+
+def _trade_peg_start(body: dict) -> dict:
+    """Arm a top-of-book peg on an existing working order. Gating (trading +
+    IBKR_AUTO_PEG + live-account rules) lives in order_peg.start_peg; the account
+    is resolved server-side exactly like cancel/place so a client can't target
+    an account the session can't see."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled")
+    order_id = str(body.get("order_id") or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required")
+    account_id = _resolve_trade_account(body.get("account"))
+    worst_price = _parse_worst_price(body.get("worst_price"))
+    kwargs: dict = {}
+    if body.get("poll_s") not in (None, ""):
+        try:
+            kwargs["poll_s"] = float(body["poll_s"])
+        except (TypeError, ValueError):
+            raise ValueError("poll_s must be a number")
+    return {"peg": order_peg.start_peg(order_id, account_id, worst_price=worst_price, **kwargs)}
+
+
+def _trade_peg_stop(body: dict) -> dict:
+    """Stop re-pricing an order (leaves the order resting; does not cancel it)."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled")
+    order_id = str(body.get("order_id") or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required")
+    return order_peg.stop_peg(order_id)

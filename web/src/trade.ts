@@ -73,6 +73,21 @@ interface LiveOrder {
   orderDesc?: string;
 }
 
+// One active peg from /api/trade/orders (folded in alongside `orders`). The
+// server keeps these in memory; a restart clears them and the order simply
+// rests at its last price.
+interface PegState {
+  order_id: string;
+  state?: string;
+  reprices?: number;
+  price?: number | null;
+  message?: string;
+  side?: string;
+  symbol?: string;
+  bound?: number;
+  tick?: number;
+}
+
 let _status: TradeStatus | null = null;   // last /api/trade/status
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
 // The basket as it was placed — snapshotted before the staged store is cleared,
@@ -81,6 +96,10 @@ let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
 // Mirrors the server's preview TTL: when it lapses, the Place button locks and
 // asks for a re-preview (the server enforces the same window on its side).
 let _previewExpiry: ReturnType<typeof setTimeout> | null = null;
+// While any order is being pegged, poll the working-orders card so reprices
+// show without the user hitting Refresh. Cleared when no peg is active.
+let _pegPollTimer: ReturnType<typeof setInterval> | null = null;
+const PEG_POLL_MS = 5000;
 
 const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
@@ -463,11 +482,12 @@ async function renderLiveOrders(token?: number) {
   }
 
   body.innerHTML = `<span class="spinner"></span> loading working orders\u2026`;
-  let data: { orders?: LiveOrder[] } | undefined;
+  let data: { orders?: LiveOrder[]; pegs?: PegState[] } | undefined;
   try {
-    data = await api<{ orders?: LiveOrder[] }>("/api/trade/orders");
+    data = await api<{ orders?: LiveOrder[]; pegs?: PegState[] }>("/api/trade/orders");
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
+    stopPegPoll();
     body.innerHTML = "";
     body.appendChild(el("div", "trade-bnr warn",
       `Could not read working orders: ${esc((e as Error).message)}`));
@@ -476,18 +496,64 @@ async function renderLiveOrders(token?: number) {
   if (token != null && isStaleToken("trade", token)) return;
 
   const orders = (data && data.orders) || [];
+  const pegs = (data && data.pegs) || [];
+  const pegById = new Map(pegs.map((p) => [String(p.order_id), p]));
   body.innerHTML = "";
   title.textContent = `Working orders (${orders.length})`;
   if (!orders.length) {
     body.appendChild(el("div", "hint", "No working orders at IBKR right now."));
+    stopPegPoll();
     return;
   }
-  orders.forEach((o) => body.appendChild(liveOrderRow(o)));
+  orders.forEach((o) => body.appendChild(liveOrderRow(o, pegById.get(String(o.orderId || o.order_id || "")))));
+  // Keep the card live while a peg is running so its reprice count updates.
+  if (pegs.length) startPegPoll();
+  else stopPegPoll();
 }
 
-function liveOrderRow(o: LiveOrder): HTMLElement {
+function startPegPoll() {
+  if (_pegPollTimer) return;
+  _pegPollTimer = setInterval(() => void renderLiveOrders(), PEG_POLL_MS);
+}
+
+function stopPegPoll() {
+  if (_pegPollTimer) { clearInterval(_pegPollTimer); _pegPollTimer = null; }
+}
+
+function pegAccount(): string | undefined {
+  return (_status && _status.default_account) || (_preview && _preview.account) || undefined;
+}
+
+async function startPeg(order_id: string, worstInput: HTMLInputElement, btn: HTMLButtonElement) {
+  btn.disabled = true;
+  const worst = worstInput.value.trim();
+  try {
+    await api("/api/trade/peg", "POST", {
+      order_id,
+      account: pegAccount(),
+      ...(worst ? { worst_price: Number(worst) } : {}),
+    });
+    renderLiveOrders();  // reflect the new peg immediately; poll takes over after
+  } catch (e) {
+    btn.disabled = false;
+    btn.title = (e as Error).message;
+  }
+}
+
+async function stopPeg(order_id: string, btn: HTMLButtonElement) {
+  btn.disabled = true;
+  try {
+    await api("/api/trade/peg/stop", "POST", { order_id });
+    renderLiveOrders();
+  } catch (e) {
+    btn.disabled = false;
+    btn.title = (e as Error).message;
+  }
+}
+
+function liveOrderRow(o: LiveOrder, peg?: PegState): HTMLElement {
   const row = el("div", "trade-live-row");
-  const oid = o.orderId || o.order_id || "";
+  const oid = String(o.orderId || o.order_id || "");
   const side = String(o.side || "").toUpperCase();
   const qty = o.remainingQuantity ?? o.totalSize ?? o.quantity ?? "";
   const type = o.orderType || o.order_type || "";
@@ -497,26 +563,51 @@ function liveOrderRow(o: LiveOrder): HTMLElement {
   const detail = o.orderDesc
     ? esc(o.orderDesc)
     : `${esc(type)}${priceBit}${tif ? ` / ${esc(tif)}` : ""}`;
+  const pegBadge = peg
+    ? `<span class="trade-peg-badge" title="${esc(peg.message || "")}">pegging${peg.reprices ? ` ·${peg.reprices}` : ""}</span>`
+    : "";
   row.innerHTML =
-    `<span class="trade-live-sym">${esc(o.ticker || o.symbol || o.conid || "?")}</span>` +
+    `<span class="trade-live-sym">${esc(o.ticker || o.symbol || o.conid || "?")}${pegBadge}</span>` +
     `<span>${side ? sideTag(side) : ""}</span>` +
     `<span class="num">${esc(qty)}</span>` +
     `<span class="trade-live-detail">${detail}</span>` +
-    `<span class="trade-live-status">${esc(o.status || o.order_status || "")}</span>`;
+    `<span class="trade-live-status">${esc(peg ? (peg.message || peg.state || "") : (o.status || o.order_status || ""))}</span>`;
+
+  const actions = el("span", "trade-live-actions");
+  // Only a resting limit order can be pegged (needs a price to improve on).
+  const isLimit = /lmt|limit/i.test(String(type)) && o.price != null && o.price !== "";
+  if (oid && isLimit) {
+    if (peg) {
+      const stop = el("button", "ghost", "Stop peg");
+      stop.type = "button";
+      stop.onclick = () => void stopPeg(oid, stop);
+      actions.appendChild(stop);
+    } else {
+      const worst = el("input", "trade-peg-worst") as HTMLInputElement;
+      worst.type = "number";
+      worst.step = "any";
+      worst.placeholder = side === "SELL" ? "min px" : "max px";
+      worst.title = "Worst price the peg may move to (optional; defaults to this order's limit)";
+      const keep = el("button", "ghost", "Keep at top");
+      keep.type = "button";
+      keep.title = "Keep this order one tick better than the best price on its side (never crosses the spread)";
+      keep.onclick = () => void startPeg(oid, worst, keep);
+      actions.appendChild(worst);
+      actions.appendChild(keep);
+    }
+  }
+
   const cancel = el("button", "ghost", "Cancel");
   cancel.type = "button";
   cancel.onclick = async () => {
     cancel.disabled = true;
     try {
-      await api("/api/trade/cancel", "POST", {
-        order_id: oid,
-        account: (_status && _status.default_account) || (_preview && _preview.account),
-      });
+      await api("/api/trade/cancel", "POST", { order_id: oid, account: pegAccount() });
       renderLiveOrders();
     } catch (e) { cancel.disabled = false; cancel.title = (e as Error).message; }
   };
-  if (oid) row.appendChild(cancel);
-  else row.appendChild(el("span"));  // keep the grid columns aligned
+  if (oid) actions.appendChild(cancel);
+  row.appendChild(actions);
   return row;
 }
 

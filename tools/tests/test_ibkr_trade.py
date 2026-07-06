@@ -222,6 +222,39 @@ class ReplyLoop(unittest.TestCase):
         self.assertIn("conid", sent)
 
 
+class ModifyOrder(unittest.TestCase):
+    def test_reprices_and_clears_prompts(self):
+        prompt = [{"id": "z9", "message": ["Price cap?"]}]
+        ack = [{"order_id": "5", "order_status": "Submitted"}]
+        with mock.patch.object(ibt, "_request", side_effect=[prompt, ack]) as req:
+            out = ibt.modify_order("DU1", "5", {"conid": 222, "orderType": "LMT",
+                                                "side": "SELL", "price": 9.94, "tif": "GTC",
+                                                "symbol": "AMD"})
+        self.assertEqual(out, ack)
+        # First POST hits the order's own path; the second is the reply.
+        self.assertIn("/iserver/account/DU1/order/5", req.call_args_list[0].args[1])
+        self.assertIn("/iserver/reply/z9", req.call_args_list[1].args[1])
+        # Display-only fields are stripped; the new price is sent.
+        self.assertNotIn("symbol", req.call_args_list[0].args[2])
+        self.assertEqual(req.call_args_list[0].args[2]["price"], 9.94)
+
+
+class TickForPrice(unittest.TestCase):
+    def test_banded_increment_picks_the_applicable_band(self):
+        rules = {"incrementRules": [{"lowerEdge": "0", "increment": "0.0001"},
+                                    {"lowerEdge": "1", "increment": "0.01"}]}
+        self.assertAlmostEqual(ibt.tick_for_price(rules, 0.5), 0.0001)
+        self.assertAlmostEqual(ibt.tick_for_price(rules, 5.0), 0.01)
+
+    def test_accepts_nested_rules_and_flat_increment(self):
+        self.assertAlmostEqual(ibt.tick_for_price({"rules": {"increment": "0.05"}}, 5.0), 0.05)
+
+    def test_default_when_absent_or_zero(self):
+        self.assertAlmostEqual(ibt.tick_for_price({}, 5.0), 0.01)
+        self.assertAlmostEqual(ibt.tick_for_price({"incrementRules": []}, 5.0), 0.01)
+        self.assertAlmostEqual(ibt.tick_for_price({"increment": 0}, 5.0), 0.01)
+
+
 class TradeServiceGuards(unittest.TestCase):
     def setUp(self):
         ibt._conid_cache.clear()

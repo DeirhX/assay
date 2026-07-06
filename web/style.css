@@ -2581,6 +2581,10 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .trade-live-detail { color: var(--muted); font-variant-numeric: tabular-nums; }
 .trade-live-status { color: var(--muted); text-transform: capitalize; }
 .trade-live-body { display: flex; flex-direction: column; }
+.trade-live-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.trade-peg-worst { width: 74px; padding: 2px 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.trade-peg-badge { margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent, #2b6); border: 1px solid var(--accent, #2b6); }
 
 /* ---- working draft (staging) ---- */
 .stage-section { margin: 18px 0; }
