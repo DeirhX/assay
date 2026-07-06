@@ -12,7 +12,8 @@
     "e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "typecheck:py": "mypy tools",
-    "lint": "eslint web/src"
+    "lint": "eslint web/src",
+    "check:all": "pwsh tools/check.ps1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

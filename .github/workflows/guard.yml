@@ -1,0 +1,40 @@
+name: guard
+
+# Server-side data-leak backstop. The pre-commit hook (tools/hooks/pre-commit)
+# is opt-in per clone and bypassable with --no-verify; this job re-runs the
+# EXACT same patterns (tools/hooks/leakcheck.sh) over the PR diff so a forgotten
+# hooksPath can never let holdings/secrets into the public repo. It also guards
+# the private `data` submodule pointer and scans the public site/ tree.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  leak-scan:
+    name: Data-leak backstop
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan PR diff for holdings/secrets
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          bash tools/hooks/leakcheck.sh range "${{ github.event.pull_request.base.sha }}" HEAD
+
+      - name: Scan public site/ tree for holdings/secrets
+        shell: bash
+        run: |
+          bash tools/hooks/leakcheck.sh tree site

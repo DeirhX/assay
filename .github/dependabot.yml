@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keep action tags current (security fixes land as new tags).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+
+  # Frontend toolchain (Vite/TS/ESLint/Vitest/Playwright). Backend is
+  # stdlib-only, so there is no pip manifest to track.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # One PR for the routine dev-dependency bumps instead of a swarm.
+      dev-dependencies:
+        dependency-type: development

@@ -1,5 +1,7 @@
 # Assay
 
+[![tests](https://github.com/DeirhX/assay/actions/workflows/tests.yml/badge.svg)](https://github.com/DeirhX/assay/actions/workflows/tests.yml)
+
 *Weigh the metal, not the hype — test every number before you trust it.*
 
 Assay is a single-user portfolio research and rebalancing workbench. Like a

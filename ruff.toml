@@ -1,0 +1,14 @@
+# Deterministic lint config so local and CI agree and ruff's default rule set
+# can't shift under us on a version bump. CI pins the ruff VERSION (see
+# tests.yml); this file pins the RULES.
+#
+# It intentionally freezes ruff's current default selection (pyflakes + the
+# pycodestyle error subset) rather than expanding it — turning on new rule
+# families (I/B/UP/…) is a deliberate cleanup, not a silent side effect of
+# adding this config.
+
+target-version = "py313"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

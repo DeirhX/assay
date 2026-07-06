@@ -430,9 +430,14 @@ the hand-written JSON contract shared across views.
   `data/cache/ibkr/` → shape-locked `data/current-holdings.json` (curated;
   refreshes can't widen it) → API payload further trimmed for the UI.
 - **Never commit:** `secrets.env`, API keys, IBKR tokens/query-ids, raw Flex XML,
-  `data/cache/`, browser profiles. A **pre-commit hook**
-  (`tools/hooks/pre-commit`, enabled via `git config core.hooksPath tools/hooks`)
-  blocks accidental commits of holdings figures/secrets.
+  `data/cache/`, browser profiles.
+- **Two enforcement layers, one pattern source** (`tools/hooks/leakcheck.sh`): a
+  **pre-commit hook** (`tools/hooks/pre-commit`, opt-in via
+  `git config core.hooksPath tools/hooks`) scans the staged index, and a
+  **CI backstop** (`.github/workflows/guard.yml`) re-runs the same
+  blocked-filename/marker patterns over every PR diff, guards the `data`
+  submodule pointer, and scans the public `site/` tree — so a fresh clone that
+  never configured the hook is still covered.
 
 ---
 
@@ -454,18 +459,27 @@ Flagged so future-you doesn't trust a stale line:
 
 ## 10. Testing & CI
 
-CI (`.github/workflows/tests.yml`) has two required jobs; branch protection needs
-both green before merge:
+CI runs two workflows. `.github/workflows/tests.yml` has three jobs (branch
+protection needs them green before merge):
 
-- **Python lint + unittest suite:** `ruff check tools` then
-  `python -m unittest discover -s tools/tests` (stdlib-only, offline, ~1s).
+- **Python lint + unittest suite:** pinned `ruff check tools` (rules frozen in
+  `ruff.toml`) then `python -m unittest discover -s tools/tests`
+  (stdlib-only, offline, ~1s).
 - **Frontend typecheck + tests + build:** `npm ci && npm run lint && npm run
   typecheck && npm test && npm run build`.
+- **Playwright e2e (hermetic):** `npm run e2e` — the suite intercepts `/api/**`,
+  so no Python server, secrets, or private submodule is needed; a failed run
+  uploads an HTML report + traces as an artifact.
 
-Local equivalents: `py -3 -m pytest tools/tests -q` (or `unittest`), and the four
-npm scripts. Playwright e2e (`npm run e2e`, hermetic) is not a required CI gate
-but is run before shipping nav/flow changes — set `E2E_PORT` to avoid colliding
-with a dev server on `:5173`.
+`.github/workflows/guard.yml` is the **data-leak backstop** (see [§8](#8-data--privacy-model)).
+All jobs are least-privilege (`permissions: contents: read`) and time-boxed.
+
+**Local mirror:** `pwsh tools/check.ps1` (or `npm run check:all`) runs the exact
+gating steps CI runs and prints a pass/fail table, plus `mypy` as a **non-gating
+signal** (the backend has a known type-error backlog CI deliberately does *not*
+gate — see `mypy.ini`). `-E2E` adds the Playwright suite; `-Data` adds the
+private-data validators (`rebalance --check`, `verify_claims`,
+`generate_site --check`) that CI can never run.
 
 ---
 
