@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from typing import Any
 
 import ibkr_trade
 import order_peg
@@ -45,7 +46,7 @@ _preview_issued: dict[str, float] = {}
 STALE_SNAPSHOT_DAYS = 7
 
 
-def _normalize_basket(trades) -> list[dict]:
+def _normalize_basket(trades: Any) -> list[dict]:
     """Canonical, de-duplicated [{symbol, delta_czk}] used for both hashing and
     sizing, sorted so the preview token is stable. Shares
     ``portfolio.normalize_basket`` with the what-if path so the two can never
@@ -67,7 +68,7 @@ def load_basket() -> list[dict]:
         return []
 
 
-def save_basket(trades) -> list[dict]:
+def save_basket(trades: Any) -> list[dict]:
     """Persist a normalized staged basket so the planner and the trade desk share
     one durable source of truth. An empty/cleared basket removes the file."""
     basket = _normalize_basket(trades) if trades else []
@@ -120,7 +121,7 @@ def _fx_by_currency() -> dict[str, float]:
     return out
 
 
-def _resolve_trade_account(requested) -> str:
+def _resolve_trade_account(requested: str | None) -> str:
     """Pick the account to trade. An explicit request must be visible to the
     session. Otherwise prefer IBKR_TRADE_ACCOUNT_ID, then a paper (DU) account,
     then the first one -- paper-first by construction."""
@@ -141,7 +142,7 @@ def _resolve_trade_account(requested) -> str:
     return paper[0] if paper else ids[0]
 
 
-def _parse_snapshot_price(raw) -> float | None:
+def _parse_snapshot_price(raw: Any) -> float | None:
     """CPAPI market-data last-price (field 31) is a string that may carry a
     leading letter flag (e.g. 'C'=prior close) or thousands separators. Extract
     the number, or None if there isn't one."""
@@ -183,7 +184,7 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     snap = ibkr_trade.market_snapshot([conids[s] for s in missing]) if missing else {}
     warnings: list[str] = []
 
-    def price_lookup(sym: str):
+    def price_lookup(sym: str) -> dict | None:
         if sym in price_map:
             return price_map[sym]
         cid = conids.get(sym)
@@ -382,7 +383,7 @@ def _trade_cancel(body: dict) -> dict:
         raise _BadGateway(str(exc)) from exc
 
 
-def _parse_worst_price(raw) -> float | None:
+def _parse_worst_price(raw: Any) -> float | None:
     """Optional worst-acceptable price for a peg: None (use the order's own
     limit), a number, or a numeric string. Anything else is a client error."""
     if raw in (None, ""):
