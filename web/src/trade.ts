@@ -69,6 +69,8 @@ interface TradePreview {
   // Per-target-symbol band context (before/after weight vs band) from the local
   // what-if, so each order can show its effect on its band at confirm time.
   order_bands?: Record<string, OrderBand>;
+  // The local what-if recompute; carries the pre-trade risk delta.
+  local_whatif?: { risk?: RiskDelta } | null;
 }
 
 // One live working order from /api/trade/orders. Field names vary by IBKR
@@ -201,6 +203,67 @@ function weightBandCaption(b: OrderBand): string {
     ? `<span class="trade-band-ok">inside ${esc(band)}</span>`
     : `<span class="trade-band-bad">\u26a0 out of band (${esc(band)})</span>`;
   return `<span class="trade-band-move">${esc(before)} \u2192 ${esc(after)}</span> \u00b7 ${verdict}`;
+}
+
+// Before/after/delta for one risk metric, as risk_delta.py emits it.
+interface RiskPair {
+  before?: number | null;
+  after?: number | null;
+  delta?: number | null;
+}
+
+// The pre-trade risk delta from the local what-if. Concentration + effective
+// names are always present; the correlation-aware pair only when the server had
+// a price series (has_correlation).
+interface RiskDelta {
+  top1_pct?: RiskPair;
+  top5_pct?: RiskPair;
+  effective_names?: RiskPair;
+  effective_bets?: RiskPair;
+  portfolio_vol_pct?: RiskPair;
+  has_correlation?: boolean;
+  warnings?: string[];
+}
+
+// One before -> after risk figure with a coloured delta chip. `higherIsWorse`
+// tints a rise red (concentration/vol) and a fall green; effective-names/bets
+// flip it (more diversification is better).
+function riskMetricHtml(
+  label: string, pair: RiskPair | undefined, unit: string, higherIsWorse: boolean,
+): string {
+  if (!pair || typeof pair.before !== "number" || typeof pair.after !== "number") return "";
+  const d = typeof pair.delta === "number" ? pair.delta : pair.after - pair.before;
+  const worse = higherIsWorse ? d > 0 : d < 0;
+  const tone = Math.abs(d) < 0.05 ? "flat" : worse ? "bad" : "good";
+  const arrow = d > 0 ? "\u2191" : d < 0 ? "\u2193" : "";
+  const sign = d > 0 ? "+" : "";
+  return `<div class="trade-risk-cell">` +
+    `<span class="trade-risk-label">${esc(label)}</span>` +
+    `<span class="trade-risk-move">${esc(pair.before.toFixed(unit === "" ? 1 : 1))}${esc(unit)}` +
+    ` \u2192 ${esc(pair.after.toFixed(1))}${esc(unit)}</span>` +
+    `<span class="trade-risk-delta ${tone}">${esc(arrow)} ${esc(sign + d.toFixed(1))}${esc(unit)}</span>` +
+    `</div>`;
+}
+
+// The basket-level risk panel: what this trade does to concentration and
+// diversification, with any threshold breaches promoted to loud pre-flight
+// warnings. risk.py is a destination view; this brings the same lens to the
+// decision itself.
+function riskPanelHtml(risk: RiskDelta | undefined): string {
+  if (!risk) return "";
+  const cells = [
+    riskMetricHtml("Top-5 concentration", risk.top5_pct, "%", true),
+    riskMetricHtml("Top-1 name", risk.top1_pct, "%", true),
+    riskMetricHtml("Effective names", risk.effective_names, "", false),
+    risk.has_correlation ? riskMetricHtml("Effective bets", risk.effective_bets, "", false) : "",
+    risk.has_correlation ? riskMetricHtml("Portfolio vol", risk.portfolio_vol_pct, "%", true) : "",
+  ].filter(Boolean).join("");
+  if (!cells && !(risk.warnings || []).length) return "";
+  const warns = (risk.warnings || [])
+    .map((w) => `<div class="trade-warn">\u26a0 ${esc(w)}</div>`).join("");
+  return `<div class="trade-risk">` +
+    `<div class="trade-risk-head">Risk impact of this basket</div>` +
+    `<div class="trade-risk-grid">${cells}</div>${warns}</div>`;
 }
 
 function gatewayOrigin(base: string | null | undefined) {
@@ -518,6 +581,11 @@ function renderPreview() {
   });
   table.appendChild(tbody);
   card.appendChild(table);
+
+  // Basket-level risk delta: concentration/diversification before -> after, with
+  // threshold breaches surfaced as pre-flight warnings right where the decision is.
+  const riskHtml = riskPanelHtml(p.local_whatif?.risk);
+  if (riskHtml) card.insertAdjacentHTML("beforeend", riskHtml);
 
   if (liveBlocked) {
     card.appendChild(el("div", "trade-warn",

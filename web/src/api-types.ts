@@ -256,7 +256,26 @@ export interface Whatif {
   after?: { rows?: PlanRow[] } | null;
   before_status?: Record<string, string>;
   tax?: { totals?: Record<string, number> } | null;
+  risk?: RiskDelta | null;
   caveats?: string[];
+}
+
+// Pre-trade risk delta (risk_delta.py). Concentration + effective names are
+// always present; the correlation-aware pair only when a price series was
+// available (has_correlation).
+export interface RiskPair {
+  before?: number | null;
+  after?: number | null;
+  delta?: number | null;
+}
+export interface RiskDelta {
+  top1_pct?: RiskPair;
+  top5_pct?: RiskPair;
+  effective_names?: RiskPair;
+  effective_bets?: RiskPair;
+  portfolio_vol_pct?: RiskPair;
+  has_correlation?: boolean;
+  warnings?: string[];
 }
 
 // ---- jobs (GET /api/deep-job, POST run/import/login/analyze/qa) -----------

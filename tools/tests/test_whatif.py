@@ -97,6 +97,14 @@ class Simulate(unittest.TestCase):
         untargeted = {u["symbol"] for u in wf["after"].get("untargeted", [])}
         self.assertIn("NVDA", untargeted)
 
+    def test_carries_a_pre_trade_risk_delta(self):
+        # REST is the dominant name (80%); buying more of it raises top-1 share.
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "REST", "delta_czk": 100}])
+        risk = wf["risk"]
+        self.assertIn("top1_pct", risk)
+        self.assertGreater(risk["top1_pct"]["after"], risk["top1_pct"]["before"])
+        self.assertFalse(risk["has_correlation"])   # no series in the pure recompute
+
     def test_does_not_mutate_input_holdings(self):
         h = holdings()
         before = h["positions"][0]["base_market_value"]
