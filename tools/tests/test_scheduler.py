@@ -95,6 +95,34 @@ class ShouldQuotes(unittest.TestCase):
         self.assertTrue(scheduler._should_quotes(NOW - dt.timedelta(minutes=61), o))
 
 
+class ShouldOrderWatch(unittest.TestCase):
+    def test_fires_in_the_market_window(self):
+        self.assertTrue(scheduler._should_order_watch(None, obs(market_open=True)))
+
+    def test_skips_outside_the_window(self):
+        self.assertFalse(scheduler._should_order_watch(None, obs(market_open=False)))
+
+    def test_two_minute_throttle(self):
+        o = obs(market_open=True)
+        self.assertFalse(scheduler._should_order_watch(NOW - dt.timedelta(seconds=90), o))
+        self.assertTrue(scheduler._should_order_watch(NOW - dt.timedelta(minutes=3), o))
+
+    def test_flag_is_off_by_default_even_under_the_master(self):
+        # The watcher touches the trading gateway, so it must NOT auto-enable when
+        # only the master refresh switch is set.
+        task = next(t for t in scheduler.TASKS if t.name == "order-watch")
+        self.assertEqual(task.flag_default, "0")
+        os.environ["ASSAY_AUTO_REFRESH"] = "1"
+        os.environ.pop("ASSAY_ORDER_WATCH", None)
+        try:
+            self.assertFalse(scheduler._task_enabled(task))
+            os.environ["ASSAY_ORDER_WATCH"] = "1"
+            self.assertTrue(scheduler._task_enabled(task))
+        finally:
+            os.environ.pop("ASSAY_AUTO_REFRESH", None)
+            os.environ.pop("ASSAY_ORDER_WATCH", None)
+
+
 class MarketWindow(unittest.TestCase):
     def test_parse_gate_hours(self):
         self.assertEqual(scheduler.parse_gate_hours("15:00-22:30"), (900, 1350))

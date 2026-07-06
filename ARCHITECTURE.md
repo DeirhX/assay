@@ -145,9 +145,9 @@ Resolution order for any key: **`os.environ` → `tools/secrets.env` → default
 (`config_value` / `flag_enabled`). Canonical paths (`DATA_DIR`, `RESEARCH_DIR`,
 `HOLDINGS_JSON`, `TARGET_MODEL_JSON`, `DEEP_DIR`, `ANALYSIS_DIR`,
 `SEGMENT_DEF_DIR`, `SEGMENT_OUT_DIR`, …) all live here. Notable env knobs:
-`SEC_USER_AGENT`, `FMP_API_KEY`, the `IBKR_*` trading flags, `ASSAY_AUTO_*`
-scheduler flags, `PPLX_*` automation settings, `REBAL_CLAUDE_CLI` /
-`REBAL_CURSOR_CLI`.
+`SEC_USER_AGENT`, `FMP_API_KEY`, the `IBKR_*` trading flags, `ASSAY_AUTO_*` /
+`ASSAY_ORDER_WATCH` scheduler flags, `ASSAY_NOTIFY*` (notification channel),
+`PPLX_*` automation settings, `REBAL_CLAUDE_CLI` / `REBAL_CURSOR_CLI`.
 
 ### 4.3 The job / task system
 
@@ -168,9 +168,26 @@ and work survives navigation.
 - **`tools/holdings_sync.py`** — IBKR sync / history / sectors jobs.
 - **`tools/scheduler.py`** — an **opt-in, read-only** freshness daemon
   (`ASSAY_AUTO_REFRESH=1`). It reuses the same button-equivalent jobs on a timer:
-  holdings resync (stale > N days), history top-up, stale segment refresh, and a
-  market-hours gate-quote sweep. It **never** trades, calls an LLM, runs
-  Perplexity, or writes the target model.
+  holdings resync (stale > N days), history top-up, stale segment refresh, a
+  market-hours gate-quote sweep, and (default-off, opt-in via `ASSAY_ORDER_WATCH`)
+  an **order/fill watcher**. It **never** trades, calls an LLM, runs Perplexity,
+  or writes the target model. Each task is a pure `should_run(last_run, obs)`
+  predicate plus an action that dispatches through `jobs.spawn`; `tick()` is fully
+  injectable for tests.
+- **`tools/order_watch.py`** — the event loop the connector was missing. Inside
+  the market window it polls the state of orders **the human already placed**
+  (`ibkr_trade.live_orders`) and detects transitions — filled / partial / cancelled
+  / rejected. On a fill it kicks the holdings-resync job (so the planner stops
+  advising off a pre-fill book — there is no plan/overview cache; everything reads
+  the snapshot from disk), records the fill, and emits a notification. If the
+  gateway session drops while orders are working it alerts once. It is strictly
+  read-only w.r.t. the market: it never places, modifies, or cancels an order. The
+  transition logic is pure/unit-tested; the IBKR IO sits behind injectable seams.
+- **`tools/notify.py`** — the outbound channel (also default-off, `ASSAY_NOTIFY=1`
+  plus a sink). Turns supervision from "remember to check" into "get interrupted".
+  Sinks: an ntfy-compatible webhook (`ASSAY_NOTIFY_WEBHOOK`, stdlib `urllib`) and a
+  best-effort Windows toast (`ASSAY_NOTIFY_TOAST`). `notify()` never raises so a
+  broken sink can't take down a scheduler tick.
 
 **Polling:** the frontend Task Center (`web/src/tasks.ts`) polls `GET /api/jobs`
 (fast when active, slow when idle). Inline pipeline status polls

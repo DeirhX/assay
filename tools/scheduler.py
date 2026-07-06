@@ -14,7 +14,12 @@ exactly like a user-initiated one.
 Off by default; opt in with ``ASSAY_AUTO_REFRESH=1`` (env or tools/secrets.env).
 Granular kill switches under the master: ``ASSAY_AUTO_RESYNC``,
 ``ASSAY_AUTO_SEGMENTS``, ``ASSAY_GATE_WATCH`` (each default on when the master is
-on).
+on), and ``ASSAY_ORDER_WATCH`` (the order/fill watcher -- default OFF even under
+the master, since it polls the trading gateway rather than a data provider).
+
+The order watcher is still strictly read-only: it observes the state of orders
+the human already placed and reacts (resync-on-fill, notifications) -- it never
+places, modifies, or cancels anything.
 
 Design: one daemon thread started from serve.py's main path (same discipline as
 ``_reload_watcher``). The thread ticks every 60s, evaluates each task's pure
@@ -39,6 +44,7 @@ import apierror
 import config
 import holdings_sync
 import jobs
+import order_watch
 import overview
 import price_levels
 import quote_cache
@@ -62,6 +68,9 @@ RESYNC_MIN_INTERVAL = dt.timedelta(hours=24)
 HISTORY_MIN_INTERVAL = dt.timedelta(days=7)
 SEGMENT_MIN_INTERVAL = dt.timedelta(hours=24)
 QUOTES_MIN_INTERVAL = dt.timedelta(hours=1)
+# Order/fill watching is an event loop, not a freshness pull, so it ticks far more
+# often than the others -- but only inside the market window (see _should_order_watch).
+ORDER_WATCH_MIN_INTERVAL = dt.timedelta(minutes=2)
 
 # Negative-quote suppression: a symbol that just failed to price is not re-hit
 # until this lapses, so a delisted/renamed name doesn't burn a provider call
@@ -82,7 +91,7 @@ def enabled() -> bool:
 def _task_enabled(task: "Task") -> bool:
     if not enabled():
         return False
-    return task.flag is None or config.flag_enabled(task.flag, "1")
+    return task.flag is None or config.flag_enabled(task.flag, task.flag_default)
 
 
 # --------------------------------------------------------------------------- #
@@ -226,6 +235,15 @@ def _should_quotes(last_run: dt.datetime | None, obs: Obs) -> bool:
     )
 
 
+def _should_order_watch(last_run: dt.datetime | None, obs: Obs) -> bool:
+    # Only inside the market window: fills land during regular hours, and a dropped
+    # session off-hours is the expected daily re-auth (alerting on it would be
+    # noise). poll_once itself no-ops cheaply when the gateway is down/unauthed, so
+    # this predicate stays deliberately simple -- the ASSAY_ORDER_WATCH flag (off by
+    # default, since it touches the trading gateway) is the real opt-in.
+    return obs.market_open and _throttle_ok(last_run, obs.now, ORDER_WATCH_MIN_INTERVAL)
+
+
 # --------------------------------------------------------------------------- #
 # Actions (dispatch real work; return a short result string for the state file)
 # --------------------------------------------------------------------------- #
@@ -276,6 +294,18 @@ def _run_quotes(obs: Obs) -> str:
     return f"quote sweep spawned for {len(batch)} name(s) #{job.get('id', '?')}"
 
 
+def _run_order_watch(obs: Obs) -> str:
+    res = order_watch.poll_once(now=obs.now)
+    if not res.get("ok"):
+        return f"order-watch skipped: {res.get('reason', 'no-op')}"
+    bits = [f"{res.get('orders', 0)} working order(s)"]
+    if res.get("events"):
+        bits.append(f"{res['events']} transition(s)")
+    if res.get("fills"):
+        bits.append(f"{res['fills']} fill(s)" + (", resync kicked" if res.get("resynced") else ""))
+    return "order-watch: " + ", ".join(bits)
+
+
 def _neg_suppressed(entry: Any, now: dt.datetime) -> bool:
     """True if ``entry`` is a recent negative (errored) quote still in cooldown."""
     if not isinstance(entry, dict) or not entry.get("error"):
@@ -318,6 +348,9 @@ class Task:
     run: Callable[[Obs], str]
     label: str = ""
     interval: dt.timedelta = RESYNC_MIN_INTERVAL   # informational: drives next_eligible surfacing
+    # Whether the granular flag is on by default when the master switch is on.
+    # Freshness tasks default on; anything touching the trading gateway opts in.
+    flag_default: str = "1"
 
 
 TASKS: list[Task] = [
@@ -329,6 +362,8 @@ TASKS: list[Task] = [
          label="Segment refresh", interval=SEGMENT_MIN_INTERVAL),
     Task("gate-quotes", "ASSAY_GATE_WATCH", _should_quotes, _run_quotes,
          label="Gate quotes", interval=QUOTES_MIN_INTERVAL),
+    Task("order-watch", "ASSAY_ORDER_WATCH", _should_order_watch, _run_order_watch,
+         label="Order/fill watch", interval=ORDER_WATCH_MIN_INTERVAL, flag_default="0"),
 ]
 
 
