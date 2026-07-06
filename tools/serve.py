@@ -23,7 +23,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -34,7 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (  # noqa: E402
-    ANALYSIS_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
+    DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR, ROOT_STATIC_SUFFIXES,
     SEGMENT_DEF_DIR, SEGMENT_OUT_DIR, TARGET_MODEL_JSON, WEB_DIR,
     set_secret as _set_secret,
 )
@@ -43,11 +42,9 @@ WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
 # Must match pplx_deep_research.default_profile_dir(): the automation worker uses
 # a dedicated profile so it never fights the MCP browser for the profile lock.
 DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
-ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
-from portfolio import holdings_payload, holdings_weights  # noqa: E402
+from portfolio import holdings_payload  # noqa: E402
 from providers import yahoo  # noqa: E402
-import instruments  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
@@ -69,7 +66,6 @@ from symbols import (  # noqa: E402  -- symbol resolve/alias/search (clean publi
     save_alias as _save_symbol_alias, search as _symbol_search,
 )
 from segments_service import (  # noqa: E402  -- segment validate/prompt/list
-    freshness_directive as _freshness_directive,
     segment_path as _segment_path, segment_prompt as _segment_prompt,
     segments_list as _segments_list, start_draft as _start_segment_draft,
     validate_definition as _validate_segment_definition,
@@ -113,6 +109,11 @@ from rebalance_overlay import (  # noqa: E402  -- research overlay + price gate 
     attach_research_overlay as _attach_research_overlay,
 )
 from ibkr_portfolio import load_env_file as _read_env_file  # noqa: E402  -- one KEY=VALUE parser
+import devreload  # noqa: E402  -- opt-in --reload supervisor / watcher / asset token
+from ticker_directory import (  # noqa: E402  -- known-symbol universe, recents index, deep prompt
+    known_tickers as _known_tickers, ticker_deep_prompt as _ticker_deep_prompt,
+    ticker_index as _ticker_index,
+)
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_reconnect, _trade_status, _trade_tickle,
@@ -125,8 +126,7 @@ from store import (  # noqa: E402
     slugify as _slugify, safe_symbol as _safe_symbol,
 )
 from jobs import (  # noqa: E402
-    any_active as _any_active_deep_job, active_count as _active_browser_count,
-    max_slots as _max_browser_slots,
+    active_count as _active_browser_count, max_slots as _max_browser_slots,
 )
 
 
@@ -218,154 +218,6 @@ def _data_status() -> dict:
     }
 
 
-def _ticker_deep_prompt(symbol: str) -> dict:
-    """Single-name Deep Research prompt: the expensive, on-demand counterpart to
-    the cheap per-ticker CLI analysis. Subject is one company, not a segment, so
-    the stem is namespaced ``ticker-<sym>`` and it reuses the same Perplexity
-    run/save/Q&A machinery without polluting the segment list. The FORMAT block
-    mirrors the segment prompt so the scraper's JSON guard and citation handling
-    behave identically."""
-    sym = (symbol or "").strip().upper()
-    if not _TICKER_SHAPE.match(sym):
-        raise ValueError(f"not a recognisable ticker: {symbol!r}")
-    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    weight = holdings_weights().get(sym)
-    prompt = (
-        f"Deep research on {sym} as a long-term investment, as of {today}.\n"
-        "Cover, with evidence: what the business does and how it earns money; the "
-        "most recent quarterly results and management guidance; valuation versus "
-        "its own history and its closest peers; competitive positioning and moat; "
-        "growth drivers and near-term catalysts; the main risks and red flags; and "
-        "an explicit bull case and bear case over the next 6-24 months.\n"
-        f"Identify {sym}'s closest public peers and compare them head-to-head; call "
-        f"out any peer that looks more attractive than {sym} on its own merits.\n"
-        "End with a clear portfolio stance \u2014 accumulate, hold, trim, or avoid "
-        "\u2014 and the specific evidence that would flip that stance.\n"
-        "Include source citations and distinguish facts from opinion. Call out which "
-        "numeric claims need deterministic verification.\n"
-        "On first mention of any public company, append its primary exchange ticker "
-        "with a $ prefix, e.g. 'ServiceNow ($NOW)'. Include a peer comparison table "
-        "with a 'Ticker' column.\n"
-        "Do not ask clarifying questions; if anything is ambiguous, state your "
-        "assumptions and proceed.\n"
-        "FORMAT: write a prose report in Markdown with section headings, paragraphs, "
-        "bullet lists, and Markdown tables. Do NOT return the answer as a JSON object "
-        "or array, and do NOT wrap the whole response in a code block. Structured "
-        "data belongs in Markdown tables, not JSON.\n"
-    )
-    prompt += _freshness_directive(today)
-    if weight is not None:
-        prompt += (
-            f"\nFor context only (do not let it bias your conclusion), I currently "
-            f"hold {sym} at {weight:.2f}% of my invested book.\n"
-        )
-    return {"segment": f"ticker-{sym.lower()}", "symbol": sym, "date": today, "prompt": prompt}
-
-
-
-
-_TICKER_SHAPE = re.compile(r"^[A-Z][A-Z0-9.]{0,5}$")
-
-
-def _known_tickers() -> list[str]:
-    """Curated universe of symbols we actually know about: pulled research
-    dossiers, held positions, and segment members. The UI uses this to decide
-    which bare uppercase tokens in a report are safe to turn into deep-dive
-    links -- a small, relevant set beats the full US/EU universe, which collides
-    badly with English words (NOW, ON, ALL, IT...)."""
-    syms: set[str] = set()
-
-    def add(value) -> None:
-        if isinstance(value, dict):
-            value = value.get("symbol")
-        if not value:
-            return
-        s = str(value).strip().upper()
-        if _TICKER_SHAPE.match(s):
-            syms.add(s)
-
-    for path in RESEARCH_DIR.glob("*.json"):
-        add(path.stem)
-    holdings = _load(HOLDINGS_JSON) or {}
-    for pos in (holdings.get("positions") or []):
-        add(pos)
-    for src_dir in (SEGMENT_DEF_DIR, SEGMENT_OUT_DIR):
-        for path in src_dir.glob("*.json"):
-            data = _load(path) or {}
-            for member in (data.get("members") or data.get("symbols") or []):
-                add(member)
-    return sorted(syms)
-
-
-def _verdict_line(report: str) -> str | None:
-    """The one-liner under an analysis '## Verdict' heading (stance + confidence
-    + justification), stripped of markdown. Used as the recents-list summary."""
-    if not report:
-        return None
-    lines = report.splitlines()
-    for i, line in enumerate(lines):
-        if re.match(r"^#{1,6}\s+verdict\b", line.strip(), re.I):
-            buf: list[str] = []
-            for nxt in lines[i + 1:]:
-                s = nxt.strip()
-                if not s:
-                    if buf:
-                        break
-                    continue
-                if re.match(r"^#{1,6}\s", s):
-                    break
-                buf.append(s)
-            text = re.sub(r"\*\*?|`", "", " ".join(buf)).strip()
-            return text or None
-    return None
-
-
-def _ticker_index() -> list[dict]:
-    """Every ticker we have material on -- a pulled dossier and/or a saved CLI
-    analysis -- with timestamps. The UI merges this with the browser's local
-    view-history to offer a quick "jump back to a ticker" list. Server-side so a
-    fresh browser still sees the tickers of interest, not an empty list."""
-    out: dict[str, dict] = {}
-    for path in RESEARCH_DIR.glob("*.json"):
-        rec = _load(path) or {}
-        sym = path.stem.upper()
-        out[sym] = {
-            "symbol": sym,
-            "name": rec.get("name") or sym,
-            "type": instruments.classify(
-                sym,
-                quote_type=rec.get("quote_type") or rec.get("instrument_type"),
-                profile=rec.get("profile"),
-            ),
-            "as_of": rec.get("as_of"),
-            "analyzed_at": None,
-            "has_analysis": False,
-        }
-    for path in ANALYSIS_DIR.glob("*.meta.json"):
-        meta = _load(path) or {}
-        sym = (meta.get("symbol") or "").upper()
-        if not sym:
-            continue
-        row = out.setdefault(sym, {
-            "symbol": sym, "name": sym, "type": instruments.OTHER, "as_of": None,
-            "analyzed_at": None, "has_analysis": False,
-        })
-        ts = meta.get("generated_at")
-        if ts and (not row["analyzed_at"] or ts > row["analyzed_at"]):
-            row["analyzed_at"] = ts
-        row["has_analysis"] = True
-    # Attach the verdict one-liner from each analyzed ticker's latest note so the
-    # recents list summarizes the call (Accumulate/Hold/Trim/Avoid + why).
-    for row in out.values():
-        if row.get("has_analysis"):
-            latest = _latest_analysis(row["symbol"])
-            if latest:
-                vl = _verdict_line(latest.get("report") or "")
-                if vl:
-                    row["verdict"] = vl
-    return sorted(out.values(), key=lambda r: r["symbol"])
-
-
 def _is_root_static_file(clean: str) -> bool:
     path = Path(clean)
     return (
@@ -373,91 +225,6 @@ def _is_root_static_file(clean: str) -> bool:
         and path.suffix in ROOT_STATIC_SUFFIXES
         and (REPO_ROOT / clean).is_file()
     )
-
-
-# ---- dev live-reload ------------------------------------------------------
-def _assets_version() -> str:
-    """Opaque token that changes whenever a served asset changes OR the server
-    restarts. The browser reloads when this differs from what it last saw."""
-    latest = 0.0
-    for p in WEB_DIR.rglob("*"):
-        if p.is_file():
-            m = p.stat().st_mtime
-            if m > latest:
-                latest = m
-    for p in REPO_ROOT.iterdir():  # root mini-site assets (site.css, *.html)
-        if p.is_file() and p.suffix in ROOT_STATIC_SUFFIXES:
-            m = p.stat().st_mtime
-            if m > latest:
-                latest = m
-    return f"{latest:.3f}-{_BOOT_TOKEN}"
-
-
-def _server_sources() -> list[Path]:
-    """Python files whose edits warrant restarting the API process."""
-    return sorted((REPO_ROOT / "tools").glob("*.py"))
-
-
-def _reload_watcher() -> None:
-    """Child-side watcher. When server code changes, exit with code 3 so the
-    supervisor respawns a fresh process. Guards: never restart on code that fails
-    to compile (keep serving the last good version), and never interrupt an
-    in-flight Deep Research run (defer the exit until it ends)."""
-    mtimes = {p: p.stat().st_mtime for p in _server_sources() if p.exists()}
-    pending = False
-    waited = False
-    while True:
-        time.sleep(1.0)
-        for p in _server_sources():
-            try:
-                m = p.stat().st_mtime
-            except OSError:
-                continue
-            if mtimes.get(p) == m:
-                continue
-            mtimes[p] = m
-            try:
-                compile(p.read_text(encoding="utf-8"), str(p), "exec")
-            except SyntaxError as exc:
-                sys.stderr.write(f"[reload] {p.name}: syntax error, staying on current code ({exc.msg} line {exc.lineno})\n")
-                continue
-            sys.stderr.write(f"[reload] {p.name} changed\n")
-            pending = True
-        if not pending:
-            continue
-        if _any_active_deep_job():
-            if not waited:
-                sys.stderr.write("[reload] change pending; holding restart until deep-research job(s) finish\n")
-                waited = True
-            continue
-        sys.stderr.write("[reload] restarting to apply changes\n")
-        sys.stderr.flush()
-        os._exit(3)
-
-
-def _run_reloader() -> int:
-    """Supervisor (parent). Runs the server as a child and respawns it whenever
-    the child exits with code 3 (a requested reload). Keeps a stable PID and the
-    console, so Ctrl+C and stdout behave normally across reloads -- unlike execv,
-    which on Windows detaches into a new, console-less process."""
-    import subprocess
-
-    child_env = dict(os.environ, _REBAL_RELOAD_CHILD="1")
-    argv = [sys.executable, *sys.argv]
-    print("[reload] supervisor watching tools/*.py — edits restart the API in place")
-    while True:
-        proc = subprocess.Popen(argv, env=child_env)
-        try:
-            code = proc.wait()
-        except KeyboardInterrupt:
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
-            return 0
-        if code == 3:
-            continue  # requested reload -> respawn with the new code
-        return code  # clean exit or crash -> stop supervising
 
 
 # Generous ceiling for JSON POST bodies (Deep Research reports run to a few
@@ -727,7 +494,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET handlers (one per _GET_EXACT / _GET_PREFIX entry) -------------
     def _get_livereload(self, path, query):
-        return self._send_json({"enabled": _RELOAD, "version": _assets_version()})
+        return self._send_json({"enabled": _RELOAD, "version": devreload.assets_version(_BOOT_TOKEN)})
 
     def _get_holdings(self, path, query):
         return self._send_json(holdings_payload())
@@ -1599,8 +1366,8 @@ def main() -> int:
 
     # In --reload mode the first invocation is the supervisor; it re-launches
     # itself as a child (marked via env) that actually serves and self-restarts.
-    if args.reload and os.environ.get("_REBAL_RELOAD_CHILD") != "1":
-        return _run_reloader()
+    if args.reload and os.environ.get(devreload.RELOAD_CHILD_ENV) != "1":
+        return devreload.run_reloader()
 
     # Hard refusal, not a warning: every endpoint is unauthenticated, several
     # write to disk (target model, IBKR credentials) or spawn browser/CLI jobs.
@@ -1634,7 +1401,7 @@ def main() -> int:
     print("  Static UI + JSON API. Localhost only. Pulls run live data sources.")
     if _RELOAD:
         print("  Dev reload ON: editing tools/*.py restarts the API; web/ + site.css edits reload the browser.")
-        threading.Thread(target=_reload_watcher, daemon=True).start()
+        threading.Thread(target=devreload.reload_watcher, daemon=True).start()
     # Read-only background freshness scheduler. No-op unless ASSAY_AUTO_REFRESH=1;
     # every action it takes is one the UI already exposes as a button.
     if scheduler.start():

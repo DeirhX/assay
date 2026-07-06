@@ -22,6 +22,7 @@ import holdings_sync
 import peer_stats
 import segments_service
 import serve
+import ticker_directory
 
 
 class RequestGuards(unittest.TestCase):
@@ -626,8 +627,8 @@ class TickerDeepResearch(unittest.TestCase):
     deep-dive can claim it. Offline -- holdings are stubbed empty."""
 
     def test_ticker_prompt_shape(self):
-        with mock.patch.object(serve, "holdings_weights", return_value={}):
-            rec = serve._ticker_deep_prompt("amd")
+        with mock.patch.object(ticker_directory, "holdings_weights", return_value={}):
+            rec = ticker_directory.ticker_deep_prompt("amd")
         self.assertEqual(rec["segment"], "ticker-amd")
         self.assertEqual(rec["symbol"], "AMD")
         self.assertRegex(rec["date"], r"^\d{4}-\d{2}-\d{2}$")
@@ -649,14 +650,14 @@ class TickerDeepResearch(unittest.TestCase):
         self.assertIn("most recent close", rec["prompt"])
 
     def test_ticker_prompt_appends_held_context(self):
-        with mock.patch.object(serve, "holdings_weights", return_value={"AMD": 12.5}):
-            rec = serve._ticker_deep_prompt("AMD")
+        with mock.patch.object(ticker_directory, "holdings_weights", return_value={"AMD": 12.5}):
+            rec = ticker_directory.ticker_deep_prompt("AMD")
         self.assertIn("currently hold AMD at 12.50%", rec["prompt"])
 
     def test_ticker_prompt_rejects_non_ticker(self):
-        with mock.patch.object(serve, "holdings_weights", return_value={}):
+        with mock.patch.object(ticker_directory, "holdings_weights", return_value={}):
             with self.assertRaises(ValueError):
-                serve._ticker_deep_prompt("not a ticker!")
+                ticker_directory.ticker_deep_prompt("not a ticker!")
 
     def test_enrich_ticker_run_without_segment_def(self):
         rec = {"stem": "ticker-amd-2026-06-13", "files": {"report": "x"}}
@@ -703,7 +704,7 @@ class DeepPromptEndpoint(unittest.TestCase):
             return err.code, json.loads(err.read().decode("utf-8"))
 
     def test_ticker_query_builds_single_name_prompt(self):
-        with mock.patch.object(serve, "holdings_weights", return_value={}):
+        with mock.patch.object(ticker_directory, "holdings_weights", return_value={}):
             status, payload = self._get("/api/deep-prompt?ticker=AMD")
         self.assertEqual(status, 200)
         self.assertEqual(payload["segment"], "ticker-amd")

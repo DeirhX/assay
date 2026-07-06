@@ -22,6 +22,10 @@ REPO_ROOT = TOOLS_DIR.parent
 DATA_DIR = REPO_ROOT / "data"
 RESEARCH_DIR = DATA_DIR / "research"
 WEB_DIR = REPO_ROOT / "web"
+# Repo-root static assets the server will serve directly (the mini-site:
+# privacy.html, site.css, privacy.js ...). Shared by the static-file router and
+# the dev live-reload watcher, which fingerprints the same set.
+ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 
 # The curated, committed portfolio snapshot. Shared by the HTTP server and the
 # holdings-sync service, so it lives on the leaf to avoid an import cycle.
