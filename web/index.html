@@ -73,11 +73,15 @@
   </div>
 
   <main>
+    <!-- Rebalance-group flow bar: current book → plan changes → orders → target
+         state. Shown only for rebalance-group views; wired in flowbar.ts. -->
+    <nav class="flowbar" id="flowbar" aria-label="Rebalance pipeline" hidden></nav>
+
     <!-- STRATEGY (guided Direction -> Rebalance) -->
     <section class="view active" id="view-strategy">
       <div class="strat-head">
         <h2>Direction → Rebalance</h2>
-        <p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. This is the guided path; the Research and Rebalance tabs hold the same steps as standalone tools.</p>
+        <details class="view-help"><summary>How this works</summary><p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. This is the guided path; the Research and Rebalance tabs hold the same steps as standalone tools.</p></details>
       </div>
       <ol class="strat-stages" id="strat-stages" hidden>
         <li data-stage="draft">Draft</li>
@@ -106,7 +110,7 @@
         <input id="ticker-input" placeholder="Enter a ticker (e.g. NVDA, TSM, AMD) and press Enter" autocomplete="off" spellcheck="false">
         <button class="primary" id="ticker-go">Analyze</button>
       </div>
-      <div class="hint">Builds a source-stamped ticker dossier from Yahoo + SEC EDGAR (+ FMP if configured), current holdings, target-model context, and recent pull history. SEC anchors US filers; foreign ADRs lean on Yahoo alone (flagged).</div>
+      <details class="view-help"><summary>How this works</summary><div class="hint">Builds a source-stamped ticker dossier from Yahoo + SEC EDGAR (+ FMP if configured), current holdings, target-model context, and recent pull history. SEC anchors US filers; foreign ADRs lean on Yahoo alone (flagged).</div></details>
       <div class="status" id="dd-status"></div>
       <div id="dd-result"></div>
     </section>
@@ -118,7 +122,7 @@
         <button class="primary" id="segment-run">Run live pull</button>
         <button class="ghost" id="segment-load">Load cached</button>
       </div>
-      <div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s), scores the research queue, and caches the table. Click any row to open its dossier.</div>
+      <details class="view-help"><summary>How this works</summary><div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s), scores the research queue, and caches the table. Click any row to open its dossier.</div></details>
       <div class="status" id="seg-status"></div>
       <div id="seg-result"></div>
     </section>
@@ -347,7 +351,7 @@
       <div class="analyses-head">
         <div class="analyses-head-text">
           <h2>Deep Research reports</h2>
-          <p class="hint">Every saved Perplexity Deep Research run, newest first. Pick one to read its report, sources, and review gate. Use a segment below — or the button — to start a new run.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Every saved Perplexity Deep Research run, newest first. Pick one to read its report, sources, and review gate. Use a segment below — or the button — to start a new run.</p></details>
         </div>
         <button class="primary" id="analyses-new" type="button">+ New run</button>
       </div>
@@ -365,7 +369,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Today</h2>
-          <p class="hint">Where the whole loop stands — holdings freshness, plan drift, anything staged mid-flight, and the research funnel — with the single most useful next step on top. Everything here is a summary; each card links to the view that owns it.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Where the whole loop stands — holdings freshness, plan drift, anything staged mid-flight, and the research funnel — with the single most useful next step on top. Everything here is a summary; each card links to the view that owns it.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="today-refresh" type="button" title="Recompute the overview">Refresh</button>
@@ -379,7 +383,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Rebalance planner</h2>
-          <p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="primary" id="reb-simulate" type="button" title="Recompute the resulting portfolio, cash, and realized Czech tax for the planned trades">Simulate basket</button>
@@ -397,7 +401,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio optimizer</h2>
-          <p class="hint">One candidate pool — everything you hold, plus your basket picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your basket picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and basket pick, feeding the convictions into the pool (runs in the Task Center)">Analyze the pool</button>
@@ -414,7 +418,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Working draft</h2>
-          <p class="hint">A safe scratchpad for changes to your plan. Proposals from strategy runs and manual edits collect here so you can review everything together and apply it in one step. <strong>Commit</strong> makes it live (a backup is kept, so it's reversible); <strong>Discard</strong> throws it away. Pinned names you've chosen are never dropped without flagging it.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">A safe scratchpad for changes to your plan. Proposals from strategy runs and manual edits collect here so you can review everything together and apply it in one step. <strong>Commit</strong> makes it live (a backup is kept, so it's reversible); <strong>Discard</strong> throws it away. Pinned names you've chosen are never dropped without flagging it.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="primary" id="stage-commit" type="button" title="Promote the working draft to the live target model">Commit to portfolio</button>
@@ -430,7 +434,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Exit planner</h2>
-          <p class="hint">A graceful way out of the names the rebalance planner wants to shrink: tax-optimal lot sequencing (Czech 3-year rule), a liquidity-aware multi-day scale-out with a suggested GTC limit ladder, and an options overlay (covered call / protective-put collar). Everything is <strong>advisory</strong> — "Stage tranche" only drops a slice into the Trade desk basket, which you still preview and place yourself. No option orders are ever placed.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">A graceful way out of the names the rebalance planner wants to shrink: tax-optimal lot sequencing (Czech 3-year rule), a liquidity-aware multi-day scale-out with a suggested GTC limit ladder, and an options overlay (covered call / protective-put collar). Everything is <strong>advisory</strong> — "Stage tranche" only drops a slice into the Trade desk basket, which you still preview and place yourself. No option orders are ever placed.</p></details>
         </div>
         <div class="reb-head-actions" id="exit-controls"></div>
       </div>
@@ -444,7 +448,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Watchlist</h2>
-          <p class="hint">A shortlist of tickers you're interested in, starred from anywhere — a deep-dive, a rebalance row, a strategy proposal. It's just interest, not a decision: nothing here is sized or committed. The next step turns your picks into a drafted rebalance plan (with LLM suggestions for names that would round it out).</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">A shortlist of tickers you're interested in, starred from anywhere — a deep-dive, a rebalance row, a strategy proposal. It's just interest, not a decision: nothing here is sized or committed. The next step turns your picks into a drafted rebalance plan (with LLM suggestions for names that would round it out).</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="basket-clear" type="button" title="Remove all picks (your portfolio and plan are untouched)">Clear basket</button>
@@ -459,7 +463,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Trade desk</h2>
-          <p class="hint">Place the staged rebalance basket through Interactive Brokers via the local Client Portal Gateway. Every basket is previewed for margin and commission, and every order needs your explicit confirmation before it is sent. This is the only part of Assay that can place real trades — it is disabled by default and paper-first. Not advice; you are responsible for every order.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Place the staged rebalance basket through Interactive Brokers via the local Client Portal Gateway. Every basket is previewed for margin and commission, and every order needs your explicit confirmation before it is sent. This is the only part of Assay that can place real trades — it is disabled by default and paper-first. Not advice; you are responsible for every order.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="trade-refresh" type="button" title="Re-check the gateway connection and account">Refresh connection</button>
@@ -475,7 +479,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio risk lens</h2>
-          <p class="hint">Single-name bands are blind to the real risk in a concentrated semis/AI book: the names move together. This shows correlation, effective number of independent bets, the share of variance that is pure co-movement, and a factor-shock stress test. It is a decision aid, not a risk oracle — read the caveats.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Single-name bands are blind to the real risk in a concentrated semis/AI book: the names move together. This shows correlation, effective number of independent bets, the share of variance that is pure co-movement, and a factor-shock stress test. It is a decision aid, not a risk oracle — read the caveats.</p></details>
         </div>
         <label class="risk-range-label">Window
           <select id="risk-range">
@@ -496,7 +500,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Decision journal</h2>
-          <p class="hint">Log every decision with its thesis and price. Outcomes (your recorded price, or the live snapshot mark) calibrate whether your judgement actually works — a buy is "right" if it rose, a trim if it fell. Append-only; stored in your private data. Not advice.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Log every decision with its thesis and price. Outcomes (your recorded price, or the live snapshot mark) calibrate whether your judgement actually works — a buy is "right" if it rose, a trim if it fell. Append-only; stored in your private data. Not advice.</p></details>
         </div>
       </div>
       <div class="jrnl-form">
@@ -546,7 +550,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio history</h2>
-          <p class="hint">Your entire executed-trade ledger and day-by-day portfolio value, reconstructed via read-only Flex one ≤365-day window at a time, back to account inception. The chart plots NAV over time with every buy (green) and sell (red) marked on the day it happened. Requires a Flex query that includes the <strong>Trades</strong> section and the <strong>Net Asset Value (NAV) in Base</strong> section (that one emits the daily NAV; not the same as “Change in NAV”). Set <code>IBKR_FLEX_HISTORY_QUERY_ID</code>. Cached privately — not committed.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Your entire executed-trade ledger and day-by-day portfolio value, reconstructed via read-only Flex one ≤365-day window at a time, back to account inception. The chart plots NAV over time with every buy (green) and sell (red) marked on the day it happened. Requires a Flex query that includes the <strong>Trades</strong> section and the <strong>Net Asset Value (NAV) in Base</strong> section (that one emits the daily NAV; not the same as “Change in NAV”). Set <code>IBKR_FLEX_HISTORY_QUERY_ID</code>. Cached privately — not committed.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="primary" id="hist-sync" type="button" title="Fetch only the days since the last pull and merge them in (read-only). The first ever run builds the complete history back to inception.">Update from IBKR</button>
@@ -562,7 +566,7 @@
       <div class="setup-head">
         <div>
           <h2>Settings</h2>
-          <p class="hint">Configure and verify the local CLIs and browser login Assay needs before running paid or quota-backed research. Credentials stay in your local tools and browser profile, not in this repo.</p>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Configure and verify the local CLIs and browser login Assay needs before running paid or quota-backed research. Credentials stay in your local tools and browser profile, not in this repo.</p></details>
         </div>
         <button class="primary" id="setup-refresh" type="button">Refresh checks</button>
       </div>

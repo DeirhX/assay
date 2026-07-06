@@ -320,8 +320,10 @@ function renderRebalance(plan: RebPlan) {
     `<span>snapshot ${freshnessNote(plan.snapshot) || esc(fmtStamp(plan.snapshot))}</span>` +
     `<span>target as of ${esc(plan.as_of || "n/a")}</span>` +
     `<span>cash target ${plan.cash_target_pct}%</span>` +
+    // The full trim priority is a hover detail, not a headline \u2014 the "Fund this
+    // plan" button applies it for you.
     (plan.funding_order && plan.funding_order.length
-      ? `<span>funding order ${plan.funding_order.map(esc).join(" \u2192 ")}</span>` : "") +
+      ? `<span class="reb-meta-hint" title="Funding order (trim priority): ${esc(plan.funding_order.join(" \u2192 "))}, then cash, then the untargeted bucket">funding order \u24d8</span>` : "") +
     `</div>` +
     `<div class="reb-stats">` +
     `<div class="reb-stat"><span class="reb-stat-k">Cash freed by trims</span><span class="reb-stat-v" id="reb-stat-raised">—</span>` +
@@ -354,6 +356,9 @@ function renderRebalance(plan: RebPlan) {
     pos: PosRefs;
   }
   const cells: RowCell[] = [];
+  // Target-row name cells by symbol, so the async working-orders pass below can
+  // badge names that already have an unfilled order at IBKR.
+  const nameCells: Record<string, HTMLElement> = {};
   // Sleeve members are now editable too: each carries an input that stages a real
   // ticker trade into the basket, and the parent sleeve's projected marker tracks
   // the sum of its members' moves.
@@ -457,6 +462,7 @@ function renderRebalance(plan: RebPlan) {
     if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", starHtml(r.name, "rebalance"));
     nameCell.appendChild(sym);
     nameCell.appendChild(el("span", "reb-rule", esc(REB_RULE_LABEL[r.rule] || r.rule)));
+    if (r.kind === "target") nameCells[cleanSymbol(r.name)] = nameCell;
     const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
     if (prov) nameCell.appendChild(prov);
     if (r.note) nameCell.title = r.note;
@@ -641,12 +647,33 @@ function renderRebalance(plan: RebPlan) {
     out.appendChild(det);
   }
 
-  out.appendChild(el("div", "hint",
-    "Suggested amounts move each name to the nearest band edge (the minimal action). " +
-    "Edit any Plan amount to simulate; \u201cReset to suggested\u201d restores them. " +
-    "Cash totals include the sleeves' suggested buys/sells (fixed — you allocate those across members). " +
-    "Net cash > 0 means trims fund the buys; < 0 means you'd need fresh cash — " +
-    "“Fund this plan” fills suggested trims (funding order first, then untargeted names) to cover it."));
+  // The mechanics explainer collapses like the view-header help: it matters the
+  // first few visits, then it's noise under the plan.
+  const mech = el("details", "view-help");
+  mech.innerHTML = `<summary>How amounts, cash, and funding work</summary>` +
+    `<div class="hint">Suggested amounts move each name to the nearest band edge (the minimal action). ` +
+    `Edit any Plan amount to simulate; “Reset to suggested” restores them. ` +
+    `Cash totals include the sleeves' suggested buys/sells (fixed — you allocate those across members). ` +
+    `Net cash &gt; 0 means trims fund the buys; &lt; 0 means you'd need fresh cash — ` +
+    `“Fund this plan” fills suggested trims (funding order first, then untargeted names) to cover it.</div>`;
+  out.appendChild(mech);
+
+  // Unfilled orders already working at IBKR are part of the current state a
+  // suggestion must be judged against - badge the rows that have one. Silent
+  // no-op when trading is disabled or the gateway is down.
+  void api<{ orders?: Array<{ ticker?: string; symbol?: string; side?: string; orderDesc?: string; remainingQuantity?: number | string; status?: string }> }>("/api/trade/orders")
+    .then((res) => {
+      (res.orders || []).forEach((o) => {
+        const osym = cleanSymbol(o.ticker || o.symbol);
+        const cell = nameCells[osym];
+        if (!osym || !cell || cell.querySelector(".reb-working")) return;
+        const chip = el("span", "chip warn reb-working", "⏳ order working");
+        chip.title = (o.orderDesc || `${o.side || ""} ${o.remainingQuantity ?? ""} ${osym} ${o.status || "working"}`.trim()) +
+          " — an unfilled order at IBKR already moves this name; check the Trade tab before staging more";
+        cell.appendChild(chip);
+      });
+    })
+    .catch(() => { /* trading disabled / gateway offline - no badges */ });
 
   // ---- omnifilter: ticker search + status / action / confidence facets -----
   // Pills within a facet OR together; facets AND together; the search box ANDs
@@ -658,6 +685,10 @@ function renderRebalance(plan: RebPlan) {
     { key: "conv", label: "Confidence", opts: [["high", "high"], ["medium", "medium"], ["low", "low"], ["none", "none"]] },
   ];
   const filterBar = el("div", "reb-filter");
+  // The search box + live count stay one line; the three facet-pill rows tuck
+  // behind a "Filters" expander so the default view is a single quiet strip.
+  // The expander auto-opens whenever a facet is active so the state that's
+  // hiding rows is never itself hidden.
   filterBar.innerHTML =
     `<div class="reb-filter-top">` +
       `<div class="reb-filter-search">` +
@@ -666,11 +697,14 @@ function renderRebalance(plan: RebPlan) {
       `<span class="reb-filter-count" id="reb-filter-count"></span>` +
       `<button type="button" class="ghost reb-filter-clear" id="reb-filter-clear">Clear</button>` +
     `</div>` +
+    `<details class="reb-filter-facets" id="reb-filter-facets">` +
+    `<summary>Filters <small class="muted">status · action · confidence</small></summary>` +
     FILTER_FACETS.map((f) =>
       `<div class="reb-filter-row"><span class="reb-filter-label">${f.label}</span>` +
       `<div class="reb-filter-pills" data-facet="${f.key}">` +
       f.opts.map(([v, l]) => `<button type="button" class="reb-fpill" data-val="${esc(v)}">${esc(l)}</button>`).join("") +
-      `</div></div>`).join("");
+      `</div></div>`).join("") +
+    `</details>`;
   out.prepend(filterBar);
 
   const qInput = filterBar.querySelector("#reb-filter-q") as HTMLInputElement;
@@ -723,6 +757,11 @@ function renderRebalance(plan: RebPlan) {
     countEl.textContent = active ? `${shown} of ${filterItems.length} plan names${tail}` : `${filterItems.length} plan names`;
     countEl.classList.toggle("active", active);
     filterBar.classList.toggle("filtering", active);
+    // Never let an active facet hide inside a collapsed expander.
+    if (catActive) {
+      const det = filterBar.querySelector<HTMLDetailsElement>("#reb-filter-facets");
+      if (det) det.open = true;
+    }
   }
 
   filterBar.querySelectorAll(".reb-fpill").forEach((b) => {

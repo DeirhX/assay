@@ -3,6 +3,7 @@ import { initBasket, loadBasket } from "./basket";
 import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { loadDeepRun, pollDeepJob } from "./errors";
+import { initFlowBar, updateFlowBar } from "./flowbar";
 import { initHistoryControls, loadHistory } from "./history";
 import { loadHoldings } from "./holdings";
 import { initJournalControls, loadJournal } from "./journal";
@@ -285,6 +286,11 @@ function updateChrome(active: string) {
   document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
   document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
+
+  // The rebalance group carries the guided flow bar (current book → plan
+  // changes → orders → target state) so the sibling sub-tabs read as one
+  // pipeline rather than five destinations.
+  updateFlowBar(active, group);
 }
 
 function setActiveView(view: string) {
@@ -425,6 +431,7 @@ function initShell() {
   initBasket();
   initOptimizer();
   initOverview();
+  initFlowBar();
 
   window.addEventListener("popstate", (event) => {
     restoreNav(event.state || navFromUrl());
