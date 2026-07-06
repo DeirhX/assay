@@ -5,6 +5,7 @@ dir and symbol resolution is stubbed to identity so no alias file is needed."""
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import _support  # noqa: F401
+import quote_cache
 import rebalance_overlay
 
 
@@ -147,6 +149,9 @@ class PriceGate(unittest.TestCase):
             mock.patch.object(rebalance_overlay, "RESEARCH_DIR", tmp),
             mock.patch.object(rebalance_overlay, "resolve_symbol", lambda s: s),
             mock.patch.object(price_levels, "LEVELS_JSON", tmp / "price-levels.json"),
+            # Point the fresh-quote cache at an empty temp path so the overlay's
+            # quote-overlay step is inert unless a test writes a quote itself.
+            mock.patch.object(quote_cache, "QUOTES_JSON", tmp / "quotes.json"),
         ]
         for p in self._patches:
             p.start()
@@ -259,6 +264,33 @@ class PriceGate(unittest.TestCase):
         self.assertEqual(row["action"], "wait")
         self.assertEqual(row["price_gate"]["blocked_action"], "buy")
         self.assertEqual(row["price_gate"]["applied_fraction"], 0.0)
+
+    def _write_quote(self, sym, price, *, hours_ago):
+        at = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_ago)).isoformat()
+        quote_cache.save({sym: {"price": price, "currency": "USD", "at": at}})
+
+    def test_fresh_quote_beats_a_stale_holdings_mark(self):
+        # Mark says 100 (would block a buy_below=92), but a fresh quote at 90
+        # crossed the level today -> the gate opens within the hour.
+        self.price_levels.lock("AMD", buy_below=92, currency="USD")
+        self._write_quote("AMD", 90.0, hours_ago=1)
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 1.0}]}
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 100.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "buy")             # fresh quote unblocks
+        self.assertEqual(row["price_gate"]["current"], 90.0)
+
+    def test_stale_quote_loses_to_the_holdings_mark(self):
+        # A 10h-old quote is past the 4h freshness window, so the mark wins.
+        self.price_levels.lock("AMD", buy_below=92, currency="USD")
+        self._write_quote("AMD", 90.0, hours_ago=10)
+        plan = {"rows": [{"kind": "target", "held": True, "name": "AMD",
+                          "action": "buy", "suggest_delta_pct": 1.0}]}
+        rebalance_overlay.attach_research_overlay(plan, self._holdings("AMD", 100.0))
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "wait")            # mark 100 still blocks
+        self.assertEqual(row["price_gate"]["current"], 100.0)
 
 
 if __name__ == "__main__":

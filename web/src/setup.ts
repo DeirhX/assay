@@ -45,11 +45,22 @@ interface SetupData {
   target_model?: { exists?: boolean };
 }
 
+interface AutomationTask {
+  name: string;
+  label: string;
+  enabled: boolean;
+  last_run?: string | null;
+  last_result?: string | null;
+  next_eligible?: string | null;
+}
+interface AutomationStatus { enabled?: boolean; tasks?: AutomationTask[] }
+
 interface SetupState {
   llm: LlmStatus;
   perplexity?: { logged_in?: boolean };
   ibkr?: Record<string, any>;
   data?: SetupData;
+  automation?: AutomationStatus;
   environment?: Record<string, any>;
 }
 
@@ -342,6 +353,15 @@ function setupSteps(st: SetupState): SetupStep[] {
       render: () => renderPerplexity(st),
     },
     {
+      id: "automation",
+      title: "Background auto-refresh",
+      required: false,
+      done: !!st.automation?.enabled,
+      partial: false,
+      state: st.automation?.enabled ? "On — keeping data fresh" : "Optional — refresh data by hand",
+      render: () => renderAutomation(st),
+    },
+    {
       id: "env",
       title: "Environment",
       required: false,
@@ -540,6 +560,28 @@ function renderEnvironment(st: SetupState) {
       `<div class="setup-row"><strong>FMP API key</strong>${badge(env.fmp_api_key, env.fmp_api_key ? "set" : "optional")}</div>` +
       `<p class="hint">FMP is optional. If set, it gives a third opinion for some market-cap and profile fields.</p>` +
     `</details>`;
+  return wrap;
+}
+
+function renderAutomation(st: SetupState) {
+  const a = st.automation || {};
+  const on = !!a.enabled;
+  const wrap = el("div", "setup-body-inner");
+  const rows = (a.tasks || []).map((t) => {
+    const when = t.last_run ? esc(t.last_run.slice(0, 16).replace("T", " ")) : "never";
+    const result = t.last_result ? ` — ${esc(t.last_result)}` : "";
+    const off = t.enabled ? "" : ` <span class="setup-optional">(off)</span>`;
+    return `<li><strong>${esc(t.label)}</strong>${off}: last ran ${when}${result}</li>`;
+  }).join("");
+  wrap.innerHTML =
+    `<p class="hint">While the server is running, keep the app's own data current — holdings snapshot, ` +
+      `portfolio history, segment caches, and prices for gated names — by running the same read-only jobs ` +
+      `the buttons already trigger, on a schedule. <strong>Strictly read-only:</strong> it never stages, sizes, ` +
+      `or places a trade, and never spends LLM/Perplexity quota.</p>` +
+    toggle("setup-auto-refresh", "Enable background auto-refresh (ASSAY_AUTO_REFRESH)", on) +
+    ` <span class="status" id="setup-auto-status"></span>` +
+    (rows ? `<div class="setup-row" style="margin-top:12px"><strong>Recent activity</strong></div><ul class="setup-list">${rows}</ul>`
+          : `<p class="setup-small">No background runs recorded yet.</p>`);
   return wrap;
 }
 
@@ -772,7 +814,20 @@ function wireSetup() {
     if (t && /^setup-(claude|cursor)-enabled$/.test(t.id || "")) {
       t.closest(".setup-provider")?.classList.toggle("disabled", !t.checked);
     }
+    if (t && t.id === "setup-auto-refresh") void saveAutomation(t.checked);
   });
+}
+
+async function saveAutomation(enabled: boolean) {
+  const status = $("#setup-auto-status");
+  if (status) { status.classList.remove("err"); status.textContent = "Saving…"; }
+  try {
+    await api("/api/setup/automation", "POST", { enabled });
+    if (status) status.textContent = enabled ? "On — the scheduler is armed." : "Off.";
+    await loadSetup();
+  } catch (e) {
+    if (status) { status.classList.add("err"); status.textContent = "Could not save: " + (e as Error).message; }
+  }
 }
 
 async function loadSetup() {

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import (  # noqa: E402
     ANALYSIS_DIR, DEEP_DIR, HOLDINGS_JSON, REPO_ROOT, RESEARCH_DIR,
     SEGMENT_DEF_DIR, SEGMENT_OUT_DIR, TARGET_MODEL_JSON, WEB_DIR,
+    set_secret as _set_secret,
 )
 
 WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
@@ -57,6 +58,7 @@ import exit_plan  # noqa: E402  -- advisory graceful-exit planner (tax-timed sca
 import whatif  # noqa: E402
 import journal  # noqa: E402
 import jobs  # noqa: E402
+import scheduler  # noqa: E402  -- read-only background freshness scheduler (off by default)
 import orchestrate  # noqa: E402  -- durable state machine for the guided strategy run
 import errorlog  # noqa: E402
 from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile math
@@ -185,6 +187,7 @@ def _setup_status(*, run_checks: bool = False) -> dict:
         "perplexity": _get_auth_state(),
         "ibkr": _ibkr_status(),
         "data": _data_status(),
+        "automation": {"enabled": scheduler.enabled(), "tasks": scheduler.task_status()},
         "environment": {
             "sec_user_agent": bool(os.environ.get("SEC_USER_AGENT")),
             "fmp_api_key": bool(os.environ.get("FMP_API_KEY")),
@@ -547,6 +550,7 @@ _POST_EXACT = {
     "/api/analysis-config": "_post_analysis_config",
     "/api/setup/check": "_post_setup_check",
     "/api/setup/ibkr": "_post_setup_ibkr",
+    "/api/setup/automation": "_post_setup_automation",
     "/api/deep-research/save": "_post_deep_save",
     "/api/deep-research/run": "_post_deep_run",
     "/api/deep-research/login": "_post_deep_login",
@@ -799,6 +803,9 @@ class Handler(BaseHTTPRequestHandler):
             "journal": overview.journal_summary(journal.load_entries(), now=now),
             "research": overview.research_summary(
                 basket.enriched_items(), _ticker_index(), segs, seg_records, now=now),
+            "automation": overview.automation_summary(
+                scheduler.load_state(), scheduler.task_status(),
+                enabled=scheduler.enabled(), now=now),
         }
         payload["next_step"] = overview.next_step(payload)
         return self._send_json(payload)
@@ -1172,6 +1179,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(400, str(exc))
         except OSError as exc:
             return self._send_error_json(500, f"could not write secrets: {exc}")
+
+    def _post_setup_automation(self, path):
+        # Toggle the read-only background scheduler (ASSAY_AUTO_REFRESH). Persists
+        # to tools/secrets.env and takes effect live: enabling starts the daemon
+        # without a restart; disabling makes every task a no-op on the next tick.
+        body = self._read_body()
+        on = bool(body.get("enabled"))
+        try:
+            _set_secret("ASSAY_AUTO_REFRESH", "1" if on else "0")
+        except OSError as exc:
+            return self._send_error_json(500, f"could not write secrets: {exc}")
+        os.environ["ASSAY_AUTO_REFRESH"] = "1" if on else "0"
+        if on:
+            scheduler.start()
+        return self._send_json({"enabled": scheduler.enabled(), "tasks": scheduler.task_status()})
 
     def _post_deep_save(self, path):
         body = self._read_body()
@@ -1579,6 +1601,10 @@ def main() -> int:
     if _RELOAD:
         print("  Dev reload ON: editing tools/*.py restarts the API; web/ + site.css edits reload the browser.")
         threading.Thread(target=_reload_watcher, daemon=True).start()
+    # Read-only background freshness scheduler. No-op unless ASSAY_AUTO_REFRESH=1;
+    # every action it takes is one the UI already exposes as a button.
+    if scheduler.start():
+        print("  Auto-refresh ON: background scheduler keeps holdings/segments/quotes current.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

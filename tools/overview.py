@@ -45,6 +45,54 @@ def age_days(stamp: Any, now: dt.datetime | None = None) -> int | None:
     return max(0, int((_now(now) - parsed).total_seconds() // 86400))
 
 
+def _parse_dt(stamp: Any) -> dt.datetime | None:
+    if not stamp:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+
+
+def automation_summary(
+    state: dict | None,
+    tasks: list[dict] | None,
+    *,
+    enabled: bool,
+    now: dt.datetime | None = None,
+) -> dict:
+    """Background-scheduler surface for the Today cockpit. Pure over the persisted
+    run-state dict (``{task: {last_run, last_result}}``) plus a list of task
+    descriptors (``{name, label, enabled, interval_s}``) so this module never
+    imports the scheduler. Returns ``{enabled, any_ran, tasks: [...]}`` with a
+    computed ``next_eligible`` per task."""
+    now = _now(now)
+    rows: list[dict] = []
+    any_ran = False
+    for t in tasks or []:
+        rec = (state or {}).get(t.get("name")) or {}
+        last_run = rec.get("last_run")
+        if last_run:
+            any_ran = True
+        parsed = _parse_dt(last_run)
+        interval_s = t.get("interval_s")
+        next_eligible = (
+            (parsed + dt.timedelta(seconds=interval_s)).isoformat(timespec="seconds")
+            if parsed and interval_s else None
+        )
+        rows.append({
+            "name": t.get("name"),
+            "label": t.get("label") or t.get("name"),
+            "enabled": bool(t.get("enabled")),
+            "last_run": last_run,
+            "last_result": rec.get("last_result"),
+            "age_days": age_days(last_run, now),
+            "next_eligible": next_eligible,
+        })
+    return {"enabled": bool(enabled), "any_ran": any_ran, "tasks": rows}
+
+
 # --------------------------------------------------------------------------- #
 # Portfolio lane
 # --------------------------------------------------------------------------- #

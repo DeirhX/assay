@@ -28,14 +28,13 @@ Standard library only.
 from __future__ import annotations
 
 import json
-import os
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
-from config import TOOLS_SECRETS, read_env_file as load_env_file
+from config import TOOLS_SECRETS, config_value as _config_value
 
 SECRETS_FILE = TOOLS_SECRETS
 USER_AGENT = "assay-ibkr-trade/1.0 (+stdlib)"
@@ -45,14 +44,8 @@ DEFAULT_GATEWAY_BASE = "https://localhost:5000/v1/api"
 # --------------------------------------------------------------------------- #
 # Config / safety flags
 # --------------------------------------------------------------------------- #
-def _config_value(key: str, default: str = "") -> str:
-    """Resolve a config value from the live env first, then the gitignored
-    secrets.env, then the default. Mirrors the Flex reader's resolution order so
-    both halves of the IBKR integration read the same file."""
-    val = os.environ.get(key)
-    if val is None:
-        val = load_env_file(SECRETS_FILE).get(key)
-    return (val if val is not None else default).strip()
+# _config_value is now config.config_value (env -> tools/secrets.env -> default),
+# re-exported under the old name so trade_service and this module keep working.
 
 
 def _truthy(val: str) -> bool:

@@ -239,6 +239,32 @@ def momentum(symbol: str) -> dict[str, Any]:
     }
 
 
+def latest_price(symbol: str) -> dict[str, Any]:
+    """Just the latest price for a symbol, cheaply -- the background quote sweep's
+    workhorse. Prefers the meta ``regularMarketPrice`` (intraday), falls back to
+    the last daily close. Returns ``{price, currency, at}`` (``at`` is ISO-8601
+    UTC of the market time when Yahoo reports it, else now). Raises ProviderError
+    when there is no usable price so the caller can cache a negative result."""
+    result = chart(symbol, rng="5d", interval="1d")
+    meta = result.get("meta", {})
+    price = _raw(meta.get("regularMarketPrice"))
+    if price is None:
+        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+        closes = [c for c in (quote.get("close") or []) if c is not None]
+        price = float(closes[-1]) if closes else None
+    if price is None or not price:
+        raise ProviderError(f"Yahoo chart has no usable price for {symbol}")
+    market_ts = meta.get("regularMarketTime")
+    when = (dt.datetime.fromtimestamp(market_ts, dt.timezone.utc)
+            if isinstance(market_ts, (int, float)) and market_ts
+            else dt.datetime.now(dt.timezone.utc))
+    return {
+        "price": round(float(price), 4),
+        "currency": meta.get("currency"),
+        "at": when.isoformat(timespec="seconds"),
+    }
+
+
 def _round(x: float | None) -> float | None:
     return None if x is None else round(x, 2)
 

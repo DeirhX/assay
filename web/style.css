@@ -3028,6 +3028,7 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .today-card-title { font-weight: 700; font-size: 13px; }
 .today-card-body { font-size: 13px; color: var(--text); line-height: 1.5; }
 .today-warn-text { color: var(--warn); }
+.today-auto-text { color: var(--muted); }
 .today-card-actions { display: flex; gap: 8px; margin-top: 10px; }
 .today-card-actions button { font-size: 12px; padding: 4px 12px; }
 
