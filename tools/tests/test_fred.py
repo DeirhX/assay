@@ -51,6 +51,23 @@ class FredParsing(unittest.TestCase):
         self.assertEqual(node["change_1y_display"], "+3.0% YoY")
 
 
+class FredSingleSeries(unittest.TestCase):
+    def test_series_snapshot_fetches_one_series(self):
+        rows = [("2024-06-13", "4.00"), ("2025-06-13", "4.50")]
+        with mock.patch.object(fred, "http_get", return_value=_csv("DGS10", rows)) as get:
+            snap = fred.series_snapshot("DGS10")
+        self.assertEqual(get.call_count, 1)  # one CSV, not the nine-series fan-out
+        self.assertIn("DGS10", snap["series"])
+        self.assertEqual(snap["series"]["DGS10"]["value"], 4.5)
+        self.assertEqual(snap["errors"], [])
+
+    def test_series_snapshot_records_error_not_raises(self):
+        with mock.patch.object(fred, "http_get", side_effect=fred.ProviderError("boom")):
+            snap = fred.series_snapshot("DGS10")
+        self.assertEqual(snap["series"], {})
+        self.assertTrue(snap["errors"])
+
+
 class FredHelpers(unittest.TestCase):
     def test_display(self):
         self.assertEqual(fred._display(4.2, "%"), "4.20%")

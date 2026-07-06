@@ -48,6 +48,7 @@ CACHE_DIR = REPO_ROOT / "data" / "cache" / "risk"
 TRADING_DAYS = 252
 MIN_OBS = 30  # below this, correlations/betas are too thin to trust
 CACHE_TTL_SECONDS = 12 * 3600
+FETCH_WORKERS = 8  # cold cache: fan the per-symbol Yahoo pulls out instead of serial
 
 # Factor-shock scenarios. Each maps a factor ETF to a hypothetical move; every
 # holding's exposure is its OLS beta to that factor over the sample window. SOXX
@@ -403,6 +404,28 @@ def _researchable_weights(holdings: dict[str, Any]) -> list[dict[str, str | floa
     return rows
 
 
+def _fetch_series_many(
+    providers: list[str],
+    *,
+    rng: str,
+    fetch: Callable[[str, str], list[dict[str, Any]] | None] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Load price series for a set of provider symbols, fanned out across a small
+    thread pool. Cold, this turns ~30 serial Yahoo round-trips into a handful of
+    parallel batches; warm, every call is a disk hit and the pool is trivial.
+    Each symbol writes its own cache file, so there is no shared mutable state."""
+    uniq = list(dict.fromkeys(p for p in providers if p))
+    if not uniq:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+    out: dict[str, list[dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(uniq))) as pool:
+        for provider, pts in zip(uniq, pool.map(lambda p: load_price_series(p, rng=rng, fetch=fetch), uniq)):
+            if pts:
+                out[provider] = pts
+    return out
+
+
 def risk_report(
     holdings: dict[str, Any],
     *,
@@ -415,23 +438,22 @@ def risk_report(
     rows = _researchable_weights(holdings)
 
     # Weights keyed by the display symbol; fetch by provider symbol but report
-    # the broker-facing name the rest of the UI uses.
+    # the broker-facing name the rest of the UI uses. All the network pulls
+    # (holdings + factor ETFs) go out together so a cold load isn't serial.
     weights: dict[str, float] = {}
-    series: dict[str, list[dict[str, Any]]] = {}
+    display_provider: list[tuple[str, str]] = []
     for r in rows:
         display, provider = str(r["display"]), str(r["provider"])
         weights[display] = float(r["weight_pct"])
-        pts = load_price_series(provider, rng=rng, fetch=fetch)
-        if pts:
-            series[display] = pts
+        display_provider.append((display, provider))
 
-    factor_series: dict[str, list[dict[str, Any]]] = {}
-    for sc in scenarios:
-        f = sc.get("factor")
-        if f and f not in factor_series:
-            pts = load_price_series(f, rng=rng, fetch=fetch)
-            if pts:
-                factor_series[f] = pts
+    factors = [str(sc["factor"]) for sc in scenarios if sc.get("factor")]
+    by_provider = _fetch_series_many(
+        [p for _d, p in display_provider] + factors, rng=rng, fetch=fetch)
+
+    series = {display: by_provider[provider] for display, provider in display_provider
+              if provider in by_provider}
+    factor_series = {f: by_provider[f] for f in factors if f in by_provider}
 
     report = analyze(weights, series, scenarios=scenarios, factor_series=factor_series)
     report["range"] = rng

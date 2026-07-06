@@ -116,6 +116,28 @@ def macro_snapshot() -> dict[str, Any]:
     return out
 
 
+def series_snapshot(series_id: str) -> dict[str, Any]:
+    """Snapshot for a single FRED series, shaped like :func:`macro_snapshot` so a
+    caller that needs just one number (e.g. the options overlay's ``DGS10``
+    risk-free rate) fetches one CSV instead of paying for the whole nine-series
+    fan-out. Falls back to a bare spec for ids outside :data:`SERIES`."""
+    spec = next(
+        (s for s in SERIES if s["id"] == series_id),
+        {"id": series_id, "label": series_id, "category": "", "unit": "", "note": ""},
+    )
+    out: dict[str, Any] = {
+        "source": "fred",
+        "as_of": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "series": {},
+        "errors": [],
+    }
+    try:
+        out["series"][series_id] = _series_snapshot(spec)
+    except ProviderError as exc:
+        out["errors"].append(f"{series_id}: {exc}")
+    return out
+
+
 def _series_snapshot(spec: dict[str, str]) -> dict[str, Any]:
     rows = _fetch_rows(spec["id"])
     if not rows:

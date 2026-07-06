@@ -144,11 +144,71 @@ function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
   head.appendChild(meta);
   card.appendChild(head);
 
-  card.appendChild(taxBlock(p));
-  card.appendChild(scheduleBlock(p, baseCcy));
+  // The headline: one plain-language recommendation + the primary action. The
+  // tax/liquidity/options machinery that justifies it lives in the expander so
+  // the card reads as "do this" first, "here's the math" on demand.
+  card.appendChild(recommendationBlock(p));
+
+  const hasOpts = !!(p.options && (p.options.covered_call || p.options.protective_put));
+  const details = el("details", "exit-details");
+  const summary = el("summary", "exit-details-summary");
+  summary.textContent = `Show details — tax layering, scale-out schedule${hasOpts ? ", options overlay" : ""}`;
+  details.appendChild(summary);
+  details.appendChild(taxBlock(p));
+  details.appendChild(scheduleBlock(p, baseCcy));
   const opt = optionsBlock(p);
-  if (opt) card.appendChild(opt);
+  if (opt) details.appendChild(opt);
+  card.appendChild(details);
   return card;
+}
+
+// One-sentence "what to do", built from the same numbers the details expand on.
+function recommendationBlock(p: ExitPosition): HTMLElement {
+  const box = el("div", "exit-reco");
+  const t = p.tax;
+  const s = p.schedule;
+  const keepPct = p.current_czk > 0 ? (100 * (p.current_czk - p.exit_czk)) / p.current_czk : 0;
+  const verb = p.end_state === "zero" ? "Exit fully" : `Reduce to ${pct(p.target_pct, 2)}`;
+  const keepStr = p.end_state === "zero" ? "" : ` <span class="muted">Keeps ${pct(keepPct, 0)} of the position.</span>`;
+
+  let timing: string;
+  if (t.sell_now_czk <= 0 && t.defer_czk > 0) {
+    timing = `Hold all ${czk(t.defer_czk)} for now — every lot is a near-exempt taxable gain, so selling today just donates tax`;
+  } else if (t.defer_czk > 0) {
+    timing = `Sell ${czk(t.sell_now_czk)} now, hold back ${czk(t.defer_czk)} until the near-exempt lots turn tax-free`;
+  } else {
+    timing = `The whole ${czk(p.exit_czk)} can be sold now`;
+  }
+  const taxBits: string[] = [];
+  if (t.harvested_loss_now > 0) taxBits.push(`harvests ${czk(t.harvested_loss_now)} of loss`);
+  if (t.exempt_gain_now > 0) taxBits.push(`banks ${czk(t.exempt_gain_now)} tax-free`);
+  if (t.taxable_gain_now > 0) taxBits.push(`realizes ~${czk(t.tax_cost_now)} tax`);
+  const taxStr = taxBits.length ? ` — ${taxBits.join(", ")}` : (t.sell_now_czk > 0 ? " — no tax cost" : "");
+  const liq = s.tranches.length > 1
+    ? ` Work it out over ${s.tranches.length} slices${s.adv ? ` (~${Math.round(cfg.adv_slice_pct * 100)}% of ADV/day)` : ""}.`
+    : "";
+  const thin = s.tranches.some((tr) => tr.over_adv_cap)
+    ? ` <span class="warn">Thin name — slices may move the price.</span>` : "";
+
+  const lead = el("div", "exit-reco-lead");
+  lead.innerHTML = `<span class="exit-reco-verb">${verb}:</span> sell <strong>${fmtNum(p.exit_shares)} sh</strong> (${czk(p.exit_czk)}).${keepStr}`;
+  box.appendChild(lead);
+  const sub = el("div", "exit-reco-sub");
+  sub.innerHTML = `${timing}${taxStr}.${liq}${thin}`;
+  box.appendChild(sub);
+
+  if (s.tranches.length) {
+    const first = s.tranches[0];
+    const cta = el("button", "primary exit-reco-cta");
+    cta.type = "button";
+    cta.textContent = s.tranches.length > 1
+      ? `Stage first slice (${fmtNum(first.shares)} sh) →`
+      : `Stage the sell (${fmtNum(first.shares)} sh) →`;
+    cta.title = "Drop this slice into the Trade desk basket (you still preview & place it)";
+    cta.addEventListener("click", () => stageTranche(p.symbol, first.index, cta));
+    box.appendChild(cta);
+  }
+  return box;
 }
 
 function fmtNum(v: number | null | undefined): string {
@@ -159,13 +219,36 @@ function fmtNum(v: number | null | undefined): string {
 // ---- tax layering ----------------------------------------------------------
 function taxBlock(p: ExitPosition): HTMLElement {
   const box = el("div", "exit-section");
-  box.appendChild(el("h3", "exit-h3", "Tax layering"));
+  const keepPct = p.current_czk > 0 ? (100 * (p.current_czk - p.exit_czk)) / p.current_czk : 0;
+  const sub = p.end_state === "zero"
+    ? `<span class="exit-h3-sub">full exit — nothing kept</span>`
+    : `<span class="exit-h3-sub">of the current ${czk(p.current_czk)} position (keeping ${pct(keepPct, 0)})</span>`;
+  box.appendChild(el("h3", "exit-h3", `Tax layering ${sub}`));
   const t = p.tax;
 
-  const bars = el("div", "exit-taxbars");
-  const total = Math.max(1, t.sell_now_czk + t.defer_czk);
-  bars.appendChild(taxBar("Sell now", t.sell_now_czk, total, "good"));
-  bars.appendChild(taxBar("Defer", t.defer_czk, total, "warn"));
+  // One bar over the WHOLE position so a partial reduce reads as partial: the
+  // sell-now (green) + defer (amber) slices are what leaves, the muted remainder
+  // is what stays. (The old two bars normalized to the exit amount, so a trim
+  // with no deferral showed a misleading full "Sell now" bar.)
+  const sellNow = Math.max(0, t.sell_now_czk);
+  const defer = Math.max(0, t.defer_czk);
+  const keep = Math.max(0, p.current_czk - p.exit_czk);
+  const total = Math.max(1, sellNow + defer + keep);
+  const w = (v: number) => ((v / total) * 100).toFixed(1);
+  const seg = (v: number, cls: string, label: string) =>
+    v > 0 ? `<span class="exit-posbar-seg ${cls}" style="width:${w(v)}%" title="${esc(label)} — ${((v / total) * 100).toFixed(0)}% of the position"></span>` : "";
+  const legend = (cls: string, label: string, v: number) =>
+    `<span class="exit-legend"><i class="exit-dot ${cls}"></i>${esc(label)} <b>${czk(v)}</b></span>`;
+  const bars = el("div", "exit-posbar-wrap");
+  bars.innerHTML =
+    `<div class="exit-posbar" role="img" aria-label="share of the current position sold now, deferred, and kept">` +
+      seg(sellNow, "good", "Sell now") + seg(defer, "warn", "Defer") + seg(keep, "keep", "Keep") +
+    `</div>` +
+    `<div class="exit-posbar-legend">` +
+      legend("good", "Sell now", sellNow) +
+      (defer > 0 ? legend("warn", "Defer", defer) : "") +
+      (keep > 0 ? legend("keep", "Keep", keep) : "") +
+    `</div>`;
   box.appendChild(bars);
 
   const notes = el("div", "exit-taxnotes hint");
@@ -194,16 +277,6 @@ function taxBlock(p: ExitPosition): HTMLElement {
     box.appendChild(defer);
   }
   return box;
-}
-
-function taxBar(label: string, value: number, total: number, cls: string): HTMLElement {
-  const w = Math.max(0, Math.min(100, (value / total) * 100));
-  const row = el("div", "exit-taxbar");
-  row.innerHTML =
-    `<span class="exit-taxbar-k">${esc(label)}</span>` +
-    `<span class="exit-taxbar-track"><span class="exit-taxbar-fill ${esc(cls)}" style="width:${w.toFixed(1)}%"></span></span>` +
-    `<span class="exit-taxbar-v">${czk(value)}</span>`;
-  return row;
 }
 
 // ---- schedule --------------------------------------------------------------
