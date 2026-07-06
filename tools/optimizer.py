@@ -197,7 +197,9 @@ def build_pool(*, model: dict | None = None, holdings: dict | None = None,
     return pool
 
 
-def _derive_conviction(*, band, pin, basket, held_pct, review=None):
+def _derive_conviction(*, band: dict[str, Any] | None, pin: dict[str, Any] | None,
+                       basket: dict[str, Any] | None, held_pct: float | None,
+                       review: str | None = None) -> tuple[str, str, str]:
     """Conviction (+ where it came from) for a pool name, by precedence:
     explicit basket conviction > pin stance > portfolio-review conviction >
     existing target rule > basket tier > held-carry default. Returns

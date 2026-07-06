@@ -32,7 +32,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- single source of truth for position weights
@@ -404,7 +404,8 @@ def _suggest(rule: str, status: str, cur: float, low: float, high: float) -> tup
 
 def _allocate_sleeve_members(
     sl: dict[str, Any], members: list[str], weights: dict[str, float],
-    czk, action: str | None, delta: float, provenance: dict[str, Any],
+    czk: Callable[[float | None], int | None], action: str | None, delta: float,
+    provenance: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """Turn a sleeve's *aggregate* buy/trim suggestion into per-member advice so
     the UI can show which names to act on, in what order, and stage member trades
@@ -484,7 +485,9 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
 
-    def add_row(key, name, kind, rule, cur, low, high, note, members=None, interactive=True):
+    def add_row(key: str, name: str, kind: str, rule: str, cur: float, low: float,
+                high: float, note: Any, members: list[dict[str, Any]] | None = None,
+                interactive: bool = True) -> None:
         status = _status(cur, low, high)
         action, delta = _suggest(rule, status, cur, low, high)
         mid = (low + high) / 2.0

@@ -30,6 +30,7 @@ cycle.
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 from config import DATA_DIR
 from store import load as _load, safe_symbol as _safe_symbol, write_json as _write_json
@@ -42,7 +43,7 @@ LEVELS_JSON = DATA_DIR / "price-levels.json"
 _SIZE_EPS = 1e-6
 
 
-def _coerce_price(value) -> float | None:
+def _coerce_price(value: Any) -> float | None:
     """A positive float, or None for blank/absent. Raises ValueError on a value
     that is present but not a sane price (negative, zero, non-numeric)."""
     if value is None or value == "":
@@ -56,7 +57,7 @@ def _coerce_price(value) -> float | None:
     return out
 
 
-def _opt_price(value) -> float | None:
+def _opt_price(value: Any) -> float | None:
     """Forgiving price coercion for reads: a positive finite float, else None."""
     try:
         return _coerce_price(value)
@@ -64,7 +65,7 @@ def _opt_price(value) -> float | None:
         return None
 
 
-def _opt_float(value) -> float | None:
+def _opt_float(value: Any) -> float | None:
     """Any finite float (margins can be 0), else None. Forgiving."""
     if value is None or value == "":
         return None
@@ -75,7 +76,7 @@ def _opt_float(value) -> float | None:
     return out if out == out and out not in (float("inf"), float("-inf")) else None
 
 
-def _coerce_size(value) -> float | None:
+def _coerce_size(value: Any) -> float | None:
     """A positive finite fraction, or None for absent (caller fills a default)."""
     if value is None or value == "":
         return None
@@ -88,7 +89,7 @@ def _coerce_size(value) -> float | None:
     return out
 
 
-def _build_ladder(raw, side: str, fair_value: float | None) -> list[dict]:
+def _build_ladder(raw: Any, side: str, fair_value: float | None) -> list[dict]:
     """Normalize a raw ladder (a list of tranche dicts) into sorted, fully-sized
     tranches. ``side`` is "buy" or "trim". A tranche may give an absolute
     ``price`` or a margin (``discount_pct``/``premium_pct``) resolved against
@@ -135,7 +136,9 @@ def _build_ladder(raw, side: str, fair_value: float | None) -> list[dict]:
     return tranches
 
 
-def _assemble(fair_value, buy_ladder, trim_ladder, buy_below=None, trim_above=None):
+def _assemble(fair_value: Any, buy_ladder: Any, trim_ladder: Any,
+              buy_below: Any = None, trim_above: Any = None
+              ) -> tuple[float | None, list[dict], list[dict]]:
     """Resolve a fair value plus both ladders from either the new ladder payload
     or the legacy ``buy_below``/``trim_above`` single levels. Forgiving (drops
     bad tranches); cross-side and fair-value validation is the caller's job."""
@@ -149,8 +152,9 @@ def _assemble(fair_value, buy_ladder, trim_ladder, buy_below=None, trim_above=No
     return fv, buy, trim
 
 
-def normalize_suggested(*, fair_value=None, buy_ladder=None, trim_ladder=None,
-                        buy_below=None, trim_above=None, currency: str = "") -> dict:
+def normalize_suggested(*, fair_value: Any = None, buy_ladder: Any = None,
+                        trim_ladder: Any = None, buy_below: Any = None,
+                        trim_above: Any = None, currency: str = "") -> dict:
     """The canonical *suggested* shape written to an analysis .meta.json and read
     by the deep-dive editor: fair value, both ladders, and the mirrored outermost
     buy_below/trim_above for back-compat. Pure; never raises."""
@@ -200,9 +204,9 @@ def get(symbol: str) -> dict | None:
     return entry if isinstance(entry, dict) else None
 
 
-def lock(symbol: str, *, fair_value=None, buy_ladder=None, trim_ladder=None,
-         buy_below=None, trim_above=None, currency: str = "",
-         source: dict | None = None) -> dict:
+def lock(symbol: str, *, fair_value: Any = None, buy_ladder: Any = None,
+         trim_ladder: Any = None, buy_below: Any = None, trim_above: Any = None,
+         currency: str = "", source: dict | None = None) -> dict:
     """Persist (upsert) a level for *symbol*. Accepts either the new ladder
     payload (``fair_value`` + ``buy_ladder``/``trim_ladder``) or the legacy
     single ``buy_below``/``trim_above``. At least one tranche must survive
