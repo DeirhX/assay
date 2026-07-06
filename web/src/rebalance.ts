@@ -1,50 +1,23 @@
 import { starHtml } from "./basket";
 import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { CashBlock, FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
+import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
+import {
+  clampPct, computePlan, connectorGeom, DELTA_EPS, fundingNeededCzk, inBandAfter,
+  parseDelta, projectedCash, r1, rebDefaultDelta, rebScaleMax, scalePct, tradesFrom,
+} from "./rebalance-model";
+import type { MemberInput, RowInput, SleeveInput } from "./rebalance-model";
 
 // ---- rebalance planner -----------------------------------------------------
 // Plan/row/what-if shapes are the API contract, so they live in ./api-types as
-// the single source of truth (no local shadows). The aliases keep the call
-// sites below reading in planner vocabulary.
+// the single source of truth (no local shadows). All plan arithmetic lives in
+// ./rebalance-model (pure, unit-tested); this module owns the DOM only.
 
 const rebStatusClass = (s: string | null | undefined) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
 const rebActionClass = (a: string | null | undefined) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
-// Weights are percent of the invested book, so size money off invested value
-// (not NAV) — that keeps a row's CZK equal to its actual market value.
-const pctToCzk = (pct: number | null | undefined, base: number | null | undefined) =>
-  (typeof base === "number" && pct != null ? Math.round((pct / 100) * base) : null);
-// Default planned amount: prefill the minimal band-closing trade only for clear
-// trim/buy actions. "review" (accumulate over ceiling) and untargeted names are
-// judgement calls, so they start at zero — the human decides.
-const rebDefaultDelta = (r: Pick<RebRow, "action" | "suggest_delta_pct">) => (r.action === "trim" || r.action === "buy" ? r.suggest_delta_pct : 0);
-
-// Projected cash after the currently-edited plan: current cash plus the plan's
-// net CZK, graded against the cash band (% of NAV). The cash target used to be
-// display-only; this is what makes "this basket leaves you under your cash
-// floor" visible while you edit. Exported for tests. Null = no cash data.
-export function projectedCash(cash: CashBlock | null | undefined, netCzk: number | null) {
-  if (!cash || typeof cash.nav !== "number" || cash.nav <= 0) return null;
-  const czk = cash.czk + (netCzk || 0);
-  const pct = (czk / cash.nav) * 100;
-  const cls = pct < cash.low - 0.01 ? "bad" : pct > cash.high + 0.01 ? "warn" : "good";
-  return { czk, pct, cls };
-}
-
-// How much fresh cash the edited plan still needs: the net shortfall (buys
-// minus trims) less whatever cash sits above the cash-band floor. 0 = the plan
-// self-funds. Exported for tests.
-export function fundingNeededCzk(netCzk: number | null, cash: CashBlock | null | undefined): number {
-  const shortfall = -(netCzk || 0);
-  if (shortfall <= 0) return 0;
-  const headroom = cash && typeof cash.nav === "number" && cash.nav > 0
-    ? Math.max(0, cash.czk - (cash.low / 100) * cash.nav)
-    : 0;
-  return Math.max(0, Math.round(shortfall - headroom));
-}
 
 // The applied-funding summary card (pure; exported for tests): which trims got
 // filled in, from which bucket, and what each would realize tax-wise.
@@ -77,22 +50,6 @@ export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[
 // current weight as a ghost tick, and the projected weight (current + planned
 // delta) as a live tick that slides as you edit the plan. Far more skimmable
 // than reading three numeric columns.
-const r1 = (n: number) => Math.round(n * 10) / 10;
-const clampPct = (v: number) => Math.max(0, Math.min(100, v));
-
-// One axis for the whole plan: round the largest band edge / weight / projection
-// up to a friendly multiple of 5, with a 10% floor so a book of small bands
-// still reads.
-function rebScaleMax(rows: RebRow[]): number {
-  let max = 0;
-  for (const r of rows) {
-    if (typeof r.high === "number") max = Math.max(max, r.high);
-    if (typeof r.current_pct === "number") max = Math.max(max, r.current_pct);
-    const proj = (r.current_pct || 0) + (r.suggest_delta_pct || 0);
-    max = Math.max(max, proj);
-  }
-  return Math.max(10, Math.ceil(max / 5) * 5);
-}
 
 // Refs into a row's track that recompute() nudges live as the plan changes.
 interface PosRefs { proj: HTMLElement; conn: HTMLElement; curP: number; }
@@ -102,7 +59,7 @@ interface PosRefs { proj: HTMLElement; conn: HTMLElement; curP: number; }
 // suggested amount.
 function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRefs } {
   const cell = el("div", "reb-c reb-pos");
-  const toP = (v: number) => clampPct((v / scaleMax) * 100);
+  const toP = (v: number) => scalePct(v, scaleMax);
   const low = typeof r.low === "number" ? r.low : 0;
   const high = typeof r.high === "number" ? r.high : low;
   const zL = toP(low);
@@ -111,7 +68,7 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
   const defDelta = r.interactive ? rebDefaultDelta(r) : (r.suggest_delta_pct || 0);
   const projInit = (r.current_pct || 0) + defDelta;
   const projP = toP(projInit);
-  const inBand0 = projInit >= low - 0.01 && projInit <= high + 0.01;
+  const inBand0 = inBandAfter(projInit, low, high);
 
   const meta =
     `<span class="reb-pos-cur">${r.current_pct.toFixed(2)}%</span>` +
@@ -772,86 +729,72 @@ function renderRebalance(plan: RebPlan) {
   });
   applyFilter();
 
+  // Slide a track's projected tick + redraw the current→projected connector.
+  const paintTrack = (pos: PosRefs, proj: number, inBand: boolean, delta: number) => {
+    const projP = scalePct(proj, scaleMax);
+    const geom = connectorGeom(pos.curP, projP);
+    pos.proj.style.left = `${r1(projP)}%`;
+    pos.proj.title = `projected ${proj.toFixed(2)}%`;
+    pos.proj.classList.toggle("in", inBand);
+    pos.proj.classList.toggle("out", !inBand);
+    pos.conn.style.left = `${r1(geom.left)}%`;
+    pos.conn.style.width = `${r1(geom.width)}%`;
+    pos.conn.classList.toggle("buy", delta > DELTA_EPS);
+    pos.conn.classList.toggle("sell", delta < -DELTA_EPS);
+  };
+
+  const plannedCzkHtml = (delta: number, czkAmount: number | null, empty: string) =>
+    (delta
+      ? sensitive(`${delta > 0 ? "+" : "−"}${fmtCZK(Math.abs(czkAmount || 0))} CZK`, "planned trade size")
+      : empty);
+
   function recompute() {
-    let raised = 0, spent = 0, closed = 0, total = 0;
-    cells.forEach(({ r, input, czk, projPct, projBand, row, pos }) => {
-      total += 1;
-      let d = parseFloat(input.value);
-      if (!Number.isFinite(d)) d = 0;
-      const proj = r.current_pct + d;
-      const inBand = proj >= r.low - 0.01 && proj <= r.high + 0.01;
-      if (inBand) closed += 1;
-      if (d < 0) raised += -d; else spent += d;
+    // All plan arithmetic lives in the pure model (rebalance-model.ts); this
+    // function only reads the edited inputs and paints the computed results.
+    const rowInputs: RowInput[] = cells.map(({ r, input }) =>
+      ({ current: r.current_pct, low: r.low, high: r.high, delta: parseDelta(input.value) }));
+    const sleeveInputs: SleeveInput[] = sleeveUnits.map(({ r, members }) => ({
+      current: r.current_pct, low: r.low, high: r.high,
+      members: members.map((mc): MemberInput =>
+        ({ cur: mc.cur, target: mc.target, cap: mc.cap, delta: parseDelta(mc.input.value) })),
+    }));
+    const comp = computePlan(rowInputs, sleeveInputs,
+      untargetedCells.map((uc) => parseDelta(uc.input.value)), base);
 
-      czk.innerHTML = d
-        ? sensitive(`${d > 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(pctToCzk(d, base)))} CZK`, "planned trade size")
-        : "<span class=\"muted\">no change</span>";
-      projPct.textContent = `${proj.toFixed(2)}%`;
-      projBand.textContent = inBand ? "in band" : "out";
-      projBand.className = "chip reb-proj-band " + (inBand ? "good" : "warn");
-      row.classList.toggle("planned-sell", d < -0.001);
-      row.classList.toggle("planned-buy", d > 0.001);
-
-      // Slide the projected tick + draw the current→projected connector live.
-      const projP = clampPct((proj / scaleMax) * 100);
-      pos.proj.style.left = `${r1(projP)}%`;
-      pos.proj.title = `projected ${proj.toFixed(2)}%`;
-      pos.proj.classList.toggle("in", inBand);
-      pos.proj.classList.toggle("out", !inBand);
-      pos.conn.style.left = `${r1(Math.min(pos.curP, projP))}%`;
-      pos.conn.style.width = `${r1(Math.abs(projP - pos.curP))}%`;
-      pos.conn.classList.toggle("buy", d > 0.001);
-      pos.conn.classList.toggle("sell", d < -0.001);
+    comp.rows.forEach((res, i) => {
+      const { czk, projPct, projBand, row, pos } = cells[i];
+      czk.innerHTML = plannedCzkHtml(res.delta, res.czk, "<span class=\"muted\">no change</span>");
+      projPct.textContent = `${res.proj.toFixed(2)}%`;
+      projBand.textContent = res.inBand ? "in band" : "out";
+      projBand.className = "chip reb-proj-band " + (res.inBand ? "good" : "warn");
+      row.classList.toggle("planned-sell", res.delta < -DELTA_EPS);
+      row.classList.toggle("planned-buy", res.delta > DELTA_EPS);
+      paintTrack(pos, res.proj, res.inBand, res.delta);
     });
 
-    // Sleeve members are editable now, so the headline sums the per-member
+    // Sleeve members are editable too, so the headline sums the per-member
     // amounts (which default to the server's split of the sleeve buy/trim). Each
     // sleeve's projected marker slides to current + the sum of its members' moves
     // so the aggregate band still reads true.
-    sleeveUnits.forEach(({ r, pos, members }) => {
-      let sum = 0;
-      members.forEach((mc) => {
-        let d = parseFloat(mc.input.value);
-        if (!Number.isFinite(d)) d = 0;
-        sum += d;
-        if (d < 0) raised += -d; else spent += d;
-        const mproj = mc.cur + d;
-        const overCap = mc.cap != null && mproj > mc.cap + 0.01;
-        mc.czk.innerHTML = d
-          ? sensitive(`${d > 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(pctToCzk(d, base)))} CZK`, "planned trade size")
-          : "<span class=\"muted\">no change</span>";
-        mc.proj.innerHTML = `${mproj.toFixed(2)}%` +
-          (overCap ? ` <span class="chip warn" title="over its member cap">cap</span>` : "");
-        mc.proj.classList.toggle("good", !overCap && mproj >= mc.target - 0.01);
+    comp.sleeves.forEach((sres, i) => {
+      const unit = sleeveUnits[i];
+      sres.members.forEach((mres, j) => {
+        const mc = unit.members[j];
+        mc.czk.innerHTML = plannedCzkHtml(mres.delta, mres.czk, "<span class=\"muted\">no change</span>");
+        mc.proj.innerHTML = `${mres.proj.toFixed(2)}%` +
+          (mres.overCap ? ` <span class="chip warn" title="over its member cap">cap</span>` : "");
+        mc.proj.classList.toggle("good", mres.atTarget);
       });
-      const proj = r.current_pct + sum;
-      const inBand = proj >= r.low - 0.01 && proj <= r.high + 0.01;
-      const projP = clampPct((proj / scaleMax) * 100);
-      pos.proj.style.left = `${r1(projP)}%`;
-      pos.proj.title = `projected ${proj.toFixed(2)}%`;
-      pos.proj.classList.toggle("in", inBand);
-      pos.proj.classList.toggle("out", !inBand);
-      pos.conn.style.left = `${r1(Math.min(pos.curP, projP))}%`;
-      pos.conn.style.width = `${r1(Math.abs(projP - pos.curP))}%`;
-      pos.conn.classList.toggle("buy", sum > 0.001);
-      pos.conn.classList.toggle("sell", sum < -0.001);
+      paintTrack(unit.pos, sres.proj, sres.inBand, sres.sum);
     });
 
     // Untargeted names have no band to project against; their edited amounts
     // still move the cash math (that's their whole role: funding).
-    untargetedCells.forEach((uc) => {
-      let d = parseFloat(uc.input.value);
-      if (!Number.isFinite(d)) d = 0;
-      if (d < 0) raised += -d; else spent += d;
-      uc.czk.innerHTML = d
-        ? sensitive(`${d > 0 ? "+" : "−"}${fmtCZK(Math.abs(pctToCzk(d, base)))} CZK`, "planned trade size")
-        : "";
+    comp.untargeted.forEach((ures, i) => {
+      untargetedCells[i].czk.innerHTML = plannedCzkHtml(ures.delta, ures.czk, "");
     });
 
-    const raisedCzk = pctToCzk(raised, base);
-    const spentCzk = pctToCzk(spent, base);
-    const net = raised - spent;
-    const netCzk = pctToCzk(net, base);
+    const { raised, spent, net, closed, total, raisedCzk, spentCzk, netCzk, fundMax } = comp.totals;
     $("#reb-stat-raised").innerHTML =
       `${sensitive(`${fmtCZK(raisedCzk)} CZK`, "cash freed")} <small>${raised.toFixed(2)}%</small>`;
     $("#reb-stat-spent").innerHTML =
@@ -896,7 +839,6 @@ function renderRebalance(plan: RebPlan) {
 
     // Funding bars: freed vs needed on a shared scale, so a glance shows whether
     // trims cover the buys (freed ≥ needed) or you'd need fresh cash.
-    const fundMax = Math.max(raised, spent, 0.01);
     const barRaised = $("#reb-bar-raised");
     const barSpent = $("#reb-bar-spent");
     const barClosed = $("#reb-bar-closed");
@@ -918,10 +860,7 @@ function renderRebalance(plan: RebPlan) {
   // "Fund this plan": ask the server which names to trim (funding_order first,
   // then untargeted, floors respected, tax-annotated), fill the amounts into
   // the same editable inputs as any hand edit, and summarise what was applied.
-  const nonZero = (input: HTMLInputElement) => {
-    const d = parseFloat(input.value);
-    return Number.isFinite(d) && Math.abs(d) > 0.001;
-  };
+  const nonZero = (input: HTMLInputElement) => Math.abs(parseDelta(input.value)) > DELTA_EPS;
   const fundBtnEl = $<HTMLButtonElement>("#reb-fund");
   if (fundBtnEl) {
     fundBtnEl.onclick = async () => {
@@ -962,32 +901,16 @@ function renderRebalance(plan: RebPlan) {
   const simBtn = $<HTMLButtonElement>("#reb-simulate");
   if (simBtn) {
     simBtn.onclick = async () => {
-      const trades: WhatifTrade[] = [];
-      cells.forEach(({ r, input }) => {
-        const d = parseFloat(input.value);
-        if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
-        const czk = pctToCzk(d, base);
-        if (czk == null || czk === 0) return;
-        trades.push({ symbol: r.name, delta_czk: czk });
-      });
-      // Sleeve members stage as real ticker trades — the simulator recomputes the
-      // sleeve aggregate from them, so the "after" band reflects your member buys.
-      sleeveUnits.forEach(({ members }) => members.forEach((mc) => {
-        const d = parseFloat(mc.input.value);
-        if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
-        const czk = pctToCzk(d, base);
-        if (czk == null || czk === 0) return;
-        trades.push({ symbol: mc.symbol, delta_czk: czk });
-      }));
-      // Untargeted funding trims are trades like any other — the simulator and
-      // trade desk don't care that no band governs the name.
-      untargetedCells.forEach((uc) => {
-        const d = parseFloat(uc.input.value);
-        if (!Number.isFinite(d) || Math.abs(d) < 0.001) return;
-        const czk = pctToCzk(d, base);
-        if (czk == null || czk === 0) return;
-        trades.push({ symbol: uc.symbol, delta_czk: czk });
-      });
+      // Every edited amount, from all three sections, in planner order. Sleeve
+      // members stage as real ticker trades — the simulator recomputes the
+      // sleeve aggregate from them — and untargeted funding trims are trades
+      // like any other; the noise-floor / CZK filtering lives in tradesFrom.
+      const entries: { symbol: string; delta: number }[] = [];
+      cells.forEach(({ r, input }) => entries.push({ symbol: r.name, delta: parseDelta(input.value) }));
+      sleeveUnits.forEach(({ members }) => members.forEach((mc) =>
+        entries.push({ symbol: mc.symbol, delta: parseDelta(mc.input.value) })));
+      untargetedCells.forEach((uc) => entries.push({ symbol: uc.symbol, delta: parseDelta(uc.input.value) }));
+      const trades: WhatifTrade[] = tradesFrom(entries, base);
       // Share the staged basket with the Trade desk so it can preview/place the
       // exact same trades you just simulated here. Persisted server-side too, so
       // it survives a reload / navigation instead of living only in this tab.
@@ -1164,8 +1087,9 @@ function taxDetails(r: RebRow) {
 export {
   rebStatusClass,
   rebActionClass,
-  pctToCzk,
-  rebDefaultDelta,
   loadRebalance,
   renderRebalance,
 };
+// The pure plan math moved to ./rebalance-model; re-exported so existing
+// imports (tests, other views) keep one stable entry point.
+export { fundingNeededCzk, pctToCzk, projectedCash, rebDefaultDelta } from "./rebalance-model";
