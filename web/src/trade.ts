@@ -40,13 +40,21 @@ interface TradePreview {
   is_paper?: boolean;
   live_allowed?: boolean;
   account?: string;
+  kind?: string;
   warnings?: string[];
   preview_ttl_s?: number;
   orders?: TradeOrder[];
   // The raw IBKR margin/commission blob; shape varies per account/order type.
   ibkr_preview?: any;
-  trades?: unknown;
+  // The normalized basket the token binds to: [{symbol, delta_czk}]. Echoed to
+  // /api/trade/place and used here for the last-mile money facts on the modal.
+  trades?: Array<{ symbol: string; delta_czk: number }>;
   token?: string;
+  // Structured snapshot staleness (mirrors the prose warning) so the UI can
+  // turn it into a soft gate instead of parsing the warnings[] strings.
+  snapshot_age_days?: number | null;
+  snapshot_stale?: boolean;
+  stale_after_days?: number;
 }
 
 // One live working order from /api/trade/orders. Field names vary by IBKR
@@ -93,9 +101,16 @@ let _preview: TradePreview | null = null;  // last /api/trade/preview (carries t
 // The basket as it was placed — snapshotted before the staged store is cleared,
 // so the "Log to journal" next step can still describe the executed trades.
 let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
-// Mirrors the server's preview TTL: when it lapses, the Place button locks and
-// asks for a re-preview (the server enforces the same window on its side).
-let _previewExpiry: ReturnType<typeof setTimeout> | null = null;
+// Mirrors the server's preview TTL: a 1s interval both counts the remaining time
+// down on the Place button and locks it when the window lapses (the server
+// enforces the same window on its side). Interval, not timeout, so the button
+// can show "1:42 left" instead of silently flipping to expired.
+let _previewTimer: ReturnType<typeof setInterval> | null = null;
+// Symbols of the working orders resting at IBKR, upper-cased, cached from the
+// last renderLiveOrders. The preview cross-checks the staged basket against
+// these so a new SELL NVDA on top of a live GTC trim ladder is flagged before
+// it double-fills — the preview path never fetches orders itself.
+let _workingSymbols = new Set<string>();
 // While any order is being pegged, poll the working-orders card so reprices
 // show without the user hitting Refresh. Cleared when no peg is active.
 let _pegPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -110,6 +125,7 @@ function gatewayOrigin(base: string | null | undefined) {
 
 async function loadTrade() {
   const token = nextToken("trade");
+  stopPreviewCountdown();  // a re-entry drops any previous preview's countdown
   const wrap = $("#trade-result");
   if (wrap) wrap.innerHTML = "";
   const refresh = $("#trade-refresh");
@@ -205,22 +221,33 @@ function renderBasket() {
   wrap.appendChild(card);
 }
 
+// The bare preview round-trip + render, factored out so the stale-snapshot
+// resync can re-issue it (fresh marks -> the staleness gate clears itself)
+// without owning a Preview button.
+async function requestPreview(): Promise<void> {
+  _preview = await api<TradePreview>("/api/trade/preview", "POST", {
+    trades: state.stagedBasket || [],
+    account: _status && _status.default_account,
+  });
+  renderPreview();
+}
+
 async function doPreview(btn: HTMLButtonElement) {
   const status = $("#trade-preview-status");
   if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> previewing\u2026`; }
   if (btn) btn.disabled = true;
   try {
-    _preview = await api<TradePreview>("/api/trade/preview", "POST", {
-      trades: state.stagedBasket || [],
-      account: _status && _status.default_account,
-    });
+    await requestPreview();
     if (status) status.textContent = "";
-    renderPreview();
   } catch (e) {
     if (status) { status.classList.add("err"); status.textContent = "preview failed: " + e.message; }
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+function stopPreviewCountdown() {
+  if (_previewTimer) { clearInterval(_previewTimer); _previewTimer = null; }
 }
 
 function renderPreview() {
@@ -261,17 +288,37 @@ function renderPreview() {
     card.appendChild(el("div", "hint", "IBKR did not return a margin/commission preview (some accounts or order types omit it). Confirm carefully."));
   }
 
-  // Per-order confirmation. Place stays disabled until every box is ticked.
+  // Per-order confirmation. Place stays disabled until every box is ticked, the
+  // stale-snapshot gate is cleared, and the preview hasn't timed out.
   const confirmState = p.orders.map(() => false);
+  // A stale holdings snapshot arms a soft gate: the sizing math trusts its marks,
+  // so Place is locked until the user resyncs or explicitly accepts stale marks.
+  let staleAck = !p.snapshot_stale;
+  let expired = false;
+  // Seconds left on the preview window; null when there's nothing to count
+  // (no TTL, or already expired). Drives the live countdown on the button.
+  let secondsLeft: number | null = p.preview_ttl_s ? Math.round(p.preview_ttl_s) : null;
+
   const placeBtn = el("button", "danger", "");
   placeBtn.type = "button";
+  const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.max(0, s % 60)).padStart(2, "0")}`;
 
-  const refreshPlaceBtn = () => {
-    const all = confirmState.every(Boolean);
-    placeBtn.disabled = !all || liveBlocked;
-    placeBtn.textContent = liveBlocked
-      ? "Live placement locked"
-      : `Place ${p.orders.length} order${p.orders.length === 1 ? "" : "s"} on ${isLive ? "LIVE" : "paper"}`;
+  const paintPlaceBtn = () => {
+    if (liveBlocked) {
+      placeBtn.disabled = true;
+      placeBtn.textContent = "Live placement locked";
+      return;
+    }
+    if (expired) {
+      placeBtn.disabled = true;
+      placeBtn.textContent = "Preview expired — re-preview";
+      placeBtn.title = "Prices and sizes are stale; run Preview again to re-arm placement";
+      return;
+    }
+    placeBtn.disabled = !(confirmState.every(Boolean) && staleAck);
+    const n = p.orders.length;
+    const base = `Place ${n} order${n === 1 ? "" : "s"} on ${isLive ? "LIVE" : "paper"}`;
+    placeBtn.textContent = secondsLeft != null ? `${base} — ${mmss(secondsLeft)} left` : base;
   };
 
   const table = el("table", "trade-orders-table");
@@ -281,10 +328,13 @@ function renderPreview() {
     const tr = el("tr");
     const cb = el("input");
     cb.type = "checkbox";
-    cb.addEventListener("change", () => { confirmState[i] = cb.checked; refreshPlaceBtn(); });
+    cb.addEventListener("change", () => { confirmState[i] = cb.checked; paintPlaceBtn(); });
     const td = el("td");
     td.appendChild(cb);
     tr.appendChild(td);
+    const sym = String(o.symbol || "").trim().toUpperCase();
+    const collides = !!sym && _workingSymbols.has(sym);
+    if (collides) tr.classList.add("trade-collide-row");
     tr.insertAdjacentHTML("beforeend",
       `<td>${esc(o.symbol || o.conid)}</td>` +
       `<td>${sideTag(o.side)}</td>` +
@@ -292,6 +342,18 @@ function renderPreview() {
       `<td>${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} / ${esc(o.tif)}</td>` +
       `<td class="muted">${esc(o.conid)}</td>`);
     tbody.appendChild(tr);
+    if (collides) {
+      // A working order already rests on this symbol — placing another risks a
+      // double fill. Loud, row-level, but not a hard block (the user may be
+      // deliberately reconciling); they still tick the box to own the decision.
+      const note = el("tr", "trade-collide-note");
+      const cell = el("td");
+      cell.colSpan = 6;
+      cell.innerHTML = `\u26a0 <strong>${esc(sym)}</strong> already has a working order at IBKR \u2014 ` +
+        `placing this could double-trade. Cancel or reconcile the existing order (see Working orders below) before you tick this.`;
+      note.appendChild(cell);
+      tbody.appendChild(note);
+    }
   });
   table.appendChild(tbody);
   card.appendChild(table);
@@ -301,45 +363,202 @@ function renderPreview() {
       "Live placement is locked. Set IBKR_ALLOW_LIVE=1 only after you have validated this flow on the paper account."));
   }
 
+  // Stale-snapshot soft gate: a one-click resync (the job already exists) or an
+  // explicit opt-out. Either arms Place; until then it stays locked.
+  if (p.snapshot_stale) {
+    const gate = el("div", "trade-stale-gate");
+    gate.appendChild(el("div", "trade-stale-msg",
+      `\u26a0 Holdings snapshot is <strong>${esc(p.snapshot_age_days)} day(s)</strong> old \u2014 ` +
+      `order sizes come from its marks. Resync before placing real orders.`));
+    const row = el("div", "trade-stale-actions");
+    const resync = el("button", "ghost", "Resync from IBKR");
+    resync.type = "button";
+    resync.addEventListener("click", () => void resyncStaleSnapshot(resync));
+    const ack = el("label", "trade-stale-ack");
+    const ackBox = el("input") as HTMLInputElement;
+    ackBox.type = "checkbox";
+    ackBox.addEventListener("change", () => { staleAck = ackBox.checked; paintPlaceBtn(); });
+    ack.appendChild(ackBox);
+    ack.appendChild(document.createTextNode(" Size from stale marks anyway"));
+    row.appendChild(resync);
+    row.appendChild(ack);
+    gate.appendChild(row);
+    card.appendChild(gate);
+  }
+
   const actions = el("div", "trade-actions");
-  const allBtn = el("button", "ghost", "Confirm all");
-  allBtn.type = "button";
-  allBtn.onclick = () => {
-    table.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb, i) => { cb.checked = true; confirmState[i] = true; });
-    refreshPlaceBtn();
-  };
+  // "Confirm all" nukes the per-order attention ritual in one click — fine on
+  // paper, exactly wrong on a live account, so it's omitted there.
+  if (!isLive) {
+    const allBtn = el("button", "ghost", "Confirm all");
+    allBtn.type = "button";
+    allBtn.onclick = () => {
+      table.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb, i) => { cb.checked = true; confirmState[i] = true; });
+      paintPlaceBtn();
+    };
+    actions.appendChild(allBtn);
+  }
   placeBtn.onclick = () => doPlace(placeBtn);
-  actions.appendChild(allBtn);
   actions.appendChild(placeBtn);
   card.appendChild(actions);
   card.appendChild(el("div", "status", "")).id = "trade-place-status";
 
-  refreshPlaceBtn();
+  paintPlaceBtn();
 
-  // Server-side the token expires after preview_ttl_s; mirror it here so the
-  // button explains the refusal instead of surfacing a rejected place call.
-  if (_previewExpiry) clearTimeout(_previewExpiry);
+  // Server-side the token expires after preview_ttl_s; mirror it here with a
+  // visible countdown so the refusal is anticipated, not a surprise flip.
+  stopPreviewCountdown();
   if (p.preview_ttl_s) {
-    _previewExpiry = setTimeout(() => {
-      placeBtn.disabled = true;
-      placeBtn.textContent = "Preview expired — re-preview";
-      placeBtn.title = "Prices and sizes are stale; run Preview again to re-arm placement";
-    }, p.preview_ttl_s * 1000);
+    const deadline = Date.now() + p.preview_ttl_s * 1000;
+    _previewTimer = setInterval(() => {
+      const left = Math.round((deadline - Date.now()) / 1000);
+      if (left <= 0) {
+        expired = true;
+        secondsLeft = null;
+        stopPreviewCountdown();
+      } else {
+        secondsLeft = left;
+      }
+      paintPlaceBtn();
+    }, 1000);
   }
   wrap.appendChild(card);
 }
 
+// Resync the holdings snapshot from IBKR (read-only) so the stale-snapshot gate
+// can clear itself: on completion we simply re-preview, and a fresh snapshot age
+// drops the gate entirely.
+async function resyncStaleSnapshot(btn: HTMLButtonElement) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  const status = $("#trade-place-status");
+  if (status) {
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
+  }
+  try {
+    const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
+    await pollDeepJob(job.id, status, async () => {
+      if (status) status.textContent = "Holdings resynced — re-previewing from fresh marks…";
+      await requestPreview();  // fresh snapshot age -> the stale gate is gone
+    }, "IBKR sync");
+  } catch (e) {
+    if (status) { status.classList.add("err"); status.textContent = "Sync failed: " + (e as Error).message; }
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+// Buy/sell gross and the single largest trade, from the token-bound basket —
+// the CZK the human actually reasoned about (orders carry shares, not CZK). Used
+// for the last-mile confirmation modal.
+function basketMoneyFacts(trades?: Array<{ symbol: string; delta_czk: number }>): {
+  buy: number; sell: number; largest: { symbol: string; czk: number } | null;
+} {
+  let buy = 0, sell = 0;
+  let largest: { symbol: string; czk: number } | null = null;
+  for (const t of trades || []) {
+    const d = Number(t.delta_czk) || 0;
+    if (d >= 0) buy += d; else sell += -d;
+    if (!largest || Math.abs(d) > Math.abs(largest.czk)) largest = { symbol: t.symbol, czk: d };
+  }
+  return { buy, sell, largest };
+}
+
+// The last gate before real orders. Replaces window.confirm() (reflex-clickable,
+// browser-suppressible) with a modal that restates the facts a human should
+// verify at the last moment. On a LIVE account the confirm button stays disabled
+// until the account id (or the word PLACE) is typed — friction proportional to
+// blast radius; paper keeps a single click.
+function confirmPlaceModal(p: TradePreview): Promise<boolean> {
+  return new Promise((resolve) => {
+    const isLive = !p.is_paper;
+    const n = (p.orders || []).length;
+    const facts = basketMoneyFacts(p.trades);
+
+    const overlay = el("div", "modal-overlay");
+    const panel = el("div", "modal trade-confirm-modal");
+    overlay.appendChild(panel);
+
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(ok);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") finish(false); };
+    document.addEventListener("keydown", onKey);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) finish(false); });
+
+    const largest = facts.largest
+      ? `${esc(facts.largest.symbol)} ${facts.largest.czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(facts.largest.czk))} CZK`
+      : "\u2014";
+    const ageLine = p.snapshot_age_days != null
+      ? `<div class="trade-cf-row"><span>Snapshot age</span><span class="${p.snapshot_stale ? "bad" : ""}">` +
+        `${esc(p.snapshot_age_days)} day(s)${p.snapshot_stale ? " \u2014 STALE" : ""}</span></div>`
+      : "";
+    panel.innerHTML =
+      `<div class="modal-head"><h2 class="section">${isLive ? "Place LIVE orders \u2014 real money" : "Place paper orders"}</h2></div>` +
+      `<div class="trade-cf-facts">` +
+      `<div class="trade-cf-row"><span>Account</span><span class="${isLive ? "bad" : ""}">${isLive ? "LIVE" : "paper"} ${esc(p.account)}</span></div>` +
+      `<div class="trade-cf-row"><span>Orders</span><span>${n}</span></div>` +
+      `<div class="trade-cf-row"><span>Gross buys</span><span>${sensitive(fmtCZK(facts.buy) + " CZK", "gross buys")}</span></div>` +
+      `<div class="trade-cf-row"><span>Gross sells</span><span>${sensitive(fmtCZK(facts.sell) + " CZK", "gross sells")}</span></div>` +
+      `<div class="trade-cf-row"><span>Largest single</span><span>${sensitive(largest, "largest order")}</span></div>` +
+      ageLine +
+      `</div>`;
+
+    const confirm = el("button", "danger", isLive ? "Place LIVE orders" : "Place orders");
+    confirm.type = "button";
+
+    if (isLive) {
+      const want = String(p.account || "").trim();
+      const arm = el("div", "trade-cf-arm");
+      arm.innerHTML = want
+        ? `<label>Type <code>${esc(want)}</code> or <code>PLACE</code> to arm placement:</label>`
+        : `<label>Type <code>PLACE</code> to arm placement:</label>`;
+      const inp = el("input", "trade-cf-input") as HTMLInputElement;
+      inp.type = "text";
+      inp.autocomplete = "off";
+      inp.spellcheck = false;
+      confirm.disabled = true;
+      inp.addEventListener("input", () => {
+        const v = inp.value.trim();
+        confirm.disabled = !((want && v === want) || v.toUpperCase() === "PLACE");
+      });
+      arm.appendChild(inp);
+      panel.appendChild(arm);
+      setTimeout(() => inp.focus(), 0);
+    }
+
+    const acts = el("div", "modal-actions");
+    const cancel = el("button", "ghost", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => finish(false));
+    confirm.addEventListener("click", () => finish(true));
+    acts.appendChild(cancel);
+    acts.appendChild(confirm);
+    panel.appendChild(acts);
+
+    document.body.appendChild(overlay);
+  });
+}
+
 async function doPlace(btn: HTMLButtonElement) {
   if (!_preview) return;
-  const isLive = !_preview.is_paper;
-  const msg = `Place ${_preview.orders.length} order(s) on the ${isLive ? "LIVE" : "paper"} account ${_preview.account}?` +
-    (isLive ? "\n\nThis uses REAL money and cannot be undone here." : "");
-  if (!window.confirm(msg)) return;
+  // The last-mile confirmation modal (typed arming on LIVE) replaces the native
+  // confirm() dialog people click through on reflex.
+  if (!(await confirmPlaceModal(_preview))) return;
 
   const status = $("#trade-place-status");
   if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> placing\u2026`; }
   if (btn) btn.disabled = true;
   try {
+    // The preview window no longer matters once we've committed to placing.
+    stopPreviewCountdown();
     // Snapshot the basket for the journal next-step before anything clears it.
     _placedBasket = (state.stagedBasket || []).slice();
     const res = await api<PlaceResult>("/api/trade/place", "POST", {
@@ -497,6 +716,11 @@ async function renderLiveOrders(token?: number) {
 
   const orders = (data && data.orders) || [];
   const pegs = (data && data.pegs) || [];
+  // Refresh the cross-check set for the preview: only names with a live working
+  // order count as a collision risk.
+  _workingSymbols = new Set(
+    orders.map((o) => String(o.ticker || o.symbol || "").trim().toUpperCase()).filter(Boolean),
+  );
   const pegById = new Map(pegs.map((p) => [String(p.order_id), p]));
   body.innerHTML = "";
   title.textContent = `Working orders (${orders.length})`;

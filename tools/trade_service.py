@@ -279,9 +279,12 @@ def _trade_preview(body: dict) -> dict:
             local = None
 
     # Sizing quality gate: the CZK->shares math leans on the snapshot's marks,
-    # so an old snapshot deserves a loud warning before real orders.
+    # so an old snapshot deserves a loud warning before real orders. The age is
+    # also returned structured (snapshot_age_days) so the UI can turn it into a
+    # soft gate instead of only parsing this prose warning out of a list.
     age = overview.age_days(holdings.get("generated_at")) if isinstance(holdings, dict) else None
-    if age is not None and age > STALE_SNAPSHOT_DAYS:
+    snapshot_stale = age is not None and age > STALE_SNAPSHOT_DAYS
+    if snapshot_stale:
         warnings = list(warnings) + [
             f"holdings snapshot is {age} days old — order sizes are computed from "
             f"its marks; resync from IBKR before placing real orders."]
@@ -305,6 +308,9 @@ def _trade_preview(body: dict) -> dict:
         "warnings": warnings,
         "ibkr_preview": ibkr_preview,
         "local_whatif": local,
+        "snapshot_age_days": age,
+        "snapshot_stale": snapshot_stale,
+        "stale_after_days": STALE_SNAPSHOT_DAYS,
     }
 
 

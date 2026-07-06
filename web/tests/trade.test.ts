@@ -26,6 +26,11 @@ const buttons = () => [...document.querySelectorAll<HTMLButtonElement>("#trade-r
 const byText = (pred: (t: string) => boolean) =>
   buttons().find((b) => pred(b.textContent || ""));
 
+// The confirmation modal mounts on document.body, not inside #trade-result.
+const modalBtn = (text: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>(".trade-confirm-modal button")]
+    .find((b) => (b.textContent || "") === text);
+
 const PAPER_STATUS = {
   trading_enabled: true, authenticated: true, default_account: "DU1",
   accounts: [{ id: "DU1", kind: "paper" }], live_allowed: false,
@@ -54,6 +59,8 @@ beforeEach(() => {
   state.stagedBasket = [];
   const wrap = document.querySelector("#trade-result");
   if (wrap) wrap.innerHTML = "";
+  // The confirmation modal mounts on body; drop any left by a prior test.
+  document.querySelectorAll(".modal-overlay").forEach((n) => n.remove());
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -91,34 +98,136 @@ describe("trade desk placement gating", () => {
     expect(place).toBeTruthy();
     expect(place.disabled).toBe(true);
 
-    byText((t) => t === "Confirm all")!.click();
-    expect(place.disabled).toBe(true); // confirming every order cannot override the live lock
+    // No "Confirm all" on live; tick the box directly — the live lock still wins.
+    expect(byText((t) => t === "Confirm all")).toBeFalsy();
+    const box = document.querySelector<HTMLInputElement>('#trade-result input[type="checkbox"]')!;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    expect(place.disabled).toBe(true); // confirming the order cannot override the live lock
   });
 
-  it("does not hit /api/trade/place unless the confirm() dialog is accepted", async () => {
+  it("does not hit /api/trade/place unless the confirmation modal is accepted", async () => {
     await previewWith(
       PAPER_STATUS,
-      { is_paper: true, live_allowed: true, account: "DU1", token: "tok-1", trades: [order()],
+      { is_paper: true, live_allowed: true, account: "DU1", token: "tok-1",
+        trades: [{ symbol: "AAPL", delta_czk: 1000 }],
         warnings: [], ibkr_preview: null, orders: [order()] },
       { placed: [{ order_id: "o-1" }], kind: "paper", account: "DU1" },
     );
     byText((t) => t === "Confirm all")!.click();
     const place = byText((t) => t.startsWith("Place"))!;
 
-    // happy-dom has no native confirm(); install a controllable stub.
-    const confirmFn = vi.fn().mockReturnValue(false);
-    (window as unknown as { confirm: () => boolean }).confirm = confirmFn;
+    // Opening the desk Place button raises the modal; cancelling it must not place.
     place.click();
     await flush();
+    let modal = document.querySelector(".trade-confirm-modal")!;
+    expect(modal).toBeTruthy();
+    modalBtn("Cancel")!.click();
+    await flush();
     expect(apiMock).not.toHaveBeenCalledWith("/api/trade/place", expect.anything(), expect.anything());
+    expect(document.querySelector(".trade-confirm-modal")).toBeFalsy();
 
-    confirmFn.mockReturnValue(true);
+    // Re-open and accept: now it places, echoing the token + account.
     place.click();
+    await flush();
+    modalBtn("Place orders")!.click();
     await flush();
     expect(apiMock).toHaveBeenCalledWith(
       "/api/trade/place", "POST",
       expect.objectContaining({ confirm: true, token: "tok-1", account: "DU1" }),
     );
+  });
+});
+
+describe("trade desk live confirmation modal", () => {
+  const LIVE_OK = {
+    trading_enabled: true, authenticated: true, default_account: "U777",
+    accounts: [{ id: "U777", kind: "live" }], live_allowed: true,
+  };
+
+  it("requires typing the account id (or PLACE) to arm a live placement", async () => {
+    await previewWith(LIVE_OK, {
+      is_paper: false, live_allowed: true, account: "U777", token: "tok-live",
+      trades: [{ symbol: "AAPL", delta_czk: 1000 }],
+      warnings: [], ibkr_preview: null, orders: [order()],
+    });
+    // No "Confirm all" on a live account; tick the single order directly.
+    expect(byText((t) => t === "Confirm all")).toBeFalsy();
+    const box = document.querySelector<HTMLInputElement>('#trade-result input[type="checkbox"]')!;
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+
+    const place = byText((t) => t.startsWith("Place"))!;
+    expect(place.disabled).toBe(false);
+    place.click();
+    await flush();
+
+    const confirm = modalBtn("Place LIVE orders")!;
+    expect(confirm).toBeTruthy();
+    expect(confirm.disabled).toBe(true); // armed only by typing the id/PLACE
+
+    const input = document.querySelector<HTMLInputElement>(".trade-cf-input")!;
+    input.value = "nope";
+    input.dispatchEvent(new Event("input"));
+    expect(confirm.disabled).toBe(true);
+
+    input.value = "U777";
+    input.dispatchEvent(new Event("input"));
+    expect(confirm.disabled).toBe(false);
+
+    confirm.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/place", "POST",
+      expect.objectContaining({ confirm: true, token: "tok-live", account: "U777" }),
+    );
+  });
+});
+
+describe("trade desk safety gates", () => {
+  it("flags an order that collides with an existing working order", async () => {
+    const basket = [{ symbol: "NVDA", delta_czk: -1000 }, { symbol: "AAPL", delta_czk: 500 }];
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket") return Promise.resolve({ trades: basket });
+      if (path === "/api/trade/orders")
+        return Promise.resolve({ orders: [{ orderId: "o-1", ticker: "NVDA", side: "SELL",
+          orderType: "LMT", price: 180, tif: "GTC", status: "Submitted" }] });
+      if (path === "/api/trade/preview")
+        return Promise.resolve({ is_paper: true, live_allowed: true, account: "DU1", warnings: [],
+          ibkr_preview: null, orders: [order({ symbol: "NVDA", side: "SELL" }), order({ symbol: "AAPL" })] });
+      return Promise.resolve({ orders: [] });
+    });
+    state.stagedBasket = basket;
+    await loadTrade();
+    await flush();
+    byText((t) => t.includes("Preview"))!.click();
+    await flush();
+
+    const note = document.querySelector(".trade-collide-note");
+    expect(note).toBeTruthy();
+    expect(note!.textContent).toContain("NVDA");
+    expect(note!.textContent).toContain("double-trade");
+    // Only the colliding symbol is flagged, not every order.
+    expect(document.querySelectorAll(".trade-collide-note")).toHaveLength(1);
+  });
+
+  it("locks Place behind the stale-snapshot gate until stale marks are accepted", async () => {
+    await previewWith(PAPER_STATUS, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: ["snapshot old"],
+      snapshot_stale: true, snapshot_age_days: 30, ibkr_preview: null, orders: [order()],
+    });
+    byText((t) => t === "Confirm all")!.click();
+    const place = byText((t) => t.startsWith("Place"))!;
+    expect(place.disabled).toBe(true); // confirmed, but the stale gate still holds
+
+    const gate = document.querySelector(".trade-stale-gate")!;
+    expect(gate).toBeTruthy();
+    expect(gate.textContent).toContain("30 day(s)");
+    const ack = gate.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    ack.checked = true;
+    ack.dispatchEvent(new Event("change"));
+    expect(place.disabled).toBe(false); // stale marks explicitly accepted -> armed
   });
 });
 
