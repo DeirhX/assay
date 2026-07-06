@@ -232,6 +232,30 @@ describe("trade desk safety gates", () => {
     expect(out!.textContent).toContain("out of band");
   });
 
+  it("renders the pre-trade risk delta and promotes threshold breaches to warnings", async () => {
+    await previewWith(PAPER_STATUS, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [order({ symbol: "NVDA" })],
+      local_whatif: {
+        risk: {
+          top5_pct: { before: 58.0, after: 64.0, delta: 6.0 },
+          top1_pct: { before: 30.0, after: 34.0, delta: 4.0 },
+          effective_names: { before: 6.2, after: 5.4, delta: -0.8 },
+          has_correlation: false,
+          warnings: ["This basket raises top-5 concentration by 6.0pp (58% -> 64%)."],
+        },
+      },
+    });
+    const panel = document.querySelector("#trade-result .trade-risk");
+    expect(panel).toBeTruthy();
+    expect(panel!.textContent).toContain("58.0% → 64.0%");
+    // A concentration rise is bad; a diversification (effective-names) fall is bad too.
+    const bad = [...panel!.querySelectorAll(".trade-risk-delta.bad")];
+    expect(bad.length).toBeGreaterThanOrEqual(2);
+    // The server's threshold breach is echoed as a loud pre-flight warning.
+    expect(panel!.querySelector(".trade-warn")!.textContent).toContain("top-5 concentration by 6.0pp");
+  });
+
   it("locks Place behind the stale-snapshot gate until stale marks are accepted", async () => {
     await previewWith(PAPER_STATUS, {
       is_paper: true, live_allowed: true, account: "DU1", warnings: ["snapshot old"],

@@ -339,7 +339,12 @@ level (`price_levels.py`) degrades a buy to "wait" until the price is favorable.
 `tax_lots.py` (Czech 3-year-exempt-aware lot selection), `whatif.py` (post-trade
 recompute), `exit_plan.py` (tax-timed, liquidity-aware scale-out ladders with an
 options overlay), and `risk.py` (correlation / effective-bets / factor-shock
-stress) all sit on top. `overview.py` (the "Today" cockpit) aggregates snapshot,
+stress) all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
+pure before→after concentration/diversification delta (top-N weight, HHI→effective
+names, plus correlation-aware bets/vol when a series is supplied) that rides on
+every `whatif.simulate` and the trade preview, promoting threshold breaches to
+pre-flight warnings so concentration confronts you while deciding, not only in the
+destination view. `overview.py` (the "Today" cockpit) aggregates snapshot,
 plan, staged basket, journal, and research signals into one prioritized
 `next_step` CTA. All of these are **advice**; none place orders.
 

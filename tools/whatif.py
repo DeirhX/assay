@@ -21,6 +21,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402
 import rebalance  # noqa: E402
+import risk_delta  # noqa: E402
 import tax_lots  # noqa: E402
 
 EPS = 0.01
@@ -78,6 +79,14 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
     }
     before_plan = rebalance.plan(model, holdings)
     after_plan = rebalance.plan(model, after_holdings)
+
+    # Pre-trade risk delta: what the basket does to concentration/diversification.
+    # Concentration is pure weight math (instant), computed on the same before/after
+    # books the rest of this recompute uses, so it can never disagree with them.
+    risk = risk_delta.delta(
+        portfolio.holdings_weights(holdings),
+        portfolio.holdings_weights(after_holdings),
+    )
 
     # Realized tax: only sells (negative deltas) realize gains, lot-selected from
     # the *pre-trade* snapshot.
@@ -146,6 +155,7 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
                  "currency": holdings.get("base_currency") or "CZK",
                  "target": cash_target},
         "tax": {"totals": tax_total, "per_symbol": per_symbol},
+        "risk": risk,
         "summary": {
             "spend_czk": spend,
             "raised_czk": raised,

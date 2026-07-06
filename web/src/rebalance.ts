@@ -971,7 +971,25 @@ function renderWhatif(wf: Whatif) {
   stats.appendChild(whatifStat("Realized taxable gain",
     sensitive(`${fmtCZK(s.realized_taxable_gain_czk)} ${esc(ccy)}`, "taxable gain"),
     s.realized_taxable_gain_czk > 0 ? "warn" : "good"));
+  // Concentration/diversification delta: risk.py's lens on the *decision*, not
+  // just the destination view. A rise in top-5 or a fall in effective names reads
+  // amber; the deeper correlation-aware numbers stay on the Risk page.
+  const risk = wf.risk;
+  const t5 = risk && risk.top5_pct;
+  if (t5 && typeof t5.before === "number" && typeof t5.after === "number") {
+    stats.appendChild(whatifStat("Top-5 concentration",
+      `${t5.before.toFixed(1)}% \u2192 ${t5.after.toFixed(1)}%`,
+      t5.after > t5.before + 0.05 ? "warn" : "good"));
+  }
+  const en = risk && risk.effective_names;
+  if (en && typeof en.before === "number" && typeof en.after === "number") {
+    stats.appendChild(whatifStat("Effective names",
+      `${en.before.toFixed(1)} \u2192 ${en.after.toFixed(1)}`,
+      en.after < en.before - 0.05 ? "warn" : "good"));
+  }
   card.appendChild(stats);
+  (risk && risk.warnings || []).forEach((w) =>
+    card.appendChild(el("div", "whatif-risk-warn", `\u26a0 ${esc(w)}`)));
 
   const afterRows: Record<string, RebRow> = {};
   // A member trade (e.g. XSD) doesn't have its own row — it rolls up into its
