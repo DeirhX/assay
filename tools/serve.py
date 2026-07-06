@@ -62,6 +62,7 @@ import orchestrate  # noqa: E402  -- durable state machine for the guided strate
 import errorlog  # noqa: E402
 from peer_stats import _peer_stats  # noqa: E402  -- dossier peer-percentile math
 import price_levels  # noqa: E402  -- locked per-symbol buy-below/trim-above triggers
+import quote_cache  # noqa: E402  -- fresh-quote + cached sparkline series (never fetches)
 from symbols import (  # noqa: E402  -- symbol resolve/alias/search (clean public names)
     aliases as _symbol_aliases, annotate_record as _annotate_symbol_record,
     candidates as _symbol_candidates, resolve_symbol as _resolve_symbol,
@@ -298,6 +299,7 @@ _GET_EXACT = {
     "/api/staging": "_get_staging",
     "/api/basket": "_get_basket",
     "/api/optimizer": "_get_optimizer",
+    "/api/spark": "_get_spark",
 }
 _GET_PREFIX = [
     ("/api/strategy/", "_get_strategy"),
@@ -668,6 +670,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_basket(self, path, query):
         return self._send_json(basket.view())
+
+    def _get_spark(self, path, query):
+        # Batch sparkline series for a row-level trend cue. Cached-only: reads
+        # dossier price history, never fetches. Symbols are resolved through the
+        # alias map (display -> provider) and the response is keyed back by the
+        # display symbol the caller asked for; unknown/thin names are omitted.
+        raw = (query.get("symbols") or [""])[0]
+        pairs: list[tuple[str, str]] = []
+        for token in raw.split(","):
+            display = _safe_symbol(token.strip())
+            if display:
+                pairs.append((display, _resolve_symbol(display)))
+        series = quote_cache.spark_series([prov for _, prov in pairs])
+        out = {display: series[prov] for display, prov in pairs if prov in series}
+        return self._send_json({"spark": out})
 
     def _get_optimizer(self, path, query):
         # The candidate pool + the default constraints, with no sizing yet. The
