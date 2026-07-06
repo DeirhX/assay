@@ -10,7 +10,6 @@ from unittest import mock
 
 import _support  # noqa: F401
 import apierror
-import ibkr_trade as ibt
 import jobs
 import order_peg
 
