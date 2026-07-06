@@ -12,6 +12,7 @@ import { loadPipeline, setPipeStep } from "./pipeline";
 import { initOptimizer, loadOptimizer } from "./optimizer";
 import { initOverview, loadOverview } from "./overview";
 import { loadRebalance } from "./rebalance";
+import { loadRegime } from "./regime";
 import { openTicker } from "./ticker-nav";
 import { initRiskControls, loadRisk } from "./risk";
 import { loadExit } from "./exit";
@@ -314,6 +315,7 @@ function setActiveView(view: string) {
   if (active === "target-state") loadTargetState();
   if (active === "exit") loadExit();
   if (active === "trade") loadTrade();
+  if (active === "segment") loadRegime();
   if (active === "risk") { initRiskControls(); loadRisk(); }
   if (active === "tax") { initTaxControls(); loadTax(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }

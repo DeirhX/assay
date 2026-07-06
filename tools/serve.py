@@ -50,6 +50,7 @@ import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import risk  # noqa: E402
+import regime  # noqa: E402  -- descriptive macro strip over the segment leaderboard
 import tax_lots  # noqa: E402
 import tax_calendar  # noqa: E402  -- forward 3-year-exemption calendar (proactive tax lever)
 import exit_plan  # noqa: E402  -- advisory graceful-exit planner (tax-timed scale-out)
@@ -266,6 +267,7 @@ _GET_EXACT = {
     "/api/rebalance": "_get_rebalance",
     "/api/exit-plan": "_get_exit_plan",
     "/api/risk": "_get_risk",
+    "/api/regime": "_get_regime",
     "/api/tax-calendar": "_get_tax_calendar",
     "/api/journal": "_get_journal",
     "/api/segments": "_get_segments",
@@ -613,6 +615,12 @@ class Handler(BaseHTTPRequestHandler):
         rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
         with _PULL_LOCK:
             return self._send_json(risk.risk_report(holdings, rng=rng))
+
+    def _get_regime(self, path, query):
+        # Descriptive macro backdrop (rates/credit/USD/vol) for the segment view.
+        # Cached 6h in regime.py; network only on a cold cache, so guard it.
+        with _PULL_LOCK:
+            return self._send_json(regime.build_regime())
 
     def _get_tax_calendar(self, path, query):
         # Forward view of every lot's Czech 3-year exemption date: gain lots going
