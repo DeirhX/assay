@@ -27,6 +27,10 @@ QUOTES_JSON = config.DATA_DIR / "cache" / "quotes.json"
 # no longer "fresh" enough to flip a locked level on its own.
 FRESH_MAX_AGE_SECONDS = 4 * 3600
 
+# Sparkline series: how much recent shape to show and how coarse to draw it.
+SPARK_TAIL_DAYS = 90
+SPARK_MAX_POINTS = 30
+
 
 def load() -> dict[str, dict]:
     """Every cached quote, keyed by upper-case symbol. Missing/corrupt → {}."""
@@ -65,3 +69,74 @@ def fresh_price(
     if age is None or age > max_age:
         return None
     return {"price": float(price), "currency": q.get("currency"), "at": q.get("at"), "age_s": age}
+
+
+def _downsample(vals: list[float], k: int) -> list[float]:
+    """At most ``k`` values spanning the full range, endpoints always kept.
+    Evenly-strided index pick; duplicate indices (when k ~ n) collapse."""
+    n = len(vals)
+    if n <= k:
+        return [round(float(v), 4) for v in vals]
+    out: list[float] = []
+    seen: set[int] = set()
+    for i in range(k):
+        j = round(i * (n - 1) / (k - 1))
+        if j not in seen:
+            seen.add(j)
+            out.append(round(float(vals[j]), 4))
+    return out
+
+
+def _dossier_closes(symbol: str, research_dir: Path) -> tuple[list[float], Any]:
+    """Ordered (oldest->newest) daily closes from a cached dossier's
+    ``price_history.points``; ``([], None)`` when the dossier or field is
+    missing. Never fetches -- reads one JSON file."""
+    rec = store.load(research_dir / f"{symbol}.json", None)
+    if not isinstance(rec, dict):
+        return [], None
+    ph = rec.get("price_history")
+    if not isinstance(ph, dict):
+        return [], None
+    pts = ph.get("points")
+    if not isinstance(pts, list):
+        return [], None
+    closes = [
+        float(p["close"]) for p in pts
+        if isinstance(p, dict) and isinstance(p.get("close"), (int, float))
+    ]
+    return closes, ph.get("currency")
+
+
+def spark_series(
+    symbols: Any,
+    *,
+    research_dir: Path | None = None,
+    tail_days: int = SPARK_TAIL_DAYS,
+    max_points: int = SPARK_MAX_POINTS,
+) -> dict[str, dict]:
+    """Per-symbol sparkline payloads from cached data only (never fetches).
+
+    ``{SYM: {"points": [float], "change": float|None, "currency": str|None}}``
+    where ``points`` is the last ``tail_days`` closes downsampled to
+    ``<=max_points`` and ``change`` is the fractional move across that window.
+    Symbols passed in are treated as provider (dossier) symbols; a symbol with
+    fewer than two cached closes is omitted (a single point can't draw a line).
+    """
+    rd = research_dir or config.RESEARCH_DIR
+    out: dict[str, dict] = {}
+    for raw in symbols or []:
+        sym = (raw or "").strip().upper()
+        if not sym or sym in out:
+            continue
+        closes, currency = _dossier_closes(sym, rd)
+        if len(closes) < 2:
+            continue
+        window = closes[-tail_days:]
+        first, last = window[0], window[-1]
+        change = (last - first) / first if first else None
+        out[sym] = {
+            "points": _downsample(window, max_points),
+            "change": round(change, 4) if change is not None else None,
+            "currency": currency,
+        }
+    return out

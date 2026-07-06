@@ -3395,3 +3395,12 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
   .tstate-nums { grid-area: nums; text-align: left; }
   .tstate-status { grid-area: status; }
 }
+
+/* Row-level sparklines (spark.ts). The SVG strokes with currentColor, so tone
+   is just the color on the wrapper. A slot with no cached series stays empty. */
+.spark { display: inline-block; vertical-align: middle; width: 96px; height: 24px; }
+.spark-up { color: var(--good); }
+.spark-down { color: var(--bad); }
+.spark-flat { color: var(--muted); }
+.spark-slot { display: inline-block; min-width: 96px; min-height: 24px; }
+.basket-trend { width: 108px; }

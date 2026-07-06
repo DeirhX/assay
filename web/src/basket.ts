@@ -9,6 +9,7 @@
 // called once from initShell — same import-cycle discipline as strategy/staging.
 import { $, api, esc, fmtWeight } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
+import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { pushNav, setActiveView } from "./shell";
 
 interface BasketBand { low?: number | null; high?: number | null; rule?: string }
@@ -136,6 +137,7 @@ function rowHtml(it: BasketItem): string {
     : `<span class="muted">—</span>`;
   return `<tr>
     <td>${symLink(it.symbol)}</td>
+    <td class="basket-trend">${sparkPlaceholder(it.symbol)}</td>
     <td>${tierCell(it)}</td>
     <td>${srcCell(it)}</td>
     <td>${held}</td>
@@ -165,7 +167,7 @@ function render(v: BasketView): void {
     ` \u00b7 <span class="tier-want">${wantCount} want</span> \u00b7 <span class="tier-curious">${curiousCount} curious</span>` +
     ` \u00b7 ${heldCount} already held \u00b7 ${planned} already in your plan.</p>` +
     `<table class="basket-table">` +
-    `<thead><tr><th>Ticker</th><th>Interest</th><th>Source</th><th>Held</th><th>In plan</th><th>Note</th><th></th></tr></thead>` +
+    `<thead><tr><th>Ticker</th><th>Trend</th><th>Interest</th><th>Source</th><th>Held</th><th>In plan</th><th>Note</th><th></th></tr></thead>` +
     `<tbody>${v.items.map(rowHtml).join("")}</tbody></table>` +
     `<div class="basket-actions">` +
     `<button class="primary basket-draft-btn" type="button" title="Run a guided strategy run over your picks">Draft a plan from these picks \u2192</button>` +
@@ -173,6 +175,9 @@ function render(v: BasketView): void {
     `</div>` +
     `<p class="hint basket-next">"Draft a plan" runs a guided strategy run over your picks (Deep Research + sized bands). ` +
     `"Optimize portfolio" pulls these picks together with your current holdings into one pool and sizes the whole book at once.</p>`;
+  // One batch /api/spark call fills the Trend column; cached-only, degrades to
+  // empty slots for names we have no price history for.
+  void hydrateSparks(body);
 }
 
 // Turn the basket into a guided strategy run and hand off to the strategy view.
