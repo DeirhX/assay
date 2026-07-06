@@ -3,7 +3,7 @@
 // dossier. The caller supplies the load/post/clear/delete thunks and optional
 // per-turn meta/usage formatters. Extracted from analyses.ts.
 import { api, el, esc, relAge } from "../core";
-import { pollDeepJob } from "../errors";
+import { pollDeepJob } from "../jobs";
 import { mdToHtml } from "./markdown";
 import { linkifyTickers } from "./linkify";
 

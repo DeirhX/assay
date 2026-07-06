@@ -1,5 +1,5 @@
 import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, simpleTable, state } from "./core";
-import { pollDeepJob } from "./errors";
+import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
 
 // ---- trade desk -----------------------------------------------------------

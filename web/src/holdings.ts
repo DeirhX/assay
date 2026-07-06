@@ -1,6 +1,6 @@
 import type { HoldingPosition, HoldingsPayload } from "./api-types";
 import { $, api, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
-import { analyzeFromAnywhere } from "./rebalance";
+import { analyzeFromAnywhere } from "./ticker-nav";
 
 // ---- holdings -------------------------------------------------------------
 async function loadHoldings() {

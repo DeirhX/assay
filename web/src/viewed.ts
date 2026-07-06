@@ -1,6 +1,6 @@
 import { $, api, el, esc } from "./core";
 import { detectStance } from "./deepdive/decorate";
-import { openTicker } from "./rebalance";
+import { openTicker } from "./ticker-nav";
 import { cleanSymbol } from "./shell";
 
 // ---- viewed tickers (browser-local recents) -------------------------------

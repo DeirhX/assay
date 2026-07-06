@@ -1,6 +1,6 @@
 import type { Job } from "./api-types";
 import { $, api, el, esc } from "./core";
-import { pollDeepJob } from "./errors";
+import { pollDeepJob } from "./jobs";
 
 let _wired = false;
 

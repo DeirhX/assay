@@ -4,7 +4,7 @@
 // rendering over the already-shaped groups -- the composer decides which
 // tables to show and supplies the data.
 import { el, esc, sensitive } from "../core";
-import { openTicker } from "../rebalance";
+import { openTicker } from "../ticker-nav";
 import {
   contractLabel, paginate,
   type ActivityGroup, type ActivityRow, type Page, type SectorGroup, type Trade,

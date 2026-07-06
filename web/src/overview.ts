@@ -8,9 +8,9 @@
 import { starHtml } from "./basket";
 import { $, api, esc, fmtCZK, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
-import { pollDeepJob } from "./errors";
+import { pollDeepJob } from "./jobs";
 import { pushNav, setActiveView } from "./shell";
-import { openTicker } from "./rebalance";
+import { openTicker } from "./ticker-nav";
 import { loadCachedSegment } from "./segment";
 
 // ---- payload shapes (GET /api/overview) ------------------------------------

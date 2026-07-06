@@ -1,7 +1,7 @@
 import { starHtml } from "./basket";
 import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import type { SegmentSummary } from "./api-types";
-import { analyzeFromAnywhere } from "./rebalance";
+import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
 // ---- segment --------------------------------------------------------------

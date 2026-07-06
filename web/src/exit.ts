@@ -12,7 +12,7 @@ import {
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
 } from "./api-types";
-import { openTicker } from "./rebalance";
+import { openTicker } from "./ticker-nav";
 import { pushNav, setActiveView } from "./shell";
 
 // Config knobs (mirror exit_plan.py defaults); tunable from the header and sent
