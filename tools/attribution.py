@@ -49,6 +49,7 @@ RANGE_DAYS = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
 DEFAULT_RANGE = "1y"
 DEFAULT_BASE = "CZK"
 DEFAULT_BENCHMARK = "SPY"
+FETCH_WORKERS = 8  # cold cache: fan the per-name price pulls out instead of serial
 
 # A compact headline verdict cached from the last computed report, so the "Today"
 # cockpit can surface "is the process earning its keep?" without recomputing (the
@@ -245,11 +246,28 @@ def flow_curve(index: dict[str, float], seed_value: float, flows: dict[str, floa
 # --------------------------------------------------------------------------- #
 # IO assembler
 # --------------------------------------------------------------------------- #
-def _yahoo_fetch(symbol: str, rng: str) -> "list[dict[str, Any]] | None":
-    from providers import yahoo  # lazy, mirrors risk._yahoo_fetch
-    result = yahoo.chart(symbol, rng=rng, interval="1d")
-    ph = yahoo.price_history_from_chart(result, rng=rng, interval="1d")
-    return ph.get("points") if ph else None
+def _cached_fetch(symbol: str, rng: str) -> "list[dict[str, Any]] | None":
+    """Default price fetch: route through risk's shared on-disk cache (12h TTL)
+    instead of hitting Yahoo raw on every load. The docstring on ``Fetch`` promised
+    a shared provider/cache path with :func:`risk.load_price_series`; this is where
+    it's finally wired, so attribution reuses warm series from the Risk view (and
+    its own prior runs) and only pays the network cost on a genuinely cold cache."""
+    import risk  # lazy: keeps risk's import cost off the pure-math callers
+    return risk.load_price_series(symbol, rng=rng)
+
+
+def _fetch_many(fetch: Fetch, symbols: list[str], rng: str) -> dict[str, "list[dict[str, Any]] | None"]:
+    """Fetch every provider symbol we need in one parallel batch. Cold cache: this
+    turns N serial round-trips (10-30s for a real book) into a handful of concurrent
+    ones; warm cache: each call is just a disk read. Mirrors risk._fetch_series_many.
+    A per-symbol miss is recorded as ``None`` (a caveat downstream), never raised."""
+    uniq = list(dict.fromkeys(s for s in symbols if s))
+    if not uniq:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(uniq))) as pool:
+        series = list(pool.map(lambda s: _safe_fetch(fetch, s, rng), uniq))
+    return dict(zip(uniq, series))
 
 
 def _range_for_days(days: int) -> str:
@@ -309,7 +327,7 @@ def attribution_report(
     flows = external_flows((history or {}).get("cash_transactions"))
     window_flows = {d: v for d, v in flows.items() if start < d <= as_of}
 
-    fetch = fetch or _yahoo_fetch
+    fetch = fetch or _cached_fetch
     panel = panel if panel is not None else fx_history.load_panel()
     fetch_range = _range_for_days(RANGE_DAYS[rng])
 
@@ -317,11 +335,19 @@ def attribution_report(
     twr: dict[str, float | None] = {"actual": _pct(time_weighted_return(nav_pts, window_flows))}
     curves: dict[str, list] = {"actual": nav_pts}
 
-    # --- benchmark counterfactual (USD -> CZK through the panel) ---
+    # Both counterfactuals need prices: the benchmark and every name held at the
+    # window start. Resolve providers up front and pull them all in one parallel
+    # batch so a cold cache costs one fan-out, not one serial round-trip per name.
     aliases = portfolio.symbol_aliases()
     bench_provider = portfolio.provider_symbol_for(benchmark, aliases)
-    bench_native = _safe_fetch(fetch, bench_provider, fetch_range)
-    bench_czk = czk_price_series(bench_native, panel, currency="USD", base=base)
+    hist_from = (history or {}).get("from_date")
+    qty_at_start = positions_at((holdings or {}).get("positions") or [],
+                                (history or {}).get("trades"), start)
+    held_providers = {sym: portfolio.provider_symbol_for(sym, aliases) for sym in qty_at_start}
+    prices = _fetch_many(fetch, [bench_provider, *held_providers.values()], fetch_range)
+
+    # --- benchmark counterfactual (USD -> CZK through the panel) ---
+    bench_czk = czk_price_series(prices.get(bench_provider), panel, currency="USD", base=base)
     bench_curve = flow_curve(bench_czk, seed, window_flows, dates)
     if bench_curve:
         curves["benchmark"] = bench_curve
@@ -330,20 +356,16 @@ def attribution_report(
         caveats.append(f"Could not price the {benchmark} benchmark in {base}; that curve is omitted.")
 
     # --- never-rebalanced counterfactual (freeze the book at window start) ---
-    hist_from = (history or {}).get("from_date")
     if isinstance(hist_from, str) and hist_from > start:
         caveats.append(
             f"Trade ledger begins {hist_from}, after the window start {start}: the "
             "frozen book is reconstructed from a partial ledger and may be approximate.")
-    qty_at_start = positions_at((holdings or {}).get("positions") or [],
-                                (history or {}).get("trades"), start)
     price_czk: dict[str, dict[str, float]] = {}
     base_values_at_start: dict[str, float] = {}
     priced_missing: list[str] = []
     for sym, q in qty_at_start.items():
         ccy = _currency_for(holdings, sym) or base
-        native = _safe_fetch(fetch, portfolio.provider_symbol_for(sym, aliases), fetch_range)
-        series = czk_price_series(native, panel, currency=ccy, base=base)
+        series = czk_price_series(prices.get(held_providers[sym]), panel, currency=ccy, base=base)
         sp = _asof(series, start)
         if not sp:
             priced_missing.append(sym)
