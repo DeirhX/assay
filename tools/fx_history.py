@@ -203,6 +203,133 @@ def _latest_date(series: dict[str, Any]) -> dt.date | None:
     return latest
 
 
+# --------------------------------------------------------------------------- #
+# Currency lens: turn the panel + a holdings snapshot into "how much of the
+# window's CZK move was FX, not stock-picking?" Consumed by risk.risk_report.
+# --------------------------------------------------------------------------- #
+# Display-range -> lookback days, so the FX window lines up with the risk view's
+# range selector (serve.PRICE_HISTORY_RANGES).
+RANGE_DAYS = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
+
+
+def exposure_by_currency(holdings: dict[str, Any], base: str = DEFAULT_BASE) -> list[dict[str, Any]]:
+    """Non-base currency exposure from the current snapshot: each foreign
+    currency's share of invested (base-valued) equity. Exact -- no panel needed."""
+    positions = holdings.get("positions") or []
+    by_ccy: dict[str, float] = {}
+    invested = 0.0
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        bmv = p.get("base_market_value")
+        if not isinstance(bmv, (int, float)):
+            continue
+        invested += bmv
+        ccy = str(p.get("currency") or "").upper()
+        if ccy and ccy != base.upper():
+            by_ccy[ccy] = by_ccy.get(ccy, 0.0) + bmv
+    rows: list[dict[str, Any]] = [
+        {
+            "currency": ccy,
+            "base_value": round(val, 2),
+            "weight_pct": round(val / invested * 100.0, 2) if invested else 0.0,
+        }
+        for ccy, val in by_ccy.items()
+    ]
+    rows.sort(key=lambda r: -float(r["base_value"]))
+    return rows
+
+
+def _asof_key(series: dict[str, float], target_iso: str) -> str | None:
+    """The latest ISO key on or before ``target_iso`` (weekends/holidays don't
+    quote), or None if every quote is newer."""
+    best: str | None = None
+    for key in series:  # ISO keys sort chronologically
+        if key <= target_iso and (best is None or key > best):
+            best = key
+    return best
+
+
+def window_move(panel: dict[str, Any], pair: str, *, days: int, today: dt.date | None = None) -> dict[str, Any] | None:
+    """Fractional FX move for ``pair`` over the trailing window: ``end/start-1``,
+    both ends taken as-of (tolerating non-trading days). Positive means the
+    foreign currency strengthened vs base -- a tailwind for that sleeve's CZK
+    value. None when the panel can't cover two distinct points in the window."""
+    series = pair_series(panel, pair)
+    if not series:
+        return None
+    today = today or dt.datetime.now(dt.timezone.utc).date()
+    end_key = _asof_key(series, today.isoformat()) or max(series)
+    start_key = _asof_key(series, (today - dt.timedelta(days=days)).isoformat())
+    if start_key is None or start_key == end_key:
+        return None
+    try:
+        start_rate, end_rate = float(series[start_key]), float(series[end_key])
+    except (TypeError, ValueError):
+        return None
+    if not start_rate or not end_rate:
+        return None
+    return {"return": end_rate / start_rate - 1.0, "from": start_key, "to": end_key}
+
+
+def window_report(
+    holdings: dict[str, Any],
+    *,
+    rng: str = "1y",
+    base: str | None = None,
+    today: dt.date | None = None,
+    panel: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The `fx` block for GET /api/risk: current-snapshot exposure by currency,
+    plus each currency's FX move over the window and an (approximate) contribution
+    to CZK NAV.
+
+    Read-only over the cached panel (``holdings_sync`` keeps it warm on every
+    history top-up), so it adds no network to the risk path and degrades to
+    exposure-only for any currency the panel doesn't yet cover. ``panel`` is
+    injectable for tests."""
+    base = (base or holdings.get("base_currency") or DEFAULT_BASE).upper()
+    exposure = exposure_by_currency(holdings, base)
+    foreign_pct = round(sum(float(e["weight_pct"]) for e in exposure), 2)
+    caveats: list[str] = []
+    window: list[dict[str, Any]] = []
+
+    if panel is None:
+        panel = load_panel()
+    days = RANGE_DAYS.get(rng, 365)
+    by_weight = {str(e["currency"]): float(e["weight_pct"]) for e in exposure}
+    for e in exposure:
+        ccy = str(e["currency"])
+        pair = f"{ccy}{base}"
+        mv = window_move(panel, pair, days=days, today=today)
+        if mv is None:
+            caveats.append(f"No FX history for {pair}=X; its FX effect is omitted.")
+            continue
+        w = by_weight.get(ccy, 0.0)
+        window.append({
+            "currency": ccy,
+            "fx_return_pct": round(mv["return"] * 100.0, 2),
+            "contribution_pct": round(w / 100.0 * mv["return"] * 100.0, 2),
+            "from": mv["from"],
+            "to": mv["to"],
+        })
+    if window:
+        caveats.append(
+            "FX contribution assumes the current book was held across the whole "
+            "window (it ignores intra-window trades); it is a context estimate, "
+            "not a realized-return statement.")
+
+    return {
+        "base": base,
+        "exposure": exposure,
+        "foreign_pct": foreign_pct,
+        "window": window,
+        "range": rng,
+        "updated_at": panel.get("fetched_at"),
+        "caveats": caveats,
+    }
+
+
 def main() -> int:
     """CLI: top up the panel from Yahoo and print a one-line coverage summary."""
     panel = update_panel()

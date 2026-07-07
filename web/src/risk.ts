@@ -43,6 +43,25 @@ interface StressScenario {
 
 type CorrMatrix = Record<string, Record<string, number | null>>;
 
+// GET /api/risk -> fx: the currency lens (fx_history.window_report).
+interface FxExposure { currency: string; base_value: number; weight_pct: number }
+interface FxWindow {
+  currency: string;
+  fx_return_pct: number;
+  contribution_pct: number;
+  from?: string;
+  to?: string;
+}
+interface FxReport {
+  base?: string;
+  exposure?: FxExposure[];
+  foreign_pct?: number;
+  window?: FxWindow[];
+  range?: string;
+  updated_at?: string | null;
+  caveats?: string[];
+}
+
 // GET /api/risk: correlation-aware portfolio risk lens. Local to this view.
 interface RiskPayload {
   metrics?: RiskMetrics;
@@ -55,7 +74,11 @@ interface RiskPayload {
   stress?: StressScenario[];
   correlation?: { symbols?: string[]; matrix?: CorrMatrix };
   positions?: RiskPosition[];
+  fx?: FxReport;
 }
+
+const fmtSignedPct1 = (v: number | null | undefined) =>
+  v == null ? "n/a" : (v >= 0 ? "+" : "") + Number(v).toFixed(1) + "%";
 
 // Correlation -> background. High positive correlation is the risk here, so make
 // it loud (red); near-zero is calm (neutral); negative (a real hedge) is green.
@@ -122,7 +145,44 @@ function renderRisk(r: RiskPayload) {
     fmtNum(m.avg_pairwise_corr, 2),
     m.avg_pairwise_corr == null ? "muted" : m.avg_pairwise_corr >= 0.6 ? "bad" : m.avg_pairwise_corr >= 0.4 ? "warn" : "good",
     "Mean correlation across every pair of held names over the window."));
+  const fx = r.fx;
+  if (fx && (fx.exposure || []).length) {
+    const top = (fx.exposure || []).map((e) => `${esc(e.currency)} ${fmtPct1(e.weight_pct)}`).join(" · ");
+    stats.appendChild(statCard("Non-base FX exposure",
+      fmtPct1(fx.foreign_pct),
+      "muted",
+      `Share of invested equity priced in a currency other than ${esc(fx.base || "base")}: ${top}. ` +
+      `That slice's ${esc(fx.base || "base")} value moves with the exchange rate, not just the stock.`));
+  }
   out.appendChild(stats);
+
+  // 2b) Currency lens: exposure + how much of the window's CZK move was FX.
+  if (fx && (fx.exposure || []).length) {
+    const sec = el("div", "risk-section");
+    sec.appendChild(el("h3", null, "Currency exposure & FX effect"));
+    sec.appendChild(el("p", "hint",
+      `A ${esc(fx.base || "base")}-base book holding foreign names earns two returns: the stock's ` +
+      `and the exchange rate's. "FX move" is the pair's change over the window; "est. contribution" ` +
+      `is that move scaled by the sleeve's weight.`));
+    const win: Record<string, FxWindow> = {};
+    (fx.window || []).forEach((w) => { win[w.currency] = w; });
+    sec.appendChild(simpleTable<FxExposure>({
+      className: "fx-table",
+      head: "<tr><th>Currency</th><th class='num'>Exposure</th><th class='num'>FX move</th><th class='num'>Est. contribution</th></tr>",
+      rows: fx.exposure || [],
+      cells: (e) => {
+        const w = win[e.currency];
+        const contrib = w ? w.contribution_pct : null;
+        const cc = contrib == null ? "muted" : contrib > 0 ? "good" : contrib < 0 ? "bad" : "muted";
+        return `<td class="fx-ccy">${esc(e.currency)}</td>` +
+          `<td class="num">${fmtPct1(e.weight_pct)}</td>` +
+          `<td class="num">${w ? fmtSignedPct1(w.fx_return_pct) : "n/a"}</td>` +
+          `<td class="num ${cc}">${w ? fmtSignedPct1(contrib) : "n/a"}</td>`;
+      },
+    }));
+    (fx.caveats || []).forEach((c) => sec.appendChild(el("p", "hint muted", c)));
+    out.appendChild(sec);
+  }
 
   // 3) Stress scenarios.
   if (r.stress && r.stress.length) {

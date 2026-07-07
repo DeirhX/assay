@@ -168,11 +168,12 @@ and work survives navigation.
 - **`tools/holdings_sync.py`** — IBKR sync / history / sectors jobs.
 - **`tools/scheduler.py`** — an **opt-in, read-only** freshness daemon
   (`ASSAY_AUTO_REFRESH=1`). It reuses the same button-equivalent jobs on a timer:
-  holdings resync (stale > N days), history top-up, stale segment refresh, a
-  market-hours gate-quote sweep, **journal outcome scoring** (stamps 30/90/365-day
-  outcomes on directional decisions from historical closes — `journal.score_outcomes`,
-  so `calibrate` stops starving on manual outcomes and stops scoring old buys
-  against today's bull-market mark), and (default-off, opt-in via `ASSAY_ORDER_WATCH`)
+  holdings resync (stale > N days), history top-up (which also tops up the daily
+  FX panel — see `fx_history.py`), stale segment refresh, a market-hours gate-quote
+  sweep, **journal outcome scoring** (stamps 30/90/365-day outcomes on directional
+  decisions from historical closes — `journal.score_outcomes`, so `calibrate` stops
+  starving on manual outcomes and stops scoring old buys against today's bull-market
+  mark), and (default-off, opt-in via `ASSAY_ORDER_WATCH`)
   an **order/fill watcher**. It **never** trades, calls an LLM, runs Perplexity,
   or writes the target model. Each task is a pure `should_run(last_run, obs)`
   predicate plus an action that dispatches through `jobs.spawn`; `tick()` is fully
@@ -349,7 +350,9 @@ per-lot exemption calendar — gain lots to wait on, loss lots to harvest before
 their deadline, a year-end rollup, and opt-in scheduler alerts), `whatif.py` (post-trade
 recompute), `exit_plan.py` (tax-timed, liquidity-aware scale-out ladders with an
 options overlay), and `risk.py` (correlation / effective-bets / factor-shock
-stress) all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
+stress, plus an `fx` block from `fx_history.py` — the daily FX panel that surfaces
+non-base currency exposure and how much of the window's CZK move was exchange rate
+rather than stock-picking) all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
 pure before→after concentration/diversification delta (top-N weight, HHI→effective
 names, plus correlation-aware bets/vol when a series is supplied) that rides on
 every `whatif.simulate` and the trade preview, promoting threshold breaches to
