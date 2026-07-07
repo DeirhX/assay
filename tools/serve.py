@@ -591,6 +591,9 @@ class Handler(BaseHTTPRequestHandler):
             "draft": draft,
             "staged_basket": overview.staged_basket_summary(_load_basket()),
             "journal": overview.journal_summary(journal.load_entries(), now=now),
+            # Read-only over the cached verdict (warmed when Attribution is opened) --
+            # no network on the Today path. Absent/thin cache degrades to a nudge.
+            "attribution": overview.attribution_summary(attribution.load_verdict(), now=now),
             "research": overview.research_summary(
                 basket.enriched_items(), _ticker_index(), segs, seg_records, now=now),
             "automation": overview.automation_summary(
@@ -640,6 +643,9 @@ class Handler(BaseHTTPRequestHandler):
         benchmark = (query.get("benchmark") or [attribution.DEFAULT_BENCHMARK])[0]
         with _PULL_LOCK:
             report = attribution.attribution_report(history, holdings, rng=rng, benchmark=benchmark)
+        # Warm the headline cache so the Today cockpit can show the verdict without
+        # a network hop of its own. Best-effort; never fails the request.
+        attribution.cache_verdict(report)
         return self._send_json(report)
 
     def _get_regime(self, path, query):

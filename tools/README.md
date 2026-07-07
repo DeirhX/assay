@@ -304,7 +304,10 @@ from IO so the tests run offline.
   (`time_weighted_return` / `positions_at` / `hold_index` / `flow_curve`) is
   fully unit-tested; only `attribution_report` does IO (history/holdings/prices/
   FX, price fetch injectable). Read-only; never trades. API: `GET /api/attribution`
-  (`range`, `benchmark`), surfaced in the **Attribution** sub-tab.
+  (`range`, `benchmark`), surfaced in the **Attribution** sub-tab. A compact
+  headline (`verdict_from_report` -> `cache_verdict`, `data/cache/attribution-verdict.json`)
+  is warmed whenever the view is opened, so the **Today** cockpit can surface
+  "beats doing nothing?" via `load_verdict` without a network hop of its own.
 - `tax_lots.py` -- **Czech tax-lot-aware sell planner**. Given a symbol and an
   amount to raise, it picks specific lots to minimize tax: realize 3y-exempt gains
   first, then harvestable losses, then taxable gains. Uses `open_datetime` for the
