@@ -1,4 +1,4 @@
-import { $, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, isStaleToken, nextToken, pctClass, sectionCard, state } from "./core";
+import { $, $$, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, isStaleToken, nextToken, pctClass, sectionCard, state } from "./core";
 import { starHtml } from "./basket";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
@@ -14,7 +14,7 @@ import { renderThesis } from "./deepdive/thesis";
 // the fields this composer touches are named; the index signature keeps the
 // dynamic metric/field access (rec[key]) honest without re-listing every column.
 interface Rec {
-  symbol?: string;
+  symbol: string;
   name?: string;
   input_symbol?: string;
   provider_symbol?: string;
@@ -38,11 +38,11 @@ interface Rec {
   [key: string]: any;
 }
 
-const tickerInput = () => $<HTMLInputElement>("#ticker-input");
+const tickerInput = () => $$<HTMLInputElement>("#ticker-input");
 
 // ---- deep dive ------------------------------------------------------------
-$("#ticker-go").addEventListener("click", () => pullTicker(tickerInput().value));
-$("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker(tickerInput().value); });
+$$("#ticker-go").addEventListener("click", () => pullTicker(tickerInput().value));
+$$("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker(tickerInput().value); });
 // Return to the viewed-tickers overview (the deep-dive landing list).
 function goToOverview() {
   tickerInput().value = "";
@@ -116,7 +116,7 @@ function symbolSuggestRow(
 function renderNoMarketData(rec: Rec): void {
   const sym = cleanSymbol(rec?.input_symbol || rec?.alias_candidate_for || rec?.symbol || "");
   const provider = rec?.provider_symbol || rec?.symbol || sym;
-  const out = $("#dd-result");
+  const out = $$("#dd-result");
   out.innerHTML = "";
   out.appendChild(overviewBackBar());
   const card = el("div", "card empty-ticker nodata-card");
@@ -184,7 +184,7 @@ async function loadNameSearch(sec: HTMLElement, query: string): Promise<void> {
   } catch (e) {
     sec.innerHTML = "";
     sec.classList.add("err");
-    sec.appendChild(el("div", "nodata-suggest-label", `Symbol search failed: ${esc(e.message)}`));
+    sec.appendChild(el("div", "nodata-suggest-label", `Symbol search failed: ${esc((e as Error).message)}`));
   }
 }
 
@@ -209,7 +209,7 @@ async function loadCandidateSuggestions(sec: HTMLElement, inputSymbol: string, c
   } catch (e) {
     sec.innerHTML = "";
     sec.classList.add("err");
-    sec.appendChild(el("div", "nodata-suggest-label", `Could not validate alternate tickers: ${esc(e.message)}`));
+    sec.appendChild(el("div", "nodata-suggest-label", `Could not validate alternate tickers: ${esc((e as Error).message)}`));
   }
 }
 
@@ -218,13 +218,13 @@ async function loadTickerFromCache(raw: string): Promise<void> {
   if (!sym) return;
   // Drop this response if the user switches to another ticker before it lands.
   const token = nextToken("deepdive");
-  const status = $("#dd-status");
+  const status = $$("#dd-status");
   status.classList.remove("err");
   status.textContent = `Loading cached ${sym}...`;
   try {
     const rec = await api<Rec>("/api/research/" + encodeURIComponent(sym));
     if (isStaleToken("deepdive", token)) return;
-    status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of).toLocaleString()}`;
+    status.textContent = `Loaded cached ${rec.symbol} from ${new Date(rec.as_of ?? "").toLocaleString()}`;
     if (hasUsableMarketData(rec)) {
       renderDeepDive(rec, { anchorChart: true });
       hydrateHistory(rec);
@@ -235,7 +235,7 @@ async function loadTickerFromCache(raw: string): Promise<void> {
     if (isStaleToken("deepdive", token)) return;
     status.textContent = `No saved data for ${sym} yet.`;
     status.classList.add("err");
-    const out = $("#dd-result");
+    const out = $$("#dd-result");
     out.innerHTML = "";
     const card = el("div", "card empty-ticker");
     card.innerHTML =
@@ -261,14 +261,14 @@ async function pullTicker(raw: string, { push = true, aliasFor = "", anchor }: {
   if (push) pushNav({ view: "deepdive", ticker: sym });
   setActiveView("deepdive");
   tickerInput().value = sym;
-  const status = $("#dd-status");
+  const status = $$("#dd-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling ${esc(sym)} from live sources...`;
-  $<HTMLButtonElement>("#ticker-go").disabled = true;
+  $$<HTMLButtonElement>("#ticker-go").disabled = true;
   try {
     const rec = await api<Rec>("/api/pull/" + encodeURIComponent(sym), "POST");
     if (isStaleToken("deepdive", token)) return;
-    status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of).toLocaleString()}`;
+    status.textContent = `Fetched ${rec.symbol} at ${new Date(rec.as_of ?? "").toLocaleString()}`;
     if (aliasFor) rec.alias_candidate_for = cleanSymbol(aliasFor);
     if (hasUsableMarketData(rec)) {
       renderDeepDive(rec, { anchorChart });
@@ -278,11 +278,11 @@ async function pullTicker(raw: string, { push = true, aliasFor = "", anchor }: {
     }
   } catch (e) {
     if (isStaleToken("deepdive", token)) return;
-    status.textContent = "Pull failed: " + e.message;
+    status.textContent = "Pull failed: " + (e as Error).message;
     status.classList.add("err");
-    renderNoMarketData({ symbol: sym, error: e.message });
+    renderNoMarketData({ symbol: sym, error: (e as Error).message });
   } finally {
-    if (!isStaleToken("deepdive", token)) $<HTMLButtonElement>("#ticker-go").disabled = false;
+    if (!isStaleToken("deepdive", token)) $$<HTMLButtonElement>("#ticker-go").disabled = false;
   }
 }
 
@@ -429,19 +429,19 @@ function wireDossierChrome(headerCard: HTMLElement, sections: DossierSection[]):
 // the chart. In-place refreshes pass false to preserve the reader's scroll.
 function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boolean } = {}): void {
   recordView(rec.symbol, rec.name);
-  const out = $("#dd-result");
+  const out = $$("#dd-result");
   teardownDossierChrome();  // drop observers from any prior dossier render
   out.innerHTML = "";
 
-  const price = rec.price ? rec.price.value : null;
+  const price = rec.price?.value ?? null;
   const portfolio = rec.portfolio || {};
   const target = portfolio.target || {};
   const owned =
     portfolio.current_weight_pct ??
     state.holdings[rec.symbol] ??
-    state.holdings[rec.input_symbol] ??
-    state.holdings[rec.alias_candidate_for] ??
-    state.holdings[rec.provider_symbol];
+    state.holdings[rec.input_symbol ?? ""] ??
+    state.holdings[rec.alias_candidate_for ?? ""] ??
+    state.holdings[rec.provider_symbol ?? ""] ?? null;
   const decision = rec.decision || "research";
 
   const card = el("div", "card");
@@ -457,7 +457,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
 
   const sub = el("div", "dd-sub");
   sub.innerHTML =
-    `<span>as of ${freshnessNote(rec.as_of) || esc(new Date(rec.as_of).toLocaleString())}</span>` +
+    `<span>as of ${freshnessNote(rec.as_of) || esc(new Date(rec.as_of ?? "").toLocaleString())}</span>` +
     (owned != null ? `<span class="owned-pill">held: ${fmtWeight(owned)} NAV</span>` : `<span class="muted">not held</span>`) +
     (target.rule ? `<span>rule: <strong>${esc(target.rule)}</strong></span>` : `<span class="muted">no target rule</span>`);
   // Actions live in their own right-aligned cluster so the clickable controls
@@ -490,11 +490,11 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       try {
-        await saveSymbolAlias(rec.alias_candidate_for, rec.symbol);
+        await saveSymbolAlias(rec.alias_candidate_for ?? "", rec.symbol);
         row.innerHTML = `<span>Saved alias ${esc(rec.alias_candidate_for)} \u2192 ${esc(rec.symbol)}.</span>`;
       } catch (e) {
         btn.disabled = false;
-        row.appendChild(el("span", "status err", ` save failed: ${esc(e.message)}`));
+        row.appendChild(el("span", "status err", ` save failed: ${esc((e as Error).message)}`));
       }
     });
     row.appendChild(btn);
@@ -545,7 +545,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
   });
   trustBody.appendChild(list);
   if (hasErrors) {
-    trustBody.appendChild(el("div", "status err", "source errors: " + rec.errors.map(esc).join("; ")));
+    trustBody.appendChild(el("div", "status err", "source errors: " + (rec.errors || []).map(esc).join("; ")));
   }
 
   // metrics

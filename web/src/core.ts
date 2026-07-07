@@ -73,6 +73,17 @@ const state: AppState = {
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document): T | null =>
   root.querySelector<T>(sel);
 
+// Like $, but for elements the static index.html shell guarantees exist. Throws
+// loudly (naming the selector) when the node is missing instead of returning
+// null, so a renamed/removed id surfaces right at the call site rather than as a
+// downstream "possibly null" TypeError or a silent no-op. Use $ (nullable) when
+// the element's absence is a legitimate, handled state.
+const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document): T => {
+  const node = root.querySelector<T>(sel);
+  if (!node) throw new Error(`Required element not found: ${sel}`);
+  return node;
+};
+
 // Overloaded so a literal tag ("button", "a", ...) yields the precise element
 // type (HTMLButtonElement, HTMLAnchorElement, ...) and call sites can touch
 // tag-specific props without a cast; a dynamic string tag falls back to
@@ -374,6 +385,7 @@ async function apiLoad<T = any>(o: ApiLoadOpts<T>): Promise<void> {
 export {
   state,
   $,
+  $$,
   el,
   esc,
   relAge,

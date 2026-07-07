@@ -55,11 +55,15 @@ export function setNeedsLoginHandler(fn: NeedsLoginHandler) {
 // pill (analysis, Q&A, deep research); omit it for non-LLM jobs (e.g. login).
 export async function pollDeepJob(
   jobId: string,
-  statusEl: HTMLElement,
+  statusEl: HTMLElement | null,
   onDone: (job: Job) => unknown,
   label?: string,
   onFail?: (msg: string) => void,
 ) {
+  // A caller without its own status line (e.g. a post-trade background resync)
+  // still needs the job driven to completion; route status writes to a detached
+  // scratch node so the loop below stays branch-free.
+  statusEl = statusEl ?? document.createElement("div");
   // The global Task Center poller (tasks.ts) owns the pill/panel now; just nudge
   // it so this freshly-started job shows up promptly. This loop keeps driving the
   // per-view status line + onDone refresh for whoever started the job.
@@ -72,7 +76,7 @@ export async function pollDeepJob(
         job = await api("/api/deep-job?id=" + encodeURIComponent(jobId));
       } catch (e) {
         statusEl.classList.add("err");
-        const msg = "lost the job: " + e.message;
+        const msg = "lost the job: " + (e as Error).message;
         statusEl.textContent = msg;
         if (onFail) onFail(msg);
         return;

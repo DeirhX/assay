@@ -46,6 +46,7 @@
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="history" type="button" role="tab">History</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
+        <button class="subtab" data-view="attribution" type="button" role="tab">Attribution</button>
         <button class="subtab" data-view="tax" type="button" role="tab">Tax</button>
         <button class="subtab" data-view="journal" type="button" role="tab">Journal</button>
       </div>
@@ -523,6 +524,33 @@
       </div>
       <div class="status" id="risk-status"></div>
       <div id="risk-result"></div>
+    </section>
+
+    <!-- ATTRIBUTION -->
+    <section class="view" id="view-attribution">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Process attribution</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Every other lens measures a position; this measures the process. Over the window it compares your actual time-weighted return against two skill-free baselines: never rebalancing (freeze the book at the window start and let prices run) and the benchmark (put the same koruna into SPY/QQQ). Deposits are neutralized so a transfer never looks like alpha, and every foreign price is converted day-by-day so currency swings don't flatter or bury the result. Read the caveats — a thin ledger or a missing price makes a curve approximate.</p></details>
+        </div>
+        <label class="risk-range-label">Benchmark
+          <select id="attr-benchmark">
+            <option value="SPY" selected>SPY</option>
+            <option value="QQQ">QQQ</option>
+          </select>
+        </label>
+        <label class="risk-range-label">Window
+          <select id="attr-range">
+            <option value="3mo">3m</option>
+            <option value="6mo">6m</option>
+            <option value="1y" selected>1y</option>
+            <option value="2y">2y</option>
+            <option value="5y">5y</option>
+          </select>
+        </label>
+      </div>
+      <div class="status" id="attr-status"></div>
+      <div id="attr-result"></div>
     </section>
 
     <!-- TAX -->

@@ -352,7 +352,13 @@ recompute), `exit_plan.py` (tax-timed, liquidity-aware scale-out ladders with an
 options overlay), and `risk.py` (correlation / effective-bets / factor-shock
 stress, plus an `fx` block from `fx_history.py` — the daily FX panel that surfaces
 non-base currency exposure and how much of the window's CZK move was exchange rate
-rather than stock-picking) all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
+rather than stock-picking), and `attribution.py` (process attribution: the actual
+time-weighted return over a window vs two skill-free baselines — never-rebalanced,
+which freezes the book at the window start and lets prices run, and the benchmark,
+which puts the same koruna into SPY/QQQ — with deposits neutralized so a transfer
+never reads as alpha and every foreign price converted day-by-day through the FX
+panel; served at `GET /api/attribution`, surfaced in the **Attribution** sub-tab)
+all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
 pure before→after concentration/diversification delta (top-N weight, HHI→effective
 names, plus correlation-aware bets/vol when a series is supplied) that rides on
 every `whatif.simulate` and the trade preview, promoting threshold breaches to

@@ -1,6 +1,6 @@
 import { loadAnalyses, startPipeline } from "./analyses";
 import { initBasket, loadBasket } from "./basket";
-import { $, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
+import { $$, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
 import { pollDeepJob } from "./jobs";
 import { loadDeepRun } from "./pipeline";
@@ -16,6 +16,7 @@ import { loadRebalance } from "./rebalance";
 import { loadRegime } from "./regime";
 import { openTicker } from "./ticker-nav";
 import { initRiskControls, loadRisk } from "./risk";
+import { initAttributionControls, loadAttribution } from "./attribution";
 import { loadExit } from "./exit";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
@@ -95,7 +96,7 @@ function tickerMenuHtml(rows: any[]) {
 }
 
 function wireTickerSearch(input: HTMLInputElement) {
-  const menu = $("#top-ticker-menu");
+  const menu = $$("#top-ticker-menu");
   if (!menu) return;
 
   const render = async (showRecents: boolean) => {
@@ -120,7 +121,7 @@ function wireTickerSearch(input: HTMLInputElement) {
   };
   const submit = () => {
     const active = menu.hidden ? null : menu.querySelector<HTMLElement>(".topsearch-item.active");
-    choose(active ? active.dataset.sym : input.value);
+    choose((active ? active.dataset.sym : input.value) ?? "");
   };
 
   input.addEventListener("focus", () => render(true));
@@ -140,12 +141,12 @@ function wireTickerSearch(input: HTMLInputElement) {
     const it = (e.target as HTMLElement).closest<HTMLElement>(".topsearch-item");
     if (!it) return;
     e.preventDefault();
-    choose(it.dataset.sym);
+    choose(it.dataset.sym ?? "");
   });
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "tax", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "basket", "setup"]);
 
 // The guided Plan flow is the dominant path, so it is the landing view and the
 // one omitted from the URL (a bare "/" means Plan). Every other view carries an
@@ -163,7 +164,7 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", tax: "portfolio", journal: "portfolio",
+  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
 };
@@ -172,7 +173,7 @@ const VIEW_GROUP: Record<string, string> = {
 const VIEW_SUBTAB: Record<string, string> = {
   leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade",
-  today: "today", holdings: "holdings", history: "history", risk: "risk", tax: "tax", journal: "journal",
+  today: "today", holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
@@ -193,7 +194,7 @@ const modelLabel = (m: string | null | undefined) => (m && m !== "(default)" ? m
 
 // A resolved location: the flat view plus its optional target identifiers.
 interface NavState {
-  view?: string;
+  view?: string | null;
   ticker?: string;
   segment?: string;
   run?: string;
@@ -227,7 +228,8 @@ function parseSearch(search = window.location.search) {
 
 function navFromUrl() {
   const params = parseSearch();
-  const view = VIEWS.has(params.get("view")) ? params.get("view") : DEFAULT_VIEW;
+  const rawView = params.get("view");
+  const view = rawView && VIEWS.has(rawView) ? rawView : DEFAULT_VIEW;
   return {
     view,
     ticker: cleanSymbol(params.get("ticker")),
@@ -262,10 +264,10 @@ function pushNav(partial: Partial<NavState>, { replace = false }: { replace?: bo
 
 function navForView(view: string) {
   const nav: { view: string; ticker?: string; segment?: string; run?: string } = { view };
-  if (view === "deepdive") nav.ticker = cleanSymbol($<HTMLInputElement>("#ticker-input").value);
-  if (view === "segment") nav.segment = cleanSlug($<HTMLSelectElement>("#segment-select").value);
+  if (view === "deepdive") nav.ticker = cleanSymbol($$<HTMLInputElement>("#ticker-input").value);
+  if (view === "segment") nav.segment = cleanSlug($$<HTMLSelectElement>("#segment-select").value);
   if (view === "pipeline") {
-    nav.segment = cleanSlug($<HTMLSelectElement>("#pipe-segment-select").value || $<HTMLInputElement>("#pipe-slug").value);
+    nav.segment = cleanSlug($$<HTMLSelectElement>("#pipe-segment-select").value || $$<HTMLInputElement>("#pipe-slug").value);
     if (state.currentDeepRun) nav.run = state.currentDeepRun;
   }
   if (view === "analyses" && state.currentAnalysis) nav.run = state.currentAnalysis;
@@ -286,12 +288,12 @@ function updateChrome(active: string) {
   document.querySelectorAll<HTMLElement>(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
 
   // The sub-tab bar only exists for groups that fan out into multiple views.
-  const subbar = $("#subbar");
+  const subbar = $$("#subbar");
   const groupHasSubtabs = group === "research" || group === "rebalance" || group === "portfolio";
   if (subbar) subbar.hidden = !groupHasSubtabs;
   document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
-  document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view] === wantSub));
+  document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view ?? ""] === wantSub));
 
   // The rebalance group carries the guided flow bar (current book → plan
   // changes → orders → target state) so the sibling sub-tabs read as one
@@ -303,7 +305,7 @@ function setActiveView(view: string) {
   const active = VIEWS.has(view) ? view : DEFAULT_VIEW;
   updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-  $("#view-" + active).classList.add("active");
+  $$("#view-" + active).classList.add("active");
   if (active === "strategy") loadStrategy();
   if (active === "leaderboard") loadLeaderboard();
   if (active === "today") loadOverview();
@@ -319,6 +321,7 @@ function setActiveView(view: string) {
   if (active === "trade") loadTrade();
   if (active === "segment") loadRegime();
   if (active === "risk") { initRiskControls(); loadRisk(); }
+  if (active === "attribution") { initAttributionControls(); loadAttribution(); }
   if (active === "tax") { initTaxControls(); loadTax(); }
   if (active === "journal") { initJournalControls(); loadJournal(); }
   if (active === "basket") loadBasket();
@@ -328,11 +331,11 @@ function setActiveView(view: string) {
 
 function setSegmentControls(segment: string | null | undefined) {
   if (!segment) return;
-  const seg = $<HTMLSelectElement>("#segment-select");
-  const pipe = $<HTMLSelectElement>("#pipe-segment-select");
+  const seg = $$<HTMLSelectElement>("#segment-select");
+  const pipe = $$<HTMLSelectElement>("#pipe-segment-select");
   if (seg && Array.from(seg.options).some((o) => o.value === segment)) seg.value = segment;
   if (pipe && Array.from(pipe.options).some((o) => o.value === segment)) pipe.value = segment;
-  const slug = $<HTMLInputElement>("#pipe-slug");
+  const slug = $$<HTMLInputElement>("#pipe-slug");
   if (slug && !slug.value) slug.value = segment;
 }
 
@@ -358,7 +361,7 @@ export async function openDeepRunInPipeline(stem: string): Promise<void> {
 
 async function restoreNav(nav: NavState) {
   const active = setActiveView(nav.view ?? DEFAULT_VIEW);
-  if (nav.ticker) $<HTMLInputElement>("#ticker-input").value = nav.ticker;
+  if (nav.ticker) $$<HTMLInputElement>("#ticker-input").value = nav.ticker;
   if (nav.segment || nav.run || active === "segment" || active === "pipeline") {
     await loadSegmentList();
     setSegmentControls(nav.segment);
@@ -378,7 +381,7 @@ async function restoreNav(nav: NavState) {
   // preventScroll: focusing the ticker input on a deep-link load would otherwise
   // scroll the input into view mid-layout, stranding the topbar in the middle of
   // the viewport. Landing at the top is handled by goToView for tab switches.
-  if (active === "deepdive") $<HTMLInputElement>("#ticker-input").focus({ preventScroll: true });
+  if (active === "deepdive") $$<HTMLInputElement>("#ticker-input").focus({ preventScroll: true });
 }
 
 // ---- tabs / app shell wiring ----------------------------------------------
@@ -401,7 +404,7 @@ function maybeShowSelChip() {
     _selChip = el("button", "sel-analyze");
     _selChip.type = "button";
     _selChip.addEventListener("mousedown", (e) => e.preventDefault());  // keep selection
-    _selChip.addEventListener("click", () => { const t = _selChip.dataset.ticker; hideSelChip(); if (t) openTicker(t); });
+    _selChip.addEventListener("click", () => { const t = _selChip?.dataset.ticker; hideSelChip(); if (t) openTicker(t); });
     document.body.appendChild(_selChip);
   }
   const sym = raw.toUpperCase();
@@ -426,20 +429,20 @@ function initShell() {
 
   // Direct view targets: the settings gear (.tab) and the secondary sub-tabs.
   document.querySelectorAll<HTMLElement>(".tab, .subtab").forEach((btn) => {
-    btn.addEventListener("click", () => goToView(btn.dataset.view));
+    btn.addEventListener("click", () => { const v = btn.dataset.view; if (v) goToView(v); });
   });
 
   // Top-level group headers jump to wherever you last were in that group (or its
   // default on first visit), giving the three-item nav some memory.
   document.querySelectorAll<HTMLElement>(".group").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const group = btn.dataset.group;
+      const group = btn.dataset.group ?? "";
       goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || DEFAULT_VIEW);
     });
   });
 
   // Persistent header search with autocomplete over tickers we already have.
-  const topTicker = $<HTMLInputElement>("#top-ticker");
+  const topTicker = $$<HTMLInputElement>("#top-ticker");
   if (topTicker) wireTickerSearch(topTicker);
 
   // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
@@ -455,12 +458,12 @@ function initShell() {
     restoreNav(event.state || navFromUrl());
   });
 
-  $("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
+  $$("#privacy-toggle").addEventListener("click", () => applyPrivacyMode(!state.privacyMode));
 
-  $("#analyses-new").addEventListener("click", () => startPipeline());
+  $$("#analyses-new").addEventListener("click", () => startPipeline());
 
   // New run is a sub-page of Reports now (no sub-tab); its Back button returns there.
-  const pipeBack = $("#pipe-back");
+  const pipeBack = $$("#pipe-back");
   if (pipeBack) pipeBack.addEventListener("click", () => goToView("analyses"));
 
   // Ticker links inside rendered reports / summaries are SPA-internal: intercept
@@ -493,9 +496,9 @@ function initShell() {
     if (_selChip && !_selChip.hidden && !(tgt.closest && tgt.closest(".sel-analyze"))) hideSelChip();
   });
 
-  $<HTMLButtonElement>("#hold-sync").addEventListener("click", async () => {
-    const btn = $<HTMLButtonElement>("#hold-sync");
-    const status = $("#hold-status");
+  $$<HTMLButtonElement>("#hold-sync").addEventListener("click", async () => {
+    const btn = $$<HTMLButtonElement>("#hold-sync");
+    const status = $$("#hold-status");
     if (btn.disabled) return;
     const prev = btn.textContent;
     btn.disabled = true;
@@ -511,7 +514,7 @@ function initShell() {
         status.textContent = "Synced. " + siteMsg((done.result as Record<string, any>)?.site);
       }, "IBKR sync");
     } catch (e) {
-      status.textContent = "Sync failed: " + e.message;
+      status.textContent = "Sync failed: " + (e as Error).message;
       status.classList.add("err");
     } finally {
       btn.disabled = false;

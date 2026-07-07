@@ -1,5 +1,5 @@
 import type { Job } from "./api-types";
-import { $, api, el, esc } from "./core";
+import { $$, api, el, esc } from "./core";
 import { pollDeepJob } from "./jobs";
 
 let _wired = false;
@@ -184,7 +184,7 @@ function wireModelCombo(id: string) {
       setActive(items, Math.max(0, idx - 1));
     } else if (e.key === "Enter" && idx >= 0) {
       e.preventDefault();
-      input.value = items[idx].dataset.val;
+      input.value = items[idx].dataset.val ?? "";
       close();
     }
   });
@@ -194,10 +194,10 @@ function wireModelCombo(id: string) {
     const it = (e.target as HTMLElement).closest<HTMLElement>(".setup-combo-item");
     if (!it) return;
     e.preventDefault();
-    input.value = it.dataset.val;
+    input.value = it.dataset.val ?? "";
     close();
   });
-  const caret = input.parentElement.querySelector(".setup-combo-caret");
+  const caret = input.parentElement?.querySelector(".setup-combo-caret");
   if (caret) {
     caret.addEventListener("mousedown", (e) => {
       e.preventDefault();
@@ -381,7 +381,7 @@ function stepStateBadge(step: SetupStep) {
 }
 
 function renderSetup(st: SetupState) {
-  const out = $("#setup-result");
+  const out = $$("#setup-result");
   out.innerHTML = "";
 
   const steps = setupSteps(st);
@@ -487,7 +487,7 @@ async function renderErrorLog(open = false) {
 }
 
 async function clearErrorLog() {
-  const status = $("#setup-errlog-status");
+  const status = $$("#setup-errlog-status");
   if (status) {
     status.classList.remove("err");
     status.textContent = "clearing…";
@@ -498,7 +498,7 @@ async function clearErrorLog() {
   } catch (e) {
     if (status) {
       status.classList.add("err");
-      status.textContent = "clear failed: " + e.message;
+      status.textContent = "clear failed: " + (e as Error).message;
     }
   }
 }
@@ -666,17 +666,17 @@ function readLlmConfig() {
   return {
     providers: LLM_IDS.map((id) => ({
       id,
-      enabled: $<HTMLInputElement>(`#setup-${id}-enabled`).checked,
-      model: $<HTMLInputElement>(`#setup-${id}-model`).value.trim(),
-      extra_args: $<HTMLInputElement>(`#setup-${id}-extra`).value.trim().split(/\s+/).filter(Boolean),
+      enabled: $$<HTMLInputElement>(`#setup-${id}-enabled`).checked,
+      model: $$<HTMLInputElement>(`#setup-${id}-model`).value.trim(),
+      extra_args: $$<HTMLInputElement>(`#setup-${id}-extra`).value.trim().split(/\s+/).filter(Boolean),
     })),
-    timeout_sec: Number($<HTMLInputElement>("#setup-timeout").value || 300),
-    allow_web: $<HTMLInputElement>("#setup-web").checked,
+    timeout_sec: Number($$<HTMLInputElement>("#setup-timeout").value || 300),
+    allow_web: $$<HTMLInputElement>("#setup-web").checked,
   };
 }
 
 async function saveLlmConfig() {
-  const status = $("#setup-llm-status");
+  const status = $$("#setup-llm-status");
   status.classList.remove("err");
   status.textContent = "saving...";
   try {
@@ -685,7 +685,7 @@ async function saveLlmConfig() {
     await loadSetup();
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "save failed: " + e.message;
+    status.textContent = "save failed: " + (e as Error).message;
   }
 }
 
@@ -700,7 +700,7 @@ async function pollJob(job: Job, status: HTMLElement): Promise<Job> {
 }
 
 async function startPerplexityLogin() {
-  const status = $("#setup-pplx-status");
+  const status = $$("#setup-pplx-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> opening login window...`;
   try {
@@ -710,12 +710,12 @@ async function startPerplexityLogin() {
     await loadSetup();
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "login failed: " + e.message;
+    status.textContent = "login failed: " + (e as Error).message;
   }
 }
 
 async function verifyPerplexity() {
-  const status = $("#setup-pplx-status");
+  const status = $$("#setup-pplx-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> checking browser session...`;
   try {
@@ -724,12 +724,12 @@ async function verifyPerplexity() {
     await loadSetup();
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "check failed: " + e.message;
+    status.textContent = "check failed: " + (e as Error).message;
   }
 }
 
 async function runSmokeChecks() {
-  const status = $("#setup-llm-status");
+  const status = $$("#setup-llm-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> running smoke checks...`;
   try {
@@ -739,15 +739,15 @@ async function runSmokeChecks() {
     ensureModels().then(fillModelLists);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "checks failed: " + e.message;
+    status.textContent = "checks failed: " + (e as Error).message;
   }
 }
 
 async function saveIbkr() {
-  const status = $("#setup-ibkr-status");
-  const token = $<HTMLInputElement>("#setup-ibkr-token").value.trim();
-  const query_id = $<HTMLInputElement>("#setup-ibkr-query").value.trim();
-  const history_query_id = $<HTMLInputElement>("#setup-ibkr-history-query").value.trim();
+  const status = $$("#setup-ibkr-status");
+  const token = $$<HTMLInputElement>("#setup-ibkr-token").value.trim();
+  const query_id = $$<HTMLInputElement>("#setup-ibkr-query").value.trim();
+  const history_query_id = $$<HTMLInputElement>("#setup-ibkr-history-query").value.trim();
   if (!token && !query_id && !history_query_id) {
     status.classList.add("err");
     status.textContent = "Enter a Query ID and/or token.";
@@ -761,13 +761,13 @@ async function saveIbkr() {
     await loadSetup();
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "save failed: " + e.message;
+    status.textContent = "save failed: " + (e as Error).message;
   }
 }
 
 async function syncIbkr() {
-  const btn = $<HTMLButtonElement>("#setup-sync-ibkr");
-  const status = $("#setup-ibkr-sync-status");
+  const btn = $$<HTMLButtonElement>("#setup-sync-ibkr");
+  const status = $$("#setup-ibkr-sync-status");
   if (!btn || btn.disabled) return;
   status.classList.remove("err");
   const prev = btn.textContent;
@@ -783,7 +783,7 @@ async function syncIbkr() {
     }, "IBKR sync");
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "Sync failed: " + e.message;
+    status.textContent = "Sync failed: " + (e as Error).message;
   } finally {
     btn.disabled = false;
     btn.textContent = prev;
@@ -804,12 +804,12 @@ const SETUP_ACTIONS: Record<string, () => unknown> = {
 function wireSetup() {
   if (_wired) return;
   _wired = true;
-  $("#setup-refresh").addEventListener("click", () => loadSetup());
-  $("#setup-result").addEventListener("click", (e) => {
+  $$("#setup-refresh").addEventListener("click", () => loadSetup());
+  $$("#setup-result").addEventListener("click", (e) => {
     SETUP_ACTIONS[(e.target as HTMLElement)?.id]?.();
   });
   // Dim a provider card live when its Enabled toggle flips.
-  $("#setup-result").addEventListener("change", (e) => {
+  $$("#setup-result").addEventListener("change", (e) => {
     const t = e.target as HTMLInputElement;
     if (t && /^setup-(claude|cursor)-enabled$/.test(t.id || "")) {
       t.closest(".setup-provider")?.classList.toggle("disabled", !t.checked);
@@ -819,7 +819,7 @@ function wireSetup() {
 }
 
 async function saveAutomation(enabled: boolean) {
-  const status = $("#setup-auto-status");
+  const status = $$("#setup-auto-status");
   if (status) { status.classList.remove("err"); status.textContent = "Saving…"; }
   try {
     await api("/api/setup/automation", "POST", { enabled });
@@ -832,7 +832,7 @@ async function saveAutomation(enabled: boolean) {
 
 async function loadSetup() {
   wireSetup();
-  const status = $("#setup-status");
+  const status = $$("#setup-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> checking setup...`;
   try {
@@ -842,7 +842,7 @@ async function loadSetup() {
     ensureModels().then(fillModelLists);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "setup check failed: " + e.message;
+    status.textContent = "setup check failed: " + (e as Error).message;
   }
 }
 

@@ -11,12 +11,18 @@ over doing nothing." Deterministic over stored data; **read-only, never trades**
 > top-up fold-in, PR #175) and its first consumer, a **currency-exposure +
 > FX-effect tile on the Risk view** (`fx_history.exposure_by_currency` /
 > `window_report` → `/api/risk → fx`). Phase 2 — the **provenance timeline** —
-> lands in this PR (`provenance-log.jsonl` writer in `commit_staged` +
-> `backfill_provenance_log()`; nothing consumes it yet). What remains: the pure
-> counterfactual engine + `/api/attribution` (phase 3), the full NAV
-> `decompose_fx` local/FX/residual split (phase 4), and by-source / by-group
-> attribution (phase 5). Two open questions are now **settled by ground truth** —
-> see the notes inline.
+> shipped (`provenance-log.jsonl` writer in `commit_staged` +
+> `backfill_provenance_log()`; PR #179). Phase 3 — the **attribution engine** —
+> ships in this PR: `tools/attribution.py` (pure `time_weighted_return` /
+> `positions_at` / `hold_index` / `flow_curve` + the `attribution_report`
+> assembler), the `never-rebalanced` and `benchmark` counterfactuals, `GET
+> /api/attribution`, and the **Attribution** sub-tab (a growth-of-100 chart +
+> actual-vs-baseline deltas). What remains: the `follow_all` counterfactual over
+> the provenance log and the full NAV `decompose_fx` local/FX/residual split
+> (phase 4), and by-source / by-group attribution (phase 5). The
+> `cash_transactions[].type` question is settled operationally — the classifier
+> substring-matches deposit/withdraw against IBKR's one external type
+> ("Deposits/Withdrawals"); everything else stays internal book return.
 
 Currency attribution (recommendation #3) is **folded into this data model from
 day one**: a CZK-base investor holding mostly USD assets sees a chunk of every
@@ -218,9 +224,14 @@ existing `_PULL_LOCK` + thread pool (mirroring `exit_plan._prewarm_caches`).
 2. ✅ **Shipped (this PR).** `provenance-log.jsonl` writer in `commit_staged` +
    `backfill_provenance_log()` + tests — the decision timeline (nothing consumes
    it yet). Best-effort append: a log failure never rolls back a landed commit.
-3. `attribution.py`: TWR + `never-rebalanced` + `benchmark` counterfactuals +
-   `/api/attribution` + a minimal view, reading the existing cached history dict.
-   **The 80% that answers "beats doing nothing?"**
+3. ✅ **Shipped (this PR).** `attribution.py`: flow-neutralized TWR +
+   `never-rebalanced` + `benchmark` counterfactuals (pure `time_weighted_return` /
+   `positions_at` / `hold_index` / `flow_curve` + the `attribution_report`
+   assembler) + `/api/attribution` + the **Attribution** sub-tab (growth-of-100
+   chart, actual-vs-baseline deltas), reading the cached history dict and pricing
+   through the FX panel. **The 80% that answers "beats doing nothing?"** The
+   frozen book is reconstructed by unwinding post-window trades; a ledger that
+   starts after the window, or an unpriceable name, degrades to a caveat.
 4. `decompose_fx` — the *full* per-period NAV split into local-price + FX +
    residual over the whole `nav_series` (the phase-1 tile is the current-holdings
    FX-effect shortcut; this is the exact, flow-aware version) + the FX strip on the

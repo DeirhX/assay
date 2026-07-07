@@ -17,12 +17,15 @@ interface QaTurn {
   backend_label?: string | null;
   model?: string | null;
   ts?: string | number | null;
-  usage?: QaUsage | null;
+  usage?: unknown;
 }
 
 // Anthropic prompt-cache + token usage for one turn, rendered as a compact line.
-export function qaUsageHtml(u: QaUsage | null | undefined): string {
-  if (!u || typeof u !== "object") return "";
+// Accepts unknown because the turn's `usage` is loosely typed upstream; the shape
+// is validated at runtime before any field is read.
+export function qaUsageHtml(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "";
+  const u = raw as QaUsage;
   const r = u.cache_read_input_tokens, w = u.cache_creation_input_tokens;
   const inp = u.input_tokens, out = u.output_tokens;
   if ([r, w, inp, out].every((v) => v == null)) return "";

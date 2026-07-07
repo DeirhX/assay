@@ -5,7 +5,7 @@
 // durable state lives in the run manifest; this view is a thin renderer over
 // GET /api/strategy/{run_id}, polled while a leg is running.
 import { starHtml } from "./basket";
-import { $, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
+import { $, $$, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { bandBar, directionTag, ruleWord, scaleMaxFor, type BandRow } from "./band-viz";
 import { openDeepRunInPipeline, pushNav, setActiveView } from "./shell";
@@ -113,7 +113,7 @@ interface Draft {
 
 // The run manifest — the single object every renderer reads from.
 interface Manifest {
-  run_id?: string;
+  run_id: string;
   state: string;
   message?: string;
   error?: string;
@@ -187,17 +187,17 @@ async function loadStrategy() {
   _lastM = null;
   if (runId) {
     _activeRunId = runId;
-    $("#strat-start").hidden = true;
+    $$("#strat-start").hidden = true;
     renderLoading("Loading run…");
     await refreshOnce(runId);
   } else {
     stopPolling();
     _activeRunId = null;
-    $("#strat-start").hidden = false;
-    $("#strat-stages").hidden = true;
-    $("#strat-panel").innerHTML = "";
-    $("#strat-status").textContent = "";
-    $("#strat-status").classList.remove("err");
+    $$("#strat-start").hidden = false;
+    $$("#strat-stages").hidden = true;
+    $$("#strat-panel").innerHTML = "";
+    $$("#strat-status").textContent = "";
+    $$("#strat-status").classList.remove("err");
     loadRecentRuns();
   }
 }
@@ -217,7 +217,7 @@ async function refreshOnce(runId: string) {
   try {
     m = await api<Manifest>("/api/strategy/" + encodeURIComponent(runId));
   } catch (e) {
-    renderError("Lost the run: " + e.message);
+    renderError("Lost the run: " + (e as Error).message);
     return;
   }
   if (_activeRunId !== runId) return;
@@ -228,32 +228,32 @@ async function refreshOnce(runId: string) {
 
 // ---- start + recents ------------------------------------------------------
 async function startRun() {
-  const dir = $<HTMLInputElement>("#strat-direction").value.trim();
-  const status = $("#strat-status");
+  const dir = $$<HTMLInputElement>("#strat-direction").value.trim();
+  const status = $$("#strat-status");
   status.classList.remove("err");
   if (!dir) { status.classList.add("err"); status.textContent = "describe a direction first"; return; }
-  const btn = $<HTMLButtonElement>("#strat-go");
+  const btn = $$<HTMLButtonElement>("#strat-go");
   btn.disabled = true;
   status.innerHTML = `<span class="spinner"></span> starting run…`;
   try {
     const m = await api("/api/strategy/start", "POST", { direction: dir });
     _activeRunId = m.run_id;
     _viewStage = null;
-    $("#strat-start").hidden = true;
+    $$("#strat-start").hidden = true;
     status.textContent = "";
     pushNav({ view: "strategy", run: m.run_id });
     render(m);
     schedulePoll(m.run_id);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "could not start: " + e.message;
+    status.textContent = "could not start: " + (e as Error).message;
   } finally {
     btn.disabled = false;
   }
 }
 
 async function loadRecentRuns() {
-  const box = $("#strat-recent");
+  const box = $$("#strat-recent");
   if (!box) return;
   try {
     const { runs } = await api<{ runs?: RunSummary[] }>("/api/strategy/runs");
@@ -283,7 +283,7 @@ async function loadRecentRuns() {
 function render(m: Manifest) {
   _lastM = m;
   renderStages(m);
-  const panel = $("#strat-panel");
+  const panel = $$("#strat-panel");
   if (m.state === "error") { _viewStage = null; return renderError(m.error || "the run failed"); }
   // Drop a stale pin (e.g. a run reloaded at an earlier state) and decide whether
   // we're showing the live step (interactive) or a revisited one (read-only).
@@ -307,7 +307,7 @@ function renderLiveStage(m: Manifest, panel: HTMLElement) {
 }
 
 function renderStages(m: Manifest) {
-  const wrap = $("#strat-stages");
+  const wrap = $$("#strat-stages");
   if (!wrap) return;
   wrap.hidden = false;
   const errored = m.state === "error";
@@ -316,7 +316,7 @@ function renderStages(m: Manifest) {
   const reached = reachedStages(m);
   const showing = (!errored && _viewStage && reached.includes(_viewStage)) ? _viewStage : live;
   wrap.querySelectorAll("li").forEach((li) => {
-    const stage = li.dataset.stage;
+    const stage = li.dataset.stage ?? "";
     const idx = STAGE_ORDER.indexOf(stage);
     li.classList.toggle("active", !errored && stage === showing);
     li.classList.toggle("done", !errored && (idx < liveIdx || m.state === "done"));
@@ -393,7 +393,8 @@ function renderSegmentStep(m: Manifest, panel: HTMLElement) {
     `<label>Segment definition JSON</label>` +
     `<textarea rows="14" spellcheck="false" readonly></textarea>`;
   panel.appendChild(card);
-  card.querySelector("textarea").value = JSON.stringify(def, null, 2);
+  const ta = card.querySelector("textarea");
+  if (ta) ta.value = JSON.stringify(def, null, 2);
 }
 
 function renderResearchStep(m: Manifest, panel: HTMLElement) {
@@ -457,12 +458,12 @@ function renderReviewStep(m: Manifest, panel: HTMLElement) {
 }
 
 function renderLoading(msg: string) {
-  $("#strat-panel").innerHTML =
+  $$("#strat-panel").innerHTML =
     `<div class="card strat-running"><span class="spinner"></span> ${esc(msg || "working…")}</div>`;
 }
 
 function renderError(msg: string) {
-  const panel = $("#strat-panel");
+  const panel = $$("#strat-panel");
   panel.innerHTML =
     `<div class="card strat-error"><strong>Run failed.</strong> <span>${esc(msg)}</span></div>`;
   const actions = el("div", "thesis-actions");
@@ -470,7 +471,7 @@ function renderError(msg: string) {
   restart.type = "button";
   restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
   actions.appendChild(restart);
-  panel.querySelector(".card").appendChild(actions);
+  panel.querySelector(".card")?.appendChild(actions);
 }
 
 // ---- gate 1: approve the drafted segment ----------------------------------
@@ -491,20 +492,20 @@ function renderSegmentGate(m: Manifest, panel: HTMLElement) {
       `<span class="status" id="strat-seg-status"></span>` +
     `</div>`;
   panel.appendChild(card);
-  $<HTMLTextAreaElement>("#strat-seg-json").value = JSON.stringify(definition, null, 2);
-  $("#strat-approve-seg").addEventListener("click", () => approveSegment(m.run_id));
+  $$<HTMLTextAreaElement>("#strat-seg-json").value = JSON.stringify(definition, null, 2);
+  $$("#strat-approve-seg").addEventListener("click", () => approveSegment(m.run_id));
 }
 
 async function approveSegment(runId: string) {
-  const status = $("#strat-seg-status");
-  const btn = $<HTMLButtonElement>("#strat-approve-seg");
+  const status = $$("#strat-seg-status");
+  const btn = $$<HTMLButtonElement>("#strat-approve-seg");
   status.classList.remove("err");
   let definition;
   try {
-    definition = JSON.parse($<HTMLTextAreaElement>("#strat-seg-json").value);
+    definition = JSON.parse($$<HTMLTextAreaElement>("#strat-seg-json").value);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "invalid JSON: " + e.message;
+    status.textContent = "invalid JSON: " + (e as Error).message;
     return;
   }
   btn.disabled = true;
@@ -515,7 +516,7 @@ async function approveSegment(runId: string) {
     schedulePoll(runId);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "could not approve: " + e.message;
+    status.textContent = "could not approve: " + (e as Error).message;
     btn.disabled = false;
   }
 }
@@ -593,8 +594,8 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
   card.appendChild(actions);
 
   panel.appendChild(card);
-  $<HTMLTextAreaElement>("#strat-changes-json").value = JSON.stringify(changes, null, 2);
-  $("#strat-approve-prop").addEventListener("click", () => approveProposal(m.run_id));
+  $$<HTMLTextAreaElement>("#strat-changes-json").value = JSON.stringify(changes, null, 2);
+  $$("#strat-approve-prop").addEventListener("click", () => approveProposal(m.run_id));
 }
 
 // Gate 2 is the highest-judgment click in the app (it rewrites target bands), so
@@ -638,18 +639,18 @@ function changesTable(changes: Change[]) {
 }
 
 async function approveProposal(runId: string) {
-  const status = $("#strat-prop-status");
-  const btn = $<HTMLButtonElement>("#strat-approve-prop");
+  const status = $$("#strat-prop-status");
+  const btn = $$<HTMLButtonElement>("#strat-approve-prop");
   status.classList.remove("err");
   let changes;
   try {
-    changes = JSON.parse($<HTMLTextAreaElement>("#strat-changes-json").value);
+    changes = JSON.parse($$<HTMLTextAreaElement>("#strat-changes-json").value);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "invalid changes JSON: " + e.message;
+    status.textContent = "invalid changes JSON: " + (e as Error).message;
     return;
   }
-  const allowBlocked = !!($<HTMLInputElement>("#strat-allow-blocked") && $<HTMLInputElement>("#strat-allow-blocked").checked);
+  const allowBlocked = !!$<HTMLInputElement>("#strat-allow-blocked")?.checked;
   btn.disabled = true;
   status.innerHTML = `<span class="spinner"></span> staging…`;
   try {
@@ -658,7 +659,7 @@ async function approveProposal(runId: string) {
     render(m);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "could not stage: " + e.message;
+    status.textContent = "could not stage: " + (e as Error).message;
     btn.disabled = false;
   }
 }
@@ -746,14 +747,14 @@ function renderNeedsLogin(m: Manifest, panel: HTMLElement) {
       `<span class="status" id="strat-login-status"></span>` +
     `</div>`;
   panel.appendChild(card);
-  $("#strat-open-setup").addEventListener("click", () => setActiveView("setup"));
+  $$("#strat-open-setup").addEventListener("click", () => setActiveView("setup"));
   // Resuming re-approves the (already approved) segment, which the state machine
   // accepts from needs_login -> synthesis_running.
-  $("#strat-resume").addEventListener("click", () => approveSegmentResume(m.run_id));
+  $$("#strat-resume").addEventListener("click", () => approveSegmentResume(m.run_id));
 }
 
 async function approveSegmentResume(runId: string) {
-  const status = $("#strat-login-status");
+  const status = $$("#strat-login-status");
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> resuming…`;
   try {
@@ -762,7 +763,7 @@ async function approveSegmentResume(runId: string) {
     schedulePoll(runId);
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "could not resume: " + e.message;
+    status.textContent = "could not resume: " + (e as Error).message;
   }
 }
 
@@ -836,7 +837,7 @@ function previewBlock(preview: Preview | null | undefined, { final = false }: { 
     const mem = members.map((m: PlanMember) => {
       const dup = targetNames.has(m.symbol);
       const s = esc(m.symbol);
-      return `<a class="tlink strat-mem${dup ? " dup" : ""}" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(m.symbol)}"` +
+      return `<a class="tlink strat-mem${dup ? " dup" : ""}" data-ticker="${s}" href="?view=deepdive&ticker=${encodeURIComponent(m.symbol ?? "")}"` +
         ` title="${dup ? s + " is also targeted on its own row — counted there too. Click to open." : "Open " + s + " deep-dive"}"` +
         `>${s}</a>`;
     }).join("");
@@ -850,7 +851,7 @@ function previewBlock(preview: Preview | null | undefined, { final = false }: { 
   const body = el("tbody");
   rows.slice(0, 20).forEach((r: PlanRow) => {
     const isSleeve = r.kind === "sleeve";
-    const tr = el("tr", isSleeve ? "strat-sleeve-row" : null);
+    const tr = el("tr", isSleeve ? "strat-sleeve-row" : undefined);
     const suggested = sensitive(`${fmtCZK(r.suggest_delta_czk)} ${esc(plan.currency || "")}`, "suggested trade") +
       (isSleeve ? `<small class="strat-spread">spread across members</small>` : "");
     const statusCell = r.status
@@ -914,19 +915,19 @@ function recentStateBadge(state: string | null | undefined) {
 // All DOM wiring is deferred to initStrategy(), called once from main()'s boot,
 // to avoid the shell<->strategy import-cycle TDZ trap (see shell.ts).
 function initStrategy() {
-  const go = $("#strat-go");
+  const go = $$("#strat-go");
   if (go) go.addEventListener("click", startRun);
-  const dir = $("#strat-direction");
+  const dir = $$("#strat-direction");
   if (dir) dir.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); startRun(); } });
 
   // Stepper navigation: clicking a reached step pins it for read-only viewing;
   // clicking the live step (or "Back to current step") unpins and follows along.
-  const stages = $("#strat-stages");
+  const stages = $$("#strat-stages");
   if (stages) stages.addEventListener("click", (e) => {
     const tgt = e.target as HTMLElement;
     const li = tgt.closest ? tgt.closest<HTMLElement>("li") : null;
     if (!li || !li.classList.contains("clickable") || !_lastM) return;
-    _viewStage = li.dataset.stage === liveStage(_lastM) ? null : li.dataset.stage;
+    _viewStage = li.dataset.stage === liveStage(_lastM) ? null : (li.dataset.stage ?? null);
     render(_lastM);
   });
 }
