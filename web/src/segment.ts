@@ -227,7 +227,12 @@ function renderSegment(rec: SegmentRec) {
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
-  card.appendChild(table);
+  // The peer table has ~16 nowrap columns and is routinely wider than the card;
+  // a scroll wrapper keeps that overflow inside the panel instead of letting it
+  // bleed past the rounded border and drag the whole page sideways.
+  const scroll = el("div", "seg-table-scroll");
+  scroll.appendChild(table);
+  card.appendChild(scroll);
   // One batch /api/spark call fills the Trend column; cached-only, so members
   // without a cached dossier just show an empty slot.
   void hydrateSparks(table);
