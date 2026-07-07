@@ -3,6 +3,7 @@ import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessN
 import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
+import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import {
@@ -416,6 +417,9 @@ function renderRebalance(plan: RebPlan) {
     if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", starHtml(r.name, "rebalance"));
     nameCell.appendChild(sym);
     nameCell.appendChild(el("span", "reb-rule", esc(ruleWord(r.rule) || r.rule)));
+    // A single-name row gets a cached-only trend cue; sleeves are baskets, no
+    // one price to spark. Filled by the batch hydrateSparks() call after render.
+    if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", sparkPlaceholder(r.name));
     if (r.kind === "target") nameCells[cleanSymbol(r.name)] = nameCell;
     const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
     if (prov) nameCell.appendChild(prov);
@@ -935,6 +939,9 @@ function renderRebalance(plan: RebPlan) {
   }
 
   recompute();
+  // One batch /api/spark call fills every target row's trend cue; cached-only,
+  // so names without a dossier just leave an empty slot.
+  void hydrateSparks(out);
 }
 
 // ---- what-if "after" panel -------------------------------------------------

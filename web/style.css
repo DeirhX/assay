@@ -3416,3 +3416,9 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 .spark-flat { color: var(--muted); }
 .spark-slot { display: inline-block; min-width: 96px; min-height: 24px; }
 .basket-trend { width: 108px; }
+/* Rebalance name cell stacks; give the trend cue a little breathing room and
+   let it sit slightly smaller than the table variants. */
+.reb-name .spark-slot { display: block; margin-top: 3px; min-height: 20px; }
+.reb-name .spark { height: 20px; }
+/* Segment Trend column: keep the cell compact and non-clickable-looking. */
+.segment-table td .spark-slot { min-width: 90px; }
