@@ -3438,6 +3438,13 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 .reb-name .spark { height: 20px; }
 /* Segment Trend column: keep the cell compact and non-clickable-looking. */
 .segment-table td .spark-slot { min-width: 90px; }
+/* The peer table's ~16 nowrap columns overflow the card on all but the widest
+   screens. Contain that overflow in a horizontal scroller so the table scrolls
+   within the panel instead of bleeding past its rounded edge and forcing a
+   page-wide sideways scrollbar. The wrapper owns the top gap; the table sits
+   flush so its own rounded border still frames the scrolled content. */
+.seg-table-scroll { overflow-x: auto; margin-top: 8px; border-radius: var(--radius-card); }
+.seg-table-scroll > .segment-table { margin-top: 0; }
 
 /* ---- segment leaderboard (leaderboard.ts) -------------------------------- */
 .lb-toolbar {
