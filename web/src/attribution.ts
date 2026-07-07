@@ -1,4 +1,4 @@
-import { $, apiLoad, el, esc, statTile } from "./core";
+import { $, $$, apiLoad, el, esc, statTile } from "./core";
 
 // ---- process attribution ---------------------------------------------------
 // The only view that measures the *process* instead of a position: actual
@@ -46,7 +46,7 @@ async function loadAttribution() {
 }
 
 function renderAttribution(r: AttrPayload) {
-  const out = $("#attr-result");
+  const out = $$("#attr-result");
   out.innerHTML = "";
   const base = r.base || "CZK";
 
@@ -92,7 +92,7 @@ function renderAttribution(r: AttrPayload) {
   const chart = growthChart(r);
   if (chart) {
     const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, "Growth of 100, same flows"));
+    sec.appendChild(el("h3", undefined, "Growth of 100, same flows"));
     sec.appendChild(el("p", "hint",
       "Each line starts at 100 and receives the identical deposits; they diverge only on " +
       "what the money was invested in. Foreign prices are converted day-by-day."));
