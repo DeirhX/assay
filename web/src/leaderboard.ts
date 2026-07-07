@@ -206,11 +206,45 @@ function draw(): void {
   const overlapNote = _payload.overlap
     ? `<span class="lb-overlap hint" title="a name can belong to several segments, so exposures don't sum to 100%">segments overlap</span>`
     : "";
+  const prev = tileRects(body);
   body.innerHTML =
     calloutHtml("hot", gaps.hot) +
     calloutHtml("cold", gaps.cold) +
     `<div class="lb-toolbar"><div class="lb-sorts">${toolbar}</div>${rankedBy}${overlapNote}</div>` +
     `<div class="lb-grid">${ordered.map((r, i) => leaderboardTileHtml(r, i + 1, _sort)).join("")}</div>`;
+  flipReorder(body, prev);
+}
+
+// Snapshot each tile's viewport position, keyed by segment, for a FLIP animation.
+function tileRects(body: HTMLElement): Map<string, DOMRect> {
+  const m = new Map<string, DOMRect>();
+  body.querySelectorAll<HTMLElement>(".lb-tile[data-segment]").forEach((t) => {
+    m.set(t.dataset.segment || "", t.getBoundingClientRect());
+  });
+  return m;
+}
+
+// Animate tiles from their previous positions to the new ones so a re-sort is
+// unmistakable even when only a couple of rows swap. No-op under reduced motion
+// or in environments without layout (jsdom reports zero-size rects).
+function flipReorder(body: HTMLElement, prev: Map<string, DOMRect>): void {
+  if (!prev.size || typeof requestAnimationFrame !== "function") return;
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  body.querySelectorAll<HTMLElement>(".lb-tile[data-segment]").forEach((t) => {
+    const old = prev.get(t.dataset.segment || "");
+    if (!old) return;
+    const now = t.getBoundingClientRect();
+    const dx = old.left - now.left;
+    const dy = old.top - now.top;
+    if (!dx && !dy) return;
+    t.style.transition = "none";
+    t.style.transform = `translate(${dx}px, ${dy}px)`;
+    requestAnimationFrame(() => {
+      t.style.transition = "transform 260ms cubic-bezier(.2,.7,.3,1)";
+      t.style.transform = "";
+      t.addEventListener("transitionend", () => { t.style.transition = ""; }, { once: true });
+    });
+  });
 }
 
 async function openSegment(slug: string): Promise<void> {
