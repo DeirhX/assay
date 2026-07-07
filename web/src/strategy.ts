@@ -932,4 +932,14 @@ function initStrategy() {
   });
 }
 
-export { initStrategy, loadStrategy };
+// Seed the direction box from another surface (e.g. a leaderboard exposure-gap
+// callout) without starting the run -- the user still reviews and hits Start.
+// loadStrategy never writes this field, so setting it after navigation sticks.
+function prefillDirection(text: string): void {
+  const dir = $<HTMLInputElement>("#strat-direction");
+  if (!dir) return;
+  dir.value = text;
+  dir.focus();
+}
+
+export { initStrategy, loadStrategy, prefillDirection };

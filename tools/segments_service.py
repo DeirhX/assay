@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import statistics
 from pathlib import Path
 from typing import Any
 
 import jobs
+import overview
 import ticker_analysis
+import timeutil
 from config import SEGMENT_DEF_DIR, SEGMENT_OUT_DIR
 from jobs import update_job
 from portfolio import holdings_weights
@@ -345,3 +348,99 @@ def segments_list() -> list[dict]:
             "cached_at": cached_at,
         })
     return out
+
+
+# ---- leaderboard: rank cached segments by "promise" -----------------------
+# The one screen that answers "which segment is showing the most promise, and am
+# I positioned for it?" Aggregates cached peer pulls only (never fetches) and
+# overlays *live* portfolio exposure (holdings_weights -- the one weight
+# definition), so the exposure figure can't drift from a stale cached snapshot.
+
+
+def _median(vals: list[Any]) -> float | None:
+    clean = [float(v) for v in vals if isinstance(v, (int, float))]
+    return round(statistics.median(clean), 2) if clean else None
+
+
+def _leaderboard_row(name: str, definition: dict, cache: dict, held: dict[str, float]) -> dict:
+    members = cache.get("members") or []
+    m3 = [m.get("chg_3m_pct") for m in members if isinstance(m.get("chg_3m_pct"), (int, float))]
+    m12 = [m.get("chg_12m_pct") for m in members if isinstance(m.get("chg_12m_pct"), (int, float))]
+    # Valuation-vs-growth: forward P/E per point of revenue growth (lower is
+    # cheaper for the growth). Only over members carrying both, with positive
+    # growth; coverage rides alongside because many rows are n/a.
+    vg = [
+        m["pe_fwd"] / m["rev_growth_yoy_pct"]
+        for m in members
+        if isinstance(m.get("pe_fwd"), (int, float))
+        and isinstance(m.get("rev_growth_yoy_pct"), (int, float))
+        and m["rev_growth_yoy_pct"] > 0
+    ]
+    syms = [m.get("symbol") for m in members if isinstance(m.get("symbol"), str)]
+    as_of = cache.get("as_of")
+    age = timeutil.age_days(as_of)
+    return {
+        "segment": name,
+        "title": definition.get("title") or cache.get("title") or name.title(),
+        "member_count": len(members),
+        "momentum_3m_med": _median(m3),
+        "momentum_12m_med": _median(m12),
+        "breadth_3m": round(sum(1 for v in m3 if v > 0) / len(m3), 4) if m3 else None,
+        "val_growth_med": round(statistics.median(vg), 2) if vg else None,
+        "val_growth_coverage": len(vg),
+        "exposure_pct": round(sum(held.get(s, 0.0) for s in syms), 2),
+        "held_count": sum(1 for s in syms if s in held),
+        "cached_at": as_of,
+        "age_days": age,
+        "stale": bool(age is not None and age > overview.STALE_SEGMENT_DAYS),
+        "overlap_allowed": bool(definition.get("overlap_allowed", True)),
+    }
+
+
+def _assign_scores(rows: list[dict]) -> None:
+    """Transparent composite: sum of ascending ranks on 3M momentum and breadth.
+    Highest metric -> highest rank -> highest score. Deliberately dumb: it orders,
+    it does not predict. A segment missing a metric scores 0 for that leg."""
+    def ranks(key: str) -> dict[str, int]:
+        present = [(r[key], r["segment"]) for r in rows if isinstance(r.get(key), (int, float))]
+        present.sort(key=lambda t: t[0])
+        return {seg: i + 1 for i, (_v, seg) in enumerate(present)}
+
+    rmom = ranks("momentum_3m_med")
+    rbr = ranks("breadth_3m")
+    for r in rows:
+        r["score"] = rmom.get(r["segment"], 0) + rbr.get(r["segment"], 0)
+
+
+def leaderboard() -> dict:
+    """Rank every cached research segment by promise, exposure overlaid.
+
+    Aggregates cached pulls only -- never fetches. Ad-hoc basket-plan
+    pseudo-segments (origin.type == "basket") are excluded. Exposures don't sum
+    to 100% because segments overlap; ``overlap`` flags that for the UI."""
+    held = holdings_weights()  # live percent-of-book -- the one weight definition
+    rows: list[dict] = []
+    seen: dict[str, int] = {}
+    for path in sorted(SEGMENT_DEF_DIR.glob("*.json")):
+        definition = load(path) or {}
+        if (definition.get("origin") or {}).get("type") == "basket":
+            continue  # an ad-hoc plan drafted from the basket, not a research lens
+        cache = load(SEGMENT_OUT_DIR / path.name)
+        if not cache or not cache.get("members"):
+            continue  # no pull yet -> nothing to rank
+        rows.append(_leaderboard_row(path.stem, definition, cache, held))
+        for m in cache["members"]:
+            s = m.get("symbol")
+            if isinstance(s, str):
+                seen[s] = seen.get(s, 0) + 1
+    _assign_scores(rows)
+    rows.sort(key=lambda r: (
+        -r["score"],
+        -(r["momentum_3m_med"] if r["momentum_3m_med"] is not None else -1e9),
+    ))
+    return {
+        "segments": rows,
+        "overlap": any(c > 1 for c in seen.values()),
+        "as_of": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "stale_days": overview.STALE_SEGMENT_DAYS,
+    }

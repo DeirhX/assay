@@ -7,6 +7,7 @@ import { loadDeepRun } from "./pipeline";
 import { initFlowBar, updateFlowBar } from "./flowbar";
 import { initHistoryControls, loadHistory } from "./history";
 import { loadHoldings } from "./holdings";
+import { loadLeaderboard } from "./leaderboard";
 import { initJournalControls, loadJournal } from "./journal";
 import { loadPipeline, setPipeStep } from "./pipeline";
 import { initOptimizer, loadOptimizer } from "./optimizer";
@@ -145,7 +146,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "basket", "setup"]);
 
 // The guided Plan flow is the dominant path, so it is the landing view and the
 // one omitted from the URL (a bare "/" means Plan). Every other view carries an
@@ -161,7 +162,7 @@ const DEFAULT_VIEW = "strategy";
 // `setup` (the gear) sits outside the group bar entirely.
 const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
-  deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
+  leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
   today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
   basket: "basket",
@@ -170,16 +171,16 @@ const VIEW_GROUP: Record<string, string> = {
 // Which sub-tab lights up for a given view. With History promoted to its own
 // sub-tab, the data-view of each sub-tab button maps 1:1 to its key here.
 const VIEW_SUBTAB: Record<string, string> = {
-  deepdive: "deepdive", analyses: "analyses", segment: "segment",
+  leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade",
   today: "today", holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
-const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", research: "deepdive", rebalance: "rebalance", portfolio: "today", basket: "basket" };
+const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { strategy: "strategy", research: "deepdive", rebalance: "rebalance", portfolio: "today", basket: "basket" };
+const lastViewByGroup: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -306,6 +307,7 @@ function setActiveView(view: string) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $$("#view-" + active).classList.add("active");
   if (active === "strategy") loadStrategy();
+  if (active === "leaderboard") loadLeaderboard();
   if (active === "today") loadOverview();
   if (active === "holdings") loadHoldings();
   if (active === "history") { initHistoryControls(); loadHistory(); }
