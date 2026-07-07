@@ -50,6 +50,7 @@ import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import risk  # noqa: E402
+import attribution  # noqa: E402  -- process attribution: actual TWR vs never-rebalanced / benchmark
 import regime  # noqa: E402  -- descriptive macro strip over the segment leaderboard
 import tax_lots  # noqa: E402
 import tax_calendar  # noqa: E402  -- forward 3-year-exemption calendar (proactive tax lever)
@@ -269,6 +270,7 @@ _GET_EXACT = {
     "/api/rebalance": "_get_rebalance",
     "/api/exit-plan": "_get_exit_plan",
     "/api/risk": "_get_risk",
+    "/api/attribution": "_get_attribution",
     "/api/regime": "_get_regime",
     "/api/tax-calendar": "_get_tax_calendar",
     "/api/journal": "_get_journal",
@@ -623,6 +625,20 @@ class Handler(BaseHTTPRequestHandler):
         rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
         with _PULL_LOCK:
             return self._send_json(risk.risk_report(holdings, rng=rng))
+
+    def _get_attribution(self, path, query):
+        # Did the process earn its keep? Actual time-weighted return vs the
+        # never-rebalanced and benchmark counterfactuals over the window --
+        # flow-neutralized and FX-clean. Fetches benchmark/held-name prices on a
+        # cold cache, so guard it with the shared pull lock.
+        holdings = _load(HOLDINGS_JSON)
+        history = _history_payload()
+        rng_key = (query.get("range") or [attribution.DEFAULT_RANGE])[0].lower()
+        rng = rng_key if rng_key in attribution.RANGE_DAYS else attribution.DEFAULT_RANGE
+        benchmark = (query.get("benchmark") or [attribution.DEFAULT_BENCHMARK])[0]
+        with _PULL_LOCK:
+            report = attribution.attribution_report(history, holdings, rng=rng, benchmark=benchmark)
+        return self._send_json(report)
 
     def _get_regime(self, path, query):
         # Descriptive macro backdrop (rates/credit/USD/vol) for the segment view.
