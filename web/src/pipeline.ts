@@ -1,5 +1,17 @@
 import type { DeepRun, Job } from "./api-types";
 import { $$, api, el, esc, sectionCard, state } from "./core";
+import {
+  blankSegmentDef,
+  clampStep,
+  latestReportForSegment as pickLatestReport,
+  parseStem,
+  pipeLockReason,
+  pipeStem,
+  reviewTagClass,
+  segDraftValid as isSegDraftValid,
+  segSlugify,
+  unlockedMax,
+} from "./pipeline-model";
 import { pollDeepJob, setNeedsLoginHandler } from "./jobs";
 import { mdToHtml, openRunInAnalyses } from "./analyses";
 import { loadSegmentList, renderSegment } from "./segment";
@@ -14,9 +26,7 @@ import { pushNav, setActiveView, setSegmentControls } from "./shell";
 //   2 Deep Research, 3 Report  -> need a chosen/approved segment
 //   4 Review & apply           -> need a saved or loaded report artifact
 function pipeCurrentStem() {
-  const seg = pipeSegment();
-  const date = ($$<HTMLInputElement>("#pipe-date").value || "").trim();
-  return seg && date ? `${seg}-${date}` : "";
+  return pipeStem(pipeSegment(), $$<HTMLInputElement>("#pipe-date").value);
 }
 
 // Step 4 needs a report saved on disk for THIS exact segment + date — that is
@@ -29,15 +39,7 @@ function pipeHasSavedReport() {
 }
 
 function pipeUnlockedMax() {
-  if (pipeHasSavedReport()) return 4;
-  if (pipeSegment()) return 3;
-  return 1;
-}
-
-function pipeLockReason(n: number) {
-  if (n >= 4) return "Save or import a report for this segment + date first — the review gate has nothing to read otherwise.";
-  if (n >= 2) return "Choose or approve a segment on Step 1 first.";
-  return "";
+  return unlockedMax(pipeHasSavedReport(), !!pipeSegment());
 }
 
 let _pipeLockTimer: ReturnType<typeof setTimeout> | null = null;
@@ -51,7 +53,7 @@ function showPipeLock(n: number) {
 }
 
 function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
-  n = Math.max(1, Math.min(4, Number(n) || 1));
+  n = clampStep(n);
   const max = pipeUnlockedMax();
   if (n > max) {
     if (!silent) showPipeLock(n);
@@ -223,51 +225,13 @@ function parseJsonField(sel: string, fallback: unknown) {
   return JSON.parse(raw);
 }
 
-// The example member's symbol in the manual template. segDraftValid() rejects
-// it, so the user must replace it with a real ticker before continuing.
-const SEG_PLACEHOLDER_SYM = "TICKER";
-
-function segSlugify(s: string) {
-  return String(s || "").toLowerCase().trim()
-    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
-}
-
-// A minimal but structurally valid segment definition for the manual path: it
-// shows the real shape with one example member. The placeholder symbol is
-// intentionally rejected by segDraftValid() so Approve & continue stays blocked
-// until it is replaced.
-function blankSegmentDef(theme: string) {
-  const title = theme
-    ? theme.replace(/\s+/g, " ").trim().replace(/\b\w/g, (c: string) => c.toUpperCase())
-    : "New segment";
-  return {
-    title,
-    kind: "research",
-    status: "approved",
-    comment: "Manual draft — replace the example member with real tickers and refine the rationales.",
-    members: [
-      { symbol: SEG_PLACEHOLDER_SYM, rationale: "Why this company belongs in the segment." },
-    ],
-  };
-}
-
-// A draft is good enough to continue only when the slug is set and the JSON
-// parses into an object with at least one member carrying a real ticker (not
-// the manual-template placeholder). This gates the Approve & continue action so
-// you can never advance to Deep Research on an empty or skeleton segment.
+// DOM adapter over the pure segDraftValid(slug, rawJson): reads the two fields
+// the gate depends on and defers the actual validation to pipeline-model.
 function segDraftValid() {
-  if (!$$<HTMLInputElement>("#pipe-slug").value.trim()) return false;
-  const raw = $$<HTMLTextAreaElement>("#pipe-segment-json").value.trim();
-  if (!raw) return false;
-  let def;
-  try { def = JSON.parse(raw); } catch (_e) { return false; }
-  if (!def || typeof def !== "object" || Array.isArray(def)) return false;
-  const members = Array.isArray(def.members) ? def.members : [];
-  if (!members.length) return false;
-  return members.every((m: { symbol?: unknown }) => {
-    const sym = m && typeof m.symbol === "string" ? m.symbol.trim() : "";
-    return !!sym && sym.toUpperCase() !== SEG_PLACEHOLDER_SYM;
-  });
+  return isSegDraftValid(
+    $$<HTMLInputElement>("#pipe-slug").value,
+    $$<HTMLTextAreaElement>("#pipe-segment-json").value,
+  );
 }
 
 function updateSegDraftState() {
@@ -382,17 +346,10 @@ function updateStep2Actions() {
   $$("#pipe-rebuild-prompt").hidden = !hasPrompt;
 }
 
-// Most recent saved run for `seg` that actually has a report on disk. Stems are
-// `${seg}-YYYY-MM-DD`; the date check stops a segment like "ai" from matching
-// "ai-software-...". Lexical desc sort on the stem orders by date newest-first.
+// DOM/state adapter: the newest saved run with a report for `seg`, read from
+// the live deep-run list. The prefix + date discipline lives in the model.
 function latestReportForSegment(seg: string | null | undefined) {
-  if (!seg) return null;
-  const prefix = seg + "-";
-  const matches = (state.deepRuns || [])
-    .filter((r) => r.files && r.files.report && r.stem.startsWith(prefix)
-      && /^\d{4}-\d{2}-\d{2}$/.test(r.stem.slice(prefix.length)))
-    .sort((a, b) => (a.stem < b.stem ? 1 : -1));
-  return matches[0] || null;
+  return pickLatestReport(state.deepRuns, seg);
 }
 
 // Deep Research spends quota, so if we already have a report for this segment,
@@ -403,7 +360,7 @@ function updateExistingReportNotice() {
   if (!box) return;
   const run = latestReportForSegment(pipeSegment());
   if (!run) { box.hidden = true; box.dataset.stem = ""; return; }
-  const date = (run.stem.match(/-(\d{4}-\d{2}-\d{2})$/) || [])[1] || "";
+  const date = parseStem(run.stem)?.date || "";
   box.dataset.stem = run.stem;
   $$("#pipe-existing-text").textContent =
     `This segment already has a saved Deep Research report${date ? ` from ${date}` : ""}. Reuse it instead of spending a new run?`;
@@ -760,11 +717,11 @@ async function loadDeepRun(stem: string, { push = true }: { push?: boolean } = {
   // refresh (otherwise deep-linking to a run can bounce off a still-locked gate).
   state.savedRuns = state.savedRuns || new Set();
   state.savedRuns.add(stem);
-  const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
-  if (m) {
-    $$<HTMLSelectElement>("#pipe-segment-select").value = m[1];
-    $$<HTMLInputElement>("#pipe-date").value = m[2];
-    if (push) pushNav({ view: "pipeline", segment: m[1], run: stem });
+  const parsed = parseStem(stem);
+  if (parsed) {
+    $$<HTMLSelectElement>("#pipe-segment-select").value = parsed.segment;
+    $$<HTMLInputElement>("#pipe-date").value = parsed.date;
+    if (push) pushNav({ view: "pipeline", segment: parsed.segment, run: stem });
   } else if (push) {
     pushNav({ view: "pipeline", run: stem });
   }
@@ -780,16 +737,6 @@ async function loadDeepRun(stem: string, { push = true }: { push?: boolean } = {
   });
   setRepMode("current");
   refreshPipeLocks();
-}
-
-// Data-quality / source-strength -> tag color. Most rows are "INFO" (neutral);
-// only escalate color when the gate flags something worth a second look.
-function reviewTagClass(v: unknown) {
-  const s = String(v).toLowerCase();
-  if (s.includes("block") || s.includes("bad") || s.includes("conflict")) return "bad";
-  if (s.includes("warn") || s.includes("weak")) return "warn";
-  if (s.includes("ok") || s.includes("good") || s.includes("primary") || s.includes("strong")) return "good";
-  return "";
 }
 
 // Step 4 no longer re-renders the report (the Analyses reader is the single
