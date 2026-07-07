@@ -6,18 +6,26 @@
 // GET /api/strategy/{run_id}, polled while a leg is running.
 import { starHtml } from "./basket";
 import { $, $$, api, el, esc, fmtCZK, fmtSignedWeight, relAge, sensitive } from "./core";
-import { tickerAnchorHtml } from "./analyses/linkify";
-import { bandBar, directionTag, ruleWord, scaleMaxFor, type BandRow } from "./band-viz";
+import { bandBar, directionTag, ruleWord, scaleMaxFor } from "./band-viz";
+import {
+  bandStr,
+  changeBandRow,
+  DIR_TONE,
+  driftTone,
+  isRunning,
+  liveStage,
+  recentStateBadge,
+  reachedStages,
+  STAGE_ORDER,
+  STAGE_TITLE,
+  statusTone,
+  symLink,
+  toneOf,
+  type Band,
+} from "./strategy-model";
 import { openDeepRunInPipeline, pushNav, setActiveView } from "./shell";
 
 // ---- manifest shapes (GET /api/strategy/{run_id}) -------------------------
-// A target band, with the rule token that produced it.
-interface Band {
-  low?: number | null;
-  high?: number | null;
-  rule?: string;
-}
-
 // One drafted segment member (Gate 1) / Deep Research candidate.
 interface SegMember {
   symbol?: string;
@@ -137,22 +145,6 @@ interface RunSummary {
   updated_at?: string;
 }
 
-// States in which a background leg is working and we should keep polling.
-const RUNNING = new Set(["draft_running", "synthesis_running", "applying"]);
-// Progress-tracker stages, in order, mapped from the manifest state.
-const STAGE_ORDER = ["draft", "segment", "research", "synthesize", "review", "done"];
-const STATE_STAGE: Record<string, string> = {
-  draft_running: "draft",
-  awaiting_segment_approval: "segment",
-  synthesis_running: "synthesize",
-  needs_login: "research",
-  awaiting_proposal_approval: "review",
-  applying: "review",
-  staged: "done",
-  done: "done",
-  error: "draft",
-};
-
 let _activeRunId: string | null = null;
 let _pollTimer: ReturnType<typeof setTimeout> | null = null;
 // The user can revisit any step the run has already reached. `_viewStage` pins a
@@ -161,21 +153,6 @@ let _pollTimer: ReturnType<typeof setTimeout> | null = null;
 // a stepper click can re-render instantly without re-fetching.
 let _viewStage: string | null = null;
 let _lastM: Manifest | null = null;
-
-const STAGE_TITLE: Record<string, string> = {
-  draft: "Draft", segment: "Segment", research: "Research",
-  synthesize: "Synthesize", review: "Review", done: "Recommendation",
-};
-
-// The stage the run is currently on, derived from its state.
-const liveStage = (m: Manifest) => STATE_STAGE[m.state] || "draft";
-// Stages the user may click into: everything up to and including the live one.
-// (Nothing is revisitable while errored — the run never produced those steps.)
-function reachedStages(m: Manifest) {
-  if (m.state === "error") return [];
-  const liveIdx = STAGE_ORDER.indexOf(liveStage(m));
-  return STAGE_ORDER.slice(0, Math.max(0, liveIdx) + 1);
-}
 
 function currentRunParam() {
   return new URLSearchParams(window.location.search).get("run") || "";
@@ -222,7 +199,7 @@ async function refreshOnce(runId: string) {
   }
   if (_activeRunId !== runId) return;
   render(m);
-  if (RUNNING.has(m.state)) schedulePoll(runId);
+  if (isRunning(m.state)) schedulePoll(runId);
   else stopPolling();
 }
 
@@ -287,9 +264,9 @@ function render(m: Manifest) {
   if (m.state === "error") { _viewStage = null; return renderError(m.error || "the run failed"); }
   // Drop a stale pin (e.g. a run reloaded at an earlier state) and decide whether
   // we're showing the live step (interactive) or a revisited one (read-only).
-  const reached = reachedStages(m);
+  const reached = reachedStages(m.state);
   if (_viewStage && !reached.includes(_viewStage)) _viewStage = null;
-  const live = liveStage(m);
+  const live = liveStage(m.state);
   const showing = _viewStage || live;
   if (showing === live) return renderLiveStage(m, panel);
   renderPastStage(m, showing, panel);
@@ -311,9 +288,9 @@ function renderStages(m: Manifest) {
   if (!wrap) return;
   wrap.hidden = false;
   const errored = m.state === "error";
-  const live = liveStage(m);
+  const live = liveStage(m.state);
   const liveIdx = STAGE_ORDER.indexOf(live);
-  const reached = reachedStages(m);
+  const reached = reachedStages(m.state);
   const showing = (!errored && _viewStage && reached.includes(_viewStage)) ? _viewStage : live;
   wrap.querySelectorAll("li").forEach((li) => {
     const stage = li.dataset.stage ?? "";
@@ -342,7 +319,7 @@ function renderPastStage(m: Manifest, stage: string, panel: HTMLElement) {
 function viewingBar(m: Manifest, stage: string) {
   const bar = el("div", "strat-viewing-bar");
   bar.innerHTML = `<span>Viewing the <strong>${esc(STAGE_TITLE[stage] || "completed")}</strong> step (read-only).</span>`;
-  const btn = el("button", "ghost", `Back to current step: ${esc(STAGE_TITLE[liveStage(m)] || "")} →`);
+  const btn = el("button", "ghost", `Back to current step: ${esc(STAGE_TITLE[liveStage(m.state)] || "")} →`);
   btn.type = "button";
   btn.addEventListener("click", () => { _viewStage = null; if (_lastM) render(_lastM); });
   bar.appendChild(btn);
@@ -522,43 +499,6 @@ async function approveSegment(runId: string) {
 }
 
 // ---- gate 2: approve the synthesized target changes -----------------------
-// Semantic tone for an action/rule token so buy- / hold- / sell-leaning cells
-// read at a glance (green / grey / amber / red) instead of as identical text.
-const TONE: Record<string, string> = {
-  accumulate: "pos", add: "pos", buy: "pos",
-  hold: "neutral", wait: "neutral",
-  reduce: "caution", trim: "caution", trim_only: "caution", do_not_add: "caution",
-  avoid: "neg", sell: "neg", exit: "neg",
-};
-const toneOf = (token: string | null | undefined) => TONE[token || ""] || TONE[(token || "").replace("_target", "")] || "neutral";
-// Above its band => overweight (trim side, amber); below => underweight (buy side, green).
-const statusTone = (s: string | null | undefined) => {
-  const t = (s || "").toLowerCase();
-  if (t.includes("above")) return "caution";
-  if (t.includes("below")) return "pos";
-  return "neutral";
-};
-// Positive drift = heavy (trim side); negative = light (buy side). Same colour story.
-const driftTone = (d: number | null | undefined) => (typeof d === "number" && d > 0 ? "caution" : typeof d === "number" && d < 0 ? "pos" : "neutral");
-const bandStr = (t: Band | null | undefined) => (t && t.low != null ? `${t.low}–${t.high}%` : "—");
-// A defined band or null (for the band-viz track), so a first-time target reads
-// as "added" and a dropped one as "removed" rather than a phantom 0–0 bar.
-const bandOrNull = (t: Band | null | undefined) =>
-  (t && (t.low != null || t.high != null)) ? { low: t.low ?? undefined, high: t.high ?? undefined, rule: t.rule } : null;
-// Map a Gate-2 change onto the shared before(ghost)→after(solid) band track.
-function changeBandRow(c: Change): BandRow {
-  const before = bandOrNull(c.current_target);
-  const after = bandOrNull(c.proposed_target);
-  const change = !before && after ? "added" : before && !after ? "removed" : "modified";
-  return { change, before, after };
-}
-// directionTag tone (ok/warn/bad) -> the strat-tag colour vocabulary.
-const DIR_TONE: Record<string, string> = { ok: "pos", warn: "caution", bad: "neg" };
-// Render a symbol as a deep-dive link. The global a.tlink click handler in shell
-// intercepts it and calls openTicker (which live-pulls on a miss); the href is a
-// fallback for middle-click / open-in-new-tab.
-const symLink = (sym: string | null | undefined) => (sym ? tickerAnchorHtml(sym, { bold: true }) : "—");
-
 function renderProposalGate(m: Manifest, panel: HTMLElement) {
   const proposal: Proposal = m.proposal || {};
   const changes = proposal.changes || [];
@@ -877,41 +817,6 @@ function previewBlock(preview: Preview | null | undefined, { final = false }: { 
   return wrap;
 }
 
-function stateLabel(s: string | null | undefined) {
-  return (({
-    draft_running: "drafting",
-    awaiting_segment_approval: "needs segment approval",
-    synthesis_running: "synthesizing",
-    needs_login: "needs login",
-    awaiting_proposal_approval: "needs approval",
-    applying: "applying",
-    staged: "staged",
-    done: "done",
-    error: "failed",
-  }) as Record<string, string>)[s || ""] || s || "";
-}
-
-// Colour-coded lifecycle pill for the recent-runs list: green = done, red =
-// failed, amber = waiting on you, accent (with a pulsing dot) = a leg is working.
-const STATE_TONE: Record<string, string> = {
-  done: "ok",
-  staged: "ok",
-  error: "bad",
-  awaiting_segment_approval: "warn",
-  awaiting_proposal_approval: "warn",
-  needs_login: "warn",
-  draft_running: "run",
-  synthesis_running: "run",
-  applying: "run",
-};
-function recentStateBadge(state: string | null | undefined) {
-  const tone = STATE_TONE[state || ""] || "muted";
-  const running = tone === "run";
-  const cls = running ? "accent" : tone;
-  const dot = running ? '<span class="strat-recent-dot"></span>' : "";
-  return `<span class="abadge ${cls} strat-recent-pill">${dot}${esc(stateLabel(state))}</span>`;
-}
-
 // All DOM wiring is deferred to initStrategy(), called once from main()'s boot,
 // to avoid the shell<->strategy import-cycle TDZ trap (see shell.ts).
 function initStrategy() {
@@ -927,7 +832,7 @@ function initStrategy() {
     const tgt = e.target as HTMLElement;
     const li = tgt.closest ? tgt.closest<HTMLElement>("li") : null;
     if (!li || !li.classList.contains("clickable") || !_lastM) return;
-    _viewStage = li.dataset.stage === liveStage(_lastM) ? null : (li.dataset.stage ?? null);
+    _viewStage = li.dataset.stage === liveStage(_lastM.state) ? null : (li.dataset.stage ?? null);
     render(_lastM);
   });
 }
