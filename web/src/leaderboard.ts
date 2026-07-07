@@ -119,27 +119,28 @@ function staleDot(row: LeaderboardRow): string {
   return `<span class="lb-dot lb-dot-fresh" title="cached ${esc(age || "recently")}"></span>`;
 }
 
-function metricCell(k: string, v: number | null): string {
-  return `<div class="lb-metric"><span class="lb-k">${esc(k)}</span>` +
+function metricCell(k: string, v: number | null, sorted = false): string {
+  return `<div class="lb-metric${sorted ? " is-sort" : ""}"><span class="lb-k">${esc(k)}</span>` +
     `<span class="lb-v ${pctClass(v)}">${fmtPct(v)}</span></div>`;
 }
 
 // Exposure is a NAV-derived figure, so it renders through sensitive(); segment
 // momentum/breadth are public market data and stay visible under privacy mode.
-function exposureChip(row: LeaderboardRow): string {
+function exposureChip(row: LeaderboardRow, sorted = false): string {
   const owned = row.held_count > 0
     ? `${sensitive(fmtWeight(row.exposure_pct), "segment exposure")} across ${row.held_count}/${row.member_count}`
     : `<span class="muted">not held</span> · ${row.member_count} names`;
-  return `<span class="lb-exposure">${owned}</span>`;
+  return `<span class="lb-exposure${sorted ? " is-sort" : ""}">${owned}</span>`;
 }
 
-export function leaderboardTileHtml(row: LeaderboardRow, rank: number): string {
+export function leaderboardTileHtml(row: LeaderboardRow, rank: number, sort: SortMode = "promise"): string {
   const breadthPct = row.breadth_3m == null ? null : Math.round(row.breadth_3m * 100);
   const breadthBar = breadthPct == null
     ? `<span class="muted">breadth n/a</span>`
     : `<div class="lb-breadth" title="${breadthPct}% of members up over 3M">` +
         `<div class="lb-breadth-fill" style="width:${breadthPct}%"></div></div>` +
         `<span class="lb-breadth-label">${breadthPct}% up</span>`;
+  const breadthRowCls = "lb-breadth-row" + (sort === "breadth" ? " is-sort" : "");
   const valGrowth = row.val_growth_med == null
     ? ""
     : `<div class="lb-valgrowth" title="median forward P/E per point of revenue growth, ${row.val_growth_coverage} of ${row.member_count} names">` +
@@ -152,9 +153,9 @@ export function leaderboardTileHtml(row: LeaderboardRow, rank: number): string {
       `<span class="lb-title">${esc(row.title)}</span>` +
       staleDot(row) +
     `</div>` +
-    `<div class="lb-metrics">${metricCell("3M", row.momentum_3m_med)}${metricCell("12M", row.momentum_12m_med)}</div>` +
-    `<div class="lb-breadth-row">${breadthBar}</div>` +
-    `<div class="lb-foot">${exposureChip(row)}${valGrowth}</div>` +
+    `<div class="lb-metrics">${metricCell("3M", row.momentum_3m_med, sort === "momentum")}${metricCell("12M", row.momentum_12m_med)}</div>` +
+    `<div class="${breadthRowCls}">${breadthBar}</div>` +
+    `<div class="lb-foot">${exposureChip(row, sort === "gap")}${valGrowth}</div>` +
   `</button>`;
 }
 
@@ -194,16 +195,22 @@ function draw(): void {
   const gaps = exposureGaps(rows);
   const ordered = rankSegments(rows, _sort);
   const toolbar = SORTS.map((s) =>
-    `<button class="lb-sort${s.mode === _sort ? " active" : ""}" type="button" data-sort="${s.mode}">${esc(s.label)}</button>`
+    `<button class="lb-sort${s.mode === _sort ? " active" : ""}" type="button" data-sort="${s.mode}">` +
+      `${esc(s.label)}${s.mode === _sort ? " \u2193" : ""}</button>`
   ).join("");
+  // With few segments the promise/momentum/breadth orders often coincide, so a
+  // caption + emphasized metric make it clear WHICH axis is active even when the
+  // tile order doesn't visibly change.
+  const activeLabel = (SORTS.find((s) => s.mode === _sort)?.label || "promise").toLowerCase();
+  const rankedBy = `<span class="lb-rankedby hint">ranked by ${esc(activeLabel)}</span>`;
   const overlapNote = _payload.overlap
     ? `<span class="lb-overlap hint" title="a name can belong to several segments, so exposures don't sum to 100%">segments overlap</span>`
     : "";
   body.innerHTML =
     calloutHtml("hot", gaps.hot) +
     calloutHtml("cold", gaps.cold) +
-    `<div class="lb-toolbar"><div class="lb-sorts">${toolbar}</div>${overlapNote}</div>` +
-    `<div class="lb-grid">${ordered.map((r, i) => leaderboardTileHtml(r, i + 1)).join("")}</div>`;
+    `<div class="lb-toolbar"><div class="lb-sorts">${toolbar}</div>${rankedBy}${overlapNote}</div>` +
+    `<div class="lb-grid">${ordered.map((r, i) => leaderboardTileHtml(r, i + 1, _sort)).join("")}</div>`;
 }
 
 async function openSegment(slug: string): Promise<void> {

@@ -3451,7 +3451,16 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 }
 .lb-sort:hover { border-color: var(--accent); color: var(--text); }
 .lb-sort.active { color: var(--accent); border-color: var(--accent); background: rgba(130,170,255,.12); }
+.lb-rankedby { margin-left: auto; white-space: nowrap; }
 .lb-overlap { white-space: nowrap; }
+
+/* Emphasize the metric the active sort ranks on, so the toggle visibly changes
+   every tile even when the resulting order coincides with another sort. */
+.lb-metric.is-sort .lb-k { color: var(--accent); }
+.lb-metric.is-sort .lb-v { text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.lb-breadth-row.is-sort .lb-breadth { border-color: var(--accent); }
+.lb-breadth-row.is-sort .lb-breadth-label { color: var(--accent); }
+.lb-exposure.is-sort { color: var(--accent); }
 
 .lb-grid {
   display: grid; gap: 12px;
@@ -3464,10 +3473,18 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 }
 .lb-tile:hover { border-color: var(--accent); background: var(--panel-2); }
 .lb-tile-stale { opacity: .82; }
-.lb-tile-head { display: flex; align-items: center; gap: 8px; }
-.lb-rank { color: var(--muted); font-weight: 800; font-size: 12px; letter-spacing: .03em; }
-.lb-title { font-weight: 700; flex: 1 1 auto; min-width: 0; }
-.lb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+/* Top-align: a wrapped (two-line) title must not drag the rank badge and
+   staleness dot to its vertical centre. */
+.lb-tile-head { display: flex; align-items: flex-start; gap: 8px; }
+.lb-rank { color: var(--muted); font-weight: 800; font-size: 12px; letter-spacing: .03em; line-height: 1.35; }
+/* Reserve two lines so short and wrapped titles keep the metric rows, breadth
+   bars, and footers aligned across the grid; clamp longer names to two lines
+   rather than spilling a third. */
+.lb-title {
+  font-weight: 700; flex: 1 1 auto; min-width: 0; line-height: 1.35; min-height: 2.7em;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.lb-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
 .lb-dot-fresh { background: var(--good); }
 .lb-dot-stale { background: var(--bad); }
 
@@ -3484,7 +3501,7 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 .lb-breadth-fill { height: 100%; background: var(--accent); }
 .lb-breadth-label { color: var(--muted); font-size: 12px; white-space: nowrap; }
 
-.lb-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
+.lb-foot { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; font-size: 12px; }
 .lb-exposure { color: var(--muted); }
 .lb-valgrowth { color: var(--muted); white-space: nowrap; }
 

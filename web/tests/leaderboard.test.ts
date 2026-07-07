@@ -137,6 +137,18 @@ describe("leaderboardTileHtml", () => {
     expect(html).toContain("width:75%");
     expect(html).toContain("75% up");
   });
+
+  it("emphasizes only the metric the active sort ranks on", () => {
+    const r = row("s", { breadth_3m: 0.5, exposure_pct: 5, held_count: 1 });
+    // default (promise) emphasizes nothing
+    expect(leaderboardTileHtml(r, 1)).not.toContain("is-sort");
+    // momentum -> the 3M metric cell
+    expect(leaderboardTileHtml(r, 1, "momentum")).toContain('class="lb-metric is-sort"');
+    // breadth -> the breadth row
+    expect(leaderboardTileHtml(r, 1, "breadth")).toContain('class="lb-breadth-row is-sort"');
+    // gap -> the exposure chip
+    expect(leaderboardTileHtml(r, 1, "gap")).toContain('class="lb-exposure is-sort"');
+  });
 });
 
 describe("loadLeaderboard render", () => {
@@ -173,7 +185,7 @@ describe("loadLeaderboard render", () => {
     expect(callout!.textContent).toContain("Hot");
   });
 
-  it("switching sort re-renders and moves the active toggle", async () => {
+  it("switching sort re-renders, moves the active toggle, and updates the caption", async () => {
     await loadLeaderboard();
     await flush();
     const momentumBtn = [...document.querySelectorAll<HTMLElement>("#lb-body .lb-sort")]
@@ -181,5 +193,8 @@ describe("loadLeaderboard render", () => {
     momentumBtn.click();
     const active = document.querySelector<HTMLElement>("#lb-body .lb-sort.active");
     expect(active!.dataset.sort).toBe("momentum");
+    expect(document.querySelector("#lb-body .lb-rankedby")!.textContent).toBe("ranked by momentum");
+    // the metric emphasis follows the active sort
+    expect(document.querySelector("#lb-body .lb-tile .lb-metric.is-sort")).not.toBeNull();
   });
 });
