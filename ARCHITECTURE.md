@@ -357,15 +357,17 @@ time-weighted return over a window vs two skill-free baselines — never-rebalan
 which freezes the book at the window start and lets prices run, and the benchmark,
 which puts the same koruna into SPY/QQQ — with deposits neutralized so a transfer
 never reads as alpha and every foreign price converted day-by-day through the FX
-panel; served at `GET /api/attribution`, surfaced in the **Attribution** sub-tab)
+panel; served at `GET /api/attribution`, surfaced in the **Attribution** sub-tab,
+with a compact headline verdict cached to `data/cache/attribution-verdict.json`
+that the "Today" cockpit reads read-only — no network on the cockpit's load path)
 all sit on top. `risk_delta.py` brings risk's lens to the *decision*: a
 pure before→after concentration/diversification delta (top-N weight, HHI→effective
 names, plus correlation-aware bets/vol when a series is supplied) that rides on
 every `whatif.simulate` and the trade preview, promoting threshold breaches to
 pre-flight warnings so concentration confronts you while deciding, not only in the
 destination view. `overview.py` (the "Today" cockpit) aggregates snapshot,
-plan, staged basket, journal, and research signals into one prioritized
-`next_step` CTA. All of these are **advice**; none place orders.
+plan, staged basket, journal, the cached process-attribution verdict, and research
+signals into one prioritized `next_step` CTA. All of these are **advice**; none place orders.
 
 ### 5.6 The guided Plan state machine
 

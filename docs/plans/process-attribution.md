@@ -17,9 +17,13 @@ over doing nothing." Deterministic over stored data; **read-only, never trades**
 > `positions_at` / `hold_index` / `flow_curve` + the `attribution_report`
 > assembler), the `never-rebalanced` and `benchmark` counterfactuals, `GET
 > /api/attribution`, and the **Attribution** sub-tab (a growth-of-100 chart +
-> actual-vs-baseline deltas). What remains: the `follow_all` counterfactual over
+> actual-vs-baseline deltas). Phase 3 was then extended (follow-up PR): the
+> headline verdict is **cached and surfaced on the Today cockpit**
+> (`verdict_from_report` / `cache_verdict` / `load_verdict` →
+> `overview.attribution_summary`), warmed when the view is opened so the cockpit
+> reads it network-free. What remains: the `follow_all` counterfactual over
 > the provenance log and the full NAV `decompose_fx` local/FX/residual split
-> (phase 4), and by-source / by-group attribution (phase 5). The
+> (phase 4), and by-source / by-group attribution tables (the rest of phase 5). The
 > `cash_transactions[].type` question is settled operationally — the classifier
 > substring-matches deposit/withdraw against IBKR's one external type
 > ("Deposits/Withdrawals"); everything else stays internal book return.
@@ -236,7 +240,10 @@ existing `_PULL_LOCK` + thread pool (mirroring `exit_plan._prewarm_caches`).
    residual over the whole `nav_series` (the phase-1 tile is the current-holdings
    FX-effect shortcut; this is the exact, flow-aware version) + the FX strip on the
    Attribution view.
-5. `attribute_by_source` + `attribute_by_group` + the tables + Today verdict.
+5. `attribute_by_source` + `attribute_by_group` + the tables. ✅ **Today verdict
+   shipped** (follow-up PR): the cached headline (`cache_verdict`/`load_verdict`)
+   feeds `overview.attribution_summary`, surfaced as a Process-attribution card on
+   the Today cockpit (read-only over the cache — no network on the Today path).
 
 ## Open questions
 

@@ -65,6 +65,18 @@ export interface AutomationTask {
   next_eligible?: string | null;
 }
 export interface AutomationSum { enabled: boolean; any_ran: boolean; tasks: AutomationTask[] }
+export interface AttributionVerdictSum {
+  exists: boolean;
+  as_of?: string | null;
+  range?: string;
+  benchmark?: string;
+  actual_pct?: number | null;
+  vs_hold_pp?: number | null;
+  vs_benchmark_pp?: number | null;
+  updated_at?: string | null;
+  age_days?: number | null;
+  stale?: boolean;
+}
 export interface Overview {
   snapshot: SnapshotSum;
   drift?: DriftSum | null;
@@ -72,6 +84,7 @@ export interface Overview {
   draft: DraftSum;
   staged_basket: StagedBasketSum;
   journal: JournalSum;
+  attribution?: AttributionVerdictSum;
   research: ResearchSum;
   automation?: AutomationSum;
   next_step: NextStep;
@@ -207,6 +220,32 @@ export function journalCard(j: JournalSum): string {
     goBtn("journal", "Journal →"));
 }
 
+export function attributionCard(a: AttributionVerdictSum | null | undefined): string {
+  if (!a || !a.exists) {
+    return card("muted", "Process attribution", "",
+      `Has your trading beaten doing nothing? Compute the flow-neutralized return against ` +
+      `never-rebalancing and the benchmark.`,
+      goBtn("attribution", "Attribution →"));
+  }
+  const sign = (x: number) => (x >= 0 ? "+" : "") + x.toFixed(2);
+  const range = a.range || "the window";
+  const bench = a.benchmark || "benchmark";
+  const vh = a.vs_hold_pp;
+  const vb = a.vs_benchmark_pp;
+  const deltas = [vh, vb].filter((x): x is number => typeof x === "number");
+  const worst = deltas.length ? Math.min(...deltas) : null;
+  const tone = worst == null ? "muted" : worst >= 0 ? "ok" : "bad";
+  const chip = worst == null ? ""
+    : worst >= 0 ? `<span class="chip good">earning its keep</span>`
+    : `<span class="chip warn">under review</span>`;
+  const bits: string[] = [];
+  bits.push(`Actual TWR <strong>${a.actual_pct == null ? "n/a" : sign(a.actual_pct) + "%"}</strong> over ${esc(range)}.`);
+  if (vh != null) bits.push(`${vh >= 0 ? "Beating" : "Trailing"} never-rebalancing by ${sign(vh)} pp.`);
+  if (vb != null) bits.push(`${vb >= 0 ? "Beating" : "Trailing"} ${esc(bench)} by ${sign(vb)} pp.`);
+  if (a.stale) bits.push(`<span class="today-warn-text">Verdict is ${agoText(a.age_days)} — reopen Attribution to refresh.</span>`);
+  return card(tone, "Process attribution", chip, bits.join(" "), goBtn("attribution", "Attribution →"));
+}
+
 // ---- research lane ----------------------------------------------------------
 export function basketTriageCard(r: ResearchSum): string {
   const b = r.basket;
@@ -265,7 +304,7 @@ export function segmentsCard(r: ResearchSum): string {
 // ---- render + wiring --------------------------------------------------------
 export function overviewHtml(v: Overview): string {
   const portfolio = [snapshotCard(v.snapshot, v.automation, v.drift), planCard(v.plan), draftCard(v.draft),
-    stagedBasketCard(v.staged_basket), journalCard(v.journal)].filter(Boolean).join("");
+    stagedBasketCard(v.staged_basket), journalCard(v.journal), attributionCard(v.attribution)].filter(Boolean).join("");
   const research = [basketTriageCard(v.research), queueCard(v.research),
     segmentsCard(v.research)].filter(Boolean).join("");
   return nextStepHtml(v.next_step) +

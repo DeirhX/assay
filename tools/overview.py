@@ -98,6 +98,29 @@ def snapshot_summary(holdings: dict | None, *, now: dt.datetime | None = None) -
     }
 
 
+def attribution_summary(cached: dict | None, *, now: dt.datetime | None = None) -> dict:
+    """Process-attribution verdict for the cockpit, from the *cached*
+    ``/api/attribution`` result. Never recomputed here -- the full report fetches
+    prices, and the Today path must stay network-free -- so this only reshapes a
+    read-only cache and flags its age. Degrades to ``{exists: False}`` when
+    attribution has never been run (the UI then nudges you to open the view)."""
+    if not isinstance(cached, dict) or not cached.get("enough_data"):
+        return {"exists": False}
+    age = age_days(cached.get("updated_at"), now)
+    return {
+        "exists": True,
+        "as_of": cached.get("as_of"),
+        "range": cached.get("range"),
+        "benchmark": cached.get("benchmark"),
+        "actual_pct": cached.get("actual_pct"),
+        "vs_hold_pp": cached.get("vs_hold_pp"),
+        "vs_benchmark_pp": cached.get("vs_benchmark_pp"),
+        "updated_at": cached.get("updated_at"),
+        "age_days": age,
+        "stale": bool(age is not None and age > STALE_SNAPSHOT_DAYS),
+    }
+
+
 def plan_summary(plan: dict) -> dict:
     """Counts over an overlay-attached ``rebalance.plan()``: how much of the
     book needs a decision, and how many price gates are waiting vs open."""

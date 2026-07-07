@@ -20,6 +20,26 @@ def _iso(days_ago: int) -> str:
     return (NOW - dt.timedelta(days=days_ago)).isoformat(timespec="seconds")
 
 
+class TestAttributionSummary(unittest.TestCase):
+    def test_absent_or_thin_cache_degrades_to_nudge(self):
+        self.assertEqual(overview.attribution_summary(None, now=NOW), {"exists": False})
+        self.assertEqual(overview.attribution_summary({"enough_data": False}, now=NOW), {"exists": False})
+
+    def test_reshapes_cache_and_flags_freshness(self):
+        cached = {"enough_data": True, "as_of": "2026-07-04", "range": "1y",
+                  "benchmark": "SPY", "actual_pct": 4.0, "vs_hold_pp": -6.0,
+                  "vs_benchmark_pp": -2.5, "updated_at": _iso(1)}
+        got = overview.attribution_summary(cached, now=NOW)
+        self.assertTrue(got["exists"])
+        self.assertAlmostEqual(got["vs_hold_pp"], -6.0)
+        self.assertEqual(got["age_days"], 1)
+        self.assertFalse(got["stale"])
+
+    def test_old_verdict_is_stale(self):
+        cached = {"enough_data": True, "updated_at": _iso(30), "actual_pct": 1.0}
+        self.assertTrue(overview.attribution_summary(cached, now=NOW)["stale"])
+
+
 class TestAgeDays(unittest.TestCase):
     def test_parses_z_suffix_and_clamps_at_zero(self):
         self.assertEqual(overview.age_days(_iso(3).replace("+00:00", "Z"), NOW), 3)
