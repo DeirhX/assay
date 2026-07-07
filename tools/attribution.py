@@ -38,6 +38,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import config  # noqa: E402  -- DATA_DIR for the verdict cache
 import fx_history  # noqa: E402  -- daily FX panel (rate_on) for FX-clean conversion
 import portfolio  # noqa: E402  -- clean_symbol / provider_symbol_for
 import store  # noqa: E402
@@ -48,6 +49,11 @@ RANGE_DAYS = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
 DEFAULT_RANGE = "1y"
 DEFAULT_BASE = "CZK"
 DEFAULT_BENCHMARK = "SPY"
+
+# A compact headline verdict cached from the last computed report, so the "Today"
+# cockpit can surface "is the process earning its keep?" without recomputing (the
+# full report fetches prices; Today must not hang a network hop off its load).
+ATTRIBUTION_VERDICT_JSON = config.DATA_DIR / "cache" / "attribution-verdict.json"
 
 # A price fetch takes (provider_symbol, range) and returns [{date, close}] | None,
 # same seam as risk.load_price_series so the two share a provider/cache path.
@@ -392,10 +398,56 @@ def _currency_for(holdings: dict | None, symbol: str) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------- #
+# Headline verdict cache (for the "Today" cockpit)
+# --------------------------------------------------------------------------- #
+def verdict_from_report(report: dict) -> dict:
+    """The one-line "did the process earn its keep?" digest of a full report:
+    the actual TWR and its edge (in percentage points) over each counterfactual.
+    Pure -- no disk."""
+    twr = report.get("twr") or {}
+    actual, hold, bench = twr.get("actual"), twr.get("hold"), twr.get("benchmark")
+
+    def _delta(a: Any, b: Any) -> float | None:
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            return round(float(a) - float(b), 2)
+        return None
+
+    return {
+        "enough_data": bool(report.get("enough_data")),
+        "as_of": report.get("as_of"),
+        "start": report.get("start"),
+        "range": report.get("range"),
+        "benchmark": report.get("benchmark"),
+        "actual_pct": actual,
+        "hold_pct": hold,
+        "benchmark_pct": bench,
+        "vs_hold_pp": _delta(actual, hold),
+        "vs_benchmark_pp": _delta(actual, bench),
+    }
+
+
+def cache_verdict(report: dict, *, path: Path = ATTRIBUTION_VERDICT_JSON) -> dict:
+    """Persist the headline verdict (best-effort). A write failure is swallowed --
+    a missing cockpit tile is never worth failing the attribution request over."""
+    verdict = verdict_from_report(report)
+    verdict["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    try:
+        store.write_json(path, verdict)
+    except OSError:
+        pass
+    return verdict
+
+
+def load_verdict(path: Path = ATTRIBUTION_VERDICT_JSON) -> dict | None:
+    """The last cached verdict, or None when attribution has never been run."""
+    raw = store.load(path)
+    return raw if isinstance(raw, dict) else None
+
+
 def _main() -> int:
     import json
 
-    import config
     from holdings_sync import history_payload
     hist = history_payload()
     holds = store.load(config.HOLDINGS_JSON)

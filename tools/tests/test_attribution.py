@@ -4,7 +4,9 @@ or disk. The pure engine (TWR, reconstruction, curves) is checked with
 hand-computed numbers; ``attribution_report`` is checked end-to-end against a
 flat-FX fixture so a wrong conversion or flow leak would move a known answer."""
 import _support  # noqa: F401
+import tempfile
 import unittest
+from pathlib import Path
 
 import attribution as A
 
@@ -182,6 +184,40 @@ class AttributionReport(unittest.TestCase):
         r = A.attribution_report({"nav_series": []}, {}, fetch=lambda s, rng: None, panel=_panel({}))
         self.assertFalse(r["enough_data"])
         self.assertEqual(r["curves"], {})
+
+
+class VerdictCache(unittest.TestCase):
+    def _report(self):
+        return {
+            "enough_data": True, "as_of": "2024-01-03", "start": "2024-01-01",
+            "range": "1y", "benchmark": "SPY",
+            "twr": {"actual": 4.0, "hold": 10.0, "benchmark": 6.5},
+        }
+
+    def test_verdict_deltas_are_actual_minus_counterfactual(self):
+        v = A.verdict_from_report(self._report())
+        self.assertTrue(v["enough_data"])
+        self.assertAlmostEqual(v["actual_pct"], 4.0)
+        self.assertAlmostEqual(v["vs_hold_pp"], -6.0)       # 4 - 10: trailing "do nothing"
+        self.assertAlmostEqual(v["vs_benchmark_pp"], -2.5)  # 4 - 6.5
+        self.assertEqual(v["benchmark"], "SPY")
+
+    def test_missing_counterfactual_leaves_delta_none(self):
+        v = A.verdict_from_report({"enough_data": True, "twr": {"actual": 3.0}})
+        self.assertIsNone(v["vs_hold_pp"])
+        self.assertIsNone(v["vs_benchmark_pp"])
+
+    def test_cache_round_trip_and_missing_reads_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "verdict.json"
+            self.assertIsNone(A.load_verdict(path))  # nothing written yet
+            written = A.cache_verdict(self._report(), path=path)
+            self.assertIn("updated_at", written)
+            loaded = A.load_verdict(path)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertAlmostEqual(loaded["vs_hold_pp"], -6.0)
+            self.assertEqual(loaded["as_of"], "2024-01-03")
 
 
 if __name__ == "__main__":
