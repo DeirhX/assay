@@ -17,7 +17,15 @@ class _Env(unittest.TestCase):
     KEYS = ("ASSAY_NOTIFY", "ASSAY_NOTIFY_WEBHOOK", "ASSAY_NOTIFY_TOAST")
 
     def setUp(self):
+        # Save, then CLEAR every notify flag so each test starts from a known
+        # disabled baseline. Without this, a suite run in a shell that has
+        # ASSAY_NOTIFY_TOAST=1 set would inherit it and fire a REAL Windows toast
+        # (via the PowerShell NotifyIcon sink) for any test that calls notify()
+        # without popping the flag or injecting a fake sink -- a unit test must
+        # never spew OS notifications on the developer's machine.
         self._orig = {k: os.environ.get(k) for k in self.KEYS}
+        for k in self.KEYS:
+            os.environ.pop(k, None)
 
     def tearDown(self):
         for k, v in self._orig.items():
