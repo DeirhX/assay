@@ -186,6 +186,36 @@ class AttributionReport(unittest.TestCase):
         self.assertEqual(r["curves"], {})
 
 
+class FetchMany(unittest.TestCase):
+    """The parallel price fan-out: dedups providers, tolerates a per-symbol miss
+    (records None, never raises), and never re-pulls the same provider twice."""
+
+    def test_dedups_and_counts_one_pull_per_unique_symbol(self):
+        calls: dict[str, int] = {}
+
+        def fetch(sym, rng):
+            calls[sym] = calls.get(sym, 0) + 1
+            return [{"date": "2024-01-01", "close": 1.0}]
+
+        got = A._fetch_many(fetch, ["SPY", "AAA", "SPY", ""], "1y")
+        self.assertEqual(set(got), {"SPY", "AAA"})  # empty string dropped
+        self.assertEqual(calls, {"SPY": 1, "AAA": 1})  # SPY fetched once despite the dupe
+
+    def test_empty_input_is_noop(self):
+        self.assertEqual(A._fetch_many(lambda s, r: [], [], "1y"), {})
+        self.assertEqual(A._fetch_many(lambda s, r: [], ["", None], "1y"), {})
+
+    def test_raising_fetch_becomes_none_not_an_error(self):
+        def fetch(sym, rng):
+            if sym == "BOOM":
+                raise RuntimeError("provider down")
+            return [{"date": "2024-01-01", "close": 1.0}]
+
+        got = A._fetch_many(fetch, ["OK", "BOOM"], "1y")
+        self.assertIsNone(got["BOOM"])
+        self.assertIsNotNone(got["OK"])
+
+
 class VerdictCache(unittest.TestCase):
     def _report(self):
         return {
