@@ -1,4 +1,4 @@
-import { $, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
+import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
@@ -82,7 +82,7 @@ const fmtSignedPct1 = (v: number | null | undefined) =>
 
 // Correlation -> background. High positive correlation is the risk here, so make
 // it loud (red); near-zero is calm (neutral); negative (a real hedge) is green.
-function corrColor(c: number | null) {
+function corrColor(c: number | null | undefined) {
   if (c == null) return "transparent";
   if (c >= 0) return `rgba(220, 80, 70, ${(0.12 + 0.78 * Math.min(1, c)).toFixed(3)})`;
   return `rgba(70, 170, 110, ${(0.12 + 0.78 * Math.min(1, -c)).toFixed(3)})`;
@@ -93,8 +93,8 @@ let _riskRange = "1y";
 async function loadRisk() {
   await apiLoad({
     path: "/api/risk?range=" + encodeURIComponent(_riskRange),
-    status: $("#risk-status"),
-    clear: [$("#risk-result")],
+    status: $$("#risk-status"),
+    clear: [$$("#risk-result")],
     loading: "Computing portfolio risk (pulling price history)…",
     errorLabel: "Could not compute risk",
     render: renderRisk,
@@ -102,7 +102,7 @@ async function loadRisk() {
 }
 
 function renderRisk(r: RiskPayload) {
-  const out = $("#risk-result");
+  const out = $$("#risk-result");
   out.innerHTML = "";
   const m = r.metrics || {};
 
@@ -159,7 +159,7 @@ function renderRisk(r: RiskPayload) {
   // 2b) Currency lens: exposure + how much of the window's CZK move was FX.
   if (fx && (fx.exposure || []).length) {
     const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, "Currency exposure & FX effect"));
+    sec.appendChild(el("h3", undefined, "Currency exposure & FX effect"));
     sec.appendChild(el("p", "hint",
       `A ${esc(fx.base || "base")}-base book holding foreign names earns two returns: the stock's ` +
       `and the exchange rate's. "FX move" is the pair's change over the window; "est. contribution" ` +
@@ -187,7 +187,7 @@ function renderRisk(r: RiskPayload) {
   // 3) Stress scenarios.
   if (r.stress && r.stress.length) {
     const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, "Factor-shock stress test"));
+    sec.appendChild(el("h3", undefined, "Factor-shock stress test"));
     sec.appendChild(el("p", "hint",
       "Estimated NAV hit if a factor moves, using each holding's beta to that factor " +
       "over the window. Linear and beta-based — it ignores that correlations spike in a real crash."));
@@ -196,19 +196,20 @@ function renderRisk(r: RiskPayload) {
   }
 
   // 4) Correlation heatmap.
-  const syms = (r.correlation && r.correlation.symbols) || [];
-  if (syms.length) {
+  const corr = r.correlation;
+  const syms = (corr && corr.symbols) || [];
+  if (syms.length && corr && corr.matrix) {
     const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, "Correlation matrix"));
+    sec.appendChild(el("h3", undefined, "Correlation matrix"));
     sec.appendChild(el("p", "hint", "Daily-return correlation. Red = move together (concentration), green = a genuine hedge. Hover any cell for the exact value."));
-    sec.appendChild(heatmap(syms, r.correlation.matrix));
+    sec.appendChild(heatmap(syms, corr.matrix));
     out.appendChild(sec);
   }
 
   // 5) Per-name vol/weight table.
   if (r.positions && r.positions.length) {
     const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", null, "Per-name volatility"));
+    sec.appendChild(el("h3", undefined, "Per-name volatility"));
     sec.appendChild(posTable(r.positions));
     out.appendChild(sec);
   }
@@ -223,15 +224,15 @@ function stressCard(s: StressScenario) {
   const impactCls = s.nav_impact_pct == null ? "muted" : s.nav_impact_pct <= -15 ? "bad" : s.nav_impact_pct < 0 ? "warn" : "good";
   head.innerHTML =
     `<span class="risk-stress-name">${esc(s.label)} ` +
-    `<small>(${esc(s.factor)} ${s.shock_pct > 0 ? "+" : ""}${esc(s.shock_pct)}%)</small></span>` +
+    `<small>(${esc(s.factor)} ${(s.shock_pct ?? 0) > 0 ? "+" : ""}${esc(s.shock_pct)}%)</small></span>` +
     `<span class="risk-stress-impact ${impactCls}">` +
-    (s.measurable ? `${s.nav_impact_pct > 0 ? "+" : ""}${esc(s.nav_impact_pct)}% NAV` : "not measurable") +
+    (s.measurable ? `${(s.nav_impact_pct ?? 0) > 0 ? "+" : ""}${esc(s.nav_impact_pct)}% NAV` : "not measurable") +
     `</span>`;
   card.appendChild(head);
   if (s.note) card.appendChild(el("div", "hint", esc(s.note)));
   if (s.measurable && s.contributions && s.contributions.length) {
     const det = el("details", "risk-contrib");
-    det.appendChild(el("summary", null, "Per-name contribution"));
+    det.appendChild(el("summary", undefined, "Per-name contribution"));
     const list = el("div", "risk-contrib-list");
     s.contributions.forEach((c) => {
       const cls = c.impact_pct == null ? "muted" : c.impact_pct < 0 ? "bad" : "good";
@@ -303,7 +304,7 @@ function posTable(positions: RiskPosition[]) {
 }
 
 function initRiskControls() {
-  const sel = $<HTMLSelectElement & { _wired?: boolean }>("#risk-range");
+  const sel = $$<HTMLSelectElement & { _wired?: boolean }>("#risk-range");
   if (sel && !sel._wired) {
     sel._wired = true;
     sel.value = _riskRange;

@@ -1,5 +1,5 @@
 import { starHtml } from "./basket";
-import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
+import { $$, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import type { SegmentSummary } from "./api-types";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
@@ -7,8 +7,8 @@ import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
 // ---- segment --------------------------------------------------------------
 async function loadSegmentList() {
-  const sel = $("#segment-select");
-  const pipeSel = $("#pipe-segment-select");
+  const sel = $$("#segment-select");
+  const pipeSel = $$("#pipe-segment-select");
   try {
     const { segments } = await api<{ segments: SegmentSummary[] }>("/api/segments");
     sel.innerHTML = "";
@@ -33,27 +33,27 @@ async function loadSegmentList() {
     // Disabled + empty value so a transient /api/segments failure can't poison
     // the dropdown with a selectable bogus name (e.g. "Failed to fetch") that a
     // later load would send to /api/segment/<name>.
-    const opt = `<option value="" disabled selected>couldn't load segments: ${esc(e.message)}</option>`;
+    const opt = `<option value="" disabled selected>couldn't load segments: ${esc((e as Error).message)}</option>`;
     sel.innerHTML = opt;
     if (pipeSel) pipeSel.innerHTML = opt;
     return [];
   }
 }
 
-$("#segment-select")?.addEventListener("change", () => {
-  if ($("#view-segment")?.classList.contains("active")) {
-    pushNav({ view: "segment", segment: $<HTMLSelectElement>("#segment-select")?.value }, { replace: true });
+$$("#segment-select")?.addEventListener("change", () => {
+  if ($$("#view-segment")?.classList.contains("active")) {
+    pushNav({ view: "segment", segment: $$<HTMLSelectElement>("#segment-select")?.value }, { replace: true });
   }
 });
 
-$("#pipe-segment-select")?.addEventListener("change", () => {
-  if ($("#view-pipeline")?.classList.contains("active")) {
-    pushNav({ view: "pipeline", segment: $<HTMLSelectElement>("#pipe-segment-select")?.value }, { replace: true });
+$$("#pipe-segment-select")?.addEventListener("change", () => {
+  if ($$("#view-pipeline")?.classList.contains("active")) {
+    pushNav({ view: "pipeline", segment: $$<HTMLSelectElement>("#pipe-segment-select")?.value }, { replace: true });
   }
 });
 
 async function runSegmentPull(name: string, { push = true }: { push?: boolean } = {}) {
-  const status = $("#seg-status");
+  const status = $$("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
   if (!isSegmentSlug(name)) {
@@ -63,10 +63,10 @@ async function runSegmentPull(name: string, { push = true }: { push?: boolean } 
   }
   if (push) pushNav({ view: "segment", segment: name });
   setActiveView("segment");
-  $<HTMLSelectElement>("#segment-select").value = name;
+  $$<HTMLSelectElement>("#segment-select").value = name;
   status.classList.remove("err");
   status.innerHTML = `${spinner()} Pulling every peer in "${esc(name)}" live — this takes a bit...`;
-  $<HTMLButtonElement>("#segment-run").disabled = true;
+  $$<HTMLButtonElement>("#segment-run").disabled = true;
   try {
     const rec = await api("/api/pull-segment/" + encodeURIComponent(name), "POST");
     status.textContent = `Pulled ${rec.members.length} names at ${new Date(rec.as_of).toLocaleString()}`;
@@ -74,12 +74,12 @@ async function runSegmentPull(name: string, { push = true }: { push?: boolean } 
   } catch (e) {
     loadError(status, "Segment pull failed", e);
   } finally {
-    $<HTMLButtonElement>("#segment-run").disabled = false;
+    $$<HTMLButtonElement>("#segment-run").disabled = false;
   }
 }
 
 async function loadCachedSegment(name: string, { push = false }: { push?: boolean } = {}) {
-  const status = $("#seg-status");
+  const status = $$("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
   if (!isSegmentSlug(name)) {
@@ -89,7 +89,7 @@ async function loadCachedSegment(name: string, { push = false }: { push?: boolea
   }
   if (push) pushNav({ view: "segment", segment: name });
   setActiveView("segment");
-  $<HTMLSelectElement>("#segment-select").value = name;
+  $$<HTMLSelectElement>("#segment-select").value = name;
   status.classList.remove("err");
   status.textContent = "Loading cached segment...";
   try {
@@ -97,17 +97,17 @@ async function loadCachedSegment(name: string, { push = false }: { push?: boolea
     status.textContent = `Cached ${rec.members.length} names from ${new Date(rec.as_of).toLocaleString()}`;
     renderSegment(rec);
   } catch (e) {
-    status.textContent = e.message + " — run a live pull first.";
+    status.textContent = (e as Error).message + " — run a live pull first.";
     status.classList.add("err");
   }
 }
 
-$("#segment-run")?.addEventListener("click", () => runSegmentPull($<HTMLSelectElement>("#segment-select")?.value));
-$("#segment-load")?.addEventListener("click", () => loadCachedSegment($<HTMLSelectElement>("#segment-select")?.value, { push: true }));
+$$("#segment-run")?.addEventListener("click", () => runSegmentPull($$<HTMLSelectElement>("#segment-select")?.value));
+$$("#segment-load")?.addEventListener("click", () => loadCachedSegment($$<HTMLSelectElement>("#segment-select")?.value, { push: true }));
 
 // Seed the result area so an un-loaded Segment tab is a clear prompt, not a void.
 // Any pull/cache load replaces this; a deep-link to ?segment= loads over it.
-emptyState($("#seg-result"),
+emptyState($$("#seg-result"),
   "<strong>No segment loaded</strong>" +
   "Pick a peer universe above, then <em>Run live pull</em> (~30-60s for ~20 names) " +
   "or <em>Load cached</em> for the last saved table.");
@@ -164,7 +164,7 @@ export interface SegmentRec {
 
 function renderSegment(rec: SegmentRec) {
   state.lastSegment = rec;
-  const out = $("#seg-result");
+  const out = $$("#seg-result");
   out.innerHTML = "";
   const card = sectionCard(esc(rec.title) + " — peer comparison");
   const table = el("table", "segment-table");
@@ -179,7 +179,7 @@ function renderSegment(rec: SegmentRec) {
         const s = state.segSort;
         s.dir = s.key === key ? -s.dir : (num ? -1 : 1);
         s.key = key;
-        renderSegment(state.lastSegment);
+        if (state.lastSegment) renderSegment(state.lastSegment);
       });
       if (state.segSort.key === key) th.innerHTML += state.segSort.dir < 0 ? " ↓" : " ↑";
     }
@@ -206,7 +206,7 @@ function renderSegment(rec: SegmentRec) {
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
       sparkPlaceholder(m.symbol),
-      `<span class="decision-pill ${decisionClass(m.decision)}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,
+      `<span class="decision-pill ${decisionClass(m.decision ?? "")}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,
       `<span class="score-pill ${scoreClass(m.research_score)}">${m.research_score == null ? "n/a" : esc(m.research_score)}</span>`,
       `<span class="sleeve-tag">${esc(m.sleeve)}</span>`,
       m.owned_pct_nav != null ? `<span class="owned-pill">${m.owned_pct_nav.toFixed(1)}</span>` : `<span class="muted">–</span>`,

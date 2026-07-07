@@ -5,7 +5,7 @@
 // depending on deepdive purely for navigation. This is a thin orchestration
 // leaf: shell owns the nav primitives, deepdive owns the rendering; here we just
 // wire "switch to the deep-dive view and show/pull the symbol".
-import { $, api } from "./core";
+import { $$, api } from "./core";
 import { hydrateHistory, pullTicker, renderDeepDive } from "./deepdive";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 
@@ -16,7 +16,7 @@ export function analyzeFromAnywhere(sym: string | null | undefined) {
   if (!ticker) return;
   pushNav({ view: "deepdive", ticker });
   setActiveView("deepdive");
-  $<HTMLInputElement>("#ticker-input").value = ticker;
+  $$<HTMLInputElement>("#ticker-input").value = ticker;
   pullTicker(ticker, { push: false });
 }
 
@@ -28,8 +28,8 @@ export async function openTicker(sym: string | null | undefined) {
   if (!ticker) return;
   pushNav({ view: "deepdive", ticker });
   setActiveView("deepdive");
-  $<HTMLInputElement>("#ticker-input").value = ticker;
-  const status = $("#dd-status");
+  $$<HTMLInputElement>("#ticker-input").value = ticker;
+  const status = $$("#dd-status");
   status.classList.remove("err");
   status.textContent = `Loading ${ticker}…`;
   try {

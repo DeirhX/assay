@@ -14,16 +14,11 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
 
-    // Tightening is staged, not flipped wholesale. Every web/src module is now
-    // typed (no @ts-nocheck), dead-code-free (noUnusedLocals), and free of
-    // implicit `any` (noImplicitAny) -- the ~390 untyped params in the legacy
-    // views (strategy/setup/rebalance/shell/trade...) were given honest
-    // data-model interfaces per-file rather than blanket `any` annotations.
-    //
-    // The remaining stage is full `strict` (strictNullChecks et al.): ~510
-    // null-safety decisions. Enable it next now that the `any` noise is gone.
-    "strict": false,
-    "noImplicitAny": true,
+    // Fully strict. The tightening was staged: first no `@ts-nocheck`, then
+    // noUnusedLocals + noImplicitAny (honest per-file data-model interfaces for
+    // the legacy views instead of blanket `any`), and finally full `strict`
+    // (strictNullChecks et al.) once the `any` noise was gone.
+    "strict": true,
     "noUnusedLocals": true,
     "allowJs": true,
     "checkJs": false

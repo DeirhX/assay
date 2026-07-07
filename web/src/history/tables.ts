@@ -64,7 +64,7 @@ function drawPager(pager: HTMLElement, pg: Page<unknown>, onGo: (page: number) =
 // valid); the per-name native currency is shown in its own column instead.
 function activityCells(r: ActivityGroup | SectorGroup | ActivityRow): string {
   const pnl = Number(r.base_realized_pnl) || 0;
-  const flowCls = r.net_base_cash_flow >= 0 ? "good" : "bad";
+  const flowCls = (r.net_base_cash_flow ?? 0) >= 0 ? "good" : "bad";
   const pnlCls = pnl > 0 ? "good" : pnl < 0 ? "bad" : "muted";
   // Gross cash out (bought) and in (sold), base currency. Unsigned magnitudes;
   // net cash flow keeps the signed good/bad treatment.
