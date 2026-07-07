@@ -287,6 +287,24 @@ from IO so the tests run offline.
   `window_report` (each currency's FX move + estimated CZK contribution over the
   window) -- is read-only over the cached panel and feeds `risk.risk_report`'s
   `fx` block.
+- `attribution.py` -- **process attribution** ("is this system earning its
+  keep?"). Every other lens measures a position; this measures the *process*. Over
+  a window it compares the actual **time-weighted return** against two skill-free
+  baselines: **never-rebalanced** (freeze the book as it stood at the window start
+  and let prices run) and the **benchmark** (put the same koruna -- starting NAV
+  plus every deposit -- into SPY/QQQ). Honest only if three things hold, all
+  enforced here: deposits/withdrawals are *neutralized* (`external_flows` +
+  `time_weighted_return`, so a transfer never reads as alpha), every foreign price
+  is converted *day-by-day* through the FX panel (`czk_price_series`, never a
+  single point-in-time rate), and all curves are *seeded with the same starting
+  NAV* so they diverge only on what the money bought. The frozen book is
+  reconstructed by unwinding post-window trades from the current snapshot
+  (`positions_at`); a ledger that starts after the window, or a name with no price
+  history, becomes a loud caveat rather than a wrong number. Pure engine
+  (`time_weighted_return` / `positions_at` / `hold_index` / `flow_curve`) is
+  fully unit-tested; only `attribution_report` does IO (history/holdings/prices/
+  FX, price fetch injectable). Read-only; never trades. API: `GET /api/attribution`
+  (`range`, `benchmark`), surfaced in the **Attribution** sub-tab.
 - `tax_lots.py` -- **Czech tax-lot-aware sell planner**. Given a symbol and an
   amount to raise, it picks specific lots to minimize tax: realize 3y-exempt gains
   first, then harvestable losses, then taxable gains. Uses `open_datetime` for the

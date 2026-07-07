@@ -2074,6 +2074,22 @@ a.tlink:hover { border-bottom-style: solid; }
 .fx-table th.num, .fx-table td.num { text-align: right; }
 .fx-ccy { font-weight: 700; }
 
+/* Attribution: reuses the risk view's stat/section chrome. The growth chart is a
+   dependency-free inline SVG; each series maps to a colour shared with the legend. */
+.attr-chart { width: 100%; max-width: 680px; height: auto; display: block; margin-top: 6px; }
+.attr-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.attr-baseline { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
+.attr-axis { fill: var(--muted); font-size: 10px; }
+.attr-actual { stroke: var(--accent, #4a9); }
+.attr-hold { stroke: #888; }
+.attr-bench { stroke: #d98a3a; }
+.attr-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 2px; font-size: 12px; color: var(--muted); }
+.attr-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.attr-swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.attr-swatch.attr-actual { background: var(--accent, #4a9); }
+.attr-swatch.attr-hold { background: #888; }
+.attr-swatch.attr-bench { background: #d98a3a; }
+
 /* Tax calendar: reuses the risk view's stat/section chrome; only the table and
    the "soon" flag need their own rules. */
 .tax-cal-table { width: 100%; max-width: 760px; border-collapse: collapse; }
