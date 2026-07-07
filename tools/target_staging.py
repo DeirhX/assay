@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
+import threading
 from pathlib import Path
 
 import portfolio
@@ -42,6 +44,16 @@ from target_model import (
 # The working draft. Mirrors the live model schema plus a top-level ``provenance``
 # map and a ``_runs`` audit list of contributing strategy runs.
 STAGED_JSON = DATA_DIR / "target-model.staged.json"
+
+# Append-only decision timeline: one JSON object per line, a band change and the
+# provenance behind it, written on every commit. The live ``provenance`` map is
+# point-in-time (the *current* source per band) and ``commit_staged`` drops the
+# staging ``_runs`` audit, so nothing else preserves *when* a band moved and why
+# -- which is exactly what attribution's "followed every suggestion" and
+# by-source analysis need. Lives in the private ``data`` submodule; it is
+# precious history, not a regenerable cache.
+PROVENANCE_LOG = DATA_DIR / "provenance-log.jsonl"
+_LOG_LOCK = threading.Lock()
 
 _VALID_STANCES = {
     "accumulate", "hold", "trim_only", "do_not_add", "reduce", "avoid", "wait",
@@ -447,6 +459,144 @@ def discard_staged() -> dict:
     return {"discarded": False}
 
 
+# --------------------------------------------------------------------------- #
+# Provenance timeline (append-only decision log)
+# --------------------------------------------------------------------------- #
+def _band_summary(band: dict | None) -> dict | None:
+    """The attribution-relevant slice of a band: low/high/rule. None for an
+    added/removed side. Keeps the log compact and stable even as the model
+    schema grows other keys (note, structural, members...)."""
+    if not isinstance(band, dict):
+        return None
+    return {k: band[k] for k in ("low", "high", "rule") if band.get(k) is not None}
+
+
+def _provenance_entries(prior: dict, later: dict, *, at: str,
+                        backfill: bool = False) -> list[dict]:
+    """The band changes from *prior* -> *later*, one log entry each, pulling the
+    source/run_id/segment/conviction from *later*'s provenance map. Pure: no disk,
+    no clock (``at`` is injected), so it's the same routine the live commit and the
+    backfill both diff through."""
+    prov = later.get("provenance") or {}
+    entries: list[dict] = []
+    for kind, field in (("target", "targets"), ("sleeve", "sleeves")):
+        bmap = prior.get(field) or {}
+        amap = later.get(field) or {}
+        for key in sorted(set(bmap) | set(amap)):
+            before, after = bmap.get(key), amap.get(key)
+            if before == after:
+                continue
+            change = "added" if before is None else ("removed" if after is None else "modified")
+            prec = prov.get(f"[{key}]" if kind == "sleeve" else key)
+            prec = prec if isinstance(prec, dict) else {}
+            entry: dict = {
+                "at": at, "key": key, "kind": kind, "change": change,
+                "before": _band_summary(before), "after": _band_summary(after),
+                "source": prec.get("source"),
+            }
+            for opt in ("run_id", "segment", "conviction"):
+                if prec.get(opt):
+                    entry[opt] = prec[opt]
+            if backfill:
+                entry["backfill"] = True
+            entries.append(entry)
+    return entries
+
+
+def _dedupe_key(entry: dict) -> tuple:
+    return (entry.get("at"), entry.get("kind"), entry.get("key"), entry.get("change"))
+
+
+def read_provenance_log(path: Path | None = None) -> list[dict]:
+    """Every logged entry (skipping any corrupt line). Empty when absent."""
+    path = path or PROVENANCE_LOG  # resolve the module global at call time (patchable)
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+    except OSError:
+        return []
+    return out
+
+
+def _append_provenance_log(entries: list[dict], *, path: Path | None = None) -> int:
+    """Append entries as JSONL, skipping any whose (at, kind, key, change) is
+    already present -- so a re-run (or an overlapping backfill) can't double-count.
+    Returns the number actually written."""
+    if not entries:
+        return 0
+    path = path or PROVENANCE_LOG
+    with _LOG_LOCK:
+        seen = {_dedupe_key(e) for e in read_provenance_log(path)}
+        fresh = [e for e in entries if _dedupe_key(e) not in seen]
+        if not fresh:
+            return 0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            for e in fresh:
+                fh.write(json.dumps(e, sort_keys=True) + "\n")
+    return len(fresh)
+
+
+def _backup_timestamp(path: Path) -> str | None:
+    """ISO instant a backup was taken, parsed from its ``target-model-<ts>.json``
+    name (the snapshot's own ``as_of`` is a date, too coarse to order intraday
+    commits). None if the name doesn't match."""
+    stem = path.stem  # target-model-20260707T012233Z
+    marker = "target-model-"
+    if not stem.startswith(marker):
+        return None
+    raw = stem[len(marker):]
+    try:
+        return dt.datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=dt.timezone.utc).isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
+def backfill_provenance_log(*, path: Path | None = None,
+                            backup_dir: Path | None = None) -> dict:
+    """Best-effort reconstruction of the timeline from the dated model backups.
+
+    The backups are a sparse chain of whole-model snapshots (each taken *before*
+    a mutating apply). Diffing consecutive snapshots, then the newest snapshot
+    against the current live model, recovers the band changes that predate the
+    log -- labelled ``backfill: true`` and dated from the *later* snapshot, so
+    they're honestly distinguishable from the exact live-commit record. Idempotent
+    via the same (at, kind, key, change) de-dupe as any append, so it's safe to
+    re-run; it only ever fills gaps."""
+    path = path or PROVENANCE_LOG
+    backup_dir = backup_dir or TARGET_MODEL_BACKUP_DIR
+    backups = sorted(
+        (p for p in backup_dir.glob("target-model-*.json") if _backup_timestamp(p)),
+        key=lambda p: _backup_timestamp(p) or "",
+    )
+    snapshots: list[tuple[str, dict]] = []
+    for p in backups:
+        model = _load(p)
+        if isinstance(model, dict):
+            snapshots.append((_backup_timestamp(p) or "", model))
+    live = load_live()
+    if live:
+        snapshots.append((live.get("as_of") or _now_iso(), live))
+
+    entries: list[dict] = []
+    for (_, prior), (at, later) in zip(snapshots, snapshots[1:]):
+        entries.extend(_provenance_entries(prior, later, at=at, backfill=True))
+    written = _append_provenance_log(entries, path=path)
+    return {"snapshots": len(snapshots), "candidates": len(entries), "written": written}
+
+
 def commit_staged(confirm: bool) -> dict:
     """Promote the working draft to the live model: backup, write, bump
     ``as_of``/``basis_snapshot``, refresh the holdings summary, clear the draft."""
@@ -455,6 +605,7 @@ def commit_staged(confirm: bool) -> dict:
     staged = _load(STAGED_JSON)
     if not isinstance(staged, dict):
         raise ValueError("no working draft to commit")
+    prior = load_live()  # snapshot BEFORE overwrite, for the provenance diff
     out = copy.deepcopy(staged)
     out.pop("_runs", None)
     out["as_of"] = _today()
@@ -475,12 +626,22 @@ def commit_staged(confirm: bool) -> dict:
             )
     backup = _backup_target_model()
     _write_json(TARGET_MODEL_JSON, out)
+    # Record the band changes to the append-only timeline now that the live write
+    # succeeded. Best-effort: a log-append failure must never roll back a commit
+    # that already landed -- the model is the source of truth, the log is audit.
+    logged = 0
+    try:
+        logged = _append_provenance_log(
+            _provenance_entries(prior, out, at=_now_iso()))
+    except Exception:  # noqa: BLE001 - the timeline is audit, not a commit gate
+        logged = 0
     try:
         STAGED_JSON.unlink()
     except OSError:
         pass
     site = _regenerate_site()
-    return {"committed": True, "backup": backup, "as_of": out["as_of"], "site": site}
+    return {"committed": True, "backup": backup, "as_of": out["as_of"],
+            "provenance_logged": logged, "site": site}
 
 
 # --------------------------------------------------------------------------- #
