@@ -1,5 +1,5 @@
 import { starHtml } from "./basket";
-import { $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
+import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
@@ -297,7 +297,9 @@ function renderRebalance(plan: RebPlan) {
       `<div class="reb-stat-bar"><span class="closed" id="reb-bar-closed"></span></div></div>` +
     `</div>`;
 
-  const openDraft = $$("#reb-open-draft");
+  // Nullable: the banner (and this button) only render when a working draft
+  // exists, so its absence is a legitimate, handled state - not a missing shell node.
+  const openDraft = $("#reb-open-draft");
   if (openDraft) openDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
 
   // Live-updated derived references, one per interactive row.
