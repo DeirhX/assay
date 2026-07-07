@@ -69,6 +69,7 @@ from symbols import (  # noqa: E402  -- symbol resolve/alias/search (clean publi
     save_alias as _save_symbol_alias, search as _symbol_search,
 )
 from segments_service import (  # noqa: E402  -- segment validate/prompt/list
+    leaderboard as _segments_leaderboard,
     segment_path as _segment_path, segment_prompt as _segment_prompt,
     segments_list as _segments_list, start_draft as _start_segment_draft,
     validate_definition as _validate_segment_definition,
@@ -273,6 +274,7 @@ _GET_EXACT = {
     "/api/tax-calendar": "_get_tax_calendar",
     "/api/journal": "_get_journal",
     "/api/segments": "_get_segments",
+    "/api/segments/leaderboard": "_get_segments_leaderboard",
     "/api/peer-stats": "_get_peer_stats",
     "/api/price-levels": "_get_price_levels",
     "/api/deep-runs": "_get_deep_runs",
@@ -654,6 +656,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_segments(self, path, query):
         return self._send_json({"segments": _segments_list()})
+
+    def _get_segments_leaderboard(self, path, query):
+        return self._send_json(_segments_leaderboard())
 
     def _get_peer_stats(self, path, query):
         sym = (query.get("symbol") or [""])[0]

@@ -29,6 +29,7 @@
     </button>
     <div class="subbar" id="subbar" hidden>
       <div class="subtabs" data-group="research" role="tablist" hidden>
+        <button class="subtab" data-view="leaderboard" type="button" role="tab">Leaderboard</button>
         <button class="subtab" data-view="deepdive" type="button" role="tab">Ticker</button>
         <button class="subtab" data-view="analyses" type="button" role="tab">Reports</button>
         <button class="subtab" data-view="segment" type="button" role="tab">Segments</button>
@@ -103,6 +104,18 @@
         <div class="strat-recent" id="strat-recent"></div>
       </div>
       <div id="strat-panel"></div>
+    </section>
+
+    <!-- LEADERBOARD (segment promise ranking) -->
+    <section class="view" id="view-leaderboard">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Segment leaderboard</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Every cached research segment ranked by "promise" — a deliberately dumb, transparent composite (<code>rank(3M momentum) + rank(breadth)</code>, shown on hover) — with your exposure overlaid. It orders, it doesn't forecast. All from cached pulls; nothing here fetches or trades. Callouts flag the two actionable mismatches: hot segments you barely own, and weak ones you're heavy in. Click a tile to open its peer table.</p></details>
+        </div>
+      </div>
+      <div class="status" id="lb-status"></div>
+      <div id="lb-body"></div>
     </section>
 
     <!-- DEEP DIVE -->
