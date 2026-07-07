@@ -1,4 +1,4 @@
-import { $, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
+import { $$, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
 import { pollDeepJob } from "./jobs";
 import { groupActivity, groupBySector, type ActivityRow, type Trade } from "./history/data";
 import { ccyTag, fmtMoney, fmtSigned } from "./history/format";
@@ -73,8 +73,8 @@ function setupNote(st: IbkrStatus | null) {
 }
 
 async function loadHistory() {
-  const status = $("#hist-status");
-  const out = $("#hist-result");
+  const status = $$("#hist-status");
+  const out = $$("#hist-result");
   status.classList.remove("err");
   status.textContent = "Loading cached history…";
   out.innerHTML = "";
@@ -87,13 +87,13 @@ async function loadHistory() {
     if (note) out.insertBefore(note, out.firstChild);
   } catch (e) {
     out.innerHTML = "";
-    if (e.status === 404) {
+    if ((e as { status?: number }).status === 404) {
       // Expected on a fresh setup: nothing pulled yet. Nudge, don't alarm.
       status.textContent = "";
       out.appendChild(emptyState(await readyP));
       return;
     }
-    status.textContent = "Could not load history: " + e.message;
+    status.textContent = "Could not load history: " + (e as Error).message;
     status.classList.add("err");
   }
 }
@@ -113,7 +113,7 @@ function emptyState(st: IbkrStatus | null) {
 }
 
 function renderHistory(h: HistoryPayload) {
-  const out = $("#hist-result");
+  const out = $$("#hist-result");
   out.innerHTML = "";
   const s = h.summary || {};
 
@@ -131,7 +131,7 @@ function renderHistory(h: HistoryPayload) {
 
   const series = (h.nav_series || []).filter((p) => p && p.date && p.nav != null);
   const chartSec = el("div", "risk-section");
-  chartSec.appendChild(el("h3", null, "Portfolio value & actions"));
+  chartSec.appendChild(el("h3", undefined, "Portfolio value & actions"));
   if (series.length >= 2) {
     chartSec.appendChild(el("p", "hint",
       "Net asset value over time. Each marker is a day you traded (bigger = more fills); " +
@@ -151,7 +151,7 @@ function renderHistory(h: HistoryPayload) {
     const known = secGroups.filter((g) => g.sector !== "Unknown").length;
     const unknown = secGroups.find((g) => g.sector === "Unknown");
     const body = el("div");
-    body.appendChild(sectorToolbar(h, unknown ? unknown.names : 0));
+    body.appendChild(sectorToolbar(h, unknown ? (unknown.names ?? 0) : 0));
     body.appendChild(sectorTable(secGroups, bcy));
     out.appendChild(section(
       `By sector (${known})`,
@@ -220,8 +220,8 @@ function sectorToolbar(h: HistoryPayload, unknownNames: number) {
 }
 
 async function runSectorFetch() {
-  const btn = $<HTMLButtonElement>("#hist-sectors");
-  const status = $("#hist-sectors-status");
+  const btn = $$<HTMLButtonElement>("#hist-sectors");
+  const status = $$("#hist-sectors-status");
   if (!btn || btn.disabled) return;
   btn.disabled = true;
   const prev = btn.textContent;
@@ -236,7 +236,7 @@ async function runSectorFetch() {
       status.textContent = `Done — resolved ${r.resolved ?? 0} new, ${r.unresolved ?? 0} still unknown.`;
     }, "sector lookup");
   } catch (e) {
-    status.textContent = "Sector lookup failed: " + e.message;
+    status.textContent = "Sector lookup failed: " + (e as Error).message;
     status.classList.add("err");
   } finally {
     btn.disabled = false;
@@ -273,12 +273,12 @@ function card(label: string, valueHtml: string, cls = "muted") {
 }
 
 async function runSync(full: boolean) {
-  const status = $("#hist-status");
-  const btns = [$<HTMLButtonElement>("#hist-sync"), $<HTMLButtonElement>("#hist-full")].filter(Boolean);
+  const status = $$("#hist-status");
+  const btns = [$$<HTMLButtonElement>("#hist-sync"), $$<HTMLButtonElement>("#hist-full")].filter(Boolean);
   if (btns.some((b) => b.disabled)) return;
   const prev = btns.map((b) => b.textContent);
   btns.forEach((b) => (b.disabled = true));
-  const active = full ? $("#hist-full") : $("#hist-sync");
+  const active = full ? $$("#hist-full") : $$("#hist-sync");
   if (active) active.textContent = full ? "Rebuilding…" : "Updating…";
   status.classList.remove("err");
   status.innerHTML = full
@@ -295,7 +295,7 @@ async function runSync(full: boolean) {
         : `Done — ${r.n_trades ?? 0} trades reconstructed.`;
     }, "IBKR history");
   } catch (e) {
-    status.textContent = "History pull failed: " + e.message;
+    status.textContent = "History pull failed: " + (e as Error).message;
     status.classList.add("err");
   } finally {
     btns.forEach((b, i) => {
@@ -307,8 +307,8 @@ async function runSync(full: boolean) {
 
 function initHistoryControls() {
   if (_wired) return;
-  const sync = $("#hist-sync");
-  const full = $("#hist-full");
+  const sync = $$("#hist-sync");
+  const full = $$("#hist-full");
   if (!sync && !full) return;
   _wired = true;
   if (sync) sync.addEventListener("click", () => runSync(false));

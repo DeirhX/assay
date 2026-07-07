@@ -1,11 +1,11 @@
 import type { HoldingPosition, HoldingsPayload } from "./api-types";
-import { $, api, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
+import { $$, api, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./ticker-nav";
 
 // ---- holdings -------------------------------------------------------------
 async function loadHoldings() {
-  const status = $("#hold-status");
-  const out = $("#hold-result");
+  const status = $$("#hold-status");
+  const out = $$("#hold-result");
   status.textContent = "Loading portfolio snapshot...";
   try {
     const h = await api<HoldingsPayload>("/api/holdings");
@@ -20,7 +20,7 @@ async function loadHoldings() {
     // NAV/concentration is the portfolio's headline, so give it a visual hero
     // rather than a muted text line -- and keep it in #hold-result, not the
     // transient #hold-status, so a "Synced…" message can't overwrite it.
-    const synced = $("#hold-synced");
+    const synced = $$("#hold-synced");
     if (synced) synced.innerHTML = h.generated_at ? `Last synced ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}` : "No snapshot yet";
     status.textContent = "";
     out.innerHTML = "";
@@ -95,7 +95,7 @@ async function loadHoldings() {
         `<span class="pos-val">${valText}</span>`;
       row.title = isOpt && o
         ? `${p.description || p.symbol} \u00b7 ${Math.abs(o.contracts)} ${o.right === "P" ? "put" : "call"} @ ${o.strike} \u00b7 ` +
-          `${exPct.toFixed(1)}% of invested if exercised (notional, not capital)`
+          `${(exPct ?? 0).toFixed(1)}% of invested if exercised (notional, not capital)`
         : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested` +
           (providerSymbol !== p.symbol ? ` \u00b7 opens ${providerSymbol}` : "");
       if (researchable) {

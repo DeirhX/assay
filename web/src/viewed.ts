@@ -1,4 +1,4 @@
-import { $, api, el, esc } from "./core";
+import { $$, api, el, esc } from "./core";
 import { detectStance } from "./deepdive/decorate";
 import { openTicker } from "./ticker-nav";
 import { cleanSymbol } from "./shell";
@@ -47,9 +47,9 @@ function relTime(iso: string | number | null | undefined): string {
 }
 
 async function renderViewedTickers() {
-  const out = $("#dd-result");
+  const out = $$("#dd-result");
   out.innerHTML = "";
-  $("#dd-status").textContent = "";
+  $$("#dd-status").textContent = "";
   const card = el("div", "card viewed-card");
   const head = el("div", "viewed-head");
   head.appendChild(el("h2", "section", "Viewed tickers"));

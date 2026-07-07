@@ -1,5 +1,5 @@
 import type { DeepRun, Job } from "./api-types";
-import { $, api, el, esc, sectionCard, state } from "./core";
+import { $$, api, el, esc, sectionCard, state } from "./core";
 import { pollDeepJob, setNeedsLoginHandler } from "./jobs";
 import { mdToHtml, openRunInAnalyses } from "./analyses";
 import { loadSegmentList, renderSegment } from "./segment";
@@ -15,7 +15,7 @@ import { pushNav, setActiveView, setSegmentControls } from "./shell";
 //   4 Review & apply           -> need a saved or loaded report artifact
 function pipeCurrentStem() {
   const seg = pipeSegment();
-  const date = ($<HTMLInputElement>("#pipe-date").value || "").trim();
+  const date = ($$<HTMLInputElement>("#pipe-date").value || "").trim();
   return seg && date ? `${seg}-${date}` : "";
 }
 
@@ -42,11 +42,11 @@ function pipeLockReason(n: number) {
 
 let _pipeLockTimer: ReturnType<typeof setTimeout> | null = null;
 function showPipeLock(n: number) {
-  const note = $("#pipe-lock-note");
+  const note = $$("#pipe-lock-note");
   if (!note) return;
   note.textContent = pipeLockReason(n);
   note.hidden = false;
-  clearTimeout(_pipeLockTimer);
+  if (_pipeLockTimer) clearTimeout(_pipeLockTimer);
   _pipeLockTimer = setTimeout(() => { note.hidden = true; }, 4500);
 }
 
@@ -57,7 +57,7 @@ function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
     if (!silent) showPipeLock(n);
     n = max;
   } else if (!silent) {
-    const note = $("#pipe-lock-note");
+    const note = $$("#pipe-lock-note");
     if (note) note.hidden = true;
   }
   state.pipeStep = n;
@@ -73,7 +73,7 @@ function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
   if (n === 2) { updateStep2LoginGate(); refreshLoginStatus(); updateExistingReportNotice(); }
   if (n === 3) updateRepSubstate();
   if (n === 4) renderPipeReport();
-  const w = $("#pipe-wizard");
+  const w = $$("#pipe-wizard");
   if (w && !silent) w.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -98,11 +98,11 @@ document.querySelectorAll<HTMLElement>("#pipe-wizard .step-next, #pipe-wizard .s
   });
 });
 
-$("#pipe-restart").addEventListener("click", () => {
+$$("#pipe-restart").addEventListener("click", () => {
   state.currentDeepRun = null;
   state.repManual = false;
   ["#pipe-report", "#pipe-sources", "#pipe-source-url", "#pipe-prompt"].forEach((sel) => {
-    const elx = $<HTMLInputElement>(sel);
+    const elx = $$<HTMLInputElement>(sel);
     if (elx) elx.value = "";
   });
   updateStep2Actions();
@@ -111,7 +111,7 @@ $("#pipe-restart").addEventListener("click", () => {
   setPipeStep(1);
 });
 
-$<HTMLSelectElement>("#pipe-segment-select").addEventListener("change", () => {
+$$<HTMLSelectElement>("#pipe-segment-select").addEventListener("change", () => {
   pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
   refreshPipeLocks();
   updateExistingReportNotice();
@@ -132,7 +132,7 @@ async function loadPipeline() {
   setRepMode(state.repMode);
   updateStep2Actions();
   setPipeStep(state.pipeStep);
-  if (!$<HTMLInputElement>("#pipe-date").value) $<HTMLInputElement>("#pipe-date").value = new Date().toISOString().slice(0, 10);
+  if (!$$<HTMLInputElement>("#pipe-date").value) $$<HTMLInputElement>("#pipe-date").value = new Date().toISOString().slice(0, 10);
 }
 
 // Step 1 shows exactly one path at a time: an approved-segment dropdown, or a
@@ -140,12 +140,12 @@ async function loadPipeline() {
 function setSegMode(mode: string) {
   mode = mode === "new" ? "new" : "existing";
   state.segMode = mode;
-  $("#seg-pane-existing").hidden = mode !== "existing";
-  $("#seg-pane-new").hidden = mode !== "new";
-  $("#seg-mode-existing").classList.toggle("active", mode === "existing");
-  $("#seg-mode-new").classList.toggle("active", mode === "new");
-  const cont = $("#pipe-step1-continue");
-  const note = $("#pipe-step1-note");
+  $$("#seg-pane-existing").hidden = mode !== "existing";
+  $$("#seg-pane-new").hidden = mode !== "new";
+  $$("#seg-mode-existing").classList.toggle("active", mode === "existing");
+  $$("#seg-mode-new").classList.toggle("active", mode === "new");
+  const cont = $$("#pipe-step1-continue");
+  const note = $$("#pipe-step1-note");
   if (mode === "existing") {
     cont.hidden = false;
     note.textContent = "Pick a segment, then continue.";
@@ -157,23 +157,23 @@ function setSegMode(mode: string) {
     // editor with a live Approve button (the bug this fixes).
     cont.hidden = true;
     note.textContent = "Draft a theme or enter one manually, review it, then approve to continue.";
-    $("#seg-draft-editor").hidden = !$<HTMLTextAreaElement>("#pipe-segment-json").value.trim();
+    $$("#seg-draft-editor").hidden = !$$<HTMLTextAreaElement>("#pipe-segment-json").value.trim();
     updateSegDraftState();
   }
 }
 
-$("#seg-mode-existing").addEventListener("click", () => setSegMode("existing"));
-$("#seg-mode-new").addEventListener("click", () => setSegMode("new"));
+$$("#seg-mode-existing").addEventListener("click", () => setSegMode("existing"));
+$$("#seg-mode-new").addEventListener("click", () => setSegMode("new"));
 
 // Step 3 is one-lane too: review the report this run produced (or paste one you
 // ran yourself), OR import an existing run. Never both at once.
 function setRepMode(mode: string) {
   mode = mode === "import" ? "import" : "current";
   state.repMode = mode;
-  $("#rep-pane-current").hidden = mode !== "current";
-  $("#rep-pane-import").hidden = mode !== "import";
-  $("#rep-mode-current").classList.toggle("active", mode === "current");
-  $("#rep-mode-import").classList.toggle("active", mode === "import");
+  $$("#rep-pane-current").hidden = mode !== "current";
+  $$("#rep-pane-import").hidden = mode !== "import";
+  $$("#rep-mode-current").classList.toggle("active", mode === "current");
+  $$("#rep-mode-import").classList.toggle("active", mode === "import");
   updateRepSubstate();
 }
 
@@ -181,7 +181,7 @@ function setRepMode(mode: string) {
 // load has populated the report body and tagged it as the current run.
 function pipeHasRunResult() {
   const stem = pipeCurrentStem();
-  return !!stem && state.currentDeepRun === stem && !!($<HTMLTextAreaElement>("#pipe-report").value || "").trim();
+  return !!stem && state.currentDeepRun === stem && !!($$<HTMLTextAreaElement>("#pipe-report").value || "").trim();
 }
 
 // Step 3 "This run's report" is itself step-by-step: until a report actually
@@ -190,18 +190,18 @@ function pipeHasRunResult() {
 // run); only a manual "I ran it elsewhere" paste makes it editable. Continue to
 // Review stays blocked until a report is saved on disk.
 function updateRepSubstate() {
-  const pending = $("#rep-current-pending");
-  const done = $("#rep-current-done");
+  const pending = $$("#rep-current-pending");
+  const done = $$("#rep-current-done");
   if (!pending || !done) return;
   const hasResult = pipeHasRunResult() || state.repManual;
   pending.hidden = hasResult;
   done.hidden = !hasResult;
-  const url = $("#pipe-source-url");
+  const url = $$("#pipe-source-url");
   if (url) {
     const editable = state.repManual && !pipeHasRunResult();
     url.toggleAttribute("readonly", !editable);
   }
-  const next = $<HTMLButtonElement>("#pipe-step3-next");
+  const next = $$<HTMLButtonElement>("#pipe-step3-next");
   if (next) {
     const ok = pipeHasSavedReport();
     next.disabled = !ok;
@@ -209,16 +209,16 @@ function updateRepSubstate() {
   }
 }
 
-$("#rep-mode-current").addEventListener("click", () => setRepMode("current"));
-$("#rep-mode-import").addEventListener("click", () => setRepMode("import"));
+$$("#rep-mode-current").addEventListener("click", () => setRepMode("current"));
+$$("#rep-mode-import").addEventListener("click", () => setRepMode("import"));
 
 function pipeSegment() {
-  if (state.segMode === "new") return $<HTMLInputElement>("#pipe-slug").value.trim() || $<HTMLSelectElement>("#pipe-segment-select").value;
-  return $<HTMLSelectElement>("#pipe-segment-select").value || $<HTMLInputElement>("#pipe-slug").value.trim();
+  if (state.segMode === "new") return $$<HTMLInputElement>("#pipe-slug").value.trim() || $$<HTMLSelectElement>("#pipe-segment-select").value;
+  return $$<HTMLSelectElement>("#pipe-segment-select").value || $$<HTMLInputElement>("#pipe-slug").value.trim();
 }
 
 function parseJsonField(sel: string, fallback: unknown) {
-  const raw = $<HTMLTextAreaElement>(sel).value.trim();
+  const raw = $$<HTMLTextAreaElement>(sel).value.trim();
   if (!raw) return fallback;
   return JSON.parse(raw);
 }
@@ -256,8 +256,8 @@ function blankSegmentDef(theme: string) {
 // the manual-template placeholder). This gates the Approve & continue action so
 // you can never advance to Deep Research on an empty or skeleton segment.
 function segDraftValid() {
-  if (!$<HTMLInputElement>("#pipe-slug").value.trim()) return false;
-  const raw = $<HTMLTextAreaElement>("#pipe-segment-json").value.trim();
+  if (!$$<HTMLInputElement>("#pipe-slug").value.trim()) return false;
+  const raw = $$<HTMLTextAreaElement>("#pipe-segment-json").value.trim();
   if (!raw) return false;
   let def;
   try { def = JSON.parse(raw); } catch (_e) { return false; }
@@ -271,7 +271,7 @@ function segDraftValid() {
 }
 
 function updateSegDraftState() {
-  const btn = $<HTMLButtonElement>("#pipe-save-segment");
+  const btn = $$<HTMLButtonElement>("#pipe-save-segment");
   if (!btn) return;
   const ok = segDraftValid();
   btn.disabled = !ok;
@@ -280,25 +280,25 @@ function updateSegDraftState() {
 
 // Live-validate as the user edits either field, so the gate reflects the
 // current draft without needing a save attempt.
-$<HTMLTextAreaElement>("#pipe-segment-json").addEventListener("input", updateSegDraftState);
-$<HTMLInputElement>("#pipe-slug").addEventListener("input", updateSegDraftState);
+$$<HTMLTextAreaElement>("#pipe-segment-json").addEventListener("input", updateSegDraftState);
+$$<HTMLInputElement>("#pipe-slug").addEventListener("input", updateSegDraftState);
 
 // The manual path: reveal the editor prefilled with a minimal valid template
 // (deriving slug + title from the theme box when present) so the user can fill
 // in real tickers instead of waiting on the LLM drafter.
-$("#seg-enter-manual").addEventListener("click", () => {
-  const status = $("#pipe-segment-status");
+$$("#seg-enter-manual").addEventListener("click", () => {
+  const status = $$("#pipe-segment-status");
   status.classList.remove("err");
-  const theme = $<HTMLInputElement>("#pipe-query").value.trim();
-  if (!$<HTMLInputElement>("#pipe-slug").value.trim()) $<HTMLInputElement>("#pipe-slug").value = segSlugify(theme) || "new-segment";
-  if (!$<HTMLTextAreaElement>("#pipe-segment-json").value.trim()) {
-    $<HTMLTextAreaElement>("#pipe-segment-json").value = JSON.stringify(blankSegmentDef(theme), null, 2);
+  const theme = $$<HTMLInputElement>("#pipe-query").value.trim();
+  if (!$$<HTMLInputElement>("#pipe-slug").value.trim()) $$<HTMLInputElement>("#pipe-slug").value = segSlugify(theme) || "new-segment";
+  if (!$$<HTMLTextAreaElement>("#pipe-segment-json").value.trim()) {
+    $$<HTMLTextAreaElement>("#pipe-segment-json").value = JSON.stringify(blankSegmentDef(theme), null, 2);
   }
-  $("#pipe-draft-prompt-wrap").hidden = true;
-  $("#seg-draft-editor").hidden = false;
+  $$("#pipe-draft-prompt-wrap").hidden = true;
+  $$("#seg-draft-editor").hidden = false;
   status.textContent = "Manual draft — replace the example ticker(s), then approve to continue.";
   updateSegDraftState();
-  $<HTMLTextAreaElement>("#pipe-segment-json").focus();
+  $$<HTMLTextAreaElement>("#pipe-segment-json").focus();
 });
 
 // Drafting is now LLM-backed and async: for a subject you don't hold (e.g.
@@ -306,10 +306,10 @@ $("#seg-enter-manual").addEventListener("click", () => {
 // the analysis CLI to propose real, currently-listed tickers and we poll for
 // the result. The keyword universe is still merged in as an instant baseline,
 // and the copy-the-prompt fallback survives for when no CLI is configured.
-$("#pipe-draft").addEventListener("click", async () => {
-  const status = $("#pipe-segment-status");
-  const btn = $("#pipe-draft") as HTMLButtonElement;
-  const query = $<HTMLInputElement>("#pipe-query").value.trim();
+$$("#pipe-draft").addEventListener("click", async () => {
+  const status = $$("#pipe-segment-status");
+  const btn = $$("#pipe-draft") as HTMLButtonElement;
+  const query = $$<HTMLInputElement>("#pipe-query").value.trim();
   status.classList.remove("err");
   if (!query) {
     status.classList.add("err");
@@ -322,29 +322,29 @@ $("#pipe-draft").addEventListener("click", async () => {
     const job = await api("/api/segment-draft", "POST", { query });
     await pollDeepJob(job.id, status, async (done: Job) => {
       const rec = (done.result || {}) as Record<string, any>;
-      $<HTMLInputElement>("#pipe-slug").value = rec.slug || "";
-      $<HTMLTextAreaElement>("#pipe-segment-json").value = JSON.stringify(rec.definition || {}, null, 2);
+      $$<HTMLInputElement>("#pipe-slug").value = rec.slug || "";
+      $$<HTMLTextAreaElement>("#pipe-segment-json").value = JSON.stringify(rec.definition || {}, null, 2);
       // The draft prompt asks an LLM for structured JSON members; it is NOT the
       // Deep Research prompt (Step 2 builds that from the saved segment). Keep it
       // here in Step 1 as a copy-paste fallback so it can't leak into #pipe-prompt.
       const draftPrompt = rec.llm_prompt || "";
-      $<HTMLTextAreaElement>("#pipe-draft-prompt").value = draftPrompt;
-      $("#pipe-draft-prompt-wrap").hidden = !draftPrompt;
-      $("#seg-draft-editor").hidden = false;
+      $$<HTMLTextAreaElement>("#pipe-draft-prompt").value = draftPrompt;
+      $$("#pipe-draft-prompt-wrap").hidden = !draftPrompt;
+      $$("#seg-draft-editor").hidden = false;
       updateSegDraftState();
       const warn = (rec.warnings || []).join(" ");
       status.textContent = warn || `drafted ${rec.member_count || 0} names — review, then approve to continue`;
     }, `Drafting ${query}`);
   } catch (e) {
-    status.textContent = "draft failed: " + e.message;
+    status.textContent = "draft failed: " + (e as Error).message;
     status.classList.add("err");
   } finally {
     btn.disabled = false;
   }
 });
 
-$("#pipe-save-segment").addEventListener("click", async () => {
-  const status = $("#pipe-segment-status");
+$$("#pipe-save-segment").addEventListener("click", async () => {
+  const status = $$("#pipe-segment-status");
   status.classList.remove("err");
   // Defense in depth: the button is disabled while the draft is invalid, but
   // re-check here so a stale enable or a programmatic click can't save an empty
@@ -357,18 +357,18 @@ $("#pipe-save-segment").addEventListener("click", async () => {
   }
   status.textContent = "saving segment...";
   try {
-    const slug = $<HTMLInputElement>("#pipe-slug").value.trim();
+    const slug = $$<HTMLInputElement>("#pipe-slug").value.trim();
     const definition = parseJsonField("#pipe-segment-json", {});
     definition.status = "approved";
     const rec = await api("/api/segment-def/" + encodeURIComponent(slug), "POST", { definition });
     status.textContent = `saved ${rec.name} — continuing to Deep Research`;
     await loadSegmentList();
-    $<HTMLSelectElement>("#pipe-segment-select").value = rec.name;
+    $$<HTMLSelectElement>("#pipe-segment-select").value = rec.name;
     setSegMode("existing");
     pushNav({ view: "pipeline", segment: rec.name }, { replace: true });
     setPipeStep(2);
   } catch (e) {
-    status.textContent = "save failed: " + e.message;
+    status.textContent = "save failed: " + (e as Error).message;
     status.classList.add("err");
   }
 });
@@ -376,10 +376,10 @@ $("#pipe-save-segment").addEventListener("click", async () => {
 // Step 2 shows one primary action at a time: "Build prompt" until a prompt
 // exists, then "Run Deep Research". Rebuild + deterministic pull are secondary.
 function updateStep2Actions() {
-  const hasPrompt = !!$<HTMLTextAreaElement>("#pipe-prompt").value.trim();
-  $("#pipe-build-prompt").hidden = hasPrompt;
-  $("#pipe-run-deep").hidden = !hasPrompt;
-  $("#pipe-rebuild-prompt").hidden = !hasPrompt;
+  const hasPrompt = !!$$<HTMLTextAreaElement>("#pipe-prompt").value.trim();
+  $$("#pipe-build-prompt").hidden = hasPrompt;
+  $$("#pipe-run-deep").hidden = !hasPrompt;
+  $$("#pipe-rebuild-prompt").hidden = !hasPrompt;
 }
 
 // Most recent saved run for `seg` that actually has a report on disk. Stems are
@@ -399,19 +399,19 @@ function latestReportForSegment(seg: string | null | undefined) {
 // surface it on Step 2 and let the user reuse it instead of running a new one.
 // This needs no login (reuse is read-only), so it sits above the login gate.
 function updateExistingReportNotice() {
-  const box = $("#pipe-existing");
+  const box = $$("#pipe-existing");
   if (!box) return;
   const run = latestReportForSegment(pipeSegment());
   if (!run) { box.hidden = true; box.dataset.stem = ""; return; }
   const date = (run.stem.match(/-(\d{4}-\d{2}-\d{2})$/) || [])[1] || "";
   box.dataset.stem = run.stem;
-  $("#pipe-existing-text").textContent =
+  $$("#pipe-existing-text").textContent =
     `This segment already has a saved Deep Research report${date ? ` from ${date}` : ""}. Reuse it instead of spending a new run?`;
   box.hidden = false;
 }
 
-$("#pipe-existing-use").addEventListener("click", async () => {
-  const stem = $("#pipe-existing").dataset.stem;
+$$("#pipe-existing-use").addEventListener("click", async () => {
+  const stem = $$("#pipe-existing").dataset.stem;
   if (!stem) return;
   await loadDeepRun(stem);
   setPipeStep(3);
@@ -422,8 +422,8 @@ $("#pipe-existing-use").addEventListener("click", async () => {
 // user sets it up first. The deterministic pull and the Step 3 import path stay
 // reachable, so this gates the prompt, not the whole step.
 function updateStep2LoginGate() {
-  const gate = $("#pipe-login-gate");
-  const area = $("#pipe-prompt-area");
+  const gate = $$("#pipe-login-gate");
+  const area = $$("#pipe-prompt-area");
   const blocked = !state.pplxLoggedIn;
   if (gate) gate.hidden = !blocked;
   if (area) area.hidden = blocked;
@@ -441,18 +441,18 @@ async function maybeAutoBuildPrompt() {
   const seg = pipeSegment();
   if (!seg) return;
   const stale = !!state.promptSegment && state.promptSegment !== seg;
-  if ($<HTMLTextAreaElement>("#pipe-prompt").value.trim() && !stale) return;
+  if ($$<HTMLTextAreaElement>("#pipe-prompt").value.trim() && !stale) return;
   state._autoBuilding = true;
   try { await buildPrompt(); } finally { state._autoBuilding = false; }
 }
 
 async function buildPrompt() {
-  const status = $("#pipe-prompt-status");
+  const status = $$("#pipe-prompt-status");
   const seg = pipeSegment();
   status.classList.remove("err");
   if (!state.pplxLoggedIn) {
     updateStep2LoginGate();
-    $("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
+    $$("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
     return;
   }
   if (!seg) {
@@ -463,24 +463,24 @@ async function buildPrompt() {
   status.textContent = "building prompt...";
   try {
     const rec = await api("/api/deep-prompt?segment=" + encodeURIComponent(seg));
-    $<HTMLInputElement>("#pipe-date").value = rec.date;
-    $<HTMLTextAreaElement>("#pipe-prompt").value = rec.prompt;
+    $$<HTMLInputElement>("#pipe-date").value = rec.date;
+    $$<HTMLTextAreaElement>("#pipe-prompt").value = rec.prompt;
     state.promptSegment = rec.segment || seg;
     pushNav({ view: "pipeline", segment: rec.segment || seg }, { replace: true });
     status.textContent = "prompt ready — review it, then run Deep Research";
     updateStep2Actions();
   } catch (e) {
-    status.textContent = "prompt failed: " + e.message;
+    status.textContent = "prompt failed: " + (e as Error).message;
     status.classList.add("err");
   }
 }
 
-$("#pipe-build-prompt").addEventListener("click", buildPrompt);
-$("#pipe-rebuild-prompt").addEventListener("click", buildPrompt);
-$<HTMLTextAreaElement>("#pipe-prompt").addEventListener("input", updateStep2Actions);
+$$("#pipe-build-prompt").addEventListener("click", buildPrompt);
+$$("#pipe-rebuild-prompt").addEventListener("click", buildPrompt);
+$$<HTMLTextAreaElement>("#pipe-prompt").addEventListener("input", updateStep2Actions);
 
-$("#pipe-run-deterministic").addEventListener("click", async () => {
-  const status = $("#pipe-prompt-status");
+$$("#pipe-run-deterministic").addEventListener("click", async () => {
+  const status = $$("#pipe-prompt-status");
   const name = pipeSegment();
   status.classList.remove("err");
   status.innerHTML = `<span class="spinner"></span> Pulling deterministic data for ${esc(name)}...`;
@@ -491,7 +491,7 @@ $("#pipe-run-deterministic").addEventListener("click", async () => {
     setActiveView("segment");
     renderSegment(rec);
   } catch (e) {
-    status.textContent = "pull failed: " + e.message;
+    status.textContent = "pull failed: " + (e as Error).message;
     status.classList.add("err");
   }
 });
@@ -565,18 +565,18 @@ function renderNeedsLogin(statusEl: HTMLElement, message?: string | null) {
 async function runDeepResearch(status: HTMLElement) {
   status.classList.remove("err");
   const segment = pipeSegment();
-  const date = $<HTMLInputElement>("#pipe-date").value.trim() || undefined;
-  const prompt = $<HTMLTextAreaElement>("#pipe-prompt").value.trim();
+  const date = $$<HTMLInputElement>("#pipe-date").value.trim() || undefined;
+  const prompt = $$<HTMLTextAreaElement>("#pipe-prompt").value.trim();
   if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
   if (!state.pplxLoggedIn) {
     setPipeStep(2);
     updateStep2LoginGate();
-    $("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
+    $$("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
     return;
   }
   if (!prompt) {
     setPipeStep(2);
-    const ps = $("#pipe-prompt-status");
+    const ps = $$("#pipe-prompt-status");
     ps.classList.add("err");
     ps.textContent = "Build a prompt on Step 2 first.";
     return;
@@ -596,26 +596,26 @@ async function runDeepResearch(status: HTMLElement) {
     await refreshLoginStatus();
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "run failed: " + e.message;
+    status.textContent = "run failed: " + (e as Error).message;
     await refreshLoginStatus();
   }
 }
 
-$("#pipe-run-deep").addEventListener("click", () => runDeepResearch($("#pipe-prompt-status")));
-$("#pipe-run-deep-report").addEventListener("click", () => runDeepResearch($("#pipe-report-run-status")));
-$("#rep-paste-manual").addEventListener("click", () => {
+$$("#pipe-run-deep").addEventListener("click", () => runDeepResearch($$("#pipe-prompt-status")));
+$$("#pipe-run-deep-report").addEventListener("click", () => runDeepResearch($$("#pipe-report-run-status")));
+$$("#rep-paste-manual").addEventListener("click", () => {
   state.repManual = true;
   setRepMode("current");
-  const r = $<HTMLTextAreaElement>("#pipe-report");
+  const r = $$<HTMLTextAreaElement>("#pipe-report");
   if (r) r.focus();
 });
 
-$("#pipe-import").addEventListener("click", async () => {
-  const status = $("#pipe-import-status");
+$$("#pipe-import").addEventListener("click", async () => {
+  const status = $$("#pipe-import-status");
   status.classList.remove("err");
-  const url = $<HTMLInputElement>("#pipe-import-url").value.trim();
+  const url = $$<HTMLInputElement>("#pipe-import-url").value.trim();
   const segment = pipeSegment();
-  const date = $<HTMLInputElement>("#pipe-date").value.trim() || undefined;
+  const date = $$<HTMLInputElement>("#pipe-date").value.trim() || undefined;
   if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
   if (!url) { status.classList.add("err"); status.textContent = "paste a Perplexity run URL"; return; }
   status.innerHTML = `<span class="spinner"></span> pulling the finished run (off-screen browser)...`;
@@ -632,7 +632,7 @@ $("#pipe-import").addEventListener("click", async () => {
     await refreshLoginStatus();
   } catch (e) {
     status.classList.add("err");
-    status.textContent = "import failed: " + e.message;
+    status.textContent = "import failed: " + (e as Error).message;
   }
 });
 
@@ -658,15 +658,15 @@ async function runPplxLogin(statusEl: HTMLElement) {
     });
   } catch (e) {
     statusEl.classList.add("err");
-    statusEl.textContent = "login failed: " + e.message;
+    statusEl.textContent = "login failed: " + (e as Error).message;
   }
   await refreshLoginStatus();
 }
 
-$("#pipe-pplx-login").addEventListener("click", () => runPplxLogin($("#pipe-login-gate-status")));
+$$("#pipe-pplx-login").addEventListener("click", () => runPplxLogin($$("#pipe-login-gate-status")));
 
-$("#pipe-login-recheck").addEventListener("click", async () => {
-  const txt = $("#pipe-login-gate-status");
+$$("#pipe-login-recheck").addEventListener("click", async () => {
+  const txt = $$("#pipe-login-gate-status");
   txt.classList.remove("err");
   txt.innerHTML = `<span class="spinner"></span> checking (off-screen browser, ~10s)...`;
   try {
@@ -677,20 +677,20 @@ $("#pipe-login-recheck").addEventListener("click", async () => {
       : "Still not logged in. Use Set up Perplexity login.";
   } catch (e) {
     txt.classList.add("err");
-    txt.textContent = "check failed: " + e.message;
+    txt.textContent = "check failed: " + (e as Error).message;
   }
 });
 
-$("#pipe-save-report").addEventListener("click", async () => {
-  const status = $("#pipe-artifact-status");
+$$("#pipe-save-report").addEventListener("click", async () => {
+  const status = $$("#pipe-artifact-status");
   status.classList.remove("err");
   status.textContent = "saving artifacts...";
   try {
     const rec = await api("/api/deep-research/save", "POST", {
       segment: pipeSegment(),
-      date: $<HTMLInputElement>("#pipe-date").value.trim(),
-      source_url: $<HTMLInputElement>("#pipe-source-url").value.trim(),
-      report: $<HTMLTextAreaElement>("#pipe-report").value,
+      date: $$<HTMLInputElement>("#pipe-date").value.trim(),
+      source_url: $$<HTMLInputElement>("#pipe-source-url").value.trim(),
+      report: $$<HTMLTextAreaElement>("#pipe-report").value,
       citations: parseJsonField("#pipe-sources", []),
     });
     status.textContent = `saved ${rec.stem} — continuing to Review`;
@@ -700,18 +700,18 @@ $("#pipe-save-report").addEventListener("click", async () => {
     await refreshDeepRuns();
     setPipeStep(4);
   } catch (e) {
-    status.textContent = "save failed: " + e.message;
+    status.textContent = "save failed: " + (e as Error).message;
     status.classList.add("err");
   }
 });
 
-$("#pipe-run-review").addEventListener("click", async () => {
-  const status = $("#pipe-review-status");
+$$("#pipe-run-review").addEventListener("click", async () => {
+  const status = $$("#pipe-review-status");
   status.classList.remove("err");
   status.textContent = "running review gate...";
   try {
     const segment = pipeSegment();
-    const date = $<HTMLInputElement>("#pipe-date").value.trim();
+    const date = $$<HTMLInputElement>("#pipe-date").value.trim();
     const rec = await api("/api/deep-research/review", "POST", { segment, date });
     state.currentDeepRun = `${segment}-${date}`;
     pushNav({ view: "pipeline", segment, run: state.currentDeepRun });
@@ -719,15 +719,15 @@ $("#pipe-run-review").addEventListener("click", async () => {
     renderReviewGate(rec);
     await refreshDeepRuns();
   } catch (e) {
-    status.textContent = "review failed: " + e.message;
+    status.textContent = "review failed: " + (e as Error).message;
     status.classList.add("err");
   }
 });
 
-$("#pipe-refresh-runs").addEventListener("click", refreshDeepRuns);
+$$("#pipe-refresh-runs").addEventListener("click", refreshDeepRuns);
 
 async function refreshDeepRuns() {
-  const out = $("#pipe-runs");
+  const out = $$("#pipe-runs");
   if (!out) return;
   try {
     const { runs } = await api<{ runs: DeepRun[] }>("/api/deep-runs");
@@ -747,7 +747,7 @@ async function refreshDeepRuns() {
     });
     out.appendChild(list);
   } catch (e) {
-    out.innerHTML = `<div class="status err">could not load runs: ${esc(e.message)}</div>`;
+    out.innerHTML = `<div class="status err">could not load runs: ${esc((e as Error).message)}</div>`;
   }
 }
 
@@ -762,15 +762,15 @@ async function loadDeepRun(stem: string, { push = true }: { push?: boolean } = {
   state.savedRuns.add(stem);
   const m = stem.match(/^(.*)-(\d{4}-\d{2}-\d{2})$/);
   if (m) {
-    $<HTMLSelectElement>("#pipe-segment-select").value = m[1];
-    $<HTMLInputElement>("#pipe-date").value = m[2];
+    $$<HTMLSelectElement>("#pipe-segment-select").value = m[1];
+    $$<HTMLInputElement>("#pipe-date").value = m[2];
     if (push) pushNav({ view: "pipeline", segment: m[1], run: stem });
   } else if (push) {
     pushNav({ view: "pipeline", run: stem });
   }
-  if (rec.report) $<HTMLTextAreaElement>("#pipe-report").value = rec.report;
-  if (rec.sources) $<HTMLTextAreaElement>("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
-  if (rec.sources && rec.sources.source_url) $<HTMLInputElement>("#pipe-source-url").value = rec.sources.source_url;
+  if (rec.report) $$<HTMLTextAreaElement>("#pipe-report").value = rec.report;
+  if (rec.sources) $$<HTMLTextAreaElement>("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
+  if (rec.sources && rec.sources.source_url) $$<HTMLInputElement>("#pipe-source-url").value = rec.sources.source_url;
   if (rec.markdown || rec.review || rec.proposal) renderReviewGate({
     markdown: rec.review || "",
     proposal: rec.proposal || { changes: [], warnings: [] },
@@ -800,7 +800,7 @@ function renderPipeReport() {
   const box = document.getElementById("pipe-report-view");
   if (!box) return;
   const stem = state.currentDeepRun;
-  const raw = ($<HTMLTextAreaElement>("#pipe-report")?.value || "").trim();
+  const raw = ($$<HTMLTextAreaElement>("#pipe-report")?.value || "").trim();
   if (!raw) { box.hidden = true; box.innerHTML = ""; return; }
   box.hidden = false;
   box.innerHTML = "";
@@ -858,7 +858,7 @@ interface ReviewGate {
 }
 
 function renderReviewGate(rec: ReviewGate) {
-  const out = $("#pipe-review-output");
+  const out = $$("#pipe-review-output");
   out.innerHTML = "";
   const card = sectionCard("Review gate output");
   if (rec.source_summary) {
@@ -918,7 +918,7 @@ function renderReviewGate(rec: ReviewGate) {
   }
   if (rec.markdown) {
     const det = el("details", "review-notes");
-    det.appendChild(el("summary", null, "Full review notes"));
+    det.appendChild(el("summary", undefined, "Full review notes"));
     det.appendChild(el("div", "prose", mdToHtml(rec.markdown)));
     card.appendChild(det);
   }
@@ -926,18 +926,18 @@ function renderReviewGate(rec: ReviewGate) {
   // Surface the actual report on this step: running the review gate alone doesn't
   // fill the Step 3 field, so without this the analyst lands here with nothing to
   // read but the gate's verdict. The review payload carries the report text.
-  if (rec.report && $<HTMLTextAreaElement>("#pipe-report")) $<HTMLTextAreaElement>("#pipe-report").value = rec.report;
+  if (rec.report && $$<HTMLTextAreaElement>("#pipe-report")) $$<HTMLTextAreaElement>("#pipe-report").value = rec.report;
   renderPipeReport();
   // Apply only becomes available once the review produced a change we're allowed
   // to apply -- i.e. at least one proposed symbol that isn't data-blocked.
-  const applyBtn = $<HTMLButtonElement>("#pipe-apply-proposal");
+  const applyBtn = $$<HTMLButtonElement>("#pipe-apply-proposal");
   if (applyBtn) applyBtn.disabled = !applicable.length;
 }
 
-$("#pipe-apply-proposal").addEventListener("click", async () => {
-  const status = $("#pipe-apply-status");
+$$("#pipe-apply-proposal").addEventListener("click", async () => {
+  const status = $$("#pipe-apply-status");
   const segment = pipeSegment();
-  const date = ($<HTMLInputElement>("#pipe-date").value || "").trim();
+  const date = ($$<HTMLInputElement>("#pipe-date").value || "").trim();
   if (!segment || !date) {
     status.textContent = "run the review gate first";
     status.classList.add("err");
@@ -960,7 +960,7 @@ $("#pipe-apply-proposal").addEventListener("click", async () => {
     go.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
     status.appendChild(go);
   } catch (e) {
-    status.textContent = "staging failed: " + e.message;
+    status.textContent = "staging failed: " + (e as Error).message;
     status.classList.add("err");
   }
 });

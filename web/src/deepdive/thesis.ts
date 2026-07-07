@@ -1,7 +1,7 @@
 // Thesis & action editor: the human's judgement (summary / action / drivers /
 // downside triggers), kept deliberately separate from the deterministic numbers
 // and persisted via /api/thesis. Extracted from deepdive.ts.
-import { $, api, el, esc } from "../core";
+import { $$, api, el, esc } from "../core";
 import { collapsibleCard } from "./cards";
 
 interface Thesis {
@@ -41,10 +41,10 @@ export function renderThesis(rec: ThesisRec): HTMLElement {
     note.textContent = "saving...";
     try {
       const payload = {
-        summary: $<HTMLTextAreaElement>("#th-summary").value,
-        action: $<HTMLTextAreaElement>("#th-action").value,
-        drivers: $<HTMLTextAreaElement>("#th-drivers").value.split("\n").map((s) => s.trim()).filter(Boolean),
-        downside_triggers: $<HTMLTextAreaElement>("#th-triggers").value.split("\n").map((s) => s.trim()).filter(Boolean),
+        summary: $$<HTMLTextAreaElement>("#th-summary").value,
+        action: $$<HTMLTextAreaElement>("#th-action").value,
+        drivers: $$<HTMLTextAreaElement>("#th-drivers").value.split("\n").map((s) => s.trim()).filter(Boolean),
+        downside_triggers: $$<HTMLTextAreaElement>("#th-triggers").value.split("\n").map((s) => s.trim()).filter(Boolean),
       };
       const updated = await api("/api/thesis/" + encodeURIComponent(rec.symbol || ""), "POST", payload);
       note.textContent = "saved " + new Date(updated.thesis.as_of).toLocaleString();

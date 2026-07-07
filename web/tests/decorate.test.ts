@@ -106,7 +106,7 @@ function renderWithSources(md: string, rec: unknown): HTMLElement {
   const root = document.createElement("div");
   root.className = "prose analysis-prose";
   root.innerHTML = mdToHtml(md);
-  decorateSources(root, rec);
+  decorateSources(root, rec as Parameters<typeof decorateSources>[1]);
   return root;
 }
 

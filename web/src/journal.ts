@@ -1,4 +1,4 @@
-import { $, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive, statTile } from "./core";
+import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtStamp, sensitive, statTile } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
 // ---- decision journal + calibration ----------------------------------------
@@ -56,7 +56,7 @@ interface JournalData {
 }
 
 function renderJournal(data: JournalData) {
-  const out = $("#journal-result");
+  const out = $$("#journal-result");
   out.innerHTML = "";
   const cal = data.calibration || {};
   const scoredById: Record<string, ScoredEntry> = {};
@@ -141,7 +141,7 @@ function entryCard(e: JournalEntry, scored?: ScoredEntry) {
       renderJournal(data);
     } catch (err) {
       btn.disabled = false;
-      alert("Could not record outcome: " + err.message);
+      alert("Could not record outcome: " + (err as Error).message);
     }
   });
   oc.appendChild(input);

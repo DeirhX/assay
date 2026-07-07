@@ -173,7 +173,7 @@ async function renderConnection(token?: number) {
     _status = await api<TradeStatus>("/api/trade/status");
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
-    if (banner) banner.innerHTML = `<div class="trade-bnr bad">Could not read trade status: ${esc(e.message)}</div>`;
+    if (banner) banner.innerHTML = `<div class="trade-bnr bad">Could not read trade status: ${esc((e as Error).message)}</div>`;
     return;
   }
   if (token != null && isStaleToken("trade", token)) return;
@@ -214,8 +214,9 @@ function paintConnection(token?: number) {
       bits.push(`<div class="trade-bnr bad">Reconnect failed: ${esc(s.reconnect_error)}. The saved login has likely expired \u2014 log in at the gateway page above.</div>`);
     }
   } else {
-    const acct = s.default_account || (s.accounts[0] && s.accounts[0].id) || "?";
-    const kind = s.accounts.find((a) => a.id === acct)?.kind || "?";
+    const accounts = s.accounts || [];
+    const acct = s.default_account || (accounts[0] && accounts[0].id) || "?";
+    const kind = accounts.find((a) => a.id === acct)?.kind || "?";
     const cls = kind === "live" ? "live" : "paper";
     bits.push(`<div class="trade-bnr ${cls}"><strong>${kind === "live" ? "LIVE" : "Paper"} account ${sensitive(esc(acct), "account id")}</strong>` +
       (kind === "live"
@@ -319,7 +320,7 @@ async function doPreview(btn: HTMLButtonElement) {
     await requestPreview();
     if (status) status.textContent = "";
   } catch (e) {
-    if (status) { status.classList.add("err"); status.textContent = "preview failed: " + e.message; }
+    if (status) { status.classList.add("err"); status.textContent = "preview failed: " + (e as Error).message; }
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -395,7 +396,7 @@ function renderPreview() {
       return;
     }
     placeBtn.disabled = !(confirmState.every(Boolean) && staleAck);
-    const n = p.orders.length;
+    const n = (p.orders || []).length;
     const base = `Place ${n} order${n === 1 ? "" : "s"} on ${isLive ? "LIVE" : "paper"}`;
     placeBtn.textContent = secondsLeft != null ? `${base} — ${mmss(secondsLeft)} left` : base;
   };
@@ -420,7 +421,7 @@ function renderPreview() {
     if (collides) tr.classList.add("trade-collide-row");
     tr.insertAdjacentHTML("beforeend",
       `<td>${esc(o.symbol || o.conid)}</td>` +
-      `<td>${sideTag(o.side)}</td>` +
+      `<td>${sideTag(o.side ?? "")}</td>` +
       `<td class="num">${esc(o.quantity)}</td>` +
       `<td>${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} / ${esc(o.tif)}</td>` +
       `<td class="muted">${esc(o.conid)}</td>`);
@@ -662,7 +663,7 @@ async function doPlace(btn: HTMLButtonElement) {
     renderPlaceResult(res);
     void renderLiveOrders();
   } catch (e) {
-    if (status) { status.classList.add("err"); status.textContent = "placement failed: " + e.message; }
+    if (status) { status.classList.add("err"); status.textContent = "placement failed: " + (e as Error).message; }
     if (btn) btn.disabled = false;
   }
 }

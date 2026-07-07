@@ -1,5 +1,5 @@
 import { starHtml } from "./basket";
-import { $, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
+import { $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
@@ -179,7 +179,7 @@ function priceGateLine(r: RebRow) {
   else if (partial) { label = "\u25d4 Partial"; cls = " reb-gate-partial"; }
 
   const bits = [];
-  if (total > 1) bits.push(`tranche ${live} of ${total}`);
+  if ((total ?? 0) > 1) bits.push(`tranche ${live} of ${total}`);
   if (frac != null && frac > 0 && frac < 1) bits.push(`${pct(frac)} sized`);
   if (next && next.price != null) {
     const sign = focus === "trim" ? "+" : "\u2212";
@@ -207,7 +207,7 @@ function escalateToStrategy(r: RebRow) {
     (res.thesis_summary ? ` ${res.thesis_summary}` : "");
   pushNav({ view: "strategy" });
   setActiveView("strategy");
-  const input = $<HTMLInputElement>("#strat-direction");
+  const input = $$<HTMLInputElement>("#strat-direction");
   if (input) { input.value = hint; input.focus(); }
 }
 
@@ -215,8 +215,8 @@ async function loadRebalance() {
   const token = nextToken("rebalance");
   await apiLoad({
     path: "/api/rebalance",
-    status: $("#reb-status"),
-    clear: [$("#reb-summary"), $("#reb-result")],
+    status: $$("#reb-status"),
+    clear: [$$("#reb-summary"), $$("#reb-result")],
     loading: "Loading rebalance plan…",
     errorLabel: "Could not load rebalance plan",
     render: renderRebalance,
@@ -259,8 +259,8 @@ function stagedBannerHtml(plan: RebPlan) {
 }
 
 function renderRebalance(plan: RebPlan) {
-  const summary = $("#reb-summary");
-  const out = $("#reb-result");
+  const summary = $$("#reb-summary");
+  const out = $$("#reb-result");
   const nav = plan.nav;
   const provenance: Record<string, Provenance | null | undefined> = plan.provenance || {};
   // Weights are % of invested book, so money is sized off invested value.
@@ -297,7 +297,7 @@ function renderRebalance(plan: RebPlan) {
       `<div class="reb-stat-bar"><span class="closed" id="reb-bar-closed"></span></div></div>` +
     `</div>`;
 
-  const openDraft = $("#reb-open-draft");
+  const openDraft = $$("#reb-open-draft");
   if (openDraft) openDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
 
   // Live-updated derived references, one per interactive row.
@@ -569,7 +569,7 @@ function renderRebalance(plan: RebPlan) {
   if (plan.untargeted && plan.untargeted.length) {
     const det = el("details", "reb-untargeted") as HTMLDetailsElement;
     untargetedDet = det;
-    det.appendChild(el("summary", null,
+    det.appendChild(el("summary", undefined,
       `Untargeted holdings — ${plan.untargeted.length} names, ` +
       `${plan.untargeted_pct.toFixed(1)}% of NAV (no band; candidate funding)`));
     const list = el("div", "reb-untargeted-list");
@@ -584,7 +584,7 @@ function renderRebalance(plan: RebPlan) {
         `<span class="reb-link reb-member-sym">${esc(u.symbol)}</span>` +
         `<span>${u.current_pct.toFixed(2)}%</span>` +
         `<small>${sensitive(`${fmtCZK(u.current_czk)} CZK`, "position value")}</small>`;
-      r.querySelector(".reb-link").addEventListener("click", () => analyzeFromAnywhere(u.symbol));
+      r.querySelector(".reb-link")?.addEventListener("click", () => analyzeFromAnywhere(u.symbol));
       const wrap = el("div", "reb-plan-input-wrap");
       const input = el("input", "reb-plan-input") as HTMLInputElement;
       input.type = "number";
@@ -799,31 +799,31 @@ function renderRebalance(plan: RebPlan) {
     });
 
     const { raised, spent, net, closed, total, raisedCzk, spentCzk, netCzk, fundMax } = comp.totals;
-    $("#reb-stat-raised").innerHTML =
+    $$("#reb-stat-raised").innerHTML =
       `${sensitive(`${fmtCZK(raisedCzk)} CZK`, "cash freed")} <small>${raised.toFixed(2)}%</small>`;
-    $("#reb-stat-spent").innerHTML =
+    $$("#reb-stat-spent").innerHTML =
       `${sensitive(`${fmtCZK(spentCzk)} CZK`, "cash needed")} <small>${spent.toFixed(2)}%</small>`;
-    const netEl = $("#reb-stat-net");
+    const netEl = $$("#reb-stat-net");
     netEl.innerHTML =
-      `${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(netCzk))} CZK`, "net cash")} ` +
+      `${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(netCzk ?? 0))} CZK`, "net cash")} ` +
       `<small>${fmtSignedWeight(net)}</small>`;
     netEl.classList.toggle("good", net >= -0.01);
     netEl.classList.toggle("bad", net < -0.01);
     // Offer funding only when the plan genuinely needs fresh cash (beyond the
     // headroom above the cash floor).
-    const fundBtn = $<HTMLButtonElement>("#reb-fund");
+    const fundBtn = $$<HTMLButtonElement>("#reb-fund");
     if (fundBtn) {
       const needed = fundingNeededCzk(netCzk, plan.cash);
       fundBtn.hidden = needed <= 0;
       fundBtn.dataset.needed = String(needed);
     }
-    const closedEl = $("#reb-stat-closed");
+    const closedEl = $$("#reb-stat-closed");
     closedEl.textContent = `${closed}/${total}`;
     closedEl.classList.toggle("good", total > 0 && closed === total);
 
     // Cash after plan: slide with every edit so a basket that breaches the
     // cash floor announces itself before it's ever simulated or staged.
-    const cashEl = $("#reb-stat-cash");
+    const cashEl = $$("#reb-stat-cash");
     const proj = projectedCash(plan.cash, netCzk);
     if (cashEl && proj && plan.cash) {
       cashEl.innerHTML =
@@ -831,7 +831,7 @@ function renderRebalance(plan: RebPlan) {
         `<small>${proj.pct.toFixed(1)}% of NAV</small>`;
       cashEl.classList.remove("good", "warn", "bad");
       cashEl.classList.add(proj.cls);
-      const sub = $("#reb-stat-cash-sub");
+      const sub = $$("#reb-stat-cash-sub");
       if (sub) {
         sub.textContent = proj.cls === "good"
           ? `in the ${plan.cash.low}–${plan.cash.high}% target band`
@@ -843,15 +843,15 @@ function renderRebalance(plan: RebPlan) {
 
     // Funding bars: freed vs needed on a shared scale, so a glance shows whether
     // trims cover the buys (freed ≥ needed) or you'd need fresh cash.
-    const barRaised = $("#reb-bar-raised");
-    const barSpent = $("#reb-bar-spent");
-    const barClosed = $("#reb-bar-closed");
+    const barRaised = $$("#reb-bar-raised");
+    const barSpent = $$("#reb-bar-spent");
+    const barClosed = $$("#reb-bar-closed");
     if (barRaised) barRaised.style.width = `${r1((raised / fundMax) * 100)}%`;
     if (barSpent) barSpent.style.width = `${r1((spent / fundMax) * 100)}%`;
     if (barClosed) barClosed.style.width = `${r1(total > 0 ? (closed / total) * 100 : 0)}%`;
   }
 
-  const reset = $("#reb-reset");
+  const reset = $$("#reb-reset");
   if (reset) {
     reset.onclick = () => {
       cells.forEach(({ r, input }) => { input.value = String(rebDefaultDelta(r)); });
@@ -865,7 +865,7 @@ function renderRebalance(plan: RebPlan) {
   // then untargeted, floors respected, tax-annotated), fill the amounts into
   // the same editable inputs as any hand edit, and summarise what was applied.
   const nonZero = (input: HTMLInputElement) => Math.abs(parseDelta(input.value)) > DELTA_EPS;
-  const fundBtnEl = $<HTMLButtonElement>("#reb-fund");
+  const fundBtnEl = $$<HTMLButtonElement>("#reb-fund");
   if (fundBtnEl) {
     fundBtnEl.onclick = async () => {
       const needed = parseInt(fundBtnEl.dataset.needed || "0", 10);
@@ -875,7 +875,7 @@ function renderRebalance(plan: RebPlan) {
       cells.forEach(({ r, input }) => { if (nonZero(input)) exclude.push(r.name); });
       sleeveUnits.forEach(({ members }) => members.forEach((mc) => { if (nonZero(mc.input)) exclude.push(mc.symbol); }));
       untargetedCells.forEach((uc) => { if (nonZero(uc.input)) exclude.push(uc.symbol); });
-      const box = $("#reb-whatif");
+      const box = $$("#reb-whatif");
       fundBtnEl.disabled = true;
       box.innerHTML = `<div class="status">Finding funding…</div>`;
       try {
@@ -902,7 +902,7 @@ function renderRebalance(plan: RebPlan) {
     };
   }
 
-  const simBtn = $<HTMLButtonElement>("#reb-simulate");
+  const simBtn = $$<HTMLButtonElement>("#reb-simulate");
   if (simBtn) {
     simBtn.onclick = async () => {
       // Every edited amount, from all three sections, in planner order. Sleeve
@@ -920,7 +920,7 @@ function renderRebalance(plan: RebPlan) {
       // it survives a reload / navigation instead of living only in this tab.
       state.stagedBasket = trades.slice();
       void api("/api/trade/basket", "POST", { trades }).catch(() => { /* best-effort */ });
-      const box = $("#reb-whatif");
+      const box = $$("#reb-whatif");
       if (!trades.length) {
         box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name or a sleeve member, then simulate.</div>`;
         return;
@@ -931,7 +931,7 @@ function renderRebalance(plan: RebPlan) {
         const wf = await api("/api/whatif", "POST", { trades });
         renderWhatif(wf);
       } catch (e) {
-        box.innerHTML = `<div class="status err">Simulation failed: ${esc(e.message)}</div>`;
+        box.innerHTML = `<div class="status err">Simulation failed: ${esc((e as Error).message)}</div>`;
       } finally {
         simBtn.disabled = false;
       }
@@ -948,17 +948,17 @@ function renderRebalance(plan: RebPlan) {
 const whatifStat = (label: string, valueHtml: string, cls?: string) => statTile(label, valueHtml, { cls, html: true });
 
 function renderWhatif(wf: Whatif) {
-  const box = $("#reb-whatif");
+  const box = $$("#reb-whatif");
   box.innerHTML = "";
   const s = wf.summary || {};
   const ccy = wf.currency;
   const card = el("div", "whatif-card");
-  card.appendChild(el("div", "whatif-title", `Projected portfolio after ${wf.trades.length} trade(s)`));
+  card.appendChild(el("div", "whatif-title", `Projected portfolio after ${(wf.trades || []).length} trade(s)`));
 
   const stats = el("div", "reb-stats");
   stats.appendChild(whatifStat("Bands in-band",
     `${s.bands_in_before} \u2192 ${s.bands_in_after} / ${s.bands_total}`,
-    s.bands_in_after >= s.bands_in_before ? "good" : "bad"));
+    (s.bands_in_after ?? 0) >= (s.bands_in_before ?? 0) ? "good" : "bad"));
   const cashAfter = wf.cash ? wf.cash.after : null;
   // Grade against the cash target band when the server computed one; a basket
   // that dips under the cash floor reads amber/red even while cash stays > 0.
@@ -973,11 +973,11 @@ function renderWhatif(wf: Whatif) {
         (ct ? ` <small>${ct.after_pct.toFixed(1)}% of NAV · target ${ct.target_pct}%</small>` : ""),
     cashCls));
   stats.appendChild(whatifStat("Net cash",
-    sensitive(`${s.net_cash_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(s.net_cash_czk))} ${esc(ccy)}`, "net cash"),
-    s.net_cash_czk >= 0 ? "good" : "bad"));
+    sensitive(`${(s.net_cash_czk ?? 0) >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(s.net_cash_czk ?? 0))} ${esc(ccy)}`, "net cash"),
+    (s.net_cash_czk ?? 0) >= 0 ? "good" : "bad"));
   stats.appendChild(whatifStat("Realized taxable gain",
     sensitive(`${fmtCZK(s.realized_taxable_gain_czk)} ${esc(ccy)}`, "taxable gain"),
-    s.realized_taxable_gain_czk > 0 ? "warn" : "good"));
+    (s.realized_taxable_gain_czk ?? 0) > 0 ? "warn" : "good"));
   // Concentration/diversification delta: risk.py's lens on the *decision*, not
   // just the destination view. A rise in top-5 or a fall in effective names reads
   // amber; the deeper correlation-aware numbers stay on the Risk page.
@@ -1009,7 +1009,7 @@ function renderWhatif(wf: Whatif) {
   card.appendChild(simpleTable({
     className: "whatif-table",
     head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr>`,
-    rows: wf.trades,
+    rows: wf.trades || [],
     cells: (t: { symbol: string; delta_czk: number }) => {
       const ar = afterRows[t.symbol];
       const sleeve = ar ? null : sleeveByMember[t.symbol];
@@ -1046,7 +1046,7 @@ function renderWhatif(wf: Whatif) {
       .join(", ");
     openJournalWith({
       symbol: trade.symbol || "",
-      action: trade.delta_czk < 0 ? "trim" : "buy",
+      action: (trade.delta_czk ?? 0) < 0 ? "trim" : "buy",
       size_czk: trade.delta_czk != null ? Math.abs(trade.delta_czk) : "",
       thesis: `Rebalance basket: ${summary}. Realized taxable gain ` +
         `${fmtCZK(s.realized_taxable_gain_czk)} ${ccy}; net cash ${fmtCZK(s.net_cash_czk)} ${ccy}.`,
@@ -1077,7 +1077,7 @@ function taxDetails(r: RebRow) {
   ];
   if (tot.exempt_proceeds > 0) bits.push(`${sensitive(`${fmtCZK(tot.exempt_proceeds)}`, "exempt proceeds")} already 3y-exempt`);
   if (tot.harvestable_loss > 0) bits.push(`${sensitive(`${fmtCZK(tot.harvestable_loss)}`, "harvestable loss")} harvestable loss`);
-  det.appendChild(el("summary", null,
+  det.appendChild(el("summary", undefined,
     `<span class="reb-tax-caret" aria-hidden="true"></span>` +
     `<span class="reb-tax-tag">Tax lots</span>` +
     `<span class="reb-tax-count">${t.n_lots_used} of ${t.n_lots_total} lot(s) to sell</span>` +
@@ -1085,7 +1085,7 @@ function taxDetails(r: RebRow) {
 
   const list = el("div", "reb-tax-list");
   t.lots.forEach((l) => {
-    const b = TAX_BUCKET[l.bucket] || { label: l.bucket, cls: "muted" };
+    const b = TAX_BUCKET[l.bucket ?? ""] || { label: l.bucket ?? "", cls: "muted" };
     const when = l.open_datetime ? String(l.open_datetime).slice(0, 10) : "?";
     const dte = (l.days_to_exempt != null && l.days_to_exempt > 0)
       ? `<small class="muted">${l.days_to_exempt}d to exempt</small>` : "";
@@ -1093,11 +1093,11 @@ function taxDetails(r: RebRow) {
       `<span class="chip ${b.cls}">${esc(b.label)}</span>` +
       `<span class="reb-tax-date">opened ${esc(when)} ${dte}</span>` +
       `<span>${sensitive(`${fmtCZK(l.proceeds)} ${esc(t.currency)}`, "lot proceeds")}</span>` +
-      `<span class="${l.gain >= 0 ? "good" : "bad"}">gain ${sensitive(`${l.gain >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(l.gain))}`, "lot gain")}</span>`));
+      `<span class="${(l.gain ?? 0) >= 0 ? "good" : "bad"}">gain ${sensitive(`${(l.gain ?? 0) >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(l.gain ?? 0))}`, "lot gain")}</span>`));
   });
   det.appendChild(list);
 
-  if (t.shortfall > 0) {
+  if ((t.shortfall ?? 0) > 0) {
     det.appendChild(el("div", "hint bad",
       `Lots cover only ${sensitive(`${fmtCZK(t.raised)}`, "raised")} of the ` +
       `${sensitive(`${fmtCZK(t.requested)}`, "requested")} ${esc(t.currency)} trim — ` +

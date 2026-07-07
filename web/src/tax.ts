@@ -1,4 +1,4 @@
-import { $, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
+import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 
 // ---- tax calendar ----------------------------------------------------------
 // The Czech 3-year exemption made proactive: every not-yet-exempt lot on a
@@ -76,8 +76,8 @@ function daysClass(days: number, soonDays: number) {
 async function loadTax() {
   await apiLoad({
     path: "/api/tax-calendar?soon_days=" + encodeURIComponent(_taxSoon),
-    status: $("#tax-status"),
-    clear: [$("#tax-result")],
+    status: $$("#tax-status"),
+    clear: [$$("#tax-result")],
     loading: "Building the exemption calendar…",
     errorLabel: "Could not build the tax calendar",
     render: renderTax,
@@ -85,7 +85,7 @@ async function loadTax() {
 }
 
 function renderTax(r: TaxCalendar) {
-  const out = $("#tax-result");
+  const out = $$("#tax-result");
   out.innerHTML = "";
   const ccy = r.currency || "CZK";
   const t = r.totals || {};
@@ -127,7 +127,7 @@ function renderTax(r: TaxCalendar) {
   // Exemption calendar: gain lots going tax-free (wait).
   const exs = r.exemptions || [];
   const exSec = el("div", "risk-section");
-  exSec.appendChild(el("h3", null, "Exemptions — gain lots going tax-free"));
+  exSec.appendChild(el("h3", undefined, "Exemptions — gain lots going tax-free"));
   exSec.appendChild(el("p", "hint",
     "Waiting past each date turns the gain tax-free. The tax column is what a trim of that lot costs today."));
   if (!exs.length) {
@@ -155,7 +155,7 @@ function renderTax(r: TaxCalendar) {
   // Harvest deadlines: loss lots whose usable-loss window is closing (act).
   const hvs = r.harvest || [];
   const hvSec = el("div", "risk-section");
-  hvSec.appendChild(el("h3", null, "Harvest deadlines — loss lots turning exempt"));
+  hvSec.appendChild(el("h3", undefined, "Harvest deadlines — loss lots turning exempt"));
   hvSec.appendChild(el("p", "hint",
     "A realized loss offsets taxable gains only while the lot is under 3 years. After the deadline the loss is stranded."));
   if (!hvs.length) {
@@ -181,7 +181,7 @@ function renderTax(r: TaxCalendar) {
 }
 
 function initTaxControls() {
-  const sel = $<HTMLSelectElement & { _wired?: boolean }>("#tax-soon");
+  const sel = $$<HTMLSelectElement & { _wired?: boolean }>("#tax-soon");
   if (sel && !sel._wired) {
     sel._wired = true;
     sel.value = _taxSoon;

@@ -168,7 +168,7 @@ export function renderPriceChart(rec: ChartRec): HTMLElement | null {
       cache[key] = ph;
       if (active === key) paint(ph);
     } catch (e) {
-      if (active === key) srcEl.innerHTML = `<span class="err">Could not load ${esc(label)}: ${esc(e.message)}</span>`;
+      if (active === key) srcEl.innerHTML = `<span class="err">Could not load ${esc(label)}: ${esc((e as Error).message)}</span>`;
     } finally {
       if (active === key) body.classList.remove("loading");
     }

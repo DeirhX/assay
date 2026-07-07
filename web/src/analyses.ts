@@ -1,5 +1,5 @@
 import type { SegmentSummary } from "./api-types";
-import { $, api, el, esc, relAge, state } from "./core";
+import { $$, api, el, esc, relAge, state } from "./core";
 import { cleanSlug, navFromUrl, pushNav, setActiveView } from "./shell";
 import { ensureTickerSet, linkifyTickers, tickerAnchorHtml } from "./analyses/linkify";
 import { buildReportToc, mdToHtml } from "./analyses/markdown";
@@ -223,7 +223,7 @@ async function deleteAnalysis(stem: string) {
   try {
     await api("/api/deep-run/delete", "POST", { stem });
   } catch (e) {
-    alert("Delete failed: " + e.message);
+    alert("Delete failed: " + (e as Error).message);
     return;
   }
   if (state.currentAnalysis === stem) state.currentAnalysis = null;
@@ -231,7 +231,7 @@ async function deleteAnalysis(stem: string) {
 }
 
 async function loadAnalyses() {
-  const list = $("#analyses-list");
+  const list = $$("#analyses-list");
   if (!list) return;
   list.innerHTML = '<div class="hint">Loading…</div>';
   let runs: AnalysisRun[];
@@ -242,7 +242,7 @@ async function loadAnalyses() {
       api<{ segments?: SegmentSummary[] }>("/api/segments").then((d) => d.segments || []).catch((): SegmentSummary[] => []),
     ]);
   } catch (e) {
-    list.innerHTML = `<div class="status err">could not load analyses: ${esc(e.message)}</div>`;
+    list.innerHTML = `<div class="status err">could not load analyses: ${esc((e as Error).message)}</div>`;
     return;
   }
   state.analysesRuns = runs;
@@ -257,7 +257,7 @@ async function loadAnalyses() {
 
   const delHtml = `<span class="analysis-row-del" role="button" tabindex="0" title="Delete this analysis" aria-label="Delete this analysis">\u00d7</span>`;
   const wireDelete = (row: HTMLElement, stem: string) => {
-    const del = row.querySelector(".analysis-row-del");
+    const del = row.querySelector<HTMLElement>(".analysis-row-del");
     if (!del) return;
     del.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(stem); });
     del.addEventListener("keydown", (ev: KeyboardEvent) => {
@@ -312,14 +312,14 @@ async function loadAnalyses() {
         `<div class="analysis-row-badges">${cover}${moreBadges}</div>`;
       row.addEventListener("click", () => { if (latest) loadAnalysis(latest.stem); else startPipeline(s.name); });
       const runBtn = row.querySelector<HTMLElement>(".seg-run");
-      runBtn.addEventListener("click", (ev) => { ev.stopPropagation(); startPipeline(s.name); });
-      runBtn.addEventListener("keydown", (ev) => {
+      runBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); startPipeline(s.name); });
+      runBtn?.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); startPipeline(s.name); }
       });
       if (latest) {
         const segDelBtn = row.querySelector<HTMLElement>(".seg-del");
-        segDelBtn.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(latest.stem); });
-        segDelBtn.addEventListener("keydown", (ev) => {
+        segDelBtn?.addEventListener("click", (ev) => { ev.stopPropagation(); deleteAnalysis(latest.stem); });
+        segDelBtn?.addEventListener("keydown", (ev) => {
           if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); ev.stopPropagation(); deleteAnalysis(latest.stem); }
         });
       }
@@ -337,7 +337,7 @@ async function loadAnalyses() {
   }
   if (!runs.length && !segments.length) {
     list.innerHTML = '<div class="hint">No analyses or segments yet. Use “+ New analysis” to start one.</div>';
-    $("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
+    $$("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
     return;
   }
 
@@ -346,13 +346,13 @@ async function loadAnalyses() {
     const toOpen = (urlRun && runs.some((r) => r.stem === urlRun)) ? urlRun : runs[0].stem;
     await loadAnalysis(toOpen, { push: false });
   } else {
-    $("#analyses-reader").innerHTML =
+    $$("#analyses-reader").innerHTML =
       '<div class="hint">No Deep Research runs yet — pick a segment to run one, choose a written report, or hit “+ New analysis”.</div>';
   }
 }
 
 async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = {}) {
-  const reader = $("#analyses-reader");
+  const reader = $$("#analyses-reader");
   if (!reader) return;
   await ensureTickerSet();
   state.currentAnalysis = stem;
@@ -363,7 +363,7 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
   try {
     rec = await api("/api/deep-run/" + encodeURIComponent(stem));
   } catch (e) {
-    reader.innerHTML = `<div class="status err">${esc(e.message)}</div>`;
+    reader.innerHTML = `<div class="status err">${esc((e as Error).message)}</div>`;
     return;
   }
   const meta: Partial<AnalysisRun> = state.analysesRuns.find((r) => r.stem === stem) || {};
@@ -424,13 +424,13 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
     const box = synthBox("Prompt", "What the console asks Perplexity for this segment");
     const det = el("details", "prompt-details");
     det.innerHTML = `<summary>Show prompt</summary><pre class="prompt-text">${esc(prompt)}</pre>`;
-    box.querySelector(".synth-box-body").appendChild(det);
+    box.querySelector(".synth-box-body")?.appendChild(det);
     reader.appendChild(box);
   }
 
   if (rec.review) {
     const box = synthBox("Review gate", "Local cross-check of the report against your holdings");
-    box.querySelector(".synth-box-body").appendChild(el("div", "prose", mdToHtml(rec.review)));
+    box.querySelector(".synth-box-body")?.appendChild(el("div", "prose", mdToHtml(rec.review)));
     reader.appendChild(box);
   }
 
@@ -443,7 +443,7 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
       "Tickers this report names beyond the segment — star to add to your pool");
     const list = el("div", "disc-list");
     list.innerHTML = discovered.map(discoveredRow).join("");
-    box.querySelector(".synth-box-body").appendChild(list);
+    box.querySelector(".synth-box-body")?.appendChild(list);
     reader.appendChild(box);
   }
 
@@ -453,7 +453,7 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
     citations.forEach((c: Citation) => {
       const li = el("li", "cite");
       let host = c.href || "";
-      try { host = new URL(c.href).hostname.replace(/^www\./, ""); } catch { /* not a URL: keep raw href */ }
+      try { host = new URL(c.href ?? "").hostname.replace(/^www\./, ""); } catch { /* not a URL: keep raw href */ }
       const parts = String(c.label || "").split("\n").map((s) => s.trim()).filter(Boolean);
       const name = parts.find((p) => !/^https?:/i.test(p)) || host;
       const desc = parts.find((p) => !/^https?:/i.test(p) && p !== name) || "";
@@ -463,7 +463,7 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
         (desc ? `<div class="cite-desc">${esc(desc)}</div>` : "");
       ul.appendChild(li);
     });
-    box.querySelector(".synth-box-body").appendChild(ul);
+    box.querySelector(".synth-box-body")?.appendChild(ul);
     reader.appendChild(box);
   }
 

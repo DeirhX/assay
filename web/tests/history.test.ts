@@ -30,7 +30,7 @@ describe("groupActivity", () => {
 
   it("folds option contracts under their underlying and aggregates in base currency", () => {
     const groups = groupActivity(rows);
-    const meta = groups.find((g: any) => g.label === "META");
+    const meta = groups.find((g: any) => g.label === "META")!;
     expect(meta.is_option).toBe(true);
     expect(meta.members).toHaveLength(2);
     expect(meta.n).toBe(3);
@@ -52,7 +52,7 @@ describe("groupActivity", () => {
   });
 
   it("keeps stocks as singleton groups", () => {
-    const amd = groupActivity(rows).find((g: any) => g.label === "AMD");
+    const amd = groupActivity(rows).find((g: any) => g.label === "AMD")!;
     expect(amd.is_option).toBe(false);
     expect(amd.members).toHaveLength(1);
     expect(amd.currency).toBe("USD");
@@ -89,7 +89,7 @@ describe("groupBySector", () => {
   ];
 
   it("aggregates rows into sectors with base-currency sums and a name count", () => {
-    const tech = groupBySector(rows).find((g: any) => g.sector === "Technology");
+    const tech = groupBySector(rows).find((g: any) => g.sector === "Technology")!;
     expect(tech.n).toBe(7);
     expect(tech.names).toBe(2);
     expect(tech.net_base_cash_flow).toBe(60);
