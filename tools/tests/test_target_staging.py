@@ -24,10 +24,14 @@ class _StagingCase(unittest.TestCase):
         self.live = root / "target-model.json"
         self.staged = root / "target-model.staged.json"
         self.holdings = root / "current-holdings.json"
+        self.prov_log = root / "provenance-log.jsonl"
+        self.backups = root / "backups"
         self._orig = {
             (ts, "TARGET_MODEL_JSON"): ts.TARGET_MODEL_JSON,
             (ts, "STAGED_JSON"): ts.STAGED_JSON,
             (ts, "HOLDINGS_JSON"): ts.HOLDINGS_JSON,
+            (ts, "PROVENANCE_LOG"): ts.PROVENANCE_LOG,
+            (ts, "TARGET_MODEL_BACKUP_DIR"): ts.TARGET_MODEL_BACKUP_DIR,
             (ts, "_regenerate_site"): ts._regenerate_site,
             (target_model, "TARGET_MODEL_JSON"): target_model.TARGET_MODEL_JSON,
             (target_model, "TARGET_MODEL_BACKUP_DIR"): target_model.TARGET_MODEL_BACKUP_DIR,
@@ -36,9 +40,11 @@ class _StagingCase(unittest.TestCase):
         ts.TARGET_MODEL_JSON = self.live
         ts.STAGED_JSON = self.staged
         ts.HOLDINGS_JSON = self.holdings
+        ts.PROVENANCE_LOG = self.prov_log
+        ts.TARGET_MODEL_BACKUP_DIR = self.backups
         ts._regenerate_site = lambda: {"ok": True, "written": []}
         target_model.TARGET_MODEL_JSON = self.live
-        target_model.TARGET_MODEL_BACKUP_DIR = root / "backups"
+        target_model.TARGET_MODEL_BACKUP_DIR = self.backups
         target_model.REPO_ROOT = root
 
     def tearDown(self):
@@ -264,12 +270,10 @@ class RestoreBackup(_StagingCase):
     def setUp(self):
         super().setUp()
         root = Path(self.tmp.name)
-        # _resolve_backup reads the names imported into target_staging's namespace,
-        # so redirect those too (the base case only patches target_model.*).
+        # _resolve_backup also reads REPO_ROOT from target_staging's namespace;
+        # the base case already redirects ts.TARGET_MODEL_BACKUP_DIR.
         self._orig[(ts, "REPO_ROOT")] = ts.REPO_ROOT
-        self._orig[(ts, "TARGET_MODEL_BACKUP_DIR")] = ts.TARGET_MODEL_BACKUP_DIR
         ts.REPO_ROOT = root
-        ts.TARGET_MODEL_BACKUP_DIR = root / "backups"
 
     def test_diff_then_restore_roundtrip(self):
         self._seed_live()  # TSM 6–8
@@ -304,6 +308,129 @@ class RestoreBackup(_StagingCase):
         for bad in ("../../etc/passwd", "data/target-model.json", "", "backups/nope.json"):
             with self.assertRaises(ValueError):
                 ts.diff_backup_vs_live(bad)
+
+
+class ProvenanceTimeline(_StagingCase):
+    """The append-only decision log: pure diffing, the commit hook, corrupt-line
+    tolerance, and idempotent backfill from dated backups."""
+
+    def test_pure_entries_capture_add_modify_remove(self):
+        prior = {
+            "targets": {"TSM": {"low": 6, "high": 8, "rule": "accumulate"},
+                        "OLD": {"low": 1, "high": 2, "rule": "hold"}},
+            "sleeves": {},
+        }
+        later = {
+            "targets": {"TSM": {"low": 7, "high": 9, "rule": "accumulate"},  # modified
+                        "NVDA": {"low": 8, "high": 10, "rule": "accumulate"}},  # added; OLD removed
+            "sleeves": {},
+            "provenance": {
+                "TSM": {"source": "optimizer", "run_id": "r2"},
+                "NVDA": {"source": "strategy", "run_id": "r1", "segment": "ai", "conviction": "high"},
+            },
+        }
+        by_key = {e["key"]: e for e in ts._provenance_entries(prior, later, at="T0")}
+        self.assertEqual(by_key["NVDA"]["change"], "added")
+        self.assertIsNone(by_key["NVDA"]["before"])
+        self.assertEqual(by_key["NVDA"]["after"], {"low": 8, "high": 10, "rule": "accumulate"})
+        self.assertEqual(by_key["NVDA"]["source"], "strategy")
+        self.assertEqual(by_key["NVDA"]["conviction"], "high")
+        self.assertEqual(by_key["TSM"]["change"], "modified")
+        self.assertEqual(by_key["TSM"]["before"]["low"], 6)
+        self.assertEqual(by_key["TSM"]["after"]["low"], 7)
+        self.assertEqual(by_key["TSM"]["source"], "optimizer")
+        self.assertEqual(by_key["OLD"]["change"], "removed")
+        self.assertIsNone(by_key["OLD"]["after"])
+        self.assertTrue(all(e["at"] == "T0" for e in by_key.values()))
+
+    def test_commit_appends_entry_with_provenance(self):
+        self._seed_live()
+        _write_json(self.holdings, {"generated_at": "2026-06-15", "positions": []})
+        ts.stage_changes([self._add("NVDA", 8, 10)], run_id="r", segment="s", source="strategy")
+        out = ts.commit_staged(True)
+        self.assertEqual(out["provenance_logged"], 1)
+        log = ts.read_provenance_log(self.prov_log)
+        self.assertEqual(len(log), 1)
+        e = log[0]
+        self.assertEqual((e["key"], e["kind"], e["change"]), ("NVDA", "target", "added"))
+        self.assertEqual(e["source"], "strategy")
+        self.assertEqual(e["run_id"], "r")
+        self.assertEqual(e["segment"], "s")
+        self.assertEqual(e["after"], {"low": 8, "high": 10, "rule": "accumulate"})
+        self.assertNotIn("backfill", e)
+
+    def test_commit_records_modified_before_and_after(self):
+        self._seed_live()
+        _write_json(self.holdings, {"generated_at": "2026-06-15", "positions": []})
+        ts.stage_changes(
+            [{"action": "modify_target", "symbol": "TSM",
+              "proposed_target": {"low": 7, "high": 9, "rule": "accumulate"}}],
+            run_id="r", segment="s")
+        ts.commit_staged(True)
+        e = ts.read_provenance_log(self.prov_log)[0]
+        self.assertEqual(e["change"], "modified")
+        self.assertEqual(e["before"], {"low": 6, "high": 8, "rule": "accumulate"})
+        self.assertEqual(e["after"], {"low": 7, "high": 9, "rule": "accumulate"})
+
+    def test_commit_survives_a_log_write_failure(self):
+        self._seed_live()
+        _write_json(self.holdings, {"generated_at": "2026-06-15", "positions": []})
+        ts.stage_changes([self._add("NVDA", 8, 10)], run_id="r", segment="s")
+        orig = ts._append_provenance_log
+        ts._append_provenance_log = lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        try:
+            out = ts.commit_staged(True)  # must not raise
+        finally:
+            ts._append_provenance_log = orig
+        self.assertTrue(out["committed"])
+        self.assertEqual(out["provenance_logged"], 0)
+        self.assertIn("NVDA", _load(self.live)["targets"])  # commit still landed
+
+    def test_append_dedupes_on_rerun(self):
+        entries = [{"at": "T0", "kind": "target", "key": "NVDA", "change": "added",
+                    "before": None, "after": {"low": 8, "high": 10}, "source": "strategy"}]
+        self.assertEqual(ts._append_provenance_log(entries, path=self.prov_log), 1)
+        self.assertEqual(ts._append_provenance_log(entries, path=self.prov_log), 0)
+        self.assertEqual(len(ts.read_provenance_log(self.prov_log)), 1)
+
+    def test_read_skips_corrupt_lines(self):
+        self.prov_log.write_text(
+            '{"at":"T0","key":"NVDA"}\nnot-json\n\n{"at":"T1","key":"TSM"}\n',
+            encoding="utf-8")
+        log = ts.read_provenance_log(self.prov_log)
+        self.assertEqual([e["key"] for e in log], ["NVDA", "TSM"])
+
+    def _write_backup(self, name, model):
+        self.backups.mkdir(parents=True, exist_ok=True)
+        _write_json(self.backups / name, model)
+
+    def test_backfill_reconstructs_and_is_idempotent(self):
+        self._write_backup("target-model-20260101T000000Z.json", {
+            "as_of": "2026-01-01",
+            "targets": {"TSM": {"low": 6, "high": 8, "rule": "accumulate"}},
+            "provenance": {"TSM": {"source": "legacy-plan"}}})
+        self._write_backup("target-model-20260201T000000Z.json", {
+            "as_of": "2026-02-01",
+            "targets": {"TSM": {"low": 6, "high": 8, "rule": "accumulate"},
+                        "NVDA": {"low": 8, "high": 10, "rule": "accumulate"}},
+            "provenance": {"NVDA": {"source": "strategy", "run_id": "r1"}}})
+        _write_json(self.live, {
+            "as_of": "2026-03-01",
+            "targets": {"TSM": {"low": 6, "high": 8, "rule": "accumulate"},
+                        "NVDA": {"low": 9, "high": 11, "rule": "accumulate"}},
+            "provenance": {"NVDA": {"source": "optimizer", "run_id": "r2"}}})
+
+        res = ts.backfill_provenance_log(path=self.prov_log, backup_dir=self.backups)
+        self.assertEqual(res["snapshots"], 3)
+        self.assertEqual(res["written"], 2)  # NVDA added (b1->b2), NVDA modified (b2->live)
+        log = ts.read_provenance_log(self.prov_log)
+        self.assertTrue(all(e.get("backfill") for e in log))
+        changes = sorted((e["change"], e["source"]) for e in log)
+        self.assertEqual(changes, [("added", "strategy"), ("modified", "optimizer")])
+
+        again = ts.backfill_provenance_log(path=self.prov_log, backup_dir=self.backups)
+        self.assertEqual(again["written"], 0)  # idempotent
+        self.assertEqual(len(ts.read_provenance_log(self.prov_log)), 2)
 
 
 if __name__ == "__main__":

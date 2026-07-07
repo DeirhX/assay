@@ -1,20 +1,22 @@
 # Process attribution — "is this system earning its keep?"
 
-Status: **in progress** · Scope: turn the data Assay already stores (the full
-trade ledger + daily NAV, per-band **provenance**, sleeves/segments, the journal)
-into a verdict on the *process itself* — not "is this stock up" but "did
-rebalancing, this optimizer, these overrides, add value over doing nothing."
-Deterministic over stored data; **read-only, never trades**.
+Status: **in progress** (updated 2026-07-07) · Scope: turn the data Assay already
+stores (the full trade ledger + daily NAV, per-band **provenance**,
+sleeves/segments, the journal) into a verdict on the *process itself* — not "is
+this stock up" but "did rebalancing, this optimizer, these overrides, add value
+over doing nothing." Deterministic over stored data; **read-only, never trades**.
 
 > **Progress (reconciled against `main`).** Phase 1 — the **FX spine** — has
 > shipped in two parts: the panel (`tools/fx_history.py` + a `holdings_sync`
 > top-up fold-in, PR #175) and its first consumer, a **currency-exposure +
 > FX-effect tile on the Risk view** (`fx_history.exposure_by_currency` /
-> `window_report` → `/api/risk → fx`, this PR). What remains: the provenance
-> timeline (phase 2), the pure counterfactual engine + `/api/attribution`
-> (phase 3), the full NAV `decompose_fx` local/FX/residual split (phase 4), and
-> by-source / by-group attribution (phase 5). Two open questions are now **settled
-> by ground truth** — see the notes inline.
+> `window_report` → `/api/risk → fx`). Phase 2 — the **provenance timeline** —
+> lands in this PR (`provenance-log.jsonl` writer in `commit_staged` +
+> `backfill_provenance_log()`; nothing consumes it yet). What remains: the pure
+> counterfactual engine + `/api/attribution` (phase 3), the full NAV
+> `decompose_fx` local/FX/residual split (phase 4), and by-source / by-group
+> attribution (phase 5). Two open questions are now **settled by ground truth** —
+> see the notes inline.
 
 Currency attribution (recommendation #3) is **folded into this data model from
 day one**: a CZK-base investor holding mostly USD assets sees a chunk of every
@@ -209,12 +211,13 @@ existing `_PULL_LOCK` + thread pool (mirroring `exit_plan._prewarm_caches`).
    folded into the `holdings_sync` history job + tests (PR #175) — the FX spine.
    Then pulled forward from the original step 4: the **currency-exposure +
    FX-effect tile on Risk** (`exposure_by_currency` / `window_report` → `/api/risk
-   → fx`, this PR), which surfaces "% non-base" and a window FX-contribution
+   → fx`), which surfaces "% non-base" and a window FX-contribution
    estimate on the *current* book (labelled an approximation, not a realized-return
    statement). *(No new scheduler task: FX rides the existing history top-up, so
    attribution always sees same-vintage rates.)*
-2. `provenance-log.jsonl` writer in `commit_staged` + backfill + tests — the
-   decision timeline (nothing consumes it yet).
+2. ✅ **Shipped (this PR).** `provenance-log.jsonl` writer in `commit_staged` +
+   `backfill_provenance_log()` + tests — the decision timeline (nothing consumes
+   it yet). Best-effort append: a log failure never rolls back a landed commit.
 3. `attribution.py`: TWR + `never-rebalanced` + `benchmark` counterfactuals +
    `/api/attribution` + a minimal view, reading the existing cached history dict.
    **The 80% that answers "beats doing nothing?"**
