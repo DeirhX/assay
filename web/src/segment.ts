@@ -1,6 +1,7 @@
 import { starHtml } from "./basket";
 import { $, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import type { SegmentSummary } from "./api-types";
+import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
@@ -117,6 +118,7 @@ emptyState($("#seg-result"),
 // SEG_COLS — it's not a sortable metric.
 const SEG_COLS: [string, string, boolean][] = [
   ["symbol", "Symbol", false],
+  ["__spark", "Trend", false],   // cached-only sparkline; not a sortable metric
   ["decision", "Decision", false],
   ["research_score", "Score", true],
   ["sleeve", "Sleeve", false],
@@ -171,13 +173,16 @@ function renderSegment(rec: SegmentRec) {
   htr.appendChild(el("th", "seg-star-th", "")); // ★ column — not sortable
   SEG_COLS.forEach(([key, label, num]) => {
     const th = el("th", num ? "num" : "", esc(label));
-    th.addEventListener("click", () => {
-      const s = state.segSort;
-      s.dir = s.key === key ? -s.dir : (num ? -1 : 1);
-      s.key = key;
-      renderSegment(state.lastSegment);
-    });
-    if (state.segSort.key === key) th.innerHTML += state.segSort.dir < 0 ? " ↓" : " ↑";
+    // The Trend column is a rendered sparkline, not a metric: no sort, no arrow.
+    if (key !== "__spark") {
+      th.addEventListener("click", () => {
+        const s = state.segSort;
+        s.dir = s.key === key ? -s.dir : (num ? -1 : 1);
+        s.key = key;
+        renderSegment(state.lastSegment);
+      });
+      if (state.segSort.key === key) th.innerHTML += state.segSort.dir < 0 ? " ↓" : " ↑";
+    }
     htr.appendChild(th);
   });
   thead.appendChild(htr);
@@ -200,6 +205,7 @@ function renderSegment(rec: SegmentRec) {
     tr.appendChild(star);
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
+      sparkPlaceholder(m.symbol),
       `<span class="decision-pill ${decisionClass(m.decision)}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,
       `<span class="score-pill ${scoreClass(m.research_score)}">${m.research_score == null ? "n/a" : esc(m.research_score)}</span>`,
       `<span class="sleeve-tag">${esc(m.sleeve)}</span>`,
@@ -222,6 +228,9 @@ function renderSegment(rec: SegmentRec) {
   });
   table.appendChild(tbody);
   card.appendChild(table);
+  // One batch /api/spark call fills the Trend column; cached-only, so members
+  // without a cached dossier just show an empty slot.
+  void hydrateSparks(table);
   card.appendChild(el("div", "hint", "Score is a rough research queue heuristic from target rule, band gap, growth, valuation, momentum, and data trust. It is not an order signal, because we are not building a robot broker for future regret. Click a row to deep-dive."));
   out.appendChild(card);
 }
