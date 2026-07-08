@@ -42,6 +42,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config  # noqa: E402
+import market_data  # noqa: E402  -- shared Yahoo fetch seam + range vocabulary
 import store  # noqa: E402
 
 FX_HISTORY_JSON = config.DATA_DIR / "cache" / "fx-history.json"
@@ -67,13 +68,9 @@ def _yahoo_symbol(pair: str) -> str:
 
 def _yahoo_fetch(pair: str, rng: str) -> list[dict[str, Any]] | None:
     """Daily closes for one FX pair as ``[{date, close}, ...]``, or None on a
-    provider miss. Lazy import keeps the network dependency off pure callers
-    (attribution math consumes the cached panel, never this)."""
-    from providers import yahoo  # noqa: E402 - lazy, mirrors risk._yahoo_fetch
-
-    result = yahoo.chart(_yahoo_symbol(pair), rng=rng, interval="1d")
-    ph = yahoo.price_history_from_chart(result, rng=rng, interval="1d")
-    return ph.get("points") if ph else None
+    provider miss. Delegates to the shared market-data seam (attribution math
+    consumes the cached panel, never this)."""
+    return market_data.daily_closes(_yahoo_symbol(pair), rng)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,8 +205,8 @@ def _latest_date(series: dict[str, Any]) -> dt.date | None:
 # window's CZK move was FX, not stock-picking?" Consumed by risk.risk_report.
 # --------------------------------------------------------------------------- #
 # Display-range -> lookback days, so the FX window lines up with the risk view's
-# range selector (serve.PRICE_HISTORY_RANGES).
-RANGE_DAYS = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
+# range selector. Shared vocabulary (see market_data).
+RANGE_DAYS = market_data.RANGE_DAYS
 
 
 def exposure_by_currency(holdings: dict[str, Any], base: str = DEFAULT_BASE) -> list[dict[str, Any]]:

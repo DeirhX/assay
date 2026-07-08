@@ -34,6 +34,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import market_data  # noqa: E402  -- shared fan-out width
 import portfolio  # noqa: E402
 import price_levels  # noqa: E402
 import rebalance  # noqa: E402
@@ -54,7 +55,7 @@ NEAR_EXEMPT_DAYS = 120      # a taxable-gain lot this close to exemption is "def
 CZ_TAX_RATE = 0.15          # Czech personal income tax on securities gains
 STUB_PCT = 0.5              # residual weight left when end-state is "stub"
 LADDER_RUNGS_PCT = (0.0, 0.02, 0.04)  # default GTC limit rungs above the mark
-FETCH_WORKERS = 8           # cold cache: fan per-name series + option-chain pulls out
+FETCH_WORKERS = market_data.FETCH_WORKERS  # shared fan-out width (warms series + chains)
 
 EPS = 1e-6
 

@@ -40,16 +40,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config  # noqa: E402  -- DATA_DIR for the verdict cache
 import fx_history  # noqa: E402  -- daily FX panel (rate_on) for FX-clean conversion
+import market_data  # noqa: E402  -- shared fetch seam + range vocabulary + fan-out
 import portfolio  # noqa: E402  -- clean_symbol / provider_symbol_for
 import store  # noqa: E402
 import timeutil  # noqa: E402
 
-# Display range -> lookback days (mirrors serve.PRICE_HISTORY_RANGES + risk).
-RANGE_DAYS = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
+# Display range -> lookback days: shared vocabulary (see market_data).
+RANGE_DAYS = market_data.RANGE_DAYS
 DEFAULT_RANGE = "1y"
 DEFAULT_BASE = "CZK"
 DEFAULT_BENCHMARK = "SPY"
-FETCH_WORKERS = 8  # cold cache: fan the per-name price pulls out instead of serial
+FETCH_WORKERS = market_data.FETCH_WORKERS  # shared fan-out width
 
 # A compact headline verdict cached from the last computed report, so the "Today"
 # cockpit can surface "is the process earning its keep?" without recomputing (the
@@ -257,24 +258,12 @@ def _cached_fetch(symbol: str, rng: str) -> "list[dict[str, Any]] | None":
 
 
 def _fetch_many(fetch: Fetch, symbols: list[str], rng: str) -> dict[str, "list[dict[str, Any]] | None"]:
-    """Fetch every provider symbol we need in one parallel batch. Cold cache: this
-    turns N serial round-trips (10-30s for a real book) into a handful of concurrent
-    ones; warm cache: each call is just a disk read. Mirrors risk._fetch_series_many.
-    A per-symbol miss is recorded as ``None`` (a caveat downstream), never raised."""
-    uniq = list(dict.fromkeys(s for s in symbols if s))
-    if not uniq:
-        return {}
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(uniq))) as pool:
-        series = list(pool.map(lambda s: _safe_fetch(fetch, s, rng), uniq))
-    return dict(zip(uniq, series))
-
-
-def _range_for_days(days: int) -> str:
-    for key in ("3mo", "6mo", "1y", "2y", "5y"):
-        if days <= RANGE_DAYS[key]:
-            return key
-    return "5y"
+    """Fetch every provider symbol we need in one parallel batch (see
+    market_data.fetch_series_many). Cold cache: this turns N serial round-trips
+    (10-30s for a real book) into a handful of concurrent ones; warm, each call is
+    a disk read. A per-symbol miss is recorded as ``None`` (a caveat downstream),
+    never raised -- hence keep_misses."""
+    return market_data.fetch_series_many(symbols, rng=rng, fetch=fetch, keep_misses=True)
 
 
 def _window_nav(nav_series: list[dict], days: int) -> list[dict[str, Any]]:
@@ -329,7 +318,7 @@ def attribution_report(
 
     fetch = fetch or _cached_fetch
     panel = panel if panel is not None else fx_history.load_panel()
-    fetch_range = _range_for_days(RANGE_DAYS[rng])
+    fetch_range = market_data.range_for_days(RANGE_DAYS[rng])
 
     # --- actual ---
     twr: dict[str, float | None] = {"actual": _pct(time_weighted_return(nav_pts, window_flows))}
@@ -401,15 +390,6 @@ def attribution_report(
 
 def _pct(frac: float | None) -> float | None:
     return round(frac * 100.0, 2) if frac is not None else None
-
-
-def _safe_fetch(fetch: Fetch, symbol: str, rng: str) -> "list[dict[str, Any]] | None":
-    if not symbol:
-        return None
-    try:
-        return fetch(symbol, rng)
-    except Exception:  # noqa: BLE001 -- a provider miss is a caveat, not an error
-        return None
 
 
 def _currency_for(holdings: dict | None, symbol: str) -> str | None:
