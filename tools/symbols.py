@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import re
 
-from config import DATA_DIR
+from config import SYMBOL_ALIASES_JSON
 import instruments
 from portfolio import provider_symbol_for, symbol_aliases
 from providers import yahoo
 from store import safe_symbol, write_json
-
-SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
 
 
 def aliases() -> dict[str, str]:

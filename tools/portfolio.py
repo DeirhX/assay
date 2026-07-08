@@ -10,9 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from store import load as load_json  # forgiving JSON read shared with the server
-from config import DATA_DIR, HOLDINGS_JSON, TARGET_MODEL_JSON
-
-SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
+from config import HOLDINGS_JSON, SYMBOL_ALIASES_JSON, TARGET_MODEL_JSON
 
 
 DATA_MISSING_HINT = (

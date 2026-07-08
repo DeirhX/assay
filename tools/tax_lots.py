@@ -366,7 +366,7 @@ def _main() -> int:
     args = parser.parse_args()
 
     portfolio.require_data()
-    holdings = store.load(Path(__file__).resolve().parent.parent / "data" / "current-holdings.json")
+    holdings = store.load(portfolio.HOLDINGS_JSON)
     if not holdings:
         raise SystemExit("no holdings snapshot — sync from IBKR first")
     print(json.dumps(breakdown_for_symbol(holdings, args.symbol, args.amount), indent=2))
