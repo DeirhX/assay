@@ -507,17 +507,13 @@ def _prewarm_caches(
         list(pool.map(warm, providers))
 
 
-def _cache_fresh(iso: str | None, ttl: int = OPT_CACHE_TTL_SECONDS) -> bool:
-    return timeutil.cache_fresh(iso, ttl)
-
-
 def _cached_risk_free_rate() -> float | None:
     """Risk-free rate (decimal) for the options overlay, cached 6h. FRED's
     ``macro_snapshot()`` fetches nine CSV series (~10s); the rate barely moves
     intraday, so caching it keeps the whole Exit view snappy. None on total
     failure lets the overlay use its own neutral default."""
     cached = store.load(_RATE_CACHE)
-    if isinstance(cached, dict) and _cache_fresh(cached.get("fetched_at"), RATE_CACHE_TTL_SECONDS):
+    if isinstance(cached, dict) and timeutil.cache_fresh(cached.get("fetched_at"), RATE_CACHE_TTL_SECONDS):
         val = cached.get("rate")
         if isinstance(val, (int, float)):
             return float(val)
@@ -549,7 +545,7 @@ def _cached_option_chain(provider_sym: str) -> dict[str, Any] | None:
     cached = store.load(path)
     # A fresh entry short-circuits even when it recorded "no chain" (None), so a
     # foreign name with no listed options doesn't 404 on every single load.
-    if isinstance(cached, dict) and "chain" in cached and _cache_fresh(cached.get("fetched_at")):
+    if isinstance(cached, dict) and "chain" in cached and timeutil.cache_fresh(cached.get("fetched_at"), OPT_CACHE_TTL_SECONDS):
         return cached.get("chain")
     try:
         from providers import yahoo

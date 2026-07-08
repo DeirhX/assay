@@ -31,6 +31,10 @@ ROOT_STATIC_SUFFIXES = {".html", ".css", ".js"}
 # holdings-sync service, so it lives on the leaf to avoid an import cycle.
 HOLDINGS_JSON = DATA_DIR / "current-holdings.json"
 
+# Display-symbol -> provider-symbol alias map. Read by portfolio's resolver and
+# written by the symbols service; centralized here so it has one definition.
+SYMBOL_ALIASES_JSON = DATA_DIR / "symbol-aliases.json"
+
 # Deep-research artifacts and the committed target model. Shared by the server
 # and the target-model service, so they live here for a single source of truth.
 DEEP_DIR = RESEARCH_DIR / "deep"
