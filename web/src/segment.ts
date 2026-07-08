@@ -1,7 +1,8 @@
 import { starHtml } from "./basket";
-import { $$, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
+import { $$, api, decisionPill, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import type { SegmentSummary } from "./api-types";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
+import { startPipeline } from "./analyses";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
 
@@ -104,6 +105,10 @@ async function loadCachedSegment(name: string, { push = false }: { push?: boolea
 
 $$("#segment-run")?.addEventListener("click", () => runSegmentPull($$<HTMLSelectElement>("#segment-select")?.value));
 $$("#segment-load")?.addEventListener("click", () => loadCachedSegment($$<HTMLSelectElement>("#segment-select")?.value, { push: true }));
+// Hand the selected segment straight to the Deep Research pipeline (step 1,
+// pre-selected). Previously the only way in was the Reports tab's "+ New run",
+// so a segment had no direct route to the narrative flow it feeds.
+$$("#segment-deep")?.addEventListener("click", () => startPipeline($$<HTMLSelectElement>("#segment-select")?.value));
 
 // Seed the result area so an un-loaded Segment tab is a clear prompt, not a void.
 // Any pull/cache load replaces this; a deep-link to ?segment= loads over it.
@@ -206,7 +211,7 @@ function renderSegment(rec: SegmentRec) {
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
       sparkPlaceholder(m.symbol),
-      `<span class="decision-pill ${decisionClass(m.decision ?? "")}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,
+      decisionPill(m.decision, { fallback: "research" }),
       `<span class="score-pill ${scoreClass(m.research_score)}">${m.research_score == null ? "n/a" : esc(m.research_score)}</span>`,
       `<span class="sleeve-tag">${esc(m.sleeve)}</span>`,
       m.owned_pct_nav != null ? `<span class="owned-pill">${m.owned_pct_nav.toFixed(1)}</span>` : `<span class="muted">–</span>`,

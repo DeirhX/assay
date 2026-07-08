@@ -6,7 +6,7 @@
 // P/E, with the change vs the previous pull) against *our guidance* at the same
 // moment (held weight, position vs the model band, and the research role). That
 // turns a list of prices into a story of how the read drifted over time.
-import { $, api, decisionClass, el, esc, fmtPrice, fmtSignedWeight, fmtWeight, fmtX, simpleTable } from "../core";
+import { $, api, decisionPill, el, esc, fmtPrice, fmtSignedWeight, fmtWeight, fmtX, simpleTable } from "../core";
 import { collapsibleCard } from "./cards";
 
 interface HistoryRow {
@@ -62,7 +62,7 @@ function bandCell(h: HistoryRow): string {
 function roleCell(h: HistoryRow, prior?: HistoryRow): string {
   const d = h.decision || "research";
   const changed = !!(prior && prior.decision && prior.decision !== d);
-  return `<span class="decision-pill ${decisionClass(d)}">${esc(d.replace(/_/g, " "))}</span>` +
+  return decisionPill(d) +
     (changed ? `<span class="hd-changed" title="was ${esc((prior!.decision || "").replace(/_/g, " "))}">changed</span>` : "");
 }
 

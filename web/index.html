@@ -35,7 +35,8 @@
         <button class="subtab" data-view="segment" type="button" role="tab">Segments</button>
       </div>
       <!-- Grouped to mirror the flow bar: the first four are all "Plan changes"
-           tools (stage 2); Trade is the separate "Orders" stage (stage 3). -->
+           tools (stage 2); the divider fences off the outcome stages — Trade
+           ("Orders", stage 3) and Target state (the projected book, stage 4). -->
       <div class="subtabs" data-group="rebalance" role="tablist" hidden>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
         <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
@@ -43,6 +44,7 @@
         <button class="subtab" data-view="exit" type="button" role="tab">Exit</button>
         <span class="subtab-sep" role="separator" aria-hidden="true"></span>
         <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
+        <button class="subtab" data-view="target-state" type="button" role="tab">Target state</button>
       </div>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
         <button class="subtab" data-view="today" type="button" role="tab">Today</button>
@@ -87,7 +89,7 @@
     <section class="view active" id="view-strategy">
       <div class="strat-head">
         <h2>Direction → Rebalance</h2>
-        <details class="view-help"><summary>How this works</summary><p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. This is the guided path; the Research and Rebalance tabs hold the same steps as standalone tools.</p></details>
+        <details class="view-help"><summary>How this works</summary><p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. <span class="signpost">This is the <strong>guided</strong> path — it runs the whole flow for you. The <strong>Optimizer</strong> resizes the book automatically; the <strong>Rebalance</strong> planner is manual, one name at a time.</span> (The Research tabs hold these same steps as standalone tools.)</p></details>
       </div>
       <ol class="strat-stages" id="strat-stages" hidden>
         <li data-stage="draft">Draft</li>
@@ -139,8 +141,9 @@
         <select id="segment-select"></select>
         <button class="primary" id="segment-run">Run live pull</button>
         <button class="ghost" id="segment-load">Load cached</button>
+        <button class="ghost" id="segment-deep" title="Open the Deep Research pipeline with this segment pre-selected">Deep Research →</button>
       </div>
-      <details class="view-help"><summary>How this works</summary><div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s), scores the research queue, and caches the table. Click any row to open its dossier.</div></details>
+      <details class="view-help"><summary>How this works</summary><div class="hint">A live segment pull fetches every peer sequentially (~20 names = 30-60s), scores the research queue, and caches the table. Click any row to open its dossier. <strong>Deep Research →</strong> hands this segment to the pipeline (step 1) to run the LLM narrative flow. Note: a <em>segment</em> is the research theme these peers share; a <em>sleeve</em> (the tag on each row) is the portfolio bucket a name sits in under your target model — different groupings.</div></details>
       <div id="regime-strip" class="regime-strip" hidden></div>
       <div class="status" id="seg-status"></div>
       <div id="seg-result"></div>
@@ -402,7 +405,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Rebalance planner</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders.</p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders. <span class="signpost">This is the <strong>manual</strong> path — you close drift one name at a time. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Optimizer</strong> resizes the whole book automatically.</span></p></details>
         </div>
         <div class="reb-head-actions">
           <button class="primary" id="reb-simulate" type="button" title="Recompute the resulting portfolio, cash, and realized Czech tax for the planned trades">Simulate basket</button>
@@ -420,7 +423,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio optimizer</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your basket picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there.</p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your basket picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there. <span class="signpost">This is the <strong>automated</strong> path — it sizes everything at once. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Rebalance</strong> planner is manual, one name at a time.</span></p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and basket pick, feeding the convictions into the pool (runs in the Task Center)">Analyze the pool</button>

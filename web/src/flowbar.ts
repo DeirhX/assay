@@ -1,4 +1,4 @@
-// The rebalance-group flow bar: one persistent strip that turns five sibling
+// The rebalance-group flow bar: one persistent strip that turns the sibling
 // sub-tabs into a legible pipeline —
 //
 //   ① Current book → ② Plan changes → ③ Orders → ④ Target state
