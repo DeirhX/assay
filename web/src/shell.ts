@@ -172,7 +172,7 @@ const VIEW_GROUP: Record<string, string> = {
 // sub-tab, the data-view of each sub-tab button maps 1:1 to its key here.
 const VIEW_SUBTAB: Record<string, string> = {
   leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
-  rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade",
+  rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade", "target-state": "target-state",
   today: "today", holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
@@ -297,7 +297,7 @@ function updateChrome(active: string) {
 
   // The rebalance group carries the guided flow bar (current book → plan
   // changes → orders → target state) so the sibling sub-tabs read as one
-  // pipeline rather than five destinations.
+  // pipeline rather than a row of unrelated destinations.
   updateFlowBar(active, group);
 }
 
