@@ -3,6 +3,7 @@
 // preview. Extracted from staging.ts so both surfaces speak the same visual
 // language on one shared axis. Pure string/markup helpers; no DOM, no fetch.
 import { esc } from "./core";
+import { axisMax, onAxis, r1 } from "./weight-axis";
 
 export type Band = { low?: number; high?: number; rule?: string; sleeve?: string } | null;
 
@@ -48,17 +49,16 @@ export const midOf = (b: Band): number | null => {
 };
 
 // One shared axis for every bar in the list so a 0–8% band and a 10–18% band
-// are visually comparable, not each stretched to fill its own row. Round up to a
-// friendly multiple of 5, with a 10% floor so a book of small bands still reads.
+// are visually comparable, not each stretched to fill its own row (see
+// weight-axis: round up to a friendly multiple of 5, 10% floor).
 export function scaleMaxFor(rows: BandRow[]): number {
-  let max = 0;
+  const vals: Array<number | null | undefined> = [];
   for (const r of rows) {
     for (const b of [r.before, r.after]) {
-      if (b && typeof b.high === "number") max = Math.max(max, b.high);
-      if (b && typeof b.low === "number") max = Math.max(max, b.low);
+      if (b) vals.push(b.high, b.low);
     }
   }
-  return Math.max(10, Math.ceil(max / 5) * 5);
+  return axisMax(vals);
 }
 
 // Project a band onto the [0, scaleMax] axis as left/width/mid percentages.
@@ -69,14 +69,11 @@ function bandSeg(b: Band, scaleMax: number): { left: number; width: number; mid:
   if (lo == null && hi == null) return null;
   if (lo == null) lo = hi as number;
   if (hi == null) hi = lo as number;
-  const clamp = (v: number) => Math.max(0, Math.min(100, (v / scaleMax) * 100));
-  const left = clamp(lo);
-  const right = clamp(hi);
+  const left = onAxis(lo, scaleMax);
+  const right = onAxis(hi, scaleMax);
   const width = Math.max(2, right - left); // keep a hairline band visible
   return { left, width, mid: (left + right) / 2 };
 }
-
-const r1 = (n: number) => Math.round(n * 10) / 10;
 
 // Plain-language direction of a change, so a user reads "trimmed" instead of
 // decoding "10–12% → 0–7.7%".

@@ -11,6 +11,7 @@
 // Read-only: this view stages nothing and never trades.
 import { $, api, esc, fmtCZK, sensitive, statTile } from "./core";
 import type { PlanRow, RebalancePlan, Whatif, WhatifTrade } from "./api-types";
+import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
 // ---- pure builders (exported for tests) -------------------------------------
@@ -68,19 +69,17 @@ export function compareRows(before: PlanRow[], after: PlanRow[] | null): Compare
 }
 
 const statusCls = (s: string) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
-const r1 = (n: number) => Math.round(n * 10) / 10;
-const clamp = (v: number) => Math.max(0, Math.min(100, v));
 
 export function scaleMaxOf(rows: CompareRow[]): number {
-  let max = 10;
-  rows.forEach((r) => { max = Math.max(max, r.high, r.cur, r.proj); });
-  return Math.ceil(max / 5) * 5;
+  const vals: number[] = [];
+  rows.forEach((r) => { vals.push(r.high, r.cur, r.proj); });
+  return axisMax(vals);
 }
 
 // One comparison row: name + rule, the shared band track with a ghost "now"
 // tick and a solid "after" tick, and the numeric now → after with status chips.
 export function compareRowHtml(r: CompareRow, scaleMax: number): string {
-  const toP = (v: number) => clamp((v / scaleMax) * 100);
+  const toP = (v: number) => onAxis(v, scaleMax);
   const zL = toP(r.low);
   const zW = Math.max(1.5, toP(r.high) - zL);
   const curP = toP(r.cur);

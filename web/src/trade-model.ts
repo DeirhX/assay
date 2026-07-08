@@ -7,8 +7,11 @@
 // way — if a new figure or fragment needs to appear on the desk, derive it here
 // first so it stays testable.
 import { esc, sensitive } from "./core";
+import { axisMax, onAxis, r1 } from "./weight-axis";
 
-export const r1 = (n: number) => Math.round(n * 10) / 10;
+// r1 now lives in the shared weight-axis module; re-export for the desk's own
+// call sites.
+export { r1 };
 
 export const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
@@ -26,13 +29,9 @@ export interface OrderBand {
 // Shared axis max across the previewed names' bands, rounded to a friendly
 // multiple of 5 (10% floor) so every track is comparable on one scale.
 export function weightScaleMax(bands: OrderBand[]): number {
-  let max = 0;
-  for (const b of bands) {
-    for (const v of [b.high, b.before_pct, b.after_pct]) {
-      if (typeof v === "number") max = Math.max(max, v);
-    }
-  }
-  return Math.max(10, Math.ceil(max / 5) * 5);
+  const vals: Array<number | null | undefined> = [];
+  for (const b of bands) vals.push(b.high, b.before_pct, b.after_pct);
+  return axisMax(vals);
 }
 
 // A compact "weight moving within its band" track: the band as a fixed zone, a
@@ -42,7 +41,7 @@ export function weightScaleMax(bands: OrderBand[]): number {
 export function weightBandTrackHtml(sym: string, b: OrderBand, scaleMax: number): string {
   const low = typeof b.low === "number" ? b.low : 0;
   const high = typeof b.high === "number" ? b.high : low;
-  const toP = (v: number) => Math.max(0, Math.min(100, (v / scaleMax) * 100));
+  const toP = (v: number) => onAxis(v, scaleMax);
   const before = typeof b.before_pct === "number" ? b.before_pct : null;
   const after = typeof b.after_pct === "number" ? b.after_pct : null;
   const inBand = String(b.status_after || "").toUpperCase() === "IN";
