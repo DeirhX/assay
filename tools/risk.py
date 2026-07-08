@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fx_history  # noqa: E402  -- currency exposure + FX-clean daily panel
+import market_data  # noqa: E402  -- shared Yahoo fetch seam + parallel fan-out
 import portfolio  # noqa: E402  -- shared weight/holdings layer
 import store  # noqa: E402
 import timeutil  # noqa: E402  -- shared Z-tolerant ISO parse + cache-freshness
@@ -50,7 +51,7 @@ CACHE_DIR = REPO_ROOT / "data" / "cache" / "risk"
 TRADING_DAYS = 252
 MIN_OBS = 30  # below this, correlations/betas are too thin to trust
 CACHE_TTL_SECONDS = 12 * 3600
-FETCH_WORKERS = 8  # cold cache: fan the per-symbol Yahoo pulls out instead of serial
+FETCH_WORKERS = market_data.FETCH_WORKERS  # shared fan-out width
 
 # Factor-shock scenarios. Each maps a factor ETF to a hypothetical move; every
 # holding's exposure is its OLS beta to that factor over the sample window. SOXX
@@ -372,10 +373,7 @@ def _fresh(iso: str | None) -> bool:
 
 
 def _yahoo_fetch(symbol: str, rng: str) -> list[dict[str, Any]] | None:
-    from providers import yahoo  # lazy: keeps import cost off pure-math callers
-    result = yahoo.chart(symbol, rng=rng, interval="1d")
-    ph = yahoo.price_history_from_chart(result, rng=rng, interval="1d")
-    return ph.get("points") if ph else None
+    return market_data.daily_closes(symbol, rng)
 
 
 def _researchable_weights(holdings: dict[str, Any]) -> list[dict[str, str | float]]:
@@ -404,20 +402,16 @@ def _fetch_series_many(
     rng: str,
     fetch: Callable[[str, str], list[dict[str, Any]] | None] | None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Load price series for a set of provider symbols, fanned out across a small
-    thread pool. Cold, this turns ~30 serial Yahoo round-trips into a handful of
-    parallel batches; warm, every call is a disk hit and the pool is trivial.
-    Each symbol writes its own cache file, so there is no shared mutable state."""
-    uniq = list(dict.fromkeys(p for p in providers if p))
-    if not uniq:
-        return {}
-    from concurrent.futures import ThreadPoolExecutor
-    out: dict[str, list[dict[str, Any]]] = {}
-    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(uniq))) as pool:
-        for provider, pts in zip(uniq, pool.map(lambda p: load_price_series(p, rng=rng, fetch=fetch), uniq)):
-            if pts:
-                out[provider] = pts
-    return out
+    """Load price series for a set of provider symbols, fanned out across the
+    shared thread pool (see market_data). Routes each pull through
+    load_price_series so the disk cache + fetch injection still apply; misses are
+    dropped so callers only see usable series."""
+    raw = market_data.fetch_series_many(
+        providers, rng=rng,
+        fetch=lambda s, r: load_price_series(s, rng=r, fetch=fetch),
+        workers=FETCH_WORKERS,
+    )
+    return {sym: pts for sym, pts in raw.items() if pts}
 
 
 def risk_report(
