@@ -1360,6 +1360,38 @@ details.report-doc:not([open]) > .report-doc-head { border-bottom: 0; }
 }
 .prose table.md-tbl tbody tr:nth-child(even) td { background: rgba(255,255,255,.02); }
 
+/* Fenced code blocks in reports (```): monospace, scrollable, and — crucially —
+   no longer mangled into literal backticks by the paragraph/inline path. */
+.md-code {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin: 12px 0; overflow-x: auto; max-width: 100%;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--muted);
+}
+.md-code code { font: inherit; color: inherit; background: none; white-space: pre; }
+
+/* A ```json price-levels record rendered as a readable ladder: a fair-value
+   anchor plus buy/trim tranche chips (margin -> size), colour-coded by side. */
+.md-levels {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin: 12px 0; display: flex; flex-direction: column; gap: 10px;
+}
+.md-levels-cap { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; }
+.md-levels-fv { display: flex; align-items: baseline; gap: 8px; }
+.md-levels-fv strong { font-size: 16px; color: var(--text); font-variant-numeric: tabular-nums; }
+.md-levels-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 18px; }
+.md-levels-side { display: flex; flex-direction: column; gap: 6px; }
+.md-lvls { display: flex; flex-wrap: wrap; gap: 6px; }
+.md-lvl {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel); font-variant-numeric: tabular-nums; font-size: 12.5px;
+}
+.md-lvl-m { font-weight: 700; }
+.md-lvl-s { color: var(--muted); font-size: 11.5px; }
+.md-levels-buy .md-levels-cap, .md-levels-buy .md-lvl-m { color: var(--good); }
+.md-levels-buy .md-lvl { border-color: rgba(107,211,138,.4); }
+.md-levels-trim .md-levels-cap, .md-levels-trim .md-lvl-m { color: var(--bad); }
+.md-levels-trim .md-lvl { border-color: rgba(255,122,122,.4); }
+
 /* auto-linked tickers inside reports / business summary */
 a.tlink {
   color: var(--accent); text-decoration: none; cursor: pointer;
@@ -1780,8 +1812,11 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-row {
   display: grid;
   grid-template-columns: minmax(150px, 1.5fr) minmax(190px, 2.4fr) minmax(118px, 1fr) minmax(90px, 0.9fr);
-  align-items: center; gap: 14px;
-  padding: 9px 13px; border: 1px solid var(--border); border-radius: var(--radius-soft);
+  /* Top-align the four columns so the ticker, current %, plan input and
+     projected % share one baseline instead of floating at each column's own
+     vertical centre (the name column is much taller than the rest). */
+  align-items: start; gap: 14px;
+  padding: 11px 13px; border: 1px solid var(--border); border-radius: var(--radius-soft);
   background: var(--panel);
 }
 .reb-head-row {
@@ -1792,11 +1827,22 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-data-row.planned-buy { border-left: 3px solid var(--good); }
 
 .reb-c { min-width: 0; font-size: 13.5px; }
-.reb-name { display: flex; flex-direction: column; gap: 2px; }
+/* align-items:flex-start keeps children (star, ticker, chips, sparkline) at
+   their natural width — the default `stretch` blew each one out to the full
+   column, so the lineage chip and star read as big empty boxes. */
+.reb-name { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.reb-name-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.reb-name-head .basket-star { font-size: 15px; padding: 0; }
 .reb-sym { font-weight: 700; color: var(--text); }
 .reb-sym.reb-link { color: var(--accent); cursor: pointer; }
 .reb-sym.reb-link:hover { text-decoration: underline; }
-.reb-rule { font-size: 11px; color: var(--muted); }
+/* The suggested action is the headline verdict of the row, so it's bold and
+   colour-coded by stance rather than the old faint grey caption. */
+.reb-rule { font-size: 12.5px; font-weight: 700; letter-spacing: .01em; color: var(--text); }
+.reb-rule-good { color: var(--good); }
+.reb-rule-bad { color: var(--bad); }
+.reb-rule-warn { color: var(--warn); }
+.reb-rule-hold { color: var(--text); }
 /* Research overlay: a terse line of independent context under a target's name.
    Decision support only — it never alters the suggested trade. */
 .reb-research { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 1px; }
@@ -3225,7 +3271,7 @@ button.trade-live-h.sortable.active { color: var(--accent); }
 .reb-staged-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px;
   background: rgba(245,199,107,.10); border: 1px solid rgba(245,199,107,.4); border-radius: var(--radius-soft);
   padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
-.reb-prov { font-size: 11px; padding: 1px 7px; margin-left: 6px; }
+.reb-prov { font-size: 11px; padding: 1px 7px; }
 .reb-prov-good { color: var(--good); border-color: rgba(107,211,138,.5); }
 .reb-prov-warn { color: var(--warn); border-color: rgba(245,199,107,.5); }
 .reb-prov-muted { color: var(--muted); }

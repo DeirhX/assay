@@ -76,6 +76,44 @@ describe("mdToHtml", () => {
     expect(mdToHtml("")).toBe("");
     expect(mdToHtml(null)).toBe("");
   });
+
+  it("renders a plain fenced code block instead of mangling the backticks", () => {
+    const out = mdToHtml("```\nline one\nline two\n```");
+    expect(out).toContain('<pre class="md-code"><code>');
+    expect(out).toContain("line one\nline two");
+    expect(out).not.toContain("`");   // no literal backticks leaked into the output
+  });
+
+  it("pretty-prints a non-price-levels json fence", () => {
+    const out = mdToHtml('```json\n{"a": 1, "b": [2, 3]}\n```');
+    expect(out).toContain('<pre class="md-code md-code-json">');
+    expect(out).toContain("&quot;a&quot;: 1");   // re-indented, escaped
+  });
+
+  it("renders a price-levels json fence as a readable ladder, not raw json", () => {
+    const md =
+      "## Price levels\n" +
+      '```json\n' +
+      '{"fair_value": 125.41, "buy_ladder": [{"discount_pct": 0.0, "size_pct": 0.25}, ' +
+      '{"discount_pct": 0.15, "size_pct": 0.35}], "trim_ladder": [{"premium_pct": 0.25, "size_pct": 1.0}]}\n' +
+      "```";
+    const out = mdToHtml(md);
+    expect(out).toContain('<div class="md-levels">');
+    expect(out).toContain("125.41");                 // fair value
+    expect(out).toContain("at fair");                // 0% discount tranche
+    expect(out).toContain("\u221215%");              // −15% buy tranche
+    expect(out).toContain("+25%");                   // +25% trim tranche
+    expect(out).toContain("md-levels-buy");
+    expect(out).toContain("md-levels-trim");
+    expect(out).not.toContain("buy_ladder");         // the raw json keys are gone
+    expect(out).not.toContain("`");                  // and no leaked backticks
+  });
+
+  it("recovers an unterminated fence at end of input", () => {
+    const out = mdToHtml("```\ndangling code");
+    expect(out).toContain('<pre class="md-code">');
+    expect(out).toContain("dangling code");
+  });
 });
 
 describe("linkifyTickers", () => {

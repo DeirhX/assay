@@ -17,8 +17,29 @@ export function mdToHtml(md: string | null | undefined): string {
   let list: string | null = null;
   let para: string[] = [];
   let table: string[] = [];
+  let fenceLang: string | null = null;   // non-null while inside a ``` block
+  let fenceLines: string[] = [];
   const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(" "))}</p>`); para = []; } };
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  // A fenced code block. A ```json block that parses as a price-levels record is
+  // rendered as a readable ladder summary; any other JSON is pretty-printed; the
+  // rest becomes a plain code block. (Without this, a fence's lines were joined
+  // into a paragraph and the inline `code` regex mangled the triple backticks.)
+  const flushFence = () => {
+    const body = fenceLines.join("\n");
+    fenceLines = [];
+    const looksJson = fenceLang === "json" || /^\s*[[{]/.test(body);
+    if (looksJson) {
+      try {
+        const data = JSON.parse(body);
+        const summary = priceLevelsSummaryHtml(data);
+        if (summary) { out.push(summary); return; }
+        out.push(`<pre class="md-code md-code-json"><code>${esc(JSON.stringify(data, null, 2))}</code></pre>`);
+        return;
+      } catch { /* not valid JSON — fall through to a plain code block */ }
+    }
+    out.push(`<pre class="md-code"><code>${esc(body)}</code></pre>`);
+  };
   const flushTable = () => {
     if (!table.length) return;
     const rows = table.map((l) => l.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim()));
@@ -50,6 +71,13 @@ export function mdToHtml(md: string | null | undefined): string {
   String(md).replace(/\r\n/g, "\n").split("\n").forEach((raw) => {
     const line = raw.replace(/\s+$/, "");
     let m: RegExpMatchArray | null;
+    // Fenced code blocks take precedence: swallow every line verbatim until the
+    // closing ``` so their contents are never parsed as markdown.
+    if (fenceLang !== null) {
+      if (/^\s*```\s*$/.test(line)) { flushFence(); fenceLang = null; } else fenceLines.push(raw);
+      return;
+    }
+    if ((m = line.match(/^\s*```(\w*)\s*$/))) { flushPara(); closeList(); flushTable(); fenceLang = (m[1] || "").toLowerCase(); return; }
     if (line.trim().startsWith("|")) { flushPara(); closeList(); table.push(line); return; }
     flushTable();
     if (!line.trim()) { flushPara(); closeList(); return; }
@@ -67,8 +95,55 @@ export function mdToHtml(md: string | null | undefined): string {
       closeList(); para.push(line);
     }
   });
+  if (fenceLang !== null) flushFence();   // unterminated fence: render what we have
   flushPara(); closeList(); flushTable();
   return out.join("\n");
+}
+
+// Render a locked/suggested price-levels JSON record as a compact, readable
+// ladder instead of raw JSON: a fair-value anchor plus buy/trim tranches, each
+// shown as a "margin -> size" chip. Returns null when the object isn't a
+// price-levels record so the caller can fall back to a generic JSON block.
+function priceLevelsSummaryHtml(d: unknown): string | null {
+  if (!d || typeof d !== "object") return null;
+  const rec = d as Record<string, unknown>;
+  const buy = Array.isArray(rec.buy_ladder) ? (rec.buy_ladder as Record<string, unknown>[]) : null;
+  const trim = Array.isArray(rec.trim_ladder) ? (rec.trim_ladder as Record<string, unknown>[]) : null;
+  const fv = typeof rec.fair_value === "number" && isFinite(rec.fair_value) ? rec.fair_value : null;
+  if (fv == null && !buy && !trim) return null;
+
+  const round2 = (v: number) => Math.round(v * 100) / 100;
+  // A fraction (0.15) -> "15%", trimming a trailing ".0".
+  const pctOf = (v: unknown): string | null => {
+    if (typeof v !== "number" || !isFinite(v)) return null;
+    const p = Math.round(v * 1000) / 10;
+    return (Number.isInteger(p) ? String(p) : p.toFixed(1)) + "%";
+  };
+  const chip = (t: Record<string, unknown>, side: "buy" | "trim"): string => {
+    const marginRaw = side === "buy" ? t.discount_pct : t.premium_pct;
+    let marginLabel: string;
+    if (typeof marginRaw === "number" && isFinite(marginRaw)) {
+      marginLabel = Math.abs(marginRaw) < 1e-9 ? "at fair" : (side === "buy" ? "\u2212" : "+") + pctOf(Math.abs(marginRaw));
+    } else if (typeof t.price === "number" && isFinite(t.price)) {
+      marginLabel = String(round2(t.price));
+    } else {
+      marginLabel = "\u2014";
+    }
+    const size = pctOf(t.size_pct);
+    return `<span class="md-lvl"><span class="md-lvl-m">${esc(marginLabel)}</span>` +
+      (size ? `<span class="md-lvl-s">${esc(size)}</span>` : "") + "</span>";
+  };
+  const sideHtml = (label: string, arr: Record<string, unknown>[] | null, side: "buy" | "trim"): string => {
+    if (!arr || !arr.length) return "";
+    return `<div class="md-levels-side md-levels-${side}">` +
+      `<span class="md-levels-cap">${label}</span>` +
+      `<span class="md-lvls">${arr.map((t) => chip(t, side)).join("")}</span></div>`;
+  };
+  const fvHtml = fv != null
+    ? `<div class="md-levels-fv"><span class="md-levels-cap">Fair value</span> <strong>${esc(String(round2(fv)))}</strong></div>`
+    : "";
+  return `<div class="md-levels">${fvHtml}` +
+    `<div class="md-levels-grid">${sideHtml("Buy", buy, "buy")}${sideHtml("Trim", trim, "trim")}</div></div>`;
 }
 
 export function slugify(s: string): string {
