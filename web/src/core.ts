@@ -187,6 +187,18 @@ const decisionClass = (v: string) => {
   return "muted";
 };
 const scoreClass = (v: Num) => (v == null ? "muted" : v >= 70 ? "good" : v >= 45 ? "warn" : "bad");
+
+// The decision chip (accumulate / add_candidate / trim / watch / ...), shared by
+// the segment table, deep-dive header, and history card. They used to hand-build
+// this and had drifted: some spaced only the first underscore (`.replace("_",
+// " ")`), so a two-underscore verb like `do_not_add` rendered "do not_add". This
+// is the one builder — `/_/g` spaces every underscore, and `decisionClass` still
+// colours from the raw token. `fallback` supplies a label when the decision is
+// absent (the segment table shows "research").
+const decisionPill = (decision: string | null | undefined, opts: { fallback?: string } = {}): string => {
+  const raw = String(decision || opts.fallback || "");
+  return `<span class="decision-pill ${decisionClass(raw)}">${esc(raw.replace(/_/g, " "))}</span>`;
+};
 const sensitive = (html: string, label = "sensitive value") =>
   `<span data-sensitive title="${esc(label)}">${html}</span>`;
 
@@ -402,6 +414,7 @@ export {
   fmtSignedWeight,
   fmtCZK,
   decisionClass,
+  decisionPill,
   scoreClass,
   sensitive,
   applyPrivacyMode,

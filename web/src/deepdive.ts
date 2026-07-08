@@ -1,4 +1,4 @@
-import { $, $$, api, decisionClass, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, isStaleToken, nextToken, pctClass, sectionCard, state } from "./core";
+import { $, $$, api, decisionPill, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, isStaleToken, nextToken, pctClass, sectionCard, state } from "./core";
 import { starHtml } from "./basket";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
@@ -382,7 +382,7 @@ function dossierBar(
     `<span class="dd-bar-sym">${esc(rec.symbol)}</span>` +
     `<span class="dd-bar-price">${esc(fmtPrice(ctx.price))}</span>` +
     (ctx.owned != null ? `<span class="owned-pill">held ${esc(fmtWeight(ctx.owned))}</span>` : `<span class="muted">not held</span>`) +
-    `<span class="decision-pill ${decisionClass(ctx.decision)}">${esc(ctx.decision.replace("_", " "))}</span>`;
+    decisionPill(ctx.decision);
   bar.appendChild(summary);
 
   const tabs = el("nav", "dd-tabs");
@@ -451,7 +451,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
     `<span class="sym">${esc(rec.symbol)}</span>` +
     `<span class="name">${esc(rec.name || "")}</span>` +
     instrumentBadge(rec.instrument_type) +
-    `<span class="decision-pill ${decisionClass(decision)}">${esc(decision.replace("_", " "))}</span>` +
+    decisionPill(decision) +
     `<span class="price">${fmtPrice(price)} <small class="muted">${esc(rec.currency || "")}</small></span>`;
   card.appendChild(head);
 
