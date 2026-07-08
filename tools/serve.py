@@ -122,8 +122,8 @@ from ticker_directory import (  # noqa: E402  -- known-symbol universe, recents 
 )
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
-    _trade_place, _trade_preview, _trade_reconnect, _trade_status, _trade_tickle,
-    load_basket as _load_basket, save_basket as _save_basket,
+    _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
+    _trade_tickle, load_basket as _load_basket, save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -289,6 +289,7 @@ _GET_EXACT = {
     "/api/trade/status": "_get_trade_status",
     "/api/trade/tickle": "_get_trade_tickle",
     "/api/trade/orders": "_get_trade_orders",
+    "/api/trade/quotes": "_get_trade_quotes",
     "/api/trade/basket": "_get_trade_basket",
     "/api/deep-research/login-status": "_get_login_status",
     "/api/deep-job": "_get_deep_job",
@@ -785,6 +786,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_trade_orders(self, path, query):
         return self._send_json(_trade_orders())
+
+    def _get_trade_quotes(self, path, query):
+        # Live {last,bid,ask} per conid for the working-orders market cells,
+        # fetched separately from the (already slow) orders list so that list can
+        # paint before this ~2s market-snapshot round-trip returns.
+        raw = (query.get("conids") or [""])[0]
+        conids: list[int] = []
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if tok:
+                try:
+                    conids.append(int(tok))
+                except ValueError:
+                    pass
+        return self._send_json({"quotes": _trade_quotes(conids)})
 
     def _get_trade_basket(self, path, query):
         # The basket the planner last staged, so the trade desk can rehydrate it

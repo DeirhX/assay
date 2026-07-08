@@ -441,13 +441,122 @@ def _trade_place(body: dict) -> dict:
     }
 
 
+# Statuses that mean an order is done and no longer working. IBKR's
+# /iserver/account/orders returns recently filled/cancelled orders alongside
+# live ones; they can't be pegged or cancelled, so the UI segregates them.
+_TERMINAL_STATUSES = frozenset(
+    {"filled", "cancelled", "canceled", "expired", "rejected", "apicancelled"}
+)
+
+
+def _order_terminal(o: dict) -> bool:
+    st = str(o.get("status") or o.get("order_status") or "").strip().lower()
+    return st in _TERMINAL_STATUSES
+
+
+def _held_avg_cost() -> dict[str, float]:
+    """Per-symbol average purchase price (weighted cost basis / share) in the
+    instrument's own currency -- the number a SELL order's limit is read against
+    to see whether it fills at a gain or a loss.
+
+    Prefers the tax-lot cost basis (exact: per-lot local-currency amounts summed
+    over shares); falls back to deriving it from the position row (mark price
+    minus per-share unrealized P/L, both local currency) for a name that has no
+    lots. The position-level cost_price/cost_basis_money fields are deliberately
+    NOT used -- IBKR leaves them null in the Flex position section, so they read
+    as a phantom zero cost."""
+    holdings = _load(HOLDINGS_JSON) or {}
+    cost_sum: dict[str, float] = {}
+    qty_sum: dict[str, float] = {}
+    for lot in holdings.get("lots") or []:
+        sym = str(lot.get("symbol") or "").strip().upper()
+        cost = lot.get("cost_basis_money")
+        qty = lot.get("quantity")
+        if sym and isinstance(cost, (int, float)) and isinstance(qty, (int, float)) and qty:
+            cost_sum[sym] = cost_sum.get(sym, 0.0) + float(cost)
+            qty_sum[sym] = qty_sum.get(sym, 0.0) + float(qty)
+    out: dict[str, float] = {}
+    for sym, q in qty_sum.items():
+        avg = cost_sum[sym] / q if q else 0.0
+        if avg > 0:
+            out[sym] = avg
+    # Fallback: a name held as a position but with no lots in this snapshot.
+    for p in holdings.get("positions") or []:
+        sym = str(p.get("symbol") or "").strip().upper()
+        if not sym or sym in out:
+            continue
+        mark, qty, upnl = p.get("mark_price"), p.get("quantity"), p.get("unrealized_pnl")
+        if all(isinstance(v, (int, float)) for v in (mark, qty, upnl)) and qty:
+            avg = float(mark) - float(upnl) / float(qty)
+            if avg > 0:
+                out[sym] = avg
+    return out
+
+
+def _attach_avg_cost(orders: list[dict]) -> list[dict]:
+    """Fold each working order's average purchase price (from the local holdings
+    snapshot, matched by symbol) onto the order so the UI can show a SELL's
+    limit-vs-cost gain/loss. A cheap file read -- no gateway round-trip -- so it
+    doesn't reintroduce the latency the async quote split just removed."""
+    costs = _held_avg_cost()
+    if not costs:
+        return orders
+    for o in orders:
+        if _order_terminal(o):
+            continue
+        sym = str(o.get("ticker") or o.get("symbol") or "").strip().upper()
+        cost = costs.get(sym)
+        if cost is not None:
+            o["avg_cost"] = cost
+    return orders
+
+
+def _trade_quotes(conids: list[int]) -> dict[str, dict]:
+    """Live {last,bid,ask} keyed by conid, for the working-orders market cells.
+
+    Fetched by its OWN endpoint rather than folded into ``_trade_orders`` because
+    the market-data snapshot is ~as slow as the orders fetch itself (~2s each);
+    serving them separately lets the working list paint immediately and the
+    quotes stream in a beat later instead of doubling the list's latency.
+
+    Best-effort: a cold/unentitled feed (or a snapshot failure) yields {} so the
+    UI simply keeps the 'no quote' state rather than erroring."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled")
+    cids = sorted({int(c) for c in conids if c is not None})
+    if not cids:
+        return {}
+    try:
+        snaps = ibkr_trade.market_snapshot(cids)
+    except ibkr_trade.CPAPIError:
+        return {}
+    out: dict[str, dict] = {}
+    for cid in cids:
+        row = snaps.get(cid)
+        if not isinstance(row, dict):
+            continue
+        q = {
+            "last": _parse_snapshot_price(row.get("31")),
+            "bid": _parse_snapshot_price(row.get("84")),
+            "ask": _parse_snapshot_price(row.get("86")),
+        }
+        if any(v is not None for v in q.values()):
+            out[str(cid)] = q
+    return out
+
+
 def _trade_orders() -> dict:
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled")
     try:
         # Fold in the active pegs so the UI can badge which working orders are
-        # being kept at the top of book (and offer a Stop) in a single call.
-        return {"orders": ibkr_trade.live_orders(), "pegs": order_peg.active_pegs()}
+        # being kept at the top of book (and offer a Stop) in a single call, plus
+        # each order's average purchase price (local holdings snapshot -- cheap)
+        # so a SELL can be read against its cost. Quotes are deliberately NOT
+        # attached here -- they're a separate, slower snapshot call the client
+        # fetches asynchronously (see _trade_quotes).
+        orders = _attach_avg_cost(ibkr_trade.live_orders())
+        return {"orders": orders, "pegs": order_peg.active_pegs()}
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
 

@@ -1,6 +1,7 @@
-import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, simpleTable, state } from "./core";
+import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } from "./core";
 import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
+import { hydrateSparks, sparkPlaceholder } from "./spark";
 import {
   basketMoneyFacts, gatewayOrigin, placeResultHtml, riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
@@ -100,7 +101,17 @@ interface LiveOrder {
   timeInForce?: string;
   // IBKR's human-readable one-liner, e.g. "Sell 100 AAPL Limit 150.00 GTC".
   orderDesc?: string;
+  // Epoch ms of the order's last update (placement/modify) — our age proxy.
+  lastExecutionTime_r?: number;
+  // Live market snapshot, hydrated asynchronously after the list paints (the
+  // snapshot round-trip is ~as slow as the orders fetch, so it's a second call).
+  quote?: Quote;
+  // Average purchase price (holdings cost basis / share), in the instrument's
+  // currency. Present when the order's symbol is held; drives a SELL's gain/loss.
+  avg_cost?: number;
 }
+
+type Quote = { last?: number | null; bid?: number | null; ask?: number | null };
 
 // One active peg from /api/trade/orders (folded in alongside `orders`). The
 // server keeps these in memory; a restart clears them and the order simply
@@ -153,8 +164,13 @@ async function loadTrade() {
   // a status re-read) so a session that idled out can recover without a browser
   // login, as long as the gateway still holds the SSO cookie.
   if (refresh) refresh.onclick = () => void reconnect();
+  // /api/trade/status hits the gateway and can take several seconds; show a
+  // skeleton so the page isn't blank behind it. The basket is decoupled from it.
+  renderConnectionSkeleton();
   // Rehydrate the basket the planner persisted server-side so it survives a
   // reload or navigating away and back — it used to live only in browser memory.
+  // Its own fetch is fast (~40ms), so we render it NOW rather than gating it
+  // behind the slow status call, which is what made the basket appear late.
   try {
     const res = await api<{ trades?: Array<{ symbol: string; delta_czk: number }> }>("/api/trade/basket");
     if (isStaleToken("trade", token)) return;
@@ -162,7 +178,16 @@ async function loadTrade() {
   } catch (_e) {
     if (isStaleToken("trade", token)) return;  // else: keep whatever's in memory
   }
+  renderBasket();
   await renderConnection(token);
+}
+
+// Placeholder banner while the (slow) gateway status call is in flight.
+function renderConnectionSkeleton(): void {
+  const banner = $("#trade-banner");
+  if (banner) {
+    banner.innerHTML = `<div class="trade-bnr"><span class="spinner"></span> checking gateway connection\u2026</div>`;
+  }
 }
 
 async function renderConnection(token?: number) {
@@ -260,6 +285,18 @@ async function keepaliveTick() {
   }
 }
 
+// A center-origin magnitude bar for a basket row: buys grow right (green),
+// sells grow left (red), each scaled to the basket's largest trade. Turns the
+// column of numbers into a shape you can scan for "what's the big move here".
+function basketBar(delta: number, maxAbs: number): string {
+  const frac = maxAbs > 0 ? Math.min(1, Math.abs(delta) / maxAbs) : 0;
+  const w = (frac * 50).toFixed(1);   // half the track at most (center origin)
+  const buy = delta >= 0;
+  const style = buy ? `left:50%;width:${w}%` : `right:50%;width:${w}%`;
+  return `<span class="basket-bar" aria-hidden="true">` +
+    `<span class="basket-bar-fill ${buy ? "buy" : "sell"}" style="${style}"></span></span>`;
+}
+
 function renderBasket() {
   const wrap = $("#trade-result");
   if (!wrap) return;
@@ -280,13 +317,47 @@ function renderBasket() {
     return;
   }
 
-  card.appendChild(simpleTable({
-    className: "trade-basket-table",
-    head: `<tr><th>Symbol</th><th class="num">Planned (CZK)</th></tr>`,
-    rows: basket,
-    cells: (t) => `<td>${esc(t.symbol)}</td>` +
-      `<td class="num">${sensitive(`${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`, "planned trade size")}</td>`,
-  }));
+  const facts = basketMoneyFacts(basket);
+  const maxAbs = facts.largest ? Math.abs(facts.largest.czk) : 0;
+  const buys = basket.filter((t) => t.delta_czk >= 0).length;
+  const sells = basket.length - buys;
+  const net = facts.buy - facts.sell;      // >0 net cash out (buying), <0 net in
+  const gross = facts.buy + facts.sell;
+
+  const table = el("table", "trade-basket-table");
+  table.innerHTML =
+    `<thead><tr>` +
+      `<th>Symbol</th>` +
+      `<th class="tb-trend">3M trend</th>` +
+      `<th>Side</th>` +
+      `<th class="num">Planned (CZK)</th>` +
+      `<th class="tb-weight">Relative size</th>` +
+    `</tr></thead>` +
+    `<tbody>${basket.map((t) => {
+      const buy = t.delta_czk >= 0;
+      const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`;
+      return `<tr>` +
+        `<td>${tickerLink(t.symbol)}</td>` +
+        `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
+        `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
+        `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
+        `<td class="tb-weight">${sensitive(basketBar(t.delta_czk, maxAbs), "relative trade size")}</td>` +
+      `</tr>`;
+    }).join("")}</tbody>` +
+    `<tfoot><tr>` +
+      `<td colspan="3" class="tb-foot-count">` +
+        `<span class="trade-side buy">${buys} buy${buys === 1 ? "" : "s"}</span> · ` +
+        `<span class="trade-side sell">${sells} sell${sells === 1 ? "" : "s"}</span>` +
+      `</td>` +
+      `<td class="num" title="net cash impact — buys minus sells">` +
+        `<span class="muted">net</span> ${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(net))}`, "net basket cash")}` +
+      `</td>` +
+      `<td class="tb-weight muted" title="gross traded value — buys plus sells">gross ${sensitive(fmtCZK(gross), "gross basket value")}</td>` +
+    `</tr></tfoot>`;
+  card.appendChild(table);
+  // Trend sparklines: cached-only batch fill after the table paints (degrades to
+  // a blank cell for a name with no cached series).
+  void hydrateSparks(table);
 
   const actions = el("div", "trade-actions");
   const previewBtn = el("button", "primary", "Preview through IBKR");
@@ -420,7 +491,7 @@ function renderPreview() {
     const collides = !!sym && _workingSymbols.has(sym);
     if (collides) tr.classList.add("trade-collide-row");
     tr.insertAdjacentHTML("beforeend",
-      `<td>${esc(o.symbol || o.conid)}</td>` +
+      `<td>${o.symbol ? tickerLink(o.symbol) : esc(String(o.conid ?? ""))}</td>` +
       `<td>${sideTag(o.side ?? "")}</td>` +
       `<td class="num">${esc(o.quantity)}</td>` +
       `<td>${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} / ${esc(o.tif)}</td>` +
@@ -433,7 +504,7 @@ function renderPreview() {
       const note = el("tr", "trade-collide-note");
       const cell = el("td");
       cell.colSpan = 6;
-      cell.innerHTML = `\u26a0 <strong>${esc(sym)}</strong> already has a working order at IBKR \u2014 ` +
+      cell.innerHTML = `\u26a0 <strong>${tickerLink(sym)}</strong> already has a working order at IBKR \u2014 ` +
         `placing this could double-trade. Cancel or reconcile the existing order (see Working orders below) before you tick this.`;
       note.appendChild(cell);
       tbody.appendChild(note);
@@ -768,25 +839,223 @@ async function renderLiveOrders(token?: number) {
   }
   if (token != null && isStaleToken("trade", token)) return;
 
-  const orders = (data && data.orders) || [];
+  const all = (data && data.orders) || [];
   const pegs = (data && data.pegs) || [];
+  // Seed quotes from the last hydration so a re-fetch (peg poll / manual
+  // refresh) doesn't blink every market cell back to a placeholder before the
+  // fresh snapshot lands.
+  for (const o of all) {
+    const c = orderConid(o);
+    if (c != null && _quoteCache.has(c)) o.quote = _quoteCache.get(c);
+  }
+  // Cache the payload so column-sort clicks can re-render locally without a
+  // refetch (which would re-hit IBKR on every click).
+  _ordersData = { orders: all, pegs };
+  const working = all.filter((o) => !orderTerminal(o));
   // Refresh the cross-check set for the preview: only names with a live working
   // order count as a collision risk.
   _workingSymbols = new Set(
-    orders.map((o) => String(o.ticker || o.symbol || "").trim().toUpperCase()).filter(Boolean),
+    working.map((o) => String(o.ticker || o.symbol || "").trim().toUpperCase()).filter(Boolean),
   );
-  const pegById = new Map(pegs.map((p) => [String(p.order_id), p]));
-  body.innerHTML = "";
-  title.textContent = `Working orders (${orders.length})`;
-  if (!orders.length) {
-    body.appendChild(el("div", "hint", "No working orders at IBKR right now."));
-    stopPegPoll();
-    return;
-  }
-  orders.forEach((o) => body.appendChild(liveOrderRow(o, pegById.get(String(o.orderId || o.order_id || "")))));
+  // The market snapshot is a separate ~2s call; paint the list now and stream
+  // the quotes into the market cells once they arrive, rather than blocking the
+  // whole list on them (which used to double this endpoint's latency).
+  _quotesPending = working.some((o) => !o.quote);
+  paintOrders(body, title);
+  void hydrateQuotes(token, body, title);
   // Keep the card live while a peg is running so its reprice count updates.
   if (pegs.length) startPegPoll();
   else stopPegPoll();
+}
+
+// Live quotes, cached by conid so a re-fetch keeps showing the last market while
+// the fresh snapshot loads. Whether a hydration is currently in flight drives
+// the "loading" vs "no quote" placeholder in the market cell.
+const _quoteCache = new Map<string | number, Quote>();
+let _quotesPending = false;
+
+function orderConid(o: LiveOrder): number | null {
+  const c = o.conid;
+  if (c == null || c === "") return null;
+  const n = typeof c === "number" ? c : Number(c);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Fetch {last,bid,ask} for the working orders' conids and fold them into the
+// cached payload, then repaint the market cells. Best-effort: a failure just
+// leaves the cells in their current (placeholder or stale) state.
+async function hydrateQuotes(token: number | undefined, body: HTMLElement, title: HTMLElement): Promise<void> {
+  if (!_ordersData) return;
+  const conids = Array.from(new Set(
+    _ordersData.orders.filter((o) => !orderTerminal(o))
+      .map(orderConid).filter((c): c is number => c != null),
+  ));
+  if (!conids.length) {
+    _quotesPending = false;              // nothing to fetch: resolve placeholders
+    if (body.isConnected) paintOrders(body, title);
+    return;
+  }
+  let map: Record<string, Quote> = {};
+  try {
+    const res = await api<{ quotes?: Record<string, Quote> }>(`/api/trade/quotes?conids=${conids.join(",")}`);
+    map = (res && res.quotes) || {};
+  } catch {
+    // leave the placeholder; a later poll/refresh may succeed
+  }
+  _quotesPending = false;
+  if (token != null && isStaleToken("trade", token)) return;
+  if (!_ordersData || !body.isConnected) return;
+  for (const o of _ordersData.orders) {
+    const c = orderConid(o);
+    const q = c != null ? map[String(c)] : undefined;
+    if (q) { o.quote = q; _quoteCache.set(c as number, q); }
+  }
+  paintOrders(body, title);
+}
+
+// Last fetched orders payload, kept so a sort click can repaint from memory.
+let _ordersData: { orders: LiveOrder[]; pegs: PegState[] } | null = null;
+
+// Client-side sort over the working list. Two sortable columns, each 3-state
+// (desc -> asc -> off), so the operator can foreground either the orders drifting
+// furthest from the market or the ones that have rested longest.
+type OrdersSortKey = "lastdist" | "age";
+let _ordersSort: { key: OrdersSortKey; dir: "asc" | "desc" } | null = null;
+
+function cycleOrdersSort(key: OrdersSortKey): void {
+  if (!_ordersSort || _ordersSort.key !== key) { _ordersSort = { key, dir: "desc" }; return; }
+  if (_ordersSort.dir === "desc") { _ordersSort.dir = "asc"; return; }
+  _ordersSort = null;  // third click restores IBKR's own order
+}
+
+// |limit - last| / last: how far the resting price has drifted from the last
+// trade, as a fraction. null when either price is missing.
+function orderLastDist(o: LiveOrder): number | null {
+  const last = o.quote && typeof o.quote.last === "number" ? o.quote.last : null;
+  const limit = typeof o.price === "number" ? o.price
+    : (o.price != null && o.price !== "" ? Number(o.price) : NaN);
+  if (last == null || last === 0 || !Number.isFinite(limit)) return null;
+  return Math.abs(limit - last) / last;
+}
+
+function sortWorking(rows: LiveOrder[]): LiveOrder[] {
+  if (!_ordersSort) return rows;
+  const { key, dir } = _ordersSort;
+  const value = key === "age"
+    ? (o: LiveOrder) => (typeof o.lastExecutionTime_r === "number" ? Date.now() - o.lastExecutionTime_r : null)
+    : (o: LiveOrder) => orderLastDist(o);
+  const sign = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = value(a), vb = value(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;   // rows without the metric always sink
+    if (vb == null) return -1;
+    return (va - vb) * sign;
+  });
+}
+
+// Render the working list into an existing card body from _ordersData. Called
+// after a fetch and on every sort click (no refetch).
+function paintOrders(body: HTMLElement, title: HTMLElement): void {
+  if (!_ordersData) return;
+  const { orders: all, pegs } = _ordersData;
+  const working = all.filter((o) => !orderTerminal(o));
+  const done = all.filter((o) => orderTerminal(o));
+  const pegById = new Map(pegs.map((p) => [String(p.order_id), p]));
+  body.innerHTML = "";
+  title.textContent = `Working orders (${working.length})`;
+  if (!working.length && !done.length) {
+    body.appendChild(el("div", "hint", "No working orders at IBKR right now."));
+    return;
+  }
+  if (working.length) {
+    body.appendChild(ordersLegend());
+    // A single grid container (rows use display:contents) so columns line up
+    // across every row instead of each row sizing its own auto columns.
+    const rows = el("div", "trade-live-rows");
+    const header = el("div", "trade-live-headrow");
+    header.innerHTML = ordersHeaderCells();
+    header.querySelectorAll<HTMLButtonElement>("[data-osort]").forEach((b) => {
+      b.onclick = () => { cycleOrdersSort(b.dataset.osort as OrdersSortKey); paintOrders(body, title); };
+    });
+    rows.appendChild(header);
+    sortWorking(working).forEach((o) =>
+      rows.appendChild(liveOrderRow(o, pegById.get(String(o.orderId || o.order_id || "")))));
+    body.appendChild(rows);
+  } else {
+    body.appendChild(el("div", "hint", "No working orders at IBKR right now."));
+  }
+  if (done.length) body.appendChild(doneSummary(done));
+}
+
+// Header cells for the shared grid (display:contents). The Market and Age cells
+// are sort buttons; the rest are plain labels.
+function ordersHeaderCells(): string {
+  const arrow = (k: OrdersSortKey) =>
+    _ordersSort && _ordersSort.key === k ? (_ordersSort.dir === "asc" ? " \u25b2" : " \u25bc") : "";
+  const active = (k: OrdersSortKey) => (_ordersSort && _ordersSort.key === k ? " active" : "");
+  return `<span class="trade-live-h">Symbol</span>` +
+    `<span class="trade-live-h"></span>` +
+    `<span class="trade-live-h num">Qty</span>` +
+    `<span class="trade-live-h">Order</span>` +
+    `<span class="trade-live-h num">Last</span>` +
+    `<span class="trade-live-h">Bid \u00d7 Ask</span>` +
+    `<span class="trade-live-h num">Spread</span>` +
+    `<button class="trade-live-h sortable${active("lastdist")}" type="button" data-osort="lastdist" ` +
+      `title="sort by how far the limit sits from the best price on its side">Edge${arrow("lastdist")}</button>` +
+    `<span class="trade-live-h">Cost</span>` +
+    `<button class="trade-live-h sortable${active("age")}" type="button" data-osort="age" ` +
+      `title="sort by how long the order has rested">Age${arrow("age")}</button>` +
+    `<span class="trade-live-h"></span>`;
+}
+
+// Terminal (done) statuses: IBKR keeps recently filled/cancelled orders in the
+// orders feed, but they can't be pegged or cancelled.
+const TERMINAL_STATUS = /^(filled|cancelled|canceled|expired|rejected|apicancelled)$/i;
+function orderTerminal(o: LiveOrder): boolean {
+  return TERMINAL_STATUS.test(String(o.status || o.order_status || "").trim());
+}
+
+// Inline icons (currentColor) so actions read as buttons, not a wall of text.
+const ICON_PEG =
+  `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 3h10" ` +
+  `stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M8 13V6M5 9l3-3 3 3" ` +
+  `fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_STOP =
+  `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">` +
+  `<rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>`;
+const ICON_CANCEL =
+  `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" ` +
+  `stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+
+function iconBtn(svg: string, label: string, cls: string): HTMLButtonElement {
+  const b = el("button", `trade-ico ${cls}`) as HTMLButtonElement;
+  b.type = "button";
+  b.innerHTML = svg;
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  return b;
+}
+
+// One legend for the whole list, so the row icons don't need repeated captions.
+function ordersLegend(): HTMLElement {
+  const lg = el("div", "trade-live-legend hint");
+  lg.innerHTML =
+    `<span><b>Edge</b> = how far your limit sits from the best price on its side ` +
+      `(green = at the touch, red = far); <b>Cost</b> = a sell's gain vs its purchase price</span>` +
+    `<span class="trade-live-keys">${ICON_PEG} keep at top &nbsp; ${ICON_CANCEL} cancel</span>`;
+  return lg;
+}
+
+function doneSummary(done: LiveOrder[]): HTMLElement {
+  const names = done.map((o) => {
+    const s = String(o.ticker || o.symbol || "").trim();
+    return s ? tickerLink(s) : esc(String(o.conid ?? "?"));
+  });
+  const wrap = el("div", "trade-live-done hint");
+  const label = done.length === 1 ? "1 recently filled/cancelled" : `${done.length} recently filled/cancelled`;
+  wrap.innerHTML = `${esc(label)}: ${names.join(", ")}`;
+  return wrap;
 }
 
 function startPegPoll() {
@@ -802,15 +1071,12 @@ function pegAccount(): string | undefined {
   return (_status && _status.default_account) || (_preview && _preview.account) || undefined;
 }
 
-async function startPeg(order_id: string, worstInput: HTMLInputElement, btn: HTMLButtonElement) {
+async function startPeg(order_id: string, btn: HTMLButtonElement) {
   btn.disabled = true;
-  const worst = worstInput.value.trim();
   try {
-    await api("/api/trade/peg", "POST", {
-      order_id,
-      account: pegAccount(),
-      ...(worst ? { worst_price: Number(worst) } : {}),
-    });
+    // No bound sent: the peg defaults to this order's own limit as the floor and
+    // never crosses the spread, which is the safe default we expose in the UI.
+    await api("/api/trade/peg", "POST", { order_id, account: pegAccount() });
     renderLiveOrders();  // reflect the new peg immediately; poll takes over after
   } catch (e) {
     btn.disabled = false;
@@ -829,62 +1095,226 @@ async function stopPeg(order_id: string, btn: HTMLButtonElement) {
   }
 }
 
+// Format a price in the instrument's own currency: 2 decimals, up to 4 for the
+// sub-dollar / fractional-tick names (e.g. 8.400, 1.54).
+function px(n: number): string {
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+// Cost basis needs less precision than a live quote (it's not tick-sensitive):
+// always two decimals, regardless of the price magnitude.
+function pxCost(n: number): string {
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// A ticker rendered as a deep-dive link. The global `a.tlink` click handler in
+// shell intercepts it and routes to the deep dive (live-pulling on a cache
+// miss), so this only needs the class + data-ticker; the href keeps it a real,
+// middle-clickable link. Empty for a blank symbol (e.g. a conid-only fallback).
+function tickerLink(sym: unknown): string {
+  const s = String(sym ?? "").trim();
+  if (!s) return "";
+  const e = esc(s);
+  return `<a class="tlink" data-ticker="${e}" href="?view=deepdive&ticker=${encodeURIComponent(s)}" title="Open ${e} deep-dive">${e}</a>`;
+}
+
+// A dim placeholder for a market column with nothing to show, so empty cells
+// read as intentionally blank rather than a broken layout.
+const EMPTY_CELL = `<span class="trade-live-dim">\u00b7</span>`;
+
+// The five market columns for one order — bid × ask, spread, last, edge, cost —
+// emitted as SEPARATE grid cells (not one wrapping blob) so figures line up down
+// each column and stay scannable across rows. This is what makes "keep at top" a
+// judgement call rather than a blind toggle.
+function marketCells(o: LiveOrder): string {
+  const q = o.quote;
+  const bid = q && typeof q.bid === "number" ? q.bid : null;
+  const ask = q && typeof q.ask === "number" ? q.ask : null;
+  const last = q && typeof q.last === "number" ? q.last : null;
+  const cold = bid == null && ask == null && last == null;
+
+  let quoteC: string;
+  if (cold) {
+    quoteC = _quotesPending
+      ? `<span class="trade-live-quoteload"><span class="spinner"></span> quote\u2026</span>`
+      : `<span class="muted">no quote</span>`;
+  } else if (bid != null && ask != null) {
+    quoteC = `${px(bid)} <span class="muted">\u00d7</span> ${px(ask)}`;
+  } else {
+    quoteC = EMPTY_CELL;
+  }
+
+  let spreadC = EMPTY_CELL;
+  if (bid != null && ask != null) {
+    const spread = ask - bid;
+    const mid = (ask + bid) / 2;
+    const spreadPct = mid > 0 ? (spread / mid) * 100 : 0;
+    const wide = spreadPct >= 0.5;  // a spread the peg can meaningfully work inside
+    spreadC = `<span class="trade-live-spread${wide ? " wide" : ""}" ` +
+      `title="bid-ask spread \u0394${esc(px(spread))}">${spreadPct.toFixed(2)}%</span>`;
+  }
+
+  const lastC = last != null ? px(last) : EMPTY_CELL;
+
+  // Where the resting limit sits relative to the price it must beat to fill,
+  // drawn as a distance meter (short/green = near the touch, long/red = far).
+  let edgeC = EMPTY_CELL;
+  const limit = typeof o.price === "number" ? o.price : (o.price != null && o.price !== "" ? Number(o.price) : NaN);
+  const side = String(o.side || "").toUpperCase();
+  if (Number.isFinite(limit) && (bid != null || ask != null)) {
+    const ref = side === "BUY" ? ask : bid;  // buyers chase the ask; sellers the bid
+    if (ref != null && ref > 0) {
+      const gapPct = side === "BUY" ? ((ref - limit) / ref) * 100 : ((limit - ref) / ref) * 100;
+      const word = side === "BUY"
+        ? (gapPct >= 0 ? "below ask" : "above ask")
+        : (gapPct >= 0 ? "above bid" : "below bid");
+      const label = Math.abs(gapPct) < 0.05
+        ? `at the ${side === "BUY" ? "ask" : "bid"}`
+        : `${Math.abs(gapPct).toFixed(1)}% ${word}`;
+      edgeC = edgeMeter(gapPct, label);
+    }
+  }
+
+  // Last leads (the price you judge your limit against, so it's the headline);
+  // bid × ask + spread follow as supporting microstructure, then edge and cost.
+  return `<span class="trade-live-last num">${lastC}</span>` +
+    `<span class="trade-live-quote">${quoteC}</span>` +
+    `<span class="num">${spreadC}</span>` +
+    `<span class="trade-live-edge-c">${edgeC}</span>` +
+    `<span class="trade-live-cost-c">${costCell(o)}</span>`;
+}
+
+// A SELL's average purchase price and the limit's gain/loss against it — the
+// "am I selling at a profit?" read — for its own column. Dim for buys or a name
+// with no cost basis. With a limit, shows the % the fill would lock in.
+function costCell(o: LiveOrder): string {
+  if (String(o.side || "").toUpperCase() !== "SELL") return EMPTY_CELL;
+  const cost = typeof o.avg_cost === "number" ? o.avg_cost : null;
+  if (cost == null || cost <= 0) return EMPTY_CELL;
+  const limit = typeof o.price === "number" ? o.price : (o.price != null && o.price !== "" ? Number(o.price) : NaN);
+  if (Number.isFinite(limit)) {
+    const g = ((limit - cost) / cost) * 100;
+    const cls = g >= 0 ? "gain" : "loss";
+    const sign = g >= 0 ? "+" : "\u2212";
+    return `<span class="trade-live-cost" title="avg purchase price ${esc(pxCost(cost))}; the limit locks ${sign}${Math.abs(g).toFixed(1)}%">` +
+      `${pxCost(cost)} <span class="${cls}">${sign}${Math.abs(g).toFixed(1)}%</span></span>`;
+  }
+  return `<span class="trade-live-cost" title="average purchase price">${pxCost(cost)}</span>`;
+}
+
+// A bar for the limit-vs-touch gap. LOG-scaled (cap ~120%) rather than linear:
+// resting targets span <1% to 100%+, so a linear 5% cap saturated almost every
+// bar to full-width red. Log spreads that range out, and the fill's colour runs
+// continuously green (at the touch) -> amber -> red (far) so distance reads at a
+// glance. The exact figure sits beside it; direction is in the tooltip.
+function edgeMeter(gapPct: number, label: string): string {
+  const mag = Math.abs(gapPct);
+  const CAP = 120;
+  const frac = Math.min(1, Math.log1p(mag) / Math.log1p(CAP));
+  const fill = Math.max(6, Math.round(frac * 100));   // floor so a ~0% gap still shows
+  const hue = Math.round((1 - frac) * 130);           // 130=green (near) .. 0=red (far)
+  return `<span class="trade-live-edge" title="limit ${esc(label)}">` +
+    `<span class="edge-meter"><span class="edge-fill" ` +
+      `style="width:${fill}%;background:hsl(${hue}, 68%, 52%)"></span></span>` +
+    `<span class="edge-num">${mag.toFixed(1)}%</span></span>`;
+}
+
+// Compact "how long it's rested" from an epoch-ms stamp: 5m / 3h / 2d / 4w.
+function agoShort(sinceMs: number): string {
+  const secs = Math.max(0, (Date.now() - sinceMs) / 1000);
+  const mins = secs / 60, hrs = mins / 60, days = hrs / 24;
+  if (secs < 90) return "just now";
+  if (mins < 90) return `${Math.round(mins)}m`;
+  if (hrs < 36) return `${Math.round(hrs)}h`;
+  if (days < 14) return `${Math.round(days)}d`;
+  if (days < 60) return `${Math.round(days / 7)}w`;
+  return `${Math.round(days / 30)}mo`;
+}
+
+// IBKR-style status-as-colour: a dot carries the state (exact text on hover), so
+// the uninteresting "PreSubmitted" string doesn't need a whole column of prose.
+// green = working at the exchange, blue = accepted/held (e.g. resting GTC),
+// amber = pending, grey = inactive/unknown.
+function statusDot(o: LiveOrder): string {
+  const st = String(o.status || o.order_status || "").trim();
+  const k = st.toLowerCase();
+  let tone = "unknown";
+  if (k === "submitted") tone = "live";
+  else if (k === "presubmitted") tone = "held";
+  else if (k.startsWith("pending")) tone = "pending";
+  else if (k === "inactive") tone = "inactive";
+  return `<span class="trade-live-dot tone-${tone}" title="${esc(st || "unknown status")}"></span>`;
+}
+
+// Status column: the colour dot plus the order's age; while pegging, the live
+// reprice/resting message is more useful than the age, so show that instead.
+function statusCell(o: LiveOrder, peg?: PegState): string {
+  const dot = statusDot(o);
+  if (peg) {
+    const msg = esc(peg.message || peg.state || "");
+    return `${dot}${msg ? `<span class="trade-live-pegmsg">${msg}</span>` : ""}`;
+  }
+  const ms = typeof o.lastExecutionTime_r === "number" ? o.lastExecutionTime_r : null;
+  if (!ms) return dot;
+  return `${dot}<span class="trade-live-age" title="last update ${esc(new Date(ms).toLocaleString())}">` +
+    `${esc(agoShort(ms))}</span>`;
+}
+
 function liveOrderRow(o: LiveOrder, peg?: PegState): HTMLElement {
   const row = el("div", "trade-live-row");
   const oid = String(o.orderId || o.order_id || "");
   const side = String(o.side || "").toUpperCase();
   const qty = o.remainingQuantity ?? o.totalSize ?? o.quantity ?? "";
   const type = o.orderType || o.order_type || "";
-  const priceBit = o.price != null && o.price !== "" ? ` @ ${esc(o.price)}` : "";
+  const priceStr = o.price != null && o.price !== "" ? esc(o.price) : "";
   const tif = o.tif || o.timeInForce || "";
-  // Prefer IBKR's own one-liner when present; it already reads well.
-  const detail = o.orderDesc
-    ? esc(o.orderDesc)
-    : `${esc(type)}${priceBit}${tif ? ` / ${esc(tif)}` : ""}`;
+  // Compact order line: price + tif. The "Limit" word is dropped (the column is
+  // headed "Order" and these are limits); a non-limit type keeps its label. The
+  // redundant "Sell 250 GSK" prose is gone — side/qty/symbol have their columns.
+  const isLimitType = /lmt|limit/i.test(String(type));
+  const typePrefix = isLimitType || !type ? "" : `${esc(type)} `;
+  const detail = `${typePrefix}${priceStr}${tif ? ` <span class="muted">· ${esc(tif)}</span>` : ""}`;
   const pegBadge = peg
     ? `<span class="trade-peg-badge" title="${esc(peg.message || "")}">pegging${peg.reprices ? ` ·${peg.reprices}` : ""}</span>`
     : "";
+  if (peg) row.classList.add("is-pegging");
+  const symRaw = String(o.ticker || o.symbol || "").trim();
+  const symCell = symRaw ? tickerLink(symRaw) : esc(String(o.conid ?? "?"));
   row.innerHTML =
-    `<span class="trade-live-sym">${esc(o.ticker || o.symbol || o.conid || "?")}${pegBadge}</span>` +
+    `<span class="trade-live-sym">${symCell}${pegBadge}</span>` +
     `<span>${side ? sideTag(side) : ""}</span>` +
     `<span class="num">${esc(qty)}</span>` +
     `<span class="trade-live-detail">${detail}</span>` +
-    `<span class="trade-live-status">${esc(peg ? (peg.message || peg.state || "") : (o.status || o.order_status || ""))}</span>`;
+    marketCells(o) +
+    `<span class="trade-live-status">${statusCell(o, peg)}</span>`;
 
   const actions = el("span", "trade-live-actions");
   // Only a resting limit order can be pegged (needs a price to improve on).
   const isLimit = /lmt|limit/i.test(String(type)) && o.price != null && o.price !== "";
   if (oid && isLimit) {
     if (peg) {
-      const stop = el("button", "ghost", "Stop peg");
-      stop.type = "button";
+      const stop = iconBtn(ICON_STOP, "Stop keeping at top", "stop");
       stop.onclick = () => void stopPeg(oid, stop);
       actions.appendChild(stop);
     } else {
-      const worst = el("input", "trade-peg-worst") as HTMLInputElement;
-      worst.type = "number";
-      worst.step = "any";
-      worst.placeholder = side === "SELL" ? "min px" : "max px";
-      worst.title = "Worst price the peg may move to (optional; defaults to this order's limit)";
-      const keep = el("button", "ghost", "Keep at top");
-      keep.type = "button";
-      keep.title = "Keep this order one tick better than the best price on its side (never crosses the spread)";
-      keep.onclick = () => void startPeg(oid, worst, keep);
-      actions.appendChild(worst);
+      const keep = iconBtn(ICON_PEG, "Keep at top", "peg");
+      keep.title = "Keep at top — hold this order one tick better than the best price on its side (never crosses the spread)";
+      keep.onclick = () => void startPeg(oid, keep);
       actions.appendChild(keep);
     }
   }
 
-  const cancel = el("button", "ghost", "Cancel");
-  cancel.type = "button";
-  cancel.onclick = async () => {
-    cancel.disabled = true;
-    try {
-      await api("/api/trade/cancel", "POST", { order_id: oid, account: pegAccount() });
-      renderLiveOrders();
-    } catch (e) { cancel.disabled = false; cancel.title = (e as Error).message; }
-  };
-  if (oid) actions.appendChild(cancel);
+  if (oid) {
+    const cancel = iconBtn(ICON_CANCEL, "Cancel order", "cancel");
+    cancel.onclick = async () => {
+      cancel.disabled = true;
+      try {
+        await api("/api/trade/cancel", "POST", { order_id: oid, account: pegAccount() });
+        renderLiveOrders();
+      } catch (e) { cancel.disabled = false; cancel.title = (e as Error).message; }
+    };
+    actions.appendChild(cancel);
+  }
   row.appendChild(actions);
   return row;
 }

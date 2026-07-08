@@ -143,6 +143,7 @@ class ParallelFanout(unittest.TestCase):
             "synth": aj._synthesize_portfolio,
             "save": optimizer.save_portfolio_review,
             "workers": aj.PORTFOLIO_REVIEW_WORKERS,
+            "basket": aj.basket.load_basket,
         }
         self.captured: dict = {}
         self.lock = threading.Lock()
@@ -160,6 +161,11 @@ class ParallelFanout(unittest.TestCase):
             return "Accumulate, high confidence"
 
         aj._held_symbols = lambda: list(self.syms)
+        # The review scope is _held_symbols() PLUS the staged basket picks. Pin the
+        # basket empty so the scope is exactly self.syms -- otherwise a dev box with
+        # a real staged basket leaks its tickers into the fanout and this assertion
+        # fails locally (while passing on a clean CI checkout with no basket).
+        aj.basket.load_basket = lambda: {"items": []}
         aj.latest_analysis = lambda s: None       # force a fresh analysis
         aj._analyze_one = fake_one
         aj._synthesize_portfolio = lambda notes: ({k: {"conviction": "high"} for k in notes}, "")
@@ -173,6 +179,7 @@ class ParallelFanout(unittest.TestCase):
         aj._synthesize_portfolio = self._save["synth"]
         optimizer.save_portfolio_review = self._save["save"]
         aj.PORTFOLIO_REVIEW_WORKERS = self._save["workers"]
+        aj.basket.load_basket = self._save["basket"]
 
     def test_runs_in_parallel_under_cap(self):
         aj.PORTFOLIO_REVIEW_WORKERS = 8
