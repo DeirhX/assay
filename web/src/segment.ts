@@ -1,5 +1,5 @@
 import { starHtml } from "./basket";
-import { $$, api, decisionClass, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
+import { $$, api, decisionPill, el, emptyState, esc, fmtB, fmtPct, fmtPrice, fmtX, loadError, pctClass, relAge, scoreClass, sectionCard, spinner, state } from "./core";
 import type { SegmentSummary } from "./api-types";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
@@ -206,7 +206,7 @@ function renderSegment(rec: SegmentRec) {
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
       sparkPlaceholder(m.symbol),
-      `<span class="decision-pill ${decisionClass(m.decision ?? "")}">${esc(String(m.decision || "research").replace("_", " "))}</span>`,
+      decisionPill(m.decision, { fallback: "research" }),
       `<span class="score-pill ${scoreClass(m.research_score)}">${m.research_score == null ? "n/a" : esc(m.research_score)}</span>`,
       `<span class="sleeve-tag">${esc(m.sleeve)}</span>`,
       m.owned_pct_nav != null ? `<span class="owned-pill">${m.owned_pct_nav.toFixed(1)}</span>` : `<span class="muted">–</span>`,
