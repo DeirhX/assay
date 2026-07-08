@@ -5,6 +5,7 @@
 // paints the results. Keep it that way — if a new number needs to appear in the
 // planner, derive it here first.
 import type { CashBlock, PlanRow, WhatifTrade } from "./api-types";
+import { axisMax, clampPct, onAxis, r1 } from "./weight-axis";
 
 // Band membership tolerance: weights are shown to 2 decimals, so a projection
 // within a hundredth of a band edge counts as inside (mirrors the backend).
@@ -13,8 +14,9 @@ export const BAND_EPS = 0.01;
 // tenths of a percent; 0.001 only ever appears via float noise).
 export const DELTA_EPS = 0.001;
 
-export const r1 = (n: number) => Math.round(n * 10) / 10;
-export const clampPct = (v: number) => Math.max(0, Math.min(100, v));
+// r1/clampPct now live in the shared weight-axis module; re-export so existing
+// planner call sites keep importing them from here.
+export { r1, clampPct };
 
 // An <input type=number> can hold "", "-", or garbage mid-edit; the plan math
 // treats all of those as zero rather than poisoning the totals with NaN.
@@ -37,24 +39,20 @@ export const rebDefaultDelta = (r: Pick<PlanRow, "action" | "suggest_delta_pct">
 export const inBandAfter = (proj: number, low: number, high: number) =>
   proj >= low - BAND_EPS && proj <= high + BAND_EPS;
 
-// One axis for the whole plan: round the largest band edge / weight / projection
-// up to a friendly multiple of 5, with a 10% floor so a book of small bands
-// still reads.
+// One axis for the whole plan: the largest band edge / weight / projection,
+// rounded up to a friendly multiple of 5 with a 10% floor (see weight-axis).
 export function rebScaleMax(rows: Pick<PlanRow, "high" | "current_pct" | "suggest_delta_pct">[]): number {
-  let max = 0;
+  const vals: number[] = [];
   for (const r of rows) {
-    if (typeof r.high === "number") max = Math.max(max, r.high);
-    if (typeof r.current_pct === "number") max = Math.max(max, r.current_pct);
-    const proj = (r.current_pct || 0) + (r.suggest_delta_pct || 0);
-    max = Math.max(max, proj);
+    vals.push(r.high, r.current_pct, (r.current_pct || 0) + (r.suggest_delta_pct || 0));
   }
-  return Math.max(10, Math.ceil(max / 5) * 5);
+  return axisMax(vals);
 }
 
 // ---- track geometry ---------------------------------------------------------
-// The Position track maps weights onto a shared 0..scaleMax axis; these two
-// helpers are the only place that mapping lives.
-export const scalePct = (v: number, scaleMax: number) => clampPct((v / scaleMax) * 100);
+// The Position track maps weights onto a shared 0..scaleMax axis; this is the
+// shared projection (kept under the planner's own name for its call sites).
+export const scalePct = onAxis;
 
 // The current→projected connector bar: spans between the two ticks.
 export const connectorGeom = (curP: number, projP: number) =>
