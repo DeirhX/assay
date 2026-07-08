@@ -19,6 +19,17 @@ import type { MemberInput, RowInput, SleeveInput } from "./rebalance-model";
 
 const rebStatusClass = (s: string | null | undefined) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
 const rebActionClass = (a: string | null | undefined) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
+// Standing-stance verb -> tone, so the suggested action (the most important word
+// on the row) reads in the same green-add / red-trim language as the status and
+// delta chips. Colour is reserved for actionable stances; a plain hold stays
+// neutral but bold ("hold") so it's pronounced without shouting.
+const RULE_TONE: Record<string, "good" | "bad" | "warn" | "hold"> = {
+  accumulate: "good", buy: "good",
+  reduce: "bad", trim_only: "bad", avoid: "bad",
+  wait: "warn",
+  hold: "hold", do_not_add: "hold",
+};
+const rebRuleTone = (r?: string | null) => RULE_TONE[r || ""] || "hold";
 
 // The applied-funding summary card (pure; exported for tests): which trims got
 // filled in, from which bucket, and what each would realize tax-wise.
@@ -415,16 +426,21 @@ function renderRebalance(plan: RebPlan) {
       sym.addEventListener("click", () => analyzeFromAnywhere(r.name));
     }
     const nameCell = el("div", "reb-c reb-name");
+    // Header line: favourite star, the (clickable) ticker, and the band-lineage
+    // badge sit together on one row so the name reads as a unit instead of a
+    // column of full-width boxes.
+    const nameHead = el("div", "reb-name-head");
     // Star only single tickers — a sleeve row is itself a basket, not one name.
-    if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", starHtml(r.name, "rebalance"));
-    nameCell.appendChild(sym);
-    nameCell.appendChild(el("span", "reb-rule", esc(ruleWord(r.rule) || r.rule)));
+    if (r.kind === "target") nameHead.insertAdjacentHTML("beforeend", starHtml(r.name, "rebalance"));
+    nameHead.appendChild(sym);
+    const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
+    if (prov) nameHead.appendChild(prov);
+    nameCell.appendChild(nameHead);
+    nameCell.appendChild(el("span", `reb-rule reb-rule-${rebRuleTone(r.rule)}`, esc(ruleWord(r.rule) || r.rule)));
     // A single-name row gets a cached-only trend cue; sleeves are baskets, no
     // one price to spark. Filled by the batch hydrateSparks() call after render.
     if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", sparkPlaceholder(r.name));
     if (r.kind === "target") nameCells[cleanSymbol(r.name)] = nameCell;
-    const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
-    if (prov) nameCell.appendChild(prov);
     if (r.note) nameCell.title = r.note;
     const research = researchLine(r);
     if (research) {
