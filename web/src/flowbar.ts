@@ -47,12 +47,20 @@ async function fetchFlowData(): Promise<FlowData> {
 export function invalidateFlowData(): void { _cacheAt = 0; }
 
 // ---- pure builders (exported for tests) -------------------------------------
-// Which pipeline stage a rebalance-group view belongs to.
+// Which pipeline stage a view belongs to. `holdings`/`setup` are stage 1 (the
+// current book) even though they live in the portfolio group, so the bar stays
+// put — and highlights the right step — when you click through to "Current book".
 export function stageForView(view: string): 1 | 2 | 3 | 4 {
+  if (view === "holdings" || view === "setup") return 1;
   if (view === "trade") return 3;
   if (view === "target-state") return 4;
   return 2;  // rebalance / optimizer / working-draft / exit: deciding the changes
 }
+
+// Non-rebalance-group views that still belong to the pipeline and so keep the
+// flow bar visible. Only the "Current book" target (holdings) — the other
+// portfolio views (history, risk, tax, …) aren't pipeline steps.
+const FLOW_VIEWS = new Set(["holdings"]);
 
 const plural = (n: number, s: string) => `${n} ${s}${n === 1 ? "" : "s"}`;
 const ago = (d: number | null | undefined) =>
@@ -130,12 +138,14 @@ export function initFlowBar(): void {
   });
 }
 
-// Show the bar on rebalance-group views (the shell calls this on every view
-// switch); render instantly from cache, then refresh once the fetch lands.
+// Show the bar on rebalance-group views plus the pipeline's "Current book"
+// target (holdings), so clicking stage 1 doesn't drop the guide (the shell calls
+// this on every view switch); render instantly from cache, then refresh once the
+// fetch lands.
 export function updateFlowBar(view: string, group: string): void {
   const host = $("#flowbar");
   if (!host) return;
-  if (group !== "rebalance") { host.hidden = true; return; }
+  if (group !== "rebalance" && !FLOW_VIEWS.has(view)) { host.hidden = true; return; }
   host.hidden = false;
   const stage = stageForView(view);
   if (_cache) host.innerHTML = flowBarHtml(_cache, stage);

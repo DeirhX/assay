@@ -106,6 +106,9 @@ header.topbar h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 }
 .subtab:hover { color: var(--text); }
 .subtab.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* Splits the four "Plan changes" tools from the "Orders" (Trade) tab so the
+   flow bar's 4-into-1 stage mapping reads as deliberate, not accidental. */
+.subtab-sep { align-self: center; width: 1px; height: 15px; margin: 0 10px; background: var(--border); }
 
 .tab.settings-cog {
   width: var(--control-h); height: var(--control-h); padding: 0;

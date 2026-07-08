@@ -1,8 +1,16 @@
 // Tests for the rebalance flow bar's pure builders: stage counts and tones from
 // the overview payload, the working-orders chip only when the gateway answered,
 // the view->stage mapping, and the active-stage highlight.
-import { describe, expect, it } from "vitest";
-import { flowBarHtml, flowStages, stageForView, type FlowData } from "../src/flowbar";
+import { describe, expect, it, vi } from "vitest";
+
+// Keep updateFlowBar's best-effort data fetch off the network so it doesn't leave
+// a pending request happy-dom has to abort on teardown; $ and esc stay real.
+vi.mock("../src/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/core")>()),
+  api: vi.fn(() => Promise.resolve({})),
+}));
+
+import { flowBarHtml, flowStages, stageForView, updateFlowBar, type FlowData } from "../src/flowbar";
 
 const data = (over: Partial<FlowData> = {}): FlowData => ({
   ov: {
@@ -22,6 +30,24 @@ describe("stageForView", () => {
     for (const v of ["rebalance", "optimizer", "working-draft", "exit"]) {
       expect(stageForView(v)).toBe(2);
     }
+  });
+
+  it("maps the current-book views (holdings/setup) to stage 1", () => {
+    expect(stageForView("holdings")).toBe(1);
+    expect(stageForView("setup")).toBe(1);
+  });
+});
+
+describe("updateFlowBar visibility", () => {
+  it("stays visible on holdings (stage 1) but hides on other portfolio views", () => {
+    document.body.innerHTML = '<nav id="flowbar" hidden></nav>';
+    const host = document.getElementById("flowbar") as HTMLElement;
+    updateFlowBar("rebalance", "rebalance");
+    expect(host.hidden).toBe(false);           // its own group
+    updateFlowBar("holdings", "portfolio");
+    expect(host.hidden).toBe(false);           // Current book, though a portfolio view
+    updateFlowBar("history", "portfolio");
+    expect(host.hidden).toBe(true);            // not a pipeline step
   });
 });
 
