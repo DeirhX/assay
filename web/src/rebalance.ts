@@ -298,7 +298,7 @@ function renderRebalance(plan: RebPlan) {
     `</div>`;
 
   // Nullable: the banner (and this button) only render when a working draft
-  // exists, so its absence is a legitimate, handled state - not a missing shell node.
+  // exists, so its absence is a legitimate state — not a missing-shell error.
   const openDraft = $("#reb-open-draft");
   if (openDraft) openDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
 

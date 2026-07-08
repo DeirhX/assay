@@ -275,10 +275,14 @@ describe("trade desk safety gates", () => {
   });
 });
 
-async function loadWith(status: object, orders: object[]) {
+// Quotes now arrive from a separate async endpoint. Tests that care about the
+// market cell put the quote on the order under `quote` AND pass `quotes` here,
+// keyed by conid, so the hydration path fills the same values it would live.
+async function loadWith(status: object, orders: object[], quotes: Record<string, object> = {}) {
   apiMock.mockImplementation((path: string) => {
     if (path === "/api/trade/status") return Promise.resolve(status);
     if (path === "/api/trade/orders") return Promise.resolve({ orders });
+    if (path.startsWith("/api/trade/quotes")) return Promise.resolve({ quotes });
     if (path === "/api/trade/cancel") return Promise.resolve({ ok: true });
     return Promise.resolve({ trades: [] });  // /api/trade/basket
   });
@@ -317,8 +321,7 @@ describe("trade desk working orders", () => {
 
   it("cancels a working order against the connected account", async () => {
     await loadWith(PAPER_STATUS, [{ orderId: "o-1", ticker: "AMD", side: "SELL", status: "Submitted" }]);
-    const cancel = [...document.querySelectorAll<HTMLButtonElement>(".trade-live-card button")]
-      .find((b) => (b.textContent || "") === "Cancel");
+    const cancel = document.querySelector<HTMLButtonElement>('.trade-live-card [aria-label="Cancel order"]');
     expect(cancel).toBeTruthy();
     cancel!.click();
     await flush();
@@ -326,6 +329,180 @@ describe("trade desk working orders", () => {
       "/api/trade/cancel", "POST",
       expect.objectContaining({ order_id: "o-1", account: "DU1" }),
     );
+  });
+
+  it("keeps filled/cancelled orders out of the working list, in a muted summary", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-1", ticker: "AMD", side: "SELL", orderType: "LMT", price: 100, status: "Submitted" },
+      { orderId: "o-2", ticker: "GEV", side: "BUY", status: "Filled" },
+      { orderId: "o-3", ticker: "AXON", side: "SELL", status: "Cancelled" },
+    ]);
+    const card = document.querySelector(".trade-live-card")!;
+    expect(card.textContent).toContain("Working orders (1)");            // only the live one counts
+    expect(card.querySelectorAll(".trade-live-row").length).toBe(1);
+    const done = card.querySelector(".trade-live-done")!;
+    expect(done).toBeTruthy();
+    expect(done.textContent).toContain("2 recently filled/cancelled");
+    expect(done.textContent).toContain("GEV");
+    expect(done.textContent).toContain("AXON");
+  });
+
+  it("shows order status as a colour dot (state on hover) plus the order's age", async () => {
+    const twoDaysAgo = Date.now() - 2 * 86400 * 1000;
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-1", ticker: "AMD", side: "SELL", orderType: "LMT", price: 100,
+        status: "PreSubmitted", lastExecutionTime_r: twoDaysAgo },
+    ]);
+    const cell = document.querySelector(".trade-live-status")!;
+    const dot = cell.querySelector(".trade-live-dot")!;
+    expect(dot).toBeTruthy();
+    expect(dot.classList.contains("tone-held")).toBe(true);       // PreSubmitted -> held/blue
+    expect(dot.getAttribute("title")).toBe("PreSubmitted");        // exact state on hover
+    expect(cell.textContent).not.toContain("PreSubmitted");        // not spelled out as prose
+    expect(cell.querySelector(".trade-live-age")!.textContent).toBe("2d");
+  });
+
+  it("shows bid × ask, spread, last, and the limit-vs-touch gap as a meter", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-1", ticker: "AMD", side: "SELL", orderType: "LMT", price: 102, status: "Submitted",
+        quote: { bid: 100, ask: 100.5, last: 100.2 } },
+    ]);
+    const mkt = document.querySelector(".trade-live-row")!;
+    expect(mkt.textContent).toContain("100.00");   // bid
+    expect(mkt.textContent).toContain("100.50");   // ask
+    expect(mkt.querySelector(".trade-live-spread")!.textContent).toContain("0.50");
+    expect(mkt.querySelector(".trade-live-last")!.textContent).toContain("100.20");
+    // sell limit 102 sits 2% above the 100 bid — direction in the tooltip, figure beside the bar
+    expect(mkt.querySelector(".edge-num")!.textContent).toBe("2.0%");
+    expect(mkt.querySelector(".trade-live-edge")!.getAttribute("title")).toContain("above bid");
+  });
+
+  it("draws the limit-vs-touch gap as a log-scaled, colour-graded meter", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o", ticker: "AMD", side: "SELL", orderType: "LMT", price: 103, status: "Submitted",
+        quote: { bid: 100, ask: 100.5, last: 100.2 } },   // 3% above bid
+    ]);
+    const fill = document.querySelector<HTMLElement>(".edge-fill")!;
+    // log-scaled: round(log1p(3)/log1p(120) * 100) = 29%, not the old linear 60%
+    expect(fill.style.width).toBe("29%");
+    // colour is set inline (green->red by distance), not a discrete tone class
+    expect(fill.getAttribute("style")).toContain("hsl(");
+    expect(document.querySelector(".edge-num")!.textContent).toBe("3.0%");
+  });
+
+  it("gives a far order a wider, redder edge bar than a near one (not monotonous)", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "near", conid: 1, ticker: "AMD", side: "SELL", orderType: "LMT", price: 102, status: "Submitted",
+        quote: { bid: 100, ask: 100.5, last: 100.2 } },    // 2% above bid
+      { orderId: "far", conid: 2, ticker: "MSFT", side: "SELL", orderType: "LMT", price: 140, status: "Submitted",
+        quote: { bid: 100, ask: 100.5, last: 100.2 } },    // 40% above bid
+    ]);
+    const rows = [...document.querySelectorAll(".trade-live-row")];
+    const near = rows.find((r) => (r.textContent || "").includes("AMD"))!.querySelector<HTMLElement>(".edge-fill")!;
+    const far = rows.find((r) => (r.textContent || "").includes("MSFT"))!.querySelector<HTMLElement>(".edge-fill")!;
+    const hue = (e: HTMLElement) => Number(/hsl\((\d+)/.exec(e.getAttribute("style") || "")![1]);
+    expect(parseFloat(far.style.width)).toBeGreaterThan(parseFloat(near.style.width));
+    expect(hue(far)).toBeLessThan(hue(near));   // lower hue = redder = further
+  });
+
+  it("paints the list first, then hydrates the market cell from the async quotes endpoint", async () => {
+    await loadWith(
+      PAPER_STATUS,
+      [{ orderId: "o-1", conid: 265598, ticker: "AMD", side: "SELL", orderType: "LMT",
+        price: 102, status: "Submitted" }],  // no inline quote -> must come from /api/trade/quotes
+      { "265598": { bid: 100, ask: 100.5, last: 100.2 } },
+    );
+    // The quotes call is keyed by the working order's conid.
+    expect(apiMock).toHaveBeenCalledWith(expect.stringContaining("/api/trade/quotes?conids=265598"));
+    const mkt = document.querySelector(".trade-live-row")!;
+    expect(mkt.textContent).not.toContain("quote\u2026");  // placeholder resolved
+    expect(mkt.textContent).toContain("100.00");            // bid, hydrated in
+    expect(mkt.querySelector(".trade-live-last")!.textContent).toContain("100.20");
+    expect(mkt.querySelector(".edge-num")!.textContent).toBe("2.0%");
+  });
+
+  it("shows 'no quote' (not a stuck spinner) once hydration returns nothing", async () => {
+    await loadWith(
+      PAPER_STATUS,
+      [{ orderId: "o-1", conid: 999, ticker: "AMD", side: "SELL", orderType: "LMT",
+        price: 102, status: "Submitted" }],
+      {},  // cold feed: the endpoint returns no quote for this conid
+    );
+    const mkt = document.querySelector(".trade-live-row")!;
+    expect(mkt.textContent).not.toContain("quote\u2026");
+    expect(mkt.textContent).toContain("no quote");
+  });
+
+  it("shows a sell's average purchase price and the limit's gain vs cost", async () => {
+    await loadWith(
+      PAPER_STATUS,
+      [{ orderId: "o-1", conid: 5, ticker: "AMD", side: "SELL", orderType: "LMT",
+        price: 102, status: "Submitted", avg_cost: 95 }],
+      { "5": { bid: 100, ask: 100.5, last: 100.2 } },
+    );
+    const cost = document.querySelector(".trade-live-cost")!;
+    expect(cost).toBeTruthy();
+    expect(cost.textContent).toContain("95.00");
+    // sell limit 102 vs cost 95 => (102-95)/95 = +7.4%, in the gain colour
+    expect(cost.querySelector(".gain")!.textContent).toContain("7.4%");
+    expect(cost.querySelector(".loss")).toBeFalsy();
+  });
+
+  it("colours a below-cost sell as a loss, and shows nothing for a buy", async () => {
+    await loadWith(
+      PAPER_STATUS,
+      [{ orderId: "s", conid: 5, ticker: "AMD", side: "SELL", orderType: "LMT",
+         price: 90, status: "Submitted", avg_cost: 95 },
+       { orderId: "b", conid: 6, ticker: "MSFT", side: "BUY", orderType: "LMT",
+         price: 90, status: "Submitted", avg_cost: 95 }],
+      {},
+    );
+    const rows = [...document.querySelectorAll(".trade-live-row")];
+    const sell = rows.find((r) => (r.textContent || "").includes("AMD"))!;
+    const buy = rows.find((r) => (r.textContent || "").includes("MSFT"))!;
+    // sell 90 vs cost 95 => -5.3%, loss colour
+    expect(sell.querySelector(".trade-live-cost .loss")!.textContent).toContain("5.3%");
+    // a buy never gets a cost read even when the name is held
+    expect(buy.querySelector(".trade-live-cost")).toBeFalsy();
+  });
+
+  it("renders working-order tickers (and the done summary) as deep-dive links", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-1", conid: 5, ticker: "AMD", side: "SELL", orderType: "LMT", price: 100, status: "Submitted" },
+      { orderId: "o-2", ticker: "GEV", side: "BUY", status: "Filled" },   // done -> summary
+    ]);
+    const sym = document.querySelector<HTMLAnchorElement>(".trade-live-sym a.tlink")!;
+    expect(sym).toBeTruthy();
+    expect(sym.dataset.ticker).toBe("AMD");
+    expect(sym.getAttribute("href")).toContain("ticker=AMD");
+    const done = document.querySelector<HTMLAnchorElement>(".trade-live-done a.tlink")!;
+    expect(done.dataset.ticker).toBe("GEV");
+  });
+
+  it("sorts the working list by age and by distance-from-last, clearing on the third click", async () => {
+    const now = Date.now();
+    const q = { bid: 99, ask: 101, last: 100 };
+    await loadWith(PAPER_STATUS, [
+      { orderId: "a", ticker: "AAA", side: "SELL", orderType: "LMT", price: 100, status: "Submitted",
+        lastExecutionTime_r: now - 1 * 86400000, quote: q },   // age 1d, 0% from last
+      { orderId: "b", ticker: "BBB", side: "SELL", orderType: "LMT", price: 110, status: "Submitted",
+        lastExecutionTime_r: now - 5 * 86400000, quote: q },   // age 5d, 10% from last
+      { orderId: "c", ticker: "CCC", side: "SELL", orderType: "LMT", price: 105, status: "Submitted",
+        lastExecutionTime_r: now - 3 * 86400000, quote: q },   // age 3d, 5% from last
+    ]);
+    const syms = () => [...document.querySelectorAll(".trade-live-row .trade-live-sym")]
+      .map((e) => (e.textContent || "").trim().slice(0, 3));
+    const click = (k: string) => document.querySelector<HTMLButtonElement>(`[data-osort="${k}"]`)!.click();
+
+    expect(syms()).toEqual(["AAA", "BBB", "CCC"]);   // IBKR order
+    click("age");                                     // desc: oldest first
+    expect(syms()).toEqual(["BBB", "CCC", "AAA"]);
+    click("age");                                     // asc: newest first
+    expect(syms()).toEqual(["AAA", "CCC", "BBB"]);
+    click("age");                                     // off: back to IBKR order
+    expect(syms()).toEqual(["AAA", "BBB", "CCC"]);
+    click("lastdist");                                // desc: farthest from last first
+    expect(syms()).toEqual(["BBB", "CCC", "AAA"]);
   });
 });
 
@@ -337,8 +514,7 @@ describe("trade desk order pegging", () => {
 
   it("offers Keep at top on a limit order and arms a peg against the account", async () => {
     await loadWith(PAPER_STATUS, [LIMIT]);
-    const keep = [...document.querySelectorAll<HTMLButtonElement>(".trade-live-card button")]
-      .find((b) => (b.textContent || "") === "Keep at top");
+    const keep = document.querySelector<HTMLButtonElement>('.trade-live-card [aria-label="Keep at top"]');
     expect(keep).toBeTruthy();
     keep!.click();
     await flush();
@@ -351,8 +527,7 @@ describe("trade desk order pegging", () => {
   it("does not offer a peg on a non-limit order", async () => {
     await loadWith(PAPER_STATUS, [{ orderId: "o-3", ticker: "AMD", side: "SELL",
       orderType: "MKT", status: "Submitted" }]);
-    const keep = [...document.querySelectorAll<HTMLButtonElement>(".trade-live-card button")]
-      .find((b) => (b.textContent || "") === "Keep at top");
+    const keep = document.querySelector<HTMLButtonElement>('.trade-live-card [aria-label="Keep at top"]');
     expect(keep).toBeFalsy();
   });
 
@@ -371,14 +546,55 @@ describe("trade desk order pegging", () => {
 
     const card = document.querySelector(".trade-live-card")!;
     expect(card.querySelector(".trade-peg-badge")).toBeTruthy();
-    const stop = [...card.querySelectorAll<HTMLButtonElement>("button")]
-      .find((b) => (b.textContent || "") === "Stop peg");
+    const stop = card.querySelector<HTMLButtonElement>('[aria-label="Stop keeping at top"]');
     expect(stop).toBeTruthy();
     stop!.click();
     await flush();
     expect(apiMock).toHaveBeenCalledWith(
       "/api/trade/peg/stop", "POST", expect.objectContaining({ order_id: "o-9" }),
     );
+  });
+});
+
+describe("trade desk staged basket", () => {
+  it("renders side, coloured amounts, a diverging size bar, trend slots and totals", async () => {
+    const basket = [
+      { symbol: "NVDA", delta_czk: 1000 },   // largest -> full half-bar
+      { symbol: "ARM", delta_czk: -500 },
+    ];
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket") return Promise.resolve({ trades: basket });
+      if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
+      return Promise.resolve({ orders: [] });
+    });
+    await loadTrade();
+    await flush();
+
+    const table = document.querySelector(".trade-basket-table")!;
+    const rows = [...table.querySelectorAll("tbody tr")];
+    expect(rows).toHaveLength(2);
+    // side tags, colour-coded
+    expect(rows[0].querySelector(".trade-side.buy")).toBeTruthy();
+    expect(rows[1].querySelector(".trade-side.sell")).toBeTruthy();
+    // coloured, signed amount cells
+    expect(rows[0].querySelector("td.tb-buy")!.textContent).toContain("+");
+    expect(rows[1].querySelector("td.tb-sell")!.textContent).toContain("\u2212");
+    // diverging magnitude bar: buy grows right, sell left, scaled to the largest
+    const buy = rows[0].querySelector<HTMLElement>(".basket-bar-fill.buy")!;
+    const sell = rows[1].querySelector<HTMLElement>(".basket-bar-fill.sell")!;
+    expect(buy.style.left).toBe("50%");
+    expect(buy.style.width).toBe("50.0%");
+    expect(sell.style.right).toBe("50%");
+    expect(sell.style.width).toBe("25.0%");   // 500/1000 * 50
+    // trend sparkline slots for the async batch hydrate
+    expect(table.querySelectorAll(".tb-trend .spark-slot").length).toBe(2);
+    // totals footer
+    const foot = table.querySelector("tfoot")!;
+    expect(foot.textContent).toContain("1 buy");
+    expect(foot.textContent).toContain("1 sell");
+    expect(foot.textContent).toContain("net");
+    expect(foot.textContent).toContain("gross");
   });
 });
 
