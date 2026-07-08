@@ -4,6 +4,8 @@ A reference for how Assay is built and why. It complements the other docs rather
 than repeating them:
 
 - **`README.md`** — what the app is for, how to run and configure it (user-facing).
+- **`docs/FEATURES.md`** — the feature catalog: every view, button, and the API
+  endpoints each one calls (user-facing surface, traced to handlers).
 - **`ORIENTATION.md`** — "what lives where" + the operator workflows (refresh,
   research, trade). *Note: parts of its nav vocabulary predate the current UI
   (see [§9](#9-known-documentation-debt)).*
