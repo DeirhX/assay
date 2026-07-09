@@ -550,19 +550,34 @@ def _ibkr_session_ready() -> bool:
 
 
 def _fetch_option_chain(symbol: str) -> dict[str, Any] | None:
-    """Live option chain for a canonical ticker: IBKR (CPAPI) first when the
-    gateway is authenticated, else Yahoo. IBKR gives real strikes/expiries even
-    without an options market-data subscription (quotes are just absent, and the
-    overlay estimates the premium); a resolve miss or any error falls through to
-    Yahoo, and both failing degrades to None -> Black-Scholes downstream."""
+    """Live option chain for a canonical ticker, best source first:
+
+    1. **IBKR** (CPAPI) when the gateway is authenticated -- real strikes/expiries
+       even without an options market-data subscription (quotes just absent, the
+       overlay then estimates the premium).
+    2. **Alpaca** when keyed -- structured quotes + daily volume + near-money
+       greeks off the indicative/OPRA feed.
+    3. **Yahoo** -- the delayed/scraped last resort.
+
+    Each source's resolve-miss or error falls through to the next; all failing
+    degrades to None -> Black-Scholes downstream. The chain is tagged with its own
+    ``source`` so premiums are labelled honestly."""
     if _ibkr_session_ready():
         try:
             import ibkr_trade
             chain = ibkr_trade.option_chain(symbol)
-        except Exception:  # noqa: BLE001 -- IBKR hiccup: fall back to Yahoo
+        except Exception:  # noqa: BLE001 -- IBKR hiccup: fall to the next source
             chain = None
         if chain and chain.get("expiries"):
             return chain
+    try:
+        from providers import alpaca
+        if alpaca.enabled():
+            chain = alpaca.option_chain(portfolio.provider_symbol_for(symbol))
+            if chain and chain.get("expiries"):
+                return chain
+    except Exception:  # noqa: BLE001 -- Alpaca hiccup: fall through to Yahoo
+        pass
     try:
         from providers import yahoo
         return yahoo.option_chain(portfolio.provider_symbol_for(symbol))

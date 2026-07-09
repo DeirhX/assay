@@ -259,7 +259,12 @@ def market_snapshot(conids: list[int], fields: tuple[str, ...] = ("31", "84", "8
 #   * quote (bid/ask/last/IV) -- needs an options market-data (OPRA) subscription;
 #     absent without one, so the caller (options_overlay) estimates the premium.
 _MD_LAST, _MD_BID, _MD_ASK, _MD_IV = "31", "84", "86", "7283"
-_OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV)
+# Option-specific fields: 87 = day volume (may arrive as "1.2K"), 7308 = delta,
+# 7638 = option open interest. Delta/OI need an options market-data (OPRA)
+# subscription; absent without one, in which case the overlay models them.
+_MD_VOLUME, _MD_DELTA, _MD_OI = "87", "7308", "7638"
+_OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV, _MD_VOLUME, _MD_DELTA, _MD_OI)
+_COUNT_MULT = {"K": 1e3, "M": 1e6, "B": 1e9}
 _MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
@@ -285,6 +290,21 @@ def _snap_num(value: Any) -> float | None:
         return None
     num = float(match.group())
     return num / 100.0 if pct else num
+
+
+def _snap_count(value: Any) -> int | None:
+    """A whole count (volume / open interest) out of a CPAPI field, honoring a
+    ``K``/``M``/``B`` multiplier suffix (``"1.2K"`` -> ``1200``). None on empty."""
+    num = _snap_num(value)
+    if num is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip().upper()
+        for suf, mult in _COUNT_MULT.items():
+            if s.endswith(suf):
+                num *= mult
+                break
+    return int(round(num))
 
 
 def _fmt_strike(strike: float) -> str:
@@ -427,6 +447,9 @@ def _quote_contract(info: dict[str, Any], quotes: dict[int, dict]) -> dict[str, 
         "ask": _snap_num(row.get(_MD_ASK)),
         "last": _snap_num(row.get(_MD_LAST)),
         "implied_vol": _snap_num(row.get(_MD_IV)),
+        "delta": _snap_num(row.get(_MD_DELTA)),
+        "volume": _snap_count(row.get(_MD_VOLUME)),
+        "open_interest": _snap_count(row.get(_MD_OI)),
     }
 
 

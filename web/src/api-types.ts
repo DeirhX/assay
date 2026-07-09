@@ -539,6 +539,25 @@ export interface ExitCoveredCall {
   assignment_guard?: boolean;
 }
 
+export interface ExitCoveredCallRung {
+  strike: number;
+  expiry: string;
+  dte: number;
+  premium: number;
+  premium_czk: number;
+  effective_exit: number;
+  moneyness_pct: number;
+  premium_yield_annual_pct: number;
+  assignment_prob_pct: number | null;
+  open_interest: number | null;
+  volume: number | null;
+  spread_pct: number | null;
+  liquidity: "ok" | "thin" | "unknown";
+  source: string;
+  estimate: boolean;
+  recommended?: boolean;
+}
+
 export interface ExitProtectivePut {
   type: "protective_put";
   source: string;
@@ -566,6 +585,7 @@ export interface ExitOptionsOverlay {
   currency: string | null;
   source: string;
   covered_call: ExitCoveredCall | null;
+  covered_call_ladder: ExitCoveredCallRung[];
   protective_put: ExitProtectivePut | null;
   notes: string[];
 }

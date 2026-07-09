@@ -47,6 +47,13 @@ PUT_OTM_PCT = 0.07         # protective-put strike below the mark
 DEFAULT_VOL = 0.35         # fallback annualized vol when no series is usable
 CONTRACT_SIZE = 100
 
+# Covered-call strike ladder (the StrikePeek-style yield-vs-assignment view).
+LADDER_SIZE = 6            # OTM strikes to surface, cheapest cushion first
+LADDER_STEP_PCT = 0.025    # synthetic strike spacing when no chain lists strikes
+LIQ_MIN_OI = 100           # open interest below this is "thin" (when OI is known)
+LIQ_MIN_VOLUME = 10        # day volume below this is "thin" (when volume is known)
+LIQ_MAX_SPREAD_PCT = 0.15  # (ask - bid) / mid above this is "thin"
+
 
 # --------------------------------------------------------------------------- #
 # Small helpers
@@ -80,14 +87,141 @@ def _mid(contract: dict[str, Any]) -> float | None:
 
 
 def _chain_source(chain: dict[str, Any] | None) -> str:
-    """Provider label for a chain's quotes: the chain's own ``source`` (``ibkr``
-    or ``yahoo``), defaulting to ``yahoo`` for a source-less chain, and
+    """Provider label for a chain's quotes: the chain's own ``source`` (``ibkr``,
+    ``alpaca`` or ``yahoo``), defaulting to ``yahoo`` for a source-less chain, and
     ``black_scholes`` when there is no chain at all (the premium is modeled). A
     suggestion whose premium came off the chain inherits this; one computed by
     Black-Scholes keeps ``black_scholes`` regardless of the chain."""
     if not isinstance(chain, dict):
         return "black_scholes"
     return str(chain.get("source") or "yahoo")
+
+
+def _spread_pct(contract: dict[str, Any]) -> float | None:
+    """Relative bid/ask spread ``(ask - bid) / mid``, or None without a two-sided
+    quote. The core liquidity signal every source can supply."""
+    bid, ask = contract.get("bid"), contract.get("ask")
+    if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid > 0 and ask > 0:
+        mid = (bid + ask) / 2.0
+        return (ask - bid) / mid if mid > 0 else None
+    return None
+
+
+def _as_int(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _liquidity(contract: dict[str, Any], premium_source: str) -> tuple[str, float | None]:
+    """Classify a contract's tradeability as ``ok`` / ``thin`` / ``unknown`` plus
+    the spread. A modeled (Black-Scholes) premium is ``unknown`` -- there is no
+    live quote to judge. Otherwise the spread is the primary gate; open interest
+    and day volume, when the source reports them (IBKR/Yahoo do, Alpaca's data
+    feed doesn't carry OI), demote an otherwise-tight strike that nobody trades."""
+    if premium_source == "black_scholes":
+        return "unknown", None
+    spread = _spread_pct(contract)
+    if spread is None:
+        return "unknown", None
+    if spread > LIQ_MAX_SPREAD_PCT:
+        return "thin", spread
+    oi, vol = _as_int(contract.get("open_interest")), _as_int(contract.get("volume"))
+    if oi is not None or vol is not None:
+        active = (oi is not None and oi >= LIQ_MIN_OI) or (vol is not None and vol >= LIQ_MIN_VOLUME)
+        if not active:
+            return "thin", spread
+    return "ok", spread
+
+
+def _call_candidate(
+    call: dict[str, Any], spot: float, vol: float, rate: float, as_of: dt.date,
+    edate: dt.date, chain_source: str, *, contracts: int, fx: float,
+) -> dict[str, Any] | None:
+    """One covered-call ladder rung for a listed (or synthetic) call strike:
+    premium (chain mid, else Black-Scholes), annualized yield, assignment
+    probability (chain delta when present, else modeled), and a liquidity tag."""
+    strike = call.get("strike")
+    if not isinstance(strike, (int, float)) or strike <= 0:
+        return None
+    t_years = _years_between(edate, as_of)
+    iv = call.get("implied_vol")
+    use_vol = iv if isinstance(iv, (int, float)) and iv > 0 else vol
+    premium = _mid(call)
+    source = chain_source if premium is not None else "black_scholes"
+    if premium is None:
+        premium = options_math.bs_price(spot, strike, t_years, use_vol, rate=rate, kind="call")
+    if premium is None or premium <= 0:
+        return None
+    raw_delta = call.get("delta")
+    delta = (float(raw_delta) if isinstance(raw_delta, (int, float)) and 0.0 < abs(raw_delta) <= 1.0
+             else options_math.bs_delta(spot, strike, t_years, use_vol, rate=rate, kind="call"))
+    dte = max(1, (edate - as_of).days)
+    yield_annual = (premium / strike) * (365.0 / dte)
+    liq, spread = _liquidity(call, source)
+    return {
+        "strike": round(float(strike), 2),
+        "premium": round(premium, 4),
+        "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
+        "effective_exit": round(strike + premium, 4),
+        "moneyness_pct": round((strike / spot - 1.0) * 100.0, 2),
+        "premium_yield_annual_pct": round(yield_annual * 100.0, 2),
+        "assignment_prob_pct": round(delta * 100.0, 1) if delta is not None else None,
+        "open_interest": _as_int(call.get("open_interest")),
+        "volume": _as_int(call.get("volume")),
+        "spread_pct": round(spread * 100.0, 1) if spread is not None else None,
+        "liquidity": liq,
+        "source": source,
+        "estimate": source == "black_scholes",
+    }
+
+
+def covered_call_ladder(
+    spot: float, vol: float, rate: float, as_of: dt.date, chain: dict[str, Any] | None,
+    *, contracts: int, fx: float, guard_after: dt.date | None,
+) -> list[dict[str, Any]]:
+    """Yield-ranked ladder of OTM covered-call strikes for the recommended expiry
+    -- the tradeoff view: near-the-money rungs pay the fattest annualized yield but
+    carry the highest assignment odds. Uses listed strikes when a chain resolves
+    one, else models a ladder off spot. Ranked richest-yield first; each rung
+    carries its own source/liquidity so a wide, illiquid quote is visibly demoted.
+    Empty when there's no whole contract to write."""
+    if contracts < 1 or spot <= 0:
+        return []
+    otm = GUARD_CALL_OTM_PCT if guard_after else CALL_OTM_PCT
+    floor_strike = spot * (1.0 + otm)
+    chain_source = _chain_source(chain)
+
+    edate: dt.date | None = None
+    expiry_iso: str | None = None
+    calls: list[dict[str, Any]] = []
+    if chain and chain.get("expiries"):
+        exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
+                           dte_max=COVERED_CALL_DTE[1], after=guard_after)
+        if exp:
+            expiry_iso = exp["expiry"]
+            edate = dt.date.fromisoformat(expiry_iso)
+            calls = [c for c in (exp.get("calls") or [])
+                     if isinstance(c.get("strike"), (int, float)) and c["strike"] >= floor_strike]
+            calls.sort(key=lambda c: c["strike"])
+
+    if edate is None:
+        # No chain (or no expiry after the tax guard): model an expiry + ladder.
+        edate = (guard_after + dt.timedelta(days=14)) if guard_after else as_of + dt.timedelta(days=37)
+        expiry_iso = edate.isoformat()
+    if not calls:
+        # Thin window or modeled path: synthesize evenly-spaced OTM strikes.
+        calls = [{"strike": round(spot * (1.0 + otm + i * LADDER_STEP_PCT), 2)}
+                 for i in range(LADDER_SIZE)]
+
+    rungs: list[dict[str, Any]] = []
+    for call in calls[:LADDER_SIZE]:
+        cand = _call_candidate(call, spot, vol, rate, as_of, edate, chain_source,
+                               contracts=contracts, fx=fx)
+        if cand:
+            cand["expiry"] = expiry_iso
+            cand["dte"] = max(1, (edate - as_of).days)
+            rungs.append(cand)
+    rungs.sort(key=lambda r: r["premium_yield_annual_pct"], reverse=True)
+    return rungs
 
 
 def _pick_expiry(
@@ -334,8 +468,17 @@ def suggest_for_position(
     if vol_estimate:
         notes.append("No usable price history; volatility defaulted -- premiums are rough estimates.")
 
-    covered = _covered_call(float(spot), vol, rate, as_of_d, chain if isinstance(chain, dict) else None,
+    chain_dict = chain if isinstance(chain, dict) else None
+    covered = _covered_call(float(spot), vol, rate, as_of_d, chain_dict,
                             contracts=contracts, fx=fx, guard_after=guard_after)
+    ladder = covered_call_ladder(float(spot), vol, rate, as_of_d, chain_dict,
+                                 contracts=contracts, fx=fx, guard_after=guard_after)
+    if covered and ladder:
+        # Flag the rung matching the headline pick so the UI can highlight it.
+        for rung in ladder:
+            if abs(rung["strike"] - covered["strike"]) < 1e-6 and rung["expiry"] == covered["expiry"]:
+                rung["recommended"] = True
+                break
     if contracts < 1:
         notes.append(f"Position is {qty:g} shares (< {CONTRACT_SIZE}); no whole option contract to write.")
     if covered and guard_after:
@@ -357,6 +500,7 @@ def suggest_for_position(
         "currency": pos.get("currency"),
         "source": _chain_source(chain),
         "covered_call": covered,
+        "covered_call_ladder": ladder,
         "protective_put": protective,
         "notes": notes,
     }
