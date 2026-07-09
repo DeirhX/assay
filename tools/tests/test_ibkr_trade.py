@@ -6,9 +6,11 @@ touching the real Client Portal Gateway."""
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import time
 import unittest
+import urllib.parse
 from unittest import mock
 
 import _support  # noqa: F401
@@ -444,6 +446,135 @@ class SessionLifecycle(unittest.TestCase):
             res = trade_service._trade_tickle()
         self.assertFalse(res["authenticated"])
         self.assertTrue(res["trading_enabled"])
+
+
+class _FakeGateway:
+    """A minimal in-memory CPAPI, standing in for ``ibkr_trade._request`` so the
+    option-chain builder is exercised entirely offline. Answers secdef/search
+    (STK + optional OPT months), secdef/strikes, secdef/info (deterministic option
+    conids), and marketdata/snapshot. An option conid absent from ``quotes``
+    returns an empty snapshot row -- exactly the no-subscription case."""
+
+    def __init__(self, *, months="AUG26", strikes=None, spot="100.0",
+                 quotes=None, has_opt=True, underlying=500):
+        self.months = months
+        self.strikes = strikes or {"call": [95, 100, 105, 110], "put": [90, 95, 100, 105]}
+        self.spot = spot
+        self.quotes = quotes or {}
+        self.has_opt = has_opt
+        self.underlying = underlying
+        self.calls: list[tuple[str, str]] = []
+
+    @staticmethod
+    def opt_conid(strike, right):
+        """Deterministic synthetic option conid so a test can address a quote."""
+        return int(round(float(strike) * 100)) * 10 + (1 if str(right).upper().startswith("C") else 2)
+
+    def __call__(self, method, endpoint, body=None):
+        self.calls.append((method, endpoint))
+        path, _, qs = endpoint.partition("?")
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(qs).items()}
+        if path == "/iserver/secdef/search":
+            sections = [{"secType": "STK"}]
+            if self.has_opt:
+                sections.append({"secType": "OPT", "months": self.months})
+            return [{"conid": self.underlying, "symbol": q.get("symbol"), "sections": sections}]
+        if path == "/iserver/secdef/strikes":
+            return {"call": list(self.strikes["call"]), "put": list(self.strikes["put"])}
+        if path == "/iserver/secdef/info":
+            ocid = self.opt_conid(float(q["strike"]), q["right"])
+            return [{"conid": ocid, "maturityDate": "20260821"}]
+        if path == "/iserver/marketdata/snapshot":
+            rows = []
+            for c in (int(x) for x in q["conids"].split(",")):
+                if c == self.underlying:
+                    rows.append({"conid": c, "31": self.spot})
+                elif c in self.quotes:
+                    rows.append({"conid": c, **self.quotes[c]})
+                else:
+                    rows.append({"conid": c})  # no market-data subscription
+            return rows
+        return {}
+
+
+class SnapNum(unittest.TestCase):
+    def test_plain_and_close_prefixed(self):
+        self.assertEqual(ibt._snap_num("123.45"), 123.45)
+        self.assertEqual(ibt._snap_num("C123.45"), 123.45)  # prior close when shut
+
+    def test_percent_becomes_decimal(self):
+        self.assertAlmostEqual(ibt._snap_num("25.3%"), 0.253)
+
+    def test_empty_and_junk_are_none(self):
+        self.assertIsNone(ibt._snap_num(""))
+        self.assertIsNone(ibt._snap_num("n/a"))
+        self.assertIsNone(ibt._snap_num(None))
+
+
+class OptionMonths(unittest.TestCase):
+    def test_orders_from_current_month_and_drops_past(self):
+        got = ibt._months_by_date(["JUL26", "AUG26", "JAN26", "DEC26"], as_of=dt.date(2026, 7, 9))
+        self.assertEqual(got, ["JUL26", "AUG26", "DEC26"])  # JAN26 is past, dropped
+
+
+class OptionChain(unittest.TestCase):
+    AS_OF = dt.date(2026, 7, 9)
+
+    def setUp(self):
+        ibt._conid_cache.clear()
+
+    def test_builds_ibkr_shaped_chain_with_quotes(self):
+        gw = _FakeGateway(spot="100.0")
+        gw.quotes = {gw.opt_conid(105, "C"): {"31": "2.50", "84": "2.40", "86": "2.60", "7283": "25.0%"}}
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
+        self.assertIsNotNone(chain)
+        self.assertEqual(chain["source"], "ibkr")
+        self.assertEqual(chain["symbol"], "NVDA")
+        self.assertEqual(chain["underlying_price"], 100.0)
+        self.assertEqual(len(chain["expiries"]), 1)
+        exp = chain["expiries"][0]
+        self.assertEqual(exp["expiry"], "2026-08-21")
+        call105 = next(c for c in exp["calls"] if c["strike"] == 105.0)
+        self.assertAlmostEqual(call105["bid"], 2.40)
+        self.assertAlmostEqual(call105["ask"], 2.60)
+        self.assertAlmostEqual(call105["last"], 2.50)
+        self.assertAlmostEqual(call105["implied_vol"], 0.25)
+
+    def test_no_subscription_leaves_prices_none_but_keeps_strikes(self):
+        # quotes empty -> every option snapshot row is bare; strikes/expiry still
+        # resolve off reference data, so the overlay can estimate the premium.
+        gw = _FakeGateway(spot="100.0", quotes={})
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
+        self.assertIsNotNone(chain)
+        exp = chain["expiries"][0]
+        self.assertTrue(exp["calls"])
+        for c in exp["calls"]:
+            self.assertIsNone(c["bid"])
+            self.assertIsNone(c["ask"])
+            self.assertIsNone(c["last"])
+
+    def test_name_without_options_returns_none(self):
+        gw = _FakeGateway(has_opt=True)
+        gw.has_opt = False
+        with mock.patch.object(ibt, "_request", gw):
+            self.assertIsNone(ibt.option_chain("KO", as_of=self.AS_OF))
+
+    def test_strike_window_bounds_resolution(self):
+        # Strikes span far outside +/-25% of a 100 spot; only in-window ones resolve.
+        gw = _FakeGateway(spot="100.0", strikes={
+            "call": [40, 60, 90, 100, 110, 140, 200],
+            "put": [40, 60, 90, 100, 110, 140, 200],
+        })
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain("NVDA", as_of=self.AS_OF, strike_window_pct=0.25)
+        strikes = [c["strike"] for c in chain["expiries"][0]["calls"]]
+        self.assertTrue(all(75.0 <= s <= 125.0 for s in strikes))
+        self.assertIn(90.0, strikes)
+        self.assertIn(110.0, strikes)
+        self.assertNotIn(40.0, strikes)
+        self.assertNotIn(200.0, strikes)
 
 
 if __name__ == "__main__":

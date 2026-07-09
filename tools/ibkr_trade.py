@@ -27,7 +27,9 @@ Standard library only.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -244,6 +246,259 @@ def market_snapshot(conids: list[int], fields: tuple[str, ...] = ("31", "84", "8
         if cid is not None:
             out[int(cid)] = row
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Option chains (reference data + quotes)
+# --------------------------------------------------------------------------- #
+# Read-only: pulling a chain needs an authenticated gateway session but NOT
+# IBKR_TRADING_ENABLED -- fetching strikes/quotes is not trading. Two tiers of
+# data with different entitlement needs:
+#   * reference (months/strikes/conids/expiry) -- always available to a logged-in
+#     session, no market-data subscription required.
+#   * quote (bid/ask/last/IV) -- needs an options market-data (OPRA) subscription;
+#     absent without one, so the caller (options_overlay) estimates the premium.
+_MD_LAST, _MD_BID, _MD_ASK, _MD_IV = "31", "84", "86", "7283"
+_OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV)
+_MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def _snap_num(value: Any) -> float | None:
+    """A float out of a CPAPI market-data field. These arrive as strings that may
+    carry a non-numeric price prefix (``C123.4`` = prior close when the market is
+    shut) or a percent suffix (``25.3%`` for implied vol, which we return as the
+    decimal 0.253). None for an empty/foreign field so a missing quote falls
+    through to the estimate."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    pct = s.endswith("%")
+    match = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not match:
+        return None
+    num = float(match.group())
+    return num / 100.0 if pct else num
+
+
+def _fmt_strike(strike: float) -> str:
+    """Render a strike the way CPAPI's ``strikes`` list does: ``130`` not
+    ``130.0``, but ``130.5`` kept."""
+    f = float(strike)
+    return str(int(f)) if f.is_integer() else str(f)
+
+
+def _parse_maturity(raw: Any) -> str | None:
+    """CPAPI ``maturityDate`` (``YYYYMMDD``) -> ISO ``YYYY-MM-DD``."""
+    try:
+        return dt.datetime.strptime(str(raw), "%Y%m%d").date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _month_key(token: str) -> tuple[int, int] | None:
+    """``AUG26`` -> ``(2026, 8)`` for chronological ordering; None if unparseable."""
+    t = str(token or "").strip().upper()
+    if len(t) < 5:
+        return None
+    mon, yy = t[:3], t[3:]
+    if mon not in _MONTH_TOKENS or not yy.isdigit():
+        return None
+    year = 2000 + int(yy) if len(yy) == 2 else int(yy)
+    return (year, _MONTH_TOKENS.index(mon) + 1)
+
+
+def _months_by_date(months: list[str], as_of: dt.date | None = None) -> list[str]:
+    """Expiry-month tokens from this calendar month onward, soonest first. Past
+    months are dropped (a chain never needs an expired series)."""
+    today = as_of or dt.datetime.now(dt.timezone.utc).date()
+    cur = (today.year, today.month)
+    keyed: list[tuple[tuple[int, int], str]] = []
+    for m in months:
+        k = _month_key(m)
+        if k is not None and k >= cur:
+            keyed.append((k, m))
+    keyed.sort(key=lambda t: t[0])
+    return [m for _, m in keyed]
+
+
+def option_months(symbol: str) -> tuple[int | None, list[str]]:
+    """``(underlying_conid, ["AUG26", ...])`` for a symbol's listed options, from
+    the same ``secdef/search`` the equity resolver uses. Empty month list when the
+    name has no OPT section (common for non-US names)."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return None, []
+    res = _request("GET", "/iserver/secdef/search?" + urllib.parse.urlencode({"symbol": sym}))
+    rows = res if isinstance(res, list) else []
+    conid = _pick_stock_conid(rows, sym)
+    months: list[str] = []
+    for row in rows:
+        for sec in (row.get("sections") or []):
+            if (sec.get("secType") or sec.get("secturetype")) == "OPT":
+                raw = str(sec.get("months") or "")
+                months = [m.strip().upper() for m in raw.split(";") if m.strip()]
+                break
+        if months:
+            break
+    return conid, months
+
+
+def option_strikes(conid: int, month: str, *, exchange: str = "SMART") -> dict[str, list[float]]:
+    """``{"call": [strike, ...], "put": [strike, ...]}`` for one expiry month, from
+    ``/iserver/secdef/strikes``. Reference data -- no market-data subscription
+    needed. Empty lists on a miss."""
+    params = {"conid": str(int(conid)), "sectype": "OPT",
+              "month": month.upper(), "exchange": exchange}
+    res = _request("GET", "/iserver/secdef/strikes?" + urllib.parse.urlencode(params))
+    if not isinstance(res, dict):
+        return {"call": [], "put": []}
+
+    def _nums(key: str) -> list[float]:
+        return [float(x) for x in (res.get(key) or []) if isinstance(x, (int, float))]
+
+    return {"call": _nums("call"), "put": _nums("put")}
+
+
+def option_info(conid: int, month: str, strike: float, right: str,
+                *, exchange: str = "SMART") -> dict[str, Any] | None:
+    """The specific option contract as ``{"conid", "expiry", "strike", "right"}``
+    from ``/iserver/secdef/info``, or None if that strike/right doesn't list.
+    ``right`` is ``"C"`` or ``"P"``."""
+    r = right.upper()[:1]
+    params = {"conid": str(int(conid)), "sectype": "OPT", "month": month.upper(),
+              "strike": _fmt_strike(strike), "right": r, "exchange": exchange}
+    res = _request("GET", "/iserver/secdef/info?" + urllib.parse.urlencode(params))
+    rows = res if isinstance(res, list) else ([res] if isinstance(res, dict) else [])
+    for row in rows:
+        ocid = row.get("conid")
+        if ocid is None or ocid == "":
+            continue
+        return {"conid": int(ocid), "expiry": _parse_maturity(row.get("maturityDate")),
+                "strike": float(strike), "right": r}
+    return None
+
+
+def _window_strikes(strikes: list[float], spot: float | None,
+                    window_pct: float, per_side: int) -> list[float]:
+    """The listed strikes worth resolving: up to ``per_side`` each side of spot,
+    within +/-``window_pct``. Without a spot, just a bounded slice off the low end
+    (the overlay still finds its nearest-OTM among them)."""
+    vals = sorted({float(s) for s in strikes if isinstance(s, (int, float))})
+    if not vals:
+        return []
+    if spot is None or spot <= 0:
+        return vals[:per_side * 2]
+    lo, hi = spot * (1.0 - window_pct), spot * (1.0 + window_pct)
+    below = [s for s in vals if lo <= s <= spot][-per_side:]
+    above = [s for s in vals if spot < s <= hi][:per_side]
+    return below + above
+
+
+def _resolve_side(conid: int, month: str, strikes: list[float],
+                  right: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Resolve each windowed strike to its option contract (conid + expiry).
+    Returns the contracts and the expiry ISO date recovered from the first hit."""
+    contracts: list[dict[str, Any]] = []
+    expiry: str | None = None
+    for k in strikes:
+        info = option_info(conid, month, k, right)
+        if not info:
+            continue
+        expiry = expiry or info.get("expiry")
+        contracts.append(info)
+    return contracts, expiry
+
+
+def _quote_contract(info: dict[str, Any], quotes: dict[int, dict]) -> dict[str, Any]:
+    """A chain contract row (Yahoo-shaped) for one resolved option, attaching its
+    snapshot quote when present."""
+    row = quotes.get(int(info["conid"])) or {}
+    return {
+        "conid": info["conid"],
+        "strike": info["strike"],
+        "bid": _snap_num(row.get(_MD_BID)),
+        "ask": _snap_num(row.get(_MD_ASK)),
+        "last": _snap_num(row.get(_MD_LAST)),
+        "implied_vol": _snap_num(row.get(_MD_IV)),
+    }
+
+
+def _build_expiry(conid: int, month: str, spot: float | None,
+                  window_pct: float, per_side: int) -> dict[str, Any] | None:
+    """One expiry's ``{expiry, calls, puts}`` block: window the strikes, resolve
+    their conids, then one snapshot for the lot. None when nothing resolves."""
+    strikes = option_strikes(conid, month)
+    call_k = _window_strikes(strikes.get("call") or [], spot, window_pct, per_side)
+    put_k = _window_strikes(strikes.get("put") or [], spot, window_pct, per_side)
+    if not call_k and not put_k:
+        return None
+    call_contracts, exp_c = _resolve_side(conid, month, call_k, "C")
+    put_contracts, exp_p = _resolve_side(conid, month, put_k, "P")
+    expiry = exp_c or exp_p
+    if expiry is None:
+        return None
+    all_conids = [c["conid"] for c in call_contracts + put_contracts]
+    quotes = market_snapshot(all_conids, fields=_OPTION_MD_FIELDS) if all_conids else {}
+    calls = [_quote_contract(c, quotes) for c in call_contracts]
+    puts = [_quote_contract(c, quotes) for c in put_contracts]
+    return {
+        "expiry": expiry,
+        "calls": sorted(calls, key=lambda c: c["strike"]),
+        "puts": sorted(puts, key=lambda p: p["strike"]),
+    }
+
+
+def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float = 0.25,
+                 strikes_per_side: int = 6, as_of: dt.date | None = None) -> dict[str, Any] | None:
+    """Yahoo-shaped option chain sourced from IBKR CPAPI, or None when the name
+    lists no options / the gateway can't resolve it.
+
+    Deliberately targeted, not the full ladder: the nearest ``max_expiries``
+    expiries, and only strikes within ``strike_window_pct`` of spot
+    (``strikes_per_side`` each way), so the request fan-out stays bounded -- enough
+    for the exit overlay's nearest-OTM pick. Reference data (months/strikes/conids)
+    needs only a logged-in session; the bid/ask/last/IV quote needs an options
+    market-data subscription and is simply absent without one (the overlay then
+    estimates the premium off Black-Scholes)."""
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return None
+    conid, months = option_months(sym)
+    if conid is None or not months:
+        return None
+
+    # Spot centers the strike window. Underlying last, or bid/ask midpoint.
+    snap = market_snapshot([conid], fields=(_MD_LAST, _MD_BID, _MD_ASK))
+    urow = snap.get(conid) or {}
+    spot = _snap_num(urow.get(_MD_LAST))
+    if spot is None:
+        bid, ask = _snap_num(urow.get(_MD_BID)), _snap_num(urow.get(_MD_ASK))
+        spot = (bid + ask) / 2.0 if bid and ask else None
+
+    expiries: list[dict[str, Any]] = []
+    for month in _months_by_date(months, as_of)[:max_expiries]:
+        block = _build_expiry(conid, month, spot, strike_window_pct, strikes_per_side)
+        if block:
+            expiries.append(block)
+    if not expiries:
+        return None
+    expiries.sort(key=lambda e: e["expiry"])
+    return {
+        "source": "ibkr",
+        "symbol": sym,
+        # secdef doesn't reliably carry currency here; the overlay uses the
+        # position's own currency, so None is fine.
+        "currency": None,
+        "underlying_price": round(spot, 4) if isinstance(spot, (int, float)) else None,
+        "expiries": expiries,
+    }
 
 
 # --------------------------------------------------------------------------- #

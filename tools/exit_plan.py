@@ -486,25 +486,28 @@ def _prewarm_caches(
     candidate, in parallel. After this returns, ``build_exit_plan``'s serial loop
     hits warm caches instead of paying each name's network cost in sequence.
     Best-effort: a failed warm just leaves that name cold for the loop to retry."""
-    providers = list(dict.fromkeys(
-        portfolio.provider_symbol_for(c["symbol"]) for c in cands
+    names = list(dict.fromkeys(
+        c["symbol"] for c in cands
         if (posidx.get(c["symbol"]) or {}).get("mv_base", 0.0) > EPS
     ))
-    if not providers:
+    if not names:
         return
 
-    def warm(provider: str) -> None:
+    def warm(sym: str) -> None:
         try:
+            # Price series keys off the provider (Yahoo) symbol; the option chain
+            # keys off the canonical ticker (its IBKR-first path resolves that, and
+            # its Yahoo fallback maps to the provider symbol internally).
             if fetch is not False:
-                risk.load_price_series(provider, fetch=fetch)
+                risk.load_price_series(portfolio.provider_symbol_for(sym), fetch=fetch)
             if with_options:
-                _cached_option_chain(provider)
+                _cached_option_chain(sym)
         except Exception:  # noqa: BLE001 -- warming is opportunistic, never fatal
             pass
 
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(providers))) as pool:
-        list(pool.map(warm, providers))
+    with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(names))) as pool:
+        list(pool.map(warm, names))
 
 
 def _cached_risk_free_rate() -> float | None:
@@ -533,27 +536,59 @@ def _cached_risk_free_rate() -> float | None:
     return rate
 
 
-def _cached_option_chain(provider_sym: str) -> dict[str, Any] | None:
-    """Yahoo option chain for a provider symbol, cached under data/cache/options.
+def _ibkr_session_ready() -> bool:
+    """True when the Client Portal Gateway holds an authenticated session, so an
+    option-chain read will actually resolve. Best-effort and quiet: any failure
+    (gateway not running, import error) simply means 'use the Yahoo fallback'.
+    Reading a chain is not trading, so this is intentionally NOT gated behind
+    IBKR_TRADING_ENABLED."""
+    try:
+        import ibkr_trade
+        return bool(ibkr_trade.auth_status().get("authenticated"))
+    except Exception:  # noqa: BLE001
+        return False
 
-    Live chain fetches are slow (crumb handshake + one request per expiry), so a
-    fresh cache entry short-circuits the network. A miss/failure caches nothing
-    and returns None; a stale hit beats a failed live pull (options are advisory,
-    slightly-old strikes are fine)."""
-    safe = "".join(ch for ch in provider_sym.upper() if ch.isalnum() or ch in "-._=")
+
+def _fetch_option_chain(symbol: str) -> dict[str, Any] | None:
+    """Live option chain for a canonical ticker: IBKR (CPAPI) first when the
+    gateway is authenticated, else Yahoo. IBKR gives real strikes/expiries even
+    without an options market-data subscription (quotes are just absent, and the
+    overlay estimates the premium); a resolve miss or any error falls through to
+    Yahoo, and both failing degrades to None -> Black-Scholes downstream."""
+    if _ibkr_session_ready():
+        try:
+            import ibkr_trade
+            chain = ibkr_trade.option_chain(symbol)
+        except Exception:  # noqa: BLE001 -- IBKR hiccup: fall back to Yahoo
+            chain = None
+        if chain and chain.get("expiries"):
+            return chain
+    try:
+        from providers import yahoo
+        return yahoo.option_chain(portfolio.provider_symbol_for(symbol))
+    except Exception:  # noqa: BLE001 -- no chain: BS fallback happens downstream
+        return None
+
+
+def _cached_option_chain(symbol: str) -> dict[str, Any] | None:
+    """Option chain for a held name (by canonical ticker), cached under
+    data/cache/options and tagged with its own ``source`` (ibkr/yahoo).
+
+    Live chain fetches are slow (an IBKR chain is many secdef calls; a Yahoo chain
+    is a crumb handshake plus one request per expiry), so a fresh cache entry
+    short-circuits the network. A miss caches None -- so a foreign name with no
+    listed options doesn't re-hit every load -- and a stale hit beats a failed
+    live pull (options are advisory, slightly-old strikes are fine)."""
+    safe = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in "-._=")
     path = _OPT_CACHE_DIR / f"{safe}.json"
     cached = store.load(path)
     # A fresh entry short-circuits even when it recorded "no chain" (None), so a
     # foreign name with no listed options doesn't 404 on every single load.
     if isinstance(cached, dict) and "chain" in cached and timeutil.cache_fresh(cached.get("fetched_at"), OPT_CACHE_TTL_SECONDS):
         return cached.get("chain")
-    try:
-        from providers import yahoo
-        chain = yahoo.option_chain(provider_sym)
-    except Exception:  # noqa: BLE001 -- no chain: BS fallback happens downstream
-        chain = None
+    chain = _fetch_option_chain(symbol)
     store.write_json(path, {
-        "symbol": provider_sym.upper(),
+        "symbol": symbol.upper(),
         "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "chain": chain,
     })
@@ -571,7 +606,7 @@ def _options_overlay(sym, pos, layers, series, cfg, as_of, *, rate=None) -> dict
     except Exception:  # noqa: BLE001
         return None
     try:
-        chain = _cached_option_chain(portfolio.provider_symbol_for(sym))
+        chain = _cached_option_chain(sym)
         return options_overlay.suggest_for_position(
             sym, pos, layers, series=series, cfg=cfg, as_of=as_of, chain=chain, rate=rate)
     except Exception:  # noqa: BLE001
