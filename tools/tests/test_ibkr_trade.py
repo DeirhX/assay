@@ -650,6 +650,20 @@ class SnapNum(unittest.TestCase):
         self.assertIsNone(ibt._snap_num(None))
 
 
+class SnapCount(unittest.TestCase):
+    def test_plain_integer(self):
+        self.assertEqual(ibt._snap_count("73"), 73)
+
+    def test_multiplier_suffixes(self):
+        self.assertEqual(ibt._snap_count("1.2K"), 1200)
+        self.assertEqual(ibt._snap_count("3.4M"), 3_400_000)
+        self.assertEqual(ibt._snap_count("2B"), 2_000_000_000)
+
+    def test_empty_is_none(self):
+        self.assertIsNone(ibt._snap_count(""))
+        self.assertIsNone(ibt._snap_count(None))
+
+
 class OptionMonths(unittest.TestCase):
     def test_orders_from_current_month_and_drops_past(self):
         got = ibt._months_by_date(["JUL26", "AUG26", "JAN26", "DEC26"], as_of=dt.date(2026, 7, 9))
@@ -679,6 +693,24 @@ class OptionChain(unittest.TestCase):
         self.assertAlmostEqual(call105["ask"], 2.60)
         self.assertAlmostEqual(call105["last"], 2.50)
         self.assertAlmostEqual(call105["implied_vol"], 0.25)
+
+    def test_enriched_fields_delta_volume_open_interest(self):
+        # 87 = volume ("1.2K" -> 1200), 7308 = delta, 7638 = open interest.
+        gw = _FakeGateway(spot="100.0")
+        gw.quotes = {gw.opt_conid(105, "C"): {
+            "31": "2.50", "84": "2.40", "86": "2.60", "7283": "25.0%",
+            "87": "1.2K", "7308": "0.35", "7638": "4210"}}
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
+        call105 = next(c for c in chain["expiries"][0]["calls"] if c["strike"] == 105.0)
+        self.assertAlmostEqual(call105["delta"], 0.35)
+        self.assertEqual(call105["volume"], 1200)
+        self.assertEqual(call105["open_interest"], 4210)
+        # A strike with no quote row carries None for the enriched fields, not 0.
+        other = next(c for c in chain["expiries"][0]["calls"] if c["strike"] == 110.0)
+        self.assertIsNone(other["delta"])
+        self.assertIsNone(other["volume"])
+        self.assertIsNone(other["open_interest"])
 
     def test_no_subscription_leaves_prices_none_but_keeps_strikes(self):
         # quotes empty -> every option snapshot row is bare; strikes/expiry still
