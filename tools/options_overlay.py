@@ -79,6 +79,17 @@ def _mid(contract: dict[str, Any]) -> float | None:
     return None
 
 
+def _chain_source(chain: dict[str, Any] | None) -> str:
+    """Provider label for a chain's quotes: the chain's own ``source`` (``ibkr``
+    or ``yahoo``), defaulting to ``yahoo`` for a source-less chain, and
+    ``black_scholes`` when there is no chain at all (the premium is modeled). A
+    suggestion whose premium came off the chain inherits this; one computed by
+    Black-Scholes keeps ``black_scholes`` regardless of the chain."""
+    if not isinstance(chain, dict):
+        return "black_scholes"
+    return str(chain.get("source") or "yahoo")
+
+
 def _pick_expiry(
     expiries: list[dict[str, Any]], as_of: dt.date, *, dte_min: int, dte_max: int, after: dt.date | None = None
 ) -> dict[str, Any] | None:
@@ -136,6 +147,7 @@ def _covered_call(
     premium: float | None = None
     iv: float | None = None
     source = "black_scholes"
+    chain_source = _chain_source(chain)
 
     if chain and chain.get("expiries"):
         exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
@@ -148,7 +160,7 @@ def _covered_call(
                 premium = _mid(call)
                 iv = call.get("implied_vol")
                 if premium is not None:
-                    source = "yahoo"
+                    source = chain_source
 
     edate = dt.date.fromisoformat(expiry_iso) if expiry_iso else (
         (guard_after + dt.timedelta(days=14)) if guard_after else as_of + dt.timedelta(days=37))
@@ -181,7 +193,7 @@ def _covered_call(
         "premium_yield_annual_pct": round(yield_annual * 100.0, 2) if yield_annual else None,
         "assignment_prob_pct": round(delta * 100.0, 1) if delta is not None else None,
         "vol_used": round(use_vol, 4),
-        "estimate": source != "yahoo",
+        "estimate": source == "black_scholes",
     }
 
 
@@ -203,6 +215,7 @@ def _protective_put(
     put_premium: float | None = None
     iv: float | None = None
     source = "black_scholes"
+    chain_source = _chain_source(chain)
 
     if chain and chain.get("expiries"):
         exp = _pick_expiry(chain["expiries"], as_of, dte_min=0, dte_max=10_000, after=min_expiry)
@@ -214,7 +227,7 @@ def _protective_put(
                 put_premium = _mid(put)
                 iv = put.get("implied_vol")
                 if put_premium is not None:
-                    source = "yahoo"
+                    source = chain_source
 
     edate = dt.date.fromisoformat(expiry_iso) if expiry_iso else (min_expiry + dt.timedelta(days=14))
     if expiry_iso is None:
@@ -261,7 +274,7 @@ def _protective_put(
         "net_collar_czk": round(net_collar * CONTRACT_SIZE * contracts * fx, 2) if net_collar is not None else None,
         "tax_saved_by_waiting_czk": round(tax_saved, 2),
         "vol_used": round(use_vol, 4),
-        "estimate": source != "yahoo",
+        "estimate": source == "black_scholes",
     }
 
 
@@ -342,7 +355,7 @@ def suggest_for_position(
         "symbol": symbol,
         "underlying": round(float(spot), 4),
         "currency": pos.get("currency"),
-        "source": (chain.get("source") if isinstance(chain, dict) else "black_scholes"),
+        "source": _chain_source(chain),
         "covered_call": covered,
         "protective_put": protective,
         "notes": notes,
