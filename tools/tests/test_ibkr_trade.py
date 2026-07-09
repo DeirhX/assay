@@ -221,6 +221,65 @@ class ReplyLoop(unittest.TestCase):
         self.assertNotIn("symbol", sent)
         self.assertIn("conid", sent)
 
+    def test_places_each_basket_order_in_its_own_request(self):
+        # A basket must NOT go in one array (CPAPI would read it as a bracket and
+        # demand parentId on the children); each order is its own POST.
+        a1 = [{"order_id": "1", "order_status": "Submitted"}]
+        a2 = [{"order_id": "2", "order_status": "Submitted"}]
+        orders = [
+            {"conid": 1, "side": "BUY", "quantity": 1, "orderType": "MKT", "tif": "DAY", "symbol": "AMD"},
+            {"conid": 2, "side": "BUY", "quantity": 1, "orderType": "MKT", "tif": "DAY", "symbol": "NVDA"}]
+        with mock.patch.object(ibt, "_request", side_effect=[a1, a2]) as req:
+            out = ibt.place_orders("DU1", orders)
+        self.assertEqual(out, [a1[0], a2[0]])          # both acks collected
+        self.assertEqual(len(req.call_args_list), 2)   # one request per order
+        for call in req.call_args_list:
+            self.assertEqual(len(call.args[2]["orders"]), 1)
+
+
+class PreviewAggregation(unittest.TestCase):
+    ORDERS = [
+        {"conid": 1, "side": "BUY", "quantity": 2, "orderType": "MKT", "tif": "DAY", "symbol": "AMD"},
+        {"conid": 2, "side": "BUY", "quantity": 1, "orderType": "MKT", "tif": "DAY", "symbol": "NVDA"}]
+
+    def test_previews_each_order_separately_and_recombines(self):
+        r1 = {"amount": {"amount": "1,000 USD", "commission": "1.0 USD"},
+              "initial": {"current": "5,000 USD", "change": "200 USD", "after": "5,200 USD"},
+              "maintenance": {"current": "4,000 USD", "change": "150 USD", "after": "4,150 USD"}}
+        r2 = {"amount": {"amount": "500 USD", "commission": "1.0 USD"},
+              "initial": {"current": "5,000 USD", "change": "100 USD", "after": "5,100 USD"},
+              "maintenance": {"current": "4,000 USD", "change": "50 USD", "after": "4,050 USD"}}
+        with mock.patch.object(ibt, "_request", side_effect=[r1, r2]) as req:
+            out = ibt.preview_orders("DU1", self.ORDERS)
+        # One whatif POST per order, each a single-element array (never a bracket).
+        self.assertEqual(len(req.call_args_list), 2)
+        for call in req.call_args_list:
+            self.assertTrue(call.args[1].endswith("/orders/whatif"))
+            self.assertEqual(len(call.args[2]["orders"]), 1)
+        # Order value + commission are additive and summed exactly.
+        self.assertEqual(out["amount"]["amount"], "1500 USD")
+        self.assertEqual(out["amount"]["commission"], "2 USD")
+        # Margin: shared pre-basket current, summed change, after = current+change.
+        self.assertEqual(out["initial"], {"current": "5000 USD", "change": "300 USD", "after": "5300 USD"})
+        self.assertEqual(out["maintenance"]["after"], "4200 USD")
+        self.assertEqual(out["basket_orders"], 2)
+
+    def test_single_order_preview_is_returned_verbatim(self):
+        r1 = {"amount": {"amount": "1,000 USD", "commission": "1.0 USD"}}
+        with mock.patch.object(ibt, "_request", return_value=r1) as req:
+            out = ibt.preview_orders("DU1", self.ORDERS[:1])
+        self.assertEqual(out, r1)
+        self.assertEqual(len(req.call_args_list), 1)
+
+    def test_a_per_order_error_is_surfaced_not_swallowed(self):
+        good = {"amount": {"amount": "1,000 USD"}}
+        bad = {"error": "no market data permissions for this contract"}
+        with mock.patch.object(ibt, "_request", side_effect=[good, bad]):
+            with self.assertRaises(ibt.CPAPIError) as ctx:
+                ibt.preview_orders("DU1", self.ORDERS)
+        self.assertIn("NVDA", str(ctx.exception))
+        self.assertIn("market data", str(ctx.exception))
+
 
 class ModifyOrder(unittest.TestCase):
     def test_reprices_and_clears_prompts(self):
