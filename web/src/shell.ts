@@ -6,6 +6,7 @@ import { pollDeepJob } from "./jobs";
 import { loadDeepRun } from "./pipeline";
 import { initFlowBar, updateFlowBar } from "./flowbar";
 import { initHistoryControls, loadHistory } from "./history";
+import { loadActivity } from "./activity";
 import { loadHoldings } from "./holdings";
 import { loadLeaderboard } from "./leaderboard";
 import { initJournalControls, loadJournal } from "./journal";
@@ -146,7 +147,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "activity", "basket", "setup"]);
 
 // The guided Plan flow is the dominant path, so it is the landing view and the
 // one omitted from the URL (a bare "/" means Plan). Every other view carries an
@@ -164,7 +165,7 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
+  today: "portfolio", holdings: "portfolio", history: "portfolio", activity: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
   basket: "basket",
   setup: "setup",
 };
@@ -173,7 +174,7 @@ const VIEW_GROUP: Record<string, string> = {
 const VIEW_SUBTAB: Record<string, string> = {
   leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade", "target-state": "target-state",
-  today: "today", holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
+  today: "today", holdings: "holdings", history: "history", activity: "activity", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
@@ -311,6 +312,7 @@ function setActiveView(view: string) {
   if (active === "today") loadOverview();
   if (active === "holdings") loadHoldings();
   if (active === "history") { initHistoryControls(); loadHistory(); }
+  if (active === "activity") loadActivity();
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
   if (active === "optimizer") loadOptimizer();

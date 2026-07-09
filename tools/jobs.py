@@ -46,6 +46,9 @@ class JobState(StrEnum):
 # Live states: a job is still doing (or about to do) work and counts against the
 # "is one already in flight?" guards.
 _LIVE_STATES = (JobState.QUEUED, JobState.RUNNING)
+# Terminal states: the job is finished. Reaching one (from a non-terminal state)
+# is what we log to the durable Activity feed, exactly once per job.
+_TERMINAL_STATES = (JobState.DONE, JobState.ERROR, JobState.CANCELLED)
 
 
 class Job(TypedDict):
@@ -106,12 +109,34 @@ def new_job(kind: str, **fields: Any) -> Job:
 
 
 def update_job(job_id: str, **fields: Any) -> None:
+    became_terminal = False
+    snapshot: dict[str, Any] | None = None
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return
+        was_terminal = job.get("state") in _TERMINAL_STATES
         job.update(cast(Job, fields))
         job["updated_at"] = _now()
+        # Log the finish to the durable Activity feed once: only on the first
+        # transition into a terminal state (later touches at the same state, or
+        # a job created already terminal, are ignored).
+        if not was_terminal and job.get("state") in _TERMINAL_STATES:
+            became_terminal = True
+            snapshot = public(job)
+    if became_terminal and snapshot is not None:
+        _record_activity(snapshot)
+
+
+def _record_activity(snapshot: dict[str, Any]) -> None:
+    """Best-effort append of a finished job to the Activity feed. Imported lazily
+    and wrapped so a feed/disk problem can never wedge the job registry."""
+    try:
+        import activity
+
+        activity.record_task(snapshot)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def public(job: Job) -> dict[str, Any]:

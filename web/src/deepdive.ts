@@ -9,6 +9,8 @@ import { METRIC_ROWS, loadPeerStats } from "./deepdive/metrics";
 import { renderAnalysisCard, renderDeepResearchCard } from "./deepdive/analysis-card";
 import { renderHistory } from "./deepdive/history-card";
 import { renderThesis } from "./deepdive/thesis";
+import { copyPortfolioPrompt } from "./holdings";
+import type { HoldingsPayload } from "./api-types";
 
 // The deep-dive dossier record returned by /api/research, /api/pull, etc. Only
 // the fields this composer touches are named; the index signature keeps the
@@ -470,6 +472,25 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
   refreshBtn.title = "Re-pull live price history, price, metrics, and profile from Yahoo / SEC / FMP";
   refreshBtn.addEventListener("click", () => pullTicker(rec.symbol, { push: false }));
   actions.appendChild(refreshBtn);
+  // Copy a portfolio snapshot focused on this ticker (context of every other
+  // holding + a question scaffold). Fetches the holdings payload on click since
+  // the dossier view doesn't otherwise load it.
+  const promptBtn = el("button", "ghost dd-copy-prompt", "Copy for prompt") as HTMLButtonElement;
+  promptBtn.type = "button";
+  promptBtn.title = `Copy a portfolio summary focused on ${esc(rec.symbol)} (with your other holdings as context) to paste into an LLM`;
+  promptBtn.addEventListener("click", async () => {
+    const prev = promptBtn.textContent || "Copy for prompt";
+    promptBtn.disabled = true;
+    promptBtn.textContent = "Building\u2026";
+    try {
+      const h = await api<HoldingsPayload>("/api/holdings");
+      await copyPortfolioPrompt(promptBtn, h, rec.symbol, prev);
+    } catch {
+      promptBtn.textContent = "Copy failed";
+      window.setTimeout(() => { promptBtn.textContent = prev; promptBtn.disabled = false; }, 1600);
+    }
+  });
+  actions.appendChild(promptBtn);
   sub.appendChild(actions);
   card.appendChild(sub);
 

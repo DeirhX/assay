@@ -1,6 +1,25 @@
-import type { HoldingPosition, HoldingsPayload } from "./api-types";
-import { $$, api, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
+import type { HoldingPosition, HoldingsPayload, RebalancePlan } from "./api-types";
+import { $$, api, copyToClipboard, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./ticker-nav";
+import { buildPortfolioPrompt } from "./prompt-export";
+
+// Fetch the plan (for stance/band/sleeve), build the prompt, copy it, and toast
+// on the button. Holdings payload is passed in (already loaded); the plan is
+// best-effort so the summary still copies (weights + options) if it fails.
+// `focus` adds a per-ticker block + question scaffold. Exported so the deep-dive
+// toolbar can reuse the exact same behaviour for the ticker in view.
+export async function copyPortfolioPrompt(btn: HTMLButtonElement, holdings: HoldingsPayload, focus: string | null, label = "Copy for prompt"): Promise<void> {
+  btn.disabled = true;
+  btn.textContent = "Building\u2026";
+  let plan: RebalancePlan | null = null;
+  try {
+    plan = await api<RebalancePlan>("/api/rebalance");
+  } catch { /* no plan: fall back to weights + options only */ }
+  const text = buildPortfolioPrompt(holdings, plan, focus);
+  const ok = await copyToClipboard(text);
+  btn.textContent = ok ? "Copied\u2713" : "Copy failed";
+  window.setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 1600);
+}
 
 // ---- holdings -------------------------------------------------------------
 async function loadHoldings() {
@@ -50,6 +69,15 @@ async function loadHoldings() {
       `<label class="setup-toggle pos-val-toggle"><input type="checkbox" id="hold-show-values"` +
       `${showValues ? " checked" : ""}><span class="setup-toggle-track"></span> ` +
       `Show asset values</label>`;
+    // Copy a compact, privacy-safe portfolio snapshot for pasting into an LLM.
+    // Needs the plan (stance/band/sleeve), fetched lazily on click so the holdings
+    // view itself stays a single request.
+    const copyBtn = el("button", "ghost pos-copy-prompt") as HTMLButtonElement;
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy for prompt";
+    copyBtn.title = "Copy a compact, weight-based portfolio summary (no absolute values) to paste into an LLM";
+    copyBtn.addEventListener("click", () => copyPortfolioPrompt(copyBtn, h, null));
+    controls.appendChild(copyBtn);
     out.appendChild(controls);
 
     const list = el("div", "pos-list" + (showValues ? " show-values" : ""));
@@ -77,8 +105,12 @@ async function loadHoldings() {
         barClass = "pos-bar opt-bar";
       } else {
         right = `${w.toFixed(2)}%`;
-        barW = (w / maxW) * 100;
-        barClass = "pos-bar";
+        // Bar length ∝ |weight| (a short/negative weight still has real size), and
+        // clamp to [0,100]. Without abs, a negative weight yields width:"-0.8%",
+        // which is invalid CSS the browser drops — so the display:block bar falls
+        // back to width:auto and fills the whole track (a tiny short reading full).
+        barW = Math.min(100, (Math.abs(w) / maxW) * 100);
+        barClass = "pos-bar" + (w < 0 ? " pos-bar-short" : "");
       }
 
       const displaySymbol = providerSymbol && providerSymbol !== p.symbol ? `${p.symbol} \u2192 ${providerSymbol}` : p.symbol;

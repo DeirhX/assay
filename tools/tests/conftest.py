@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import activity  # noqa: E402
 import config  # noqa: E402
 
 
@@ -28,4 +29,17 @@ def _isolate_local_secrets(monkeypatch):
     missing = Path(__file__).resolve().parent / "_no-such-secrets.env"
     monkeypatch.setattr(config, "TOOLS_SECRETS", missing, raising=False)
     monkeypatch.setattr(config, "ROOT_SECRETS", missing, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_activity_log(monkeypatch, tmp_path):
+    """Redirect the durable Activity feed to a throwaway file for every test.
+
+    ``jobs.update_job`` logs finished jobs to ``activity.record_task``, so the
+    many existing tests that drive a job to ``done`` would otherwise append to
+    the developer's real ``data/cache/activity-log.jsonl``. Point it at tmp and
+    clear the in-process view debounce so tests never see each other's writes."""
+    monkeypatch.setattr(activity, "ACTIVITY_LOG", tmp_path / "activity-log.jsonl", raising=False)
+    activity._last_view.clear()
     yield

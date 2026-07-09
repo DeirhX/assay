@@ -204,6 +204,76 @@ def option_exposure(position: dict[str, Any], invested: float) -> dict[str, Any]
     }
 
 
+def _option_root(symbol: str | None) -> str:
+    """Underlying ticker of an OCC option symbol. IBKR Flex writes a space-padded
+    root then the 15-char OCC tail ('KLAC  260717P00238000'); take the first
+    token, falling back to stripping the tail if the root wasn't space-separated."""
+    raw = str(symbol or "").strip()
+    head = raw.split()[0] if raw.split() else ""
+    if head and len(head) <= 6:
+        return head.upper()
+    compact = raw.replace(" ", "")
+    return (compact[:-15].upper() if len(compact) >= 15 else head.upper())
+
+
+def _leg_label(right: str, contracts: float, strike: float) -> str:
+    """Compact human tag for one option leg, e.g. 'short 2× 238P'."""
+    side = "short" if contracts < 0 else "long"
+    n = abs(int(contracts)) if float(contracts).is_integer() else abs(contracts)
+    strike_s = f"{strike:g}"
+    return f"{side} {n}\u00d7 {strike_s}{right}"
+
+
+def pending_option_exposure(data: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Per-underlying exposure that the *options* book would add to the stock on
+    exercise/assignment -- NOT counted as owned shares (weights stay share-only),
+    but surfaced so the rebalance planner can temper an ``accumulate`` on a name
+    you've already committed to via short puts (or long calls).
+
+    Keyed by underlying ticker. ``long_pct`` is the bullish exposure (short puts +
+    long calls) as a share of invested value -- the number that substitutes for a
+    buy; ``short_pct`` is the bearish side (long puts + short calls); ``net_pct``
+    is the signed sum. Empty when the snapshot has no options.
+    """
+    data = data if data is not None else load_json(HOLDINGS_JSON)
+    if not data:
+        return {}
+    positions = data.get("positions", [])
+    invested = invested_value(positions)
+    if not invested:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for p in positions:
+        if p.get("asset_class") != "OPT":
+            continue
+        exp = option_exposure(p, invested)
+        if not exp:
+            continue
+        root = _option_root(p.get("symbol"))
+        if not root:
+            continue
+        pct = float(exp["exercise_pct"])
+        entry = out.setdefault(root, {
+            "long_pct": 0.0, "short_pct": 0.0, "net_pct": 0.0, "contracts": 0, "legs": [],
+        })
+        if pct >= 0:
+            entry["long_pct"] += pct
+        else:
+            entry["short_pct"] += -pct
+        entry["net_pct"] += pct
+        entry["contracts"] += abs(int(exp["contracts"])) if float(exp["contracts"]).is_integer() else abs(exp["contracts"])
+        entry["legs"].append({
+            "right": exp["right"], "strike": exp["strike"], "contracts": exp["contracts"],
+            "exercise_pct": round(pct, 4), "label": _leg_label(exp["right"], exp["contracts"], exp["strike"]),
+        })
+    for entry in out.values():
+        entry["long_pct"] = round(entry["long_pct"], 4)
+        entry["short_pct"] = round(entry["short_pct"], 4)
+        entry["net_pct"] = round(entry["net_pct"], 4)
+        entry["label"] = ", ".join(leg["label"] for leg in entry["legs"])
+    return out
+
+
 def holdings_weights(data: dict[str, Any] | None = None, *, include_aliases: bool = False) -> dict[str, float]:
     data = data if data is not None else load_json(HOLDINGS_JSON)
     if not data:

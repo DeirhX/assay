@@ -34,6 +34,9 @@ function recordView(sym: string, name?: string) {
   const m = getViewedMap();
   m[sym] = { ts: new Date().toISOString(), name: name || (m[sym] && m[sym].name) || "" };
   try { localStorage.setItem(VIEWED_KEY, JSON.stringify(m)); } catch (_e) { /* private mode */ }
+  // Mirror to the durable server-side Activity feed (best-effort; the server
+  // debounces repeat views, so this stays quiet even if called on every render).
+  api("/api/activity/view", "POST", { symbol: sym, name: m[sym].name }).catch(() => { /* offline: local-only */ });
 }
 function relTime(iso: string | number | null | undefined): string {
   const t = Date.parse(String(iso ?? ""));

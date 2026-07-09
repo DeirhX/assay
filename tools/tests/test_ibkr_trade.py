@@ -316,6 +316,86 @@ class TickForPrice(unittest.TestCase):
         self.assertAlmostEqual(ibt.tick_for_price({"increment": 0}, 5.0), 0.01)
 
 
+class LiveOrders(unittest.TestCase):
+    """A half-up CPAPI session answers the orders endpoint with either 500
+    'Please query /accounts first' (never primed) or 400 'Bad Request: no bridge'
+    (auth is fine but the orders bridge isn't connected yet). live_orders must
+    self-heal both: prime the session and retry once, rather than bubbling a 502."""
+
+    def test_returns_orders_on_the_happy_path(self):
+        with mock.patch.object(ibt, "_request", return_value={"orders": [{"orderId": "1"}]}) as req:
+            self.assertEqual(ibt.live_orders(), [{"orderId": "1"}])
+        req.assert_called_once_with("GET", "/iserver/account/orders")
+
+    def test_primes_an_already_authenticated_session_then_retries(self):
+        # Brokerage session is up but was never queried: a GET /iserver/accounts
+        # is enough, no reauth needed.
+        unprimed = ibt.CPAPIError('gateway HTTP 500: {"error":"Please query /accounts first"}', status=500)
+        with mock.patch.object(ibt, "_request", side_effect=[
+            unprimed,                       # orders: unprimed
+            {"authenticated": True},        # auth_status
+            {"accounts": ["U1"]},           # /iserver/accounts primer
+            {"orders": [{"orderId": "9"}]},  # retry succeeds
+        ]) as req:
+            self.assertEqual(ibt.live_orders(), [{"orderId": "9"}])
+        self.assertEqual(
+            [c.args for c in req.call_args_list],
+            [("GET", "/iserver/account/orders"),
+             ("POST", "/iserver/auth/status"),
+             ("GET", "/iserver/accounts"),
+             ("GET", "/iserver/account/orders")],
+        )
+
+    def test_reauthenticates_when_the_brokerage_session_is_down_then_retries(self):
+        # Only the SSO/web session is up (the real failure seen live): iserver
+        # is unauthenticated, so ssodh/init must bring it up before querying
+        # accounts and re-fetching orders.
+        unprimed = ibt.CPAPIError('gateway HTTP 500: {"error":"Please query /accounts first"}', status=500)
+        with mock.patch.object(ibt, "_request", side_effect=[
+            unprimed,                        # orders: unprimed
+            {"authenticated": False},        # auth_status -> session down
+            {"authenticated": True},         # ssodh/init (reauthenticate)
+            {"accounts": ["U1"]},            # /iserver/accounts primer
+            {"orders": [{"orderId": "7"}]},  # retry succeeds
+        ]) as req:
+            self.assertEqual(ibt.live_orders(), [{"orderId": "7"}])
+        self.assertEqual(
+            [c.args for c in req.call_args_list],
+            [("GET", "/iserver/account/orders"),
+             ("POST", "/iserver/auth/status"),
+             ("POST", "/iserver/auth/ssodh/init", {"publish": True, "compete": True}),
+             ("GET", "/iserver/accounts"),
+             ("GET", "/iserver/account/orders")],
+        )
+
+    def test_primes_and_retries_on_no_bridge(self):
+        # Auth/status is healthy but the orders subsystem's backend bridge isn't
+        # up yet (the live 502 the user hit): a prime nudge (/iserver/accounts)
+        # + retry clears it without a reconnect.
+        no_bridge = ibt.CPAPIError('gateway HTTP 400: {"error":"Bad Request: no bridge","statusCode":400}', status=400)
+        with mock.patch.object(ibt, "_request", side_effect=[
+            no_bridge,                       # orders: bridge not up
+            {"authenticated": True},         # auth_status -> already authed
+            {"accounts": ["U1"]},            # /iserver/accounts primer
+            {"orders": [{"orderId": "3"}]},  # retry succeeds
+        ]) as req:
+            self.assertEqual(ibt.live_orders(), [{"orderId": "3"}])
+        self.assertEqual(
+            [c.args for c in req.call_args_list],
+            [("GET", "/iserver/account/orders"),
+             ("POST", "/iserver/auth/status"),
+             ("GET", "/iserver/accounts"),
+             ("GET", "/iserver/account/orders")],
+        )
+
+    def test_does_not_retry_on_an_unrelated_error(self):
+        boom = ibt.CPAPIError("gateway HTTP 503: service unavailable", status=503)
+        with mock.patch.object(ibt, "_request", side_effect=boom) as req:
+            with self.assertRaises(ibt.CPAPIError):
+                ibt.live_orders()
+        req.assert_called_once_with("GET", "/iserver/account/orders")
+
+
 class TradeServiceGuards(unittest.TestCase):
     def setUp(self):
         ibt._conid_cache.clear()

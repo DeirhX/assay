@@ -58,6 +58,7 @@ import exit_plan  # noqa: E402  -- advisory graceful-exit planner (tax-timed sca
 import whatif  # noqa: E402
 import journal  # noqa: E402
 import jobs  # noqa: E402
+import activity  # noqa: E402  -- durable JSONL feed of tickers viewed + tasks finished
 import scheduler  # noqa: E402  -- read-only background freshness scheduler (off by default)
 import orchestrate  # noqa: E402  -- durable state machine for the guided strategy run
 import errorlog  # noqa: E402
@@ -294,6 +295,7 @@ _GET_EXACT = {
     "/api/deep-research/login-status": "_get_login_status",
     "/api/deep-job": "_get_deep_job",
     "/api/jobs": "_get_jobs",
+    "/api/activity": "_get_activity",
     "/api/deep-prompt": "_get_deep_prompt",
     "/api/deep-qa": "_get_deep_qa",
     "/api/target-model": "_get_target_model",
@@ -326,6 +328,7 @@ _POST_EXACT = {
     "/api/portfolio-history/sync": "_post_portfolio_history_sync",
     "/api/portfolio-history/sectors": "_post_portfolio_history_sectors",
     "/api/deep-job/cancel": "_post_deep_job_cancel",
+    "/api/activity/view": "_post_activity_view",
     "/api/deep-run/delete": "_post_deep_run_delete",
     "/api/deep-qa": "_post_deep_qa",
     "/api/error-log": "_post_error_log",
@@ -823,6 +826,15 @@ class Handler(BaseHTTPRequestHandler):
         # jobs are never evicted from the in-memory registry.
         return self._send_json({"jobs": jobs.list_public()[:JOBS_LIST_LIMIT]})
 
+    def _get_activity(self, path, query):
+        # Durable, cross-restart feed for the Activity view: tickers viewed +
+        # tasks finished, newest-first. Capped so the payload stays bounded.
+        try:
+            limit = int((query.get("limit") or ["400"])[0])
+        except (TypeError, ValueError):
+            limit = 400
+        return self._send_json({"events": activity.recent(max(1, min(limit, 1000)))})
+
     def _get_deep_prompt(self, path, query):
         ticker = (query.get("ticker") or [""])[0].strip()
         name = (query.get("segment") or [""])[0]
@@ -948,6 +960,15 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         sym = _resolve_symbol(_safe_symbol(str(body.get("symbol") or "")))
         return self._send_json(price_levels.clear(sym))
+
+    def _post_activity_view(self, path):
+        # Client pings this when a dossier opens, so "tickers visited" survives a
+        # restart and crosses devices (it used to be browser-local only). The
+        # feed debounces repeat views, so a chatty client is harmless.
+        body = self._read_body()
+        sym = _safe_symbol(str(body.get("symbol") or ""))
+        logged = activity.record_view(sym, str(body.get("name") or "")) if sym else False
+        return self._send_json({"ok": True, "logged": bool(logged)})
 
     def _post_strategy_start(self, path):
         body = self._read_body()
