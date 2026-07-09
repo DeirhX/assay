@@ -111,3 +111,52 @@ def test_premium_converted_to_base_currency():
     cc = out["covered_call"]
     # 2.2 premium * 100 * 10 contracts * 23 fx = 50,600.
     assert cc["premium_czk"] == 50_600.0
+
+
+# --------------------------------------------------------------------------- #
+# Source labeling -- a from-chain premium inherits the chain's own source, so an
+# IBKR chain is not mislabeled as "yahoo".
+# --------------------------------------------------------------------------- #
+def _ibkr_chain():
+    c = _chain()
+    c["source"] = "ibkr"
+    return c
+
+
+def test_covered_call_inherits_ibkr_source():
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=_ibkr_chain(), rate=0.04)
+    cc = out["covered_call"]
+    assert cc["source"] == "ibkr"
+    assert cc["estimate"] is False
+    assert out["source"] == "ibkr"
+
+
+def test_protective_put_inherits_ibkr_source():
+    out = ov.suggest_for_position("TEST", _pos(), _defer("2026-10-01"), as_of=AS_OF, chain=_ibkr_chain(), rate=0.04)
+    pp = out["protective_put"]
+    assert pp["source"] == "ibkr"
+    assert pp["estimate"] is False
+
+
+def test_sourceless_chain_defaults_to_yahoo():
+    c = _chain()
+    c.pop("source", None)
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    assert out["covered_call"]["source"] == "yahoo"
+
+
+def test_ibkr_chain_without_quotes_estimates_premium():
+    # An IBKR chain that resolved strikes/expiries but carries no quotes (no
+    # options market-data subscription): the premium is modeled, so the
+    # suggestion is labeled black_scholes even though the chain came from IBKR --
+    # while the chain-level source still records where the chain came from.
+    c = _ibkr_chain()
+    for exp in c["expiries"]:
+        for side in ("calls", "puts"):
+            for k in exp[side]:
+                k["bid"] = k["ask"] = k["last"] = None
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["source"] == "black_scholes"
+    assert cc["estimate"] is True
+    assert out["source"] == "ibkr"

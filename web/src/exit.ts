@@ -357,17 +357,22 @@ function optionsBlock(p: ExitPosition): HTMLElement | null {
   return box;
 }
 
-function estimateBadge(estimate: boolean): string {
-  return estimate
-    ? `<span class="exit-est" title="Black-Scholes estimate — no live chain for this name">estimate</span>`
-    : `<span class="exit-live" title="From a live-ish Yahoo option chain (delayed/mid)">indicative</span>`;
+// Name the provenance of the premium: a live IBKR/Yahoo chain quote, or a
+// Black-Scholes estimate when no chain quote was available (`estimate` is set
+// server-side exactly when the premium was modeled, so it wins over `source`).
+function sourceBadge(source: string, estimate: boolean): string {
+  if (!estimate && source === "ibkr")
+    return `<span class="exit-live" title="Live from your IBKR option chain">IBKR</span>`;
+  if (!estimate && source === "yahoo")
+    return `<span class="exit-live" title="From a live-ish Yahoo option chain (delayed/mid)">Yahoo</span>`;
+  return `<span class="exit-est" title="Black-Scholes estimate — no live chain quote for this name">estimate</span>`;
 }
 
 function coveredCallCard(c: ExitCoveredCall, ccy: string | null): HTMLElement {
   const card = el("div", "exit-opt-card");
   const cur = ccy || "";
   card.innerHTML =
-    `<div class="exit-opt-title">Covered call ${estimateBadge(c.estimate)}` +
+    `<div class="exit-opt-title">Covered call ${sourceBadge(c.source, c.estimate)}` +
     (c.assignment_guard ? ` <span class="warn" title="Pushed far-OTM / post-exemption to protect a deferred lot">tax-guarded</span>` : "") +
     `</div>` +
     `<div class="exit-opt-grid">` +
@@ -388,7 +393,7 @@ function protectivePutCard(pp: ExitProtectivePut, ccy: string | null): HTMLEleme
   const collar = net == null ? "n/a"
     : (net >= 0 ? `${fmtNum(net)} ${esc(cur)} debit` : `${fmtNum(-net)} ${esc(cur)} credit`) + ` · ${czk(pp.net_collar_czk)}`;
   card.innerHTML =
-    `<div class="exit-opt-title">Protective put / collar ${estimateBadge(pp.estimate)}</div>` +
+    `<div class="exit-opt-title">Protective put / collar ${sourceBadge(pp.source, pp.estimate)}</div>` +
     `<div class="exit-opt-grid">` +
       kv("Buy put", `${pp.contracts}× ${fmtNum(pp.put_strike)} ${esc(cur)}`) +
       kv("Expiry", `${esc(pp.expiry)} (${pp.dte}d · after ${esc(pp.exempt_on)})`) +

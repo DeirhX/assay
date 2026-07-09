@@ -1,11 +1,14 @@
 import datetime as dt
 import sys
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import exit_plan  # noqa: E402
+import ibkr_trade  # noqa: E402
 import tax_lots  # noqa: E402
+from providers import yahoo  # noqa: E402
 
 AS_OF = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
 
@@ -187,3 +190,80 @@ def test_build_exit_plan_skips_in_band_names():
     plan = exit_plan.build_exit_plan(_model("reduce", 70.0, 90.0), _holdings(),
                                      as_of=AS_OF, fetch=False, with_options=False)
     assert plan["positions"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Option-chain source selection: IBKR first when the gateway is authenticated,
+# Yahoo fallback otherwise / on an IBKR miss.
+# --------------------------------------------------------------------------- #
+def _ibkr_chain():
+    return {"source": "ibkr", "symbol": "NVDA",
+            "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
+
+
+def _yahoo_chain():
+    return {"source": "yahoo", "symbol": "NVDA",
+            "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
+
+
+def test_session_ready_reads_auth_status():
+    with mock.patch.object(ibkr_trade, "auth_status", return_value={"authenticated": True}):
+        assert exit_plan._ibkr_session_ready() is True
+    with mock.patch.object(ibkr_trade, "auth_status", return_value={}):
+        assert exit_plan._ibkr_session_ready() is False
+    with mock.patch.object(ibkr_trade, "auth_status", side_effect=RuntimeError("down")):
+        assert exit_plan._ibkr_session_ready() is False
+
+
+def test_fetch_prefers_ibkr_when_authenticated():
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
+            mock.patch.object(ibkr_trade, "option_chain", return_value=_ibkr_chain()) as ibkr_fn, \
+            mock.patch.object(yahoo, "option_chain") as yahoo_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "ibkr"
+    ibkr_fn.assert_called_once()
+    yahoo_fn.assert_not_called()
+
+
+def test_fetch_falls_back_to_yahoo_when_not_authenticated():
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
+            mock.patch.object(ibkr_trade, "option_chain") as ibkr_fn, \
+            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "yahoo"
+    ibkr_fn.assert_not_called()
+    yahoo_fn.assert_called_once()
+
+
+def test_fetch_falls_back_when_ibkr_resolves_nothing():
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
+            mock.patch.object(ibkr_trade, "option_chain", return_value=None), \
+            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "yahoo"
+    yahoo_fn.assert_called_once()
+
+
+def test_fetch_falls_back_when_ibkr_raises():
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
+            mock.patch.object(ibkr_trade, "option_chain", side_effect=RuntimeError("gateway boom")), \
+            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "yahoo"
+    yahoo_fn.assert_called_once()
+
+
+def test_cached_option_chain_persists_and_serves(tmp_path, monkeypatch):
+    monkeypatch.setattr(exit_plan, "_OPT_CACHE_DIR", tmp_path)
+    calls = {"n": 0}
+
+    def fake_fetch(sym):
+        calls["n"] += 1
+        return _ibkr_chain()
+
+    monkeypatch.setattr(exit_plan, "_fetch_option_chain", fake_fetch)
+    first = exit_plan._cached_option_chain("NVDA")
+    second = exit_plan._cached_option_chain("NVDA")
+    assert first["source"] == "ibkr"
+    assert second["source"] == "ibkr"
+    assert calls["n"] == 1  # second call served from the fresh cache entry
