@@ -20,11 +20,18 @@ aliased to its existing private name.
 from __future__ import annotations
 
 import hygiene
+import portfolio
 import price_levels
 import quote_cache
 from config import RESEARCH_DIR
 from store import load
 from symbols import resolve_symbol
+
+# Bullish option exposure (short puts / long calls) at/above this much of a buy
+# gap counts as "fully covered": the accumulate is already committed via options,
+# so acting on it now would double up. A slack so a 2.65%-vs-2.65% match reads
+# as covered despite float noise.
+_OPTION_COVER_EPS = 0.05
 
 
 # How a thesis verdict leans. Used only to flag when the deterministic band action
@@ -175,14 +182,100 @@ def apply_price_gate(
     row["price_gate"] = gate
 
 
+def _apply_options(unit: dict, exp: dict | None, *, action_key: str, wait_value) -> None:
+    """Attach an ``options`` block to a plan row/member and, when the unit's a BUY
+    that its bullish option exposure already covers, temper it: a full cover drops
+    the pre-staged default (so Simulate doesn't stack a doubling-up buy on the
+    puts) and downgrades the action; a partial cover is annotated but left to act.
+
+    Shares stay share-only -- this never touches ``current_pct``; it only informs
+    the *recommendation*. ``action_key``/``wait_value`` differ for a target row
+    (``"action"`` -> ``"wait"``) vs a sleeve member (``"member_action"`` -> None)."""
+    if not exp:
+        return
+    summ = {
+        "long_pct": exp.get("long_pct", 0.0),
+        "short_pct": exp.get("short_pct", 0.0),
+        "net_pct": exp.get("net_pct", 0.0),
+        "contracts": exp.get("contracts", 0),
+        "label": exp.get("label", ""),
+        "legs": exp.get("legs", []),
+    }
+    long_pct = summ["long_pct"]
+    gap = unit.get("suggest_delta_pct")
+    if unit.get(action_key) == "buy" and isinstance(gap, (int, float)) and gap > 0 and long_pct > 0:
+        summ["gap_pct"] = round(gap, 2)
+        if long_pct + _OPTION_COVER_EPS >= gap:
+            summ["covers"] = "full"
+            for key in ("suggest_delta_pct", "suggest_delta_czk"):
+                val = unit.get(key)
+                if isinstance(val, (int, float)):
+                    summ["full_" + key] = val
+                    unit[key] = 0.0 if key.endswith("pct") else 0
+            unit[action_key] = wait_value
+        else:
+            summ["covers"] = "partial"
+            summ["covered_pct"] = round(long_pct, 2)
+    unit["options"] = summ
+
+
+def attach_options_overlay(plan: dict, opt_map: dict[str, dict]) -> None:
+    """Fold per-underlying pending option exposure onto target rows, sleeve rows,
+    and sleeve members, tempering a buy the options already cover. A sleeve's
+    exposure is the aggregate of its members' (so a sleeve whose short puts alone
+    reach the band stops recommending a stock buy on top). Best-effort; no-op when
+    there are no options."""
+    if not opt_map:
+        return
+
+    def expo_for(sym) -> dict | None:
+        return opt_map.get(str(sym or "").strip().upper())
+
+    for row in plan.get("rows") or []:
+        kind = row.get("kind")
+        if kind == "target":
+            _apply_options(row, expo_for(row.get("name")), action_key="action", wait_value="wait")
+        elif kind == "sleeve":
+            members = row.get("members") or []
+            legs: list = []
+            labels: list[str] = []
+            long_sum = short_sum = net_sum = 0.0
+            contracts = 0
+            for m in members:
+                e = expo_for(m.get("symbol"))
+                _apply_options(m, e, action_key="member_action", wait_value=None)
+                if e:
+                    long_sum += e.get("long_pct", 0.0)
+                    short_sum += e.get("short_pct", 0.0)
+                    net_sum += e.get("net_pct", 0.0)
+                    contracts += e.get("contracts", 0)
+                    legs.extend(e.get("legs", []))
+                    labels.append(f"{m.get('symbol')} {e.get('label', '')}".strip())
+            if legs:
+                agg = {
+                    "long_pct": round(long_sum, 4), "short_pct": round(short_sum, 4),
+                    "net_pct": round(net_sum, 4), "contracts": contracts,
+                    "legs": legs, "label": ", ".join(labels),
+                }
+                _apply_options(row, agg, action_key="action", wait_value="wait")
+
+
 def attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
     """Enrich each held target row of a rebalance plan, in place, with a compact
     ``research`` object + a ``research_conflict`` flag, and a ``price_gate`` from
     any locked price level (downgrading the action to ``"wait"`` when the price
-    isn't favorable yet). Best-effort: a missing/malformed dossier or level is
-    skipped silently so the planner always renders."""
+    isn't favorable yet), and -- across all rows/sleeve members -- an ``options``
+    block from pending short-put / long-call exposure that tempers a buy the
+    options already cover. Best-effort: a missing/malformed dossier, level, or
+    options snapshot is skipped silently so the planner always renders."""
     price_map = mark_price_map(holdings)
     quotes = quote_cache.load()   # read the fresh-quote cache once for the whole plan
+    # Pending option exposure (short puts / long calls) per underlying, so an
+    # accumulate the options already cover can be tempered below. Read once.
+    try:
+        opt_map = portfolio.pending_option_exposure(holdings) if holdings else {}
+    except Exception:  # noqa: BLE001 - options context is optional, never fatal
+        opt_map = {}
     for row in plan.get("rows") or []:
         if row.get("kind") != "target" or not row.get("held"):
             continue
@@ -201,3 +294,7 @@ def attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
             apply_price_gate(row, provider_sym, price_map, quotes=quotes)
         except Exception:  # noqa: BLE001 - gating is decision support, never fatal
             pass
+    try:
+        attach_options_overlay(plan, opt_map)
+    except Exception:  # noqa: BLE001 - options context is decision support, never fatal
+        pass

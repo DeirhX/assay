@@ -83,10 +83,25 @@ export function chartSvg(rec: ChartRec, history: PriceHistory):
   // vertical gridline to match the y-axis grid. Set() dedupes when there are
   // fewer points than ticks.
   const xTickCount = Math.min(Math.max(2, Math.round(innerW / 120)), points.length);
-  const xIndices = Array.from(new Set(
+  const rawIndices = Array.from(new Set(
     Array.from({ length: xTickCount }, (_, i) =>
       Math.round((i / (xTickCount - 1)) * (points.length - 1))),
   ));
+  // Deduping the indices isn't enough: on an intraday range two evenly-spaced
+  // points can format to the SAME label (the last two ticks both reading
+  // "Jul 8"). Dedupe by the rendered label too, keeping the first tick of each
+  // day — but if the right-edge point (the "now" tick) collides with an earlier
+  // one, move that tick out to the edge so the latest date anchors the axis once
+  // instead of appearing twice.
+  const lastIdx = points.length - 1;
+  const labelPos = new Map<string, number>();
+  const xIndices: number[] = [];
+  for (const idx of rawIndices) {
+    const label = dateLabel(points[idx].date);
+    const prev = labelPos.get(label);
+    if (prev === undefined) { labelPos.set(label, xIndices.length); xIndices.push(idx); }
+    else if (idx === lastIdx) { xIndices[prev] = idx; }
+  }
   const xAxis = xIndices.map((idx) => {
     const xp = x(idx).toFixed(1);
     const anchor = idx === 0 ? "start" : idx === points.length - 1 ? "end" : "middle";

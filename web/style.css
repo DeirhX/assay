@@ -924,7 +924,9 @@ tr:last-child td { border-bottom: 0; }
 .pos-list.show-values .pos-row { grid-template-columns: 160px 1fr 84px 124px; }
 .pos-list.show-values .pos-val { display: block; }
 
-.pos-controls { display: flex; justify-content: flex-end; margin: 8px 2px 0; }
+.pos-controls { display: flex; justify-content: flex-end; align-items: center; gap: 14px; margin: 8px 2px 0; }
+/* Secondary action; a touch smaller than a primary control. */
+.pos-copy-prompt, .dd-copy-prompt { height: 30px; padding: 0 12px; font-size: 12.5px; }
 /* Uses the shared .setup-toggle switch; only the weight is dialed back since
    this is a secondary, optional control rather than a setup decision. */
 .pos-val-toggle { font-weight: 500; color: var(--muted); }
@@ -947,6 +949,13 @@ tr:last-child td { border-bottom: 0; }
   min-width: 2px;
   background-image: repeating-linear-gradient(-45deg, var(--info) 0 5px, transparent 5px 10px) !important;
   opacity: .85;
+}
+/* A short / negative weight: same magnitude scale, but a hollow outlined bar so
+   it never reads as a normal long holding. */
+.pos-bar-short {
+  background: transparent !important;
+  border: 1px solid var(--bad);
+  box-shadow: inset 0 0 0 9999px rgba(255, 122, 122, .18);
 }
 
 @media (max-width: 620px) { .pos-row { grid-template-columns: 110px 1fr 70px; gap: 8px; } }
@@ -1493,6 +1502,28 @@ a.tlink:hover { border-bottom-style: solid; }
   border-color: var(--warn, #d8a657);
   color: var(--warn, #d8a657);
 }
+/* Spacer pushes the toggles right; the collapse toggle sits at the far right
+   (alone when collapsed, next to Advanced when expanded). */
+.pl-head-spacer { flex: 1 1 auto; }
+.pl-collapse-toggle { font-size: 11px; padding: 3px 9px; flex: none; }
+
+/* Collapsed summary: the effective levels (locked, else the analysis suggestion)
+   as compact pills. The whole strip is a click target that opens the editor. */
+.pl-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
+.pl-pill {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel); font-size: 12px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.pl-pill--buy { color: var(--good); border-color: rgba(107,211,138,.45); }
+.pl-pill--trim { color: var(--warn, #d8a657); border-color: rgba(216,166,87,.45); }
+.pl-pill--fv { color: var(--text); font-weight: 600; }
+.pl-pill--spot { color: var(--muted); }
+.pl-pill--tag { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .05em; font-weight: 700; }
+.pl-pill--empty { color: var(--accent); border-style: dashed; }
+/* A suggestion that isn't locked yet reads as provisional. */
+.pl-pill--suggested { border-style: dashed; }
+.pl-pills:hover .pl-pill--empty { background: rgba(130,170,255,.08); }
 
 /* Simplified default view: one price per side, side by side. */
 .pl-simple { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -1755,6 +1786,37 @@ a.tlink:hover { border-bottom-style: solid; }
   .viewed-when { display: none; }
 }
 
+/* ---- activity feed -------------------------------------------------------- */
+.act-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.act-card { display: flex; flex-direction: column; gap: 4px; }
+.act-day {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); margin: 12px 0 2px; font-weight: 700;
+}
+.act-day:first-child { margin-top: 0; }
+.act-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: center; gap: 4px 12px;
+  width: 100%; text-align: left;
+  border: 1px solid var(--border); border-radius: 9px; padding: 8px 12px;
+  background: var(--panel-2); color: var(--text); font: inherit;
+}
+.act-row.navigable { cursor: pointer; }
+.act-row.navigable:hover { border-color: var(--accent); }
+.act-row:disabled { cursor: default; opacity: 0.7; }
+.act-icon { color: var(--muted); font-size: 14px; text-align: center; }
+.act-view .act-icon { color: var(--accent); }
+.act-title { min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
+.act-sym { font-weight: 700; color: var(--accent); }
+.act-name, .act-detail { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-kindtag, .act-when { font-size: 12px; white-space: nowrap; text-align: right; }
+.act-state { justify-self: end; }
+@media (max-width: 640px) {
+  .act-row { grid-template-columns: 20px minmax(0, 1fr) auto; }
+  .act-when { display: none; }
+}
+
 /* ---- rebalance planner ---------------------------------------------------- */
 .reb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .reb-head-text { min-width: 0; }
@@ -1869,6 +1931,17 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-gate-detail { font-weight: 600; }
 /* A row gated off (price not favorable) is flagged like a softer conflict. */
 .reb-data-row.reb-gated { box-shadow: inset 3px 0 0 var(--warn); }
+
+/* Pending option-exposure annotation under a name (short puts / long calls). */
+.reb-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; font-size: 11px; }
+.reb-opt-label { font-weight: 700; color: var(--muted); }
+.reb-opt-legs { font-variant-numeric: tabular-nums; color: var(--text); }
+.reb-opt-detail { font-weight: 600; }
+.reb-opt-full .reb-opt-label { color: var(--warn); }
+.reb-opt-partial .reb-opt-label { color: var(--muted); }
+/* A buy fully covered by options gets the same soft warn rail as a price gate. */
+.reb-data-row.reb-opt-covered { box-shadow: inset 3px 0 0 var(--warn); }
+.reb-mem-opt { font-size: 10.5px; }
 .reb-cur { display: flex; flex-direction: column; gap: 1px; }
 .reb-cur small, .reb-member small, .reb-untargeted-row small { color: var(--muted); font-size: 11.5px; }
 .reb-band { color: var(--muted); white-space: nowrap; }
@@ -2468,6 +2541,14 @@ a.tlink:hover { border-bottom-style: solid; }
 .hist-activity td.num .ccy { font-size: 11px; }
 /* Trades count: hover reveals the buy/sell split (native title). */
 .hist-trades-n { cursor: help; border-bottom: 1px dotted var(--border); }
+
+/* Sortable column headers (Activity by name). The whole <th> is the hit target;
+   the active column colors up and shows a direction arrow. */
+.risk-pos-table th.hist-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.risk-pos-table th.hist-sortable:hover { color: var(--text); }
+.risk-pos-table th.hist-sortable.active { color: var(--accent); }
+.risk-pos-table th.hist-sortable:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.hist-sort-ind { display: inline-block; width: .9em; margin-left: 2px; font-size: .9em; }
 
 /* "By sector" toolbar: freshness note + the Yahoo backfill trigger. */
 .hist-sectools { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; flex-wrap: wrap; }

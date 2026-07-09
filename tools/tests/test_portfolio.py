@@ -73,6 +73,41 @@ class OptionExposure(unittest.TestCase):
         self.assertIsNone(pf.option_exposure(self.PUT, 0.0))
 
 
+class PendingOptionExposure(unittest.TestCase):
+    """Per-underlying options exposure the planner folds onto rebalance rows."""
+
+    # A short put and a long put on the same name, plus a stock line so invested
+    # is nonzero. base_market_value/market_value give the FX (CZK per USD).
+    def _holdings(self):
+        return {"positions": [
+            {"symbol": "STK", "base_market_value": 10_000_000.0},
+            {"symbol": "KLAC  260717P00238000", "asset_class": "OPT", "quantity": -2.0,
+             "mark_price": 27.4615, "market_value": -5492.3, "base_market_value": -116650.96},
+            {"symbol": "KLAC  260717P00200000", "asset_class": "OPT", "quantity": 1.0,
+             "mark_price": 5.0, "market_value": 1000.0, "base_market_value": 21240.0},
+        ]}
+
+    def test_short_put_is_bullish_long_exposure(self):
+        expo = pf.pending_option_exposure(self._holdings())
+        self.assertIn("KLAC", expo)
+        k = expo["KLAC"]
+        self.assertGreater(k["long_pct"], 0)    # short put -> long on assignment
+        self.assertGreater(k["short_pct"], 0)   # long put -> short/hedge
+        self.assertEqual(k["contracts"], 3)     # 2 + 1, sign-agnostic count
+        self.assertEqual(len(k["legs"]), 2)
+        self.assertIn("short 2\u00d7 238P", k["label"])
+        # net = long - short (both legs signed and summed; each rounded to 4dp)
+        self.assertAlmostEqual(k["net_pct"], k["long_pct"] - k["short_pct"], places=2)
+
+    def test_root_parsing_handles_padded_and_unpadded_occ(self):
+        self.assertEqual(pf._option_root("KLAC  260717P00238000"), "KLAC")
+        self.assertEqual(pf._option_root("KLAC260717P00238000"), "KLAC")
+
+    def test_no_options_is_empty(self):
+        self.assertEqual(pf.pending_option_exposure({"positions": [
+            {"symbol": "AAA", "base_market_value": 100.0}]}), {})
+
+
 class TargetContext(unittest.TestCase):
     MODEL = {
         "targets": {"AMD": {"low": 10, "high": 12, "rule": "trim_only"}},

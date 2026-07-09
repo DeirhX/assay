@@ -3,8 +3,8 @@
 // when a locked price trigger blocks the side) seeds the plan input at 0, so a
 // gated buy/trim isn't staged unless the human types an override.
 import { describe, expect, it } from "vitest";
-import { fundingCardHtml, fundingNeededCzk, projectedCash, rebActionClass, rebDefaultDelta } from "../src/rebalance";
-import type { FundingCandidate } from "../src/api-types";
+import { fundingCardHtml, fundingNeededCzk, optionsLine, projectedCash, rebActionClass, rebDefaultDelta } from "../src/rebalance";
+import type { FundingCandidate, PendingOptionExposure } from "../src/api-types";
 
 describe("rebDefaultDelta", () => {
   it("prefills the band-closing amount for clear buy/trim actions", () => {
@@ -21,6 +21,38 @@ describe("rebDefaultDelta", () => {
   it("zeroes review/none rows too (judgement calls)", () => {
     expect(rebDefaultDelta({ action: "review", suggest_delta_pct: 3 })).toBe(0);
     expect(rebDefaultDelta({ action: null, suggest_delta_pct: 0 })).toBe(0);
+  });
+});
+
+describe("optionsLine (pending option-exposure annotation)", () => {
+  const base: PendingOptionExposure = {
+    long_pct: 3.5, short_pct: 0, net_pct: 3.5, contracts: 2,
+    label: "KLAC short 2× 238P", legs: [],
+  };
+
+  it("returns null without exposure", () => {
+    expect(optionsLine(null)).toBeNull();
+    expect(optionsLine(undefined)).toBeNull();
+  });
+
+  it("flags a fully covered buy and warns against doubling up", () => {
+    const line = optionsLine({ ...base, covers: "full", gap_pct: 2.5, full_suggest_delta_pct: 2.5 })!;
+    expect(line.className).toContain("reb-opt-full");
+    expect(line.textContent).toContain("Covered by options");
+    expect(line.textContent).toContain("hold off");
+    expect(line.textContent).toContain("KLAC short 2× 238P");
+  });
+
+  it("annotates a partial cover but does not say covered", () => {
+    const line = optionsLine({ ...base, covers: "partial", gap_pct: 6, covered_pct: 3.5 })!;
+    expect(line.className).toContain("reb-opt-partial");
+    expect(line.textContent).toContain("covers 3.5% of a +6% buy");
+  });
+
+  it("shows a plain info line when there's exposure but no buy to cover", () => {
+    const line = optionsLine(base)!;
+    expect(line.className).toContain("reb-opt-info");
+    expect(line.textContent).toContain("~3.5% pending");
   });
 });
 

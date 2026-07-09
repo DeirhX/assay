@@ -14,6 +14,70 @@ import { ccyTag, fmtMoney, fmtSigned } from "./format";
 const ACTIVITY_PAGE = 25;
 const LEDGER_PAGE = 50;
 
+// ---- sortable "Activity by name" columns -----------------------------------
+export type ActivitySortKey = "name" | "ccy" | "trades" | "bought" | "sold" | "flow" | "pnl";
+export interface ActivitySort { key: ActivitySortKey; dir: "asc" | "desc"; }
+
+// Per-column value pulled off a group for comparison. Name/Ccy compare as
+// strings; the rest are base-currency numbers.
+const ACTIVITY_SORT_VAL: Record<ActivitySortKey, (g: ActivityGroup) => number | string> = {
+  name: (g) => (g.label || "").toUpperCase(),
+  ccy: (g) => (g.currency || "").toUpperCase(),
+  trades: (g) => Number(g.n) || 0,
+  bought: (g) => Number(g.bought_base) || 0,
+  sold: (g) => Number(g.sold_base) || 0,
+  flow: (g) => Number(g.net_base_cash_flow) || 0,
+  pnl: (g) => Number(g.base_realized_pnl) || 0,
+};
+
+// Numbers open descending (largest first is what you usually want for money /
+// counts); text opens ascending (A→Z).
+const activityDefaultDir = (key: ActivitySortKey): "asc" | "desc" =>
+  key === "name" || key === "ccy" ? "asc" : "desc";
+
+// Sort a COPY of the groups; the primary key breaks ties on name so the order is
+// stable and direction-independent (a name tiebreak never flips with dir).
+export function sortActivityGroups(groups: ActivityGroup[], sort: ActivitySort): ActivityGroup[] {
+  const get = ACTIVITY_SORT_VAL[sort.key];
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return [...groups].sort((a, b) => {
+    const va = get(a), vb = get(b);
+    const cmp = typeof va === "string" || typeof vb === "string"
+      ? String(va).localeCompare(String(vb))
+      : (va as number) - (vb as number);
+    if (cmp !== 0) return cmp * sign;
+    return (a.label || "").localeCompare(b.label || "");
+  });
+}
+
+interface ActivityCol { key: ActivitySortKey; label: string; num: boolean; }
+
+// A clickable/keyboard-operable header row. The active column carries an arrow
+// and aria-sort; clicking re-sorts (toggling direction on the active column).
+function activityHead(cols: ActivityCol[], sort: ActivitySort, onSort: (k: ActivitySortKey) => void): HTMLElement {
+  const thead = el("thead");
+  const tr = el("tr");
+  cols.forEach((c) => {
+    const active = sort.key === c.key;
+    const th = el("th", (c.num ? "num " : "") + "hist-sortable" + (active ? " active" : ""));
+    th.setAttribute("role", "button");
+    th.tabIndex = 0;
+    th.title = "Sort by " + c.label;
+    th.setAttribute("aria-sort", active ? (sort.dir === "asc" ? "ascending" : "descending") : "none");
+    const arrow = active ? (sort.dir === "asc" ? "\u2191" : "\u2193") : "";
+    th.innerHTML = `<span class="hist-sort-lbl">${esc(c.label)}</span><span class="hist-sort-ind">${arrow}</span>`;
+    const go = () => onSort(c.key);
+    th.addEventListener("click", go);
+    th.addEventListener("keydown", (ev) => {
+      const k = (ev as KeyboardEvent).key;
+      if (k === "Enter" || k === " ") { ev.preventDefault(); go(); }
+    });
+    tr.appendChild(th);
+  });
+  thead.appendChild(tr);
+  return thead;
+}
+
 // Leading caret cell for a grouped row. Always rendered (empty when there's
 // nothing to expand) so expandable and plain names share the same left edge.
 const caretCell = (expandable: boolean): string =>
@@ -119,18 +183,38 @@ export function sectorTable(secGroups: SectorGroup[], baseCcy: string): HTMLElem
 export function activityTable(groups: ActivityGroup[], baseCcy: string): HTMLElement {
   const wrap = el("div");
   const baseLbl = baseCcy ? ` (${esc(baseCcy)})` : "";
+  const cols: ActivityCol[] = [
+    { key: "name", label: "Name", num: false },
+    { key: "ccy", label: "Ccy", num: true },
+    { key: "trades", label: "Trades", num: true },
+    { key: "bought", label: `Bought${baseLbl}`, num: true },
+    { key: "sold", label: `Sold${baseLbl}`, num: true },
+    { key: "flow", label: `Net cash flow${baseLbl}`, num: true },
+    { key: "pnl", label: `Realized P&L${baseLbl}`, num: true },
+  ];
   const tbl = el("table", "risk-pos-table hist-activity");
-  tbl.innerHTML =
-    `<thead><tr><th>Name</th><th class="num">Ccy</th><th class="num">Trades</th>` +
-    `<th class="num">Bought${baseLbl}</th><th class="num">Sold${baseLbl}</th>` +
-    `<th class="num">Net cash flow${baseLbl}</th><th class="num">Realized P&L${baseLbl}</th></tr></thead>`;
+  // Default order mirrors the data layer's own sort (most-traded first).
+  let sort: ActivitySort = { key: "trades", dir: "desc" };
+  let thead = activityHead(cols, sort, onSort);
+  tbl.appendChild(thead);
   const body = el("tbody");
   tbl.appendChild(body);
   const pager = el("div", "hist-pager");
   let page = 1;
 
+  function onSort(key: ActivitySortKey): void {
+    sort = sort.key === key
+      ? { key, dir: sort.dir === "desc" ? "asc" : "desc" }  // toggle the active column
+      : { key, dir: activityDefaultDir(key) };
+    page = 1;  // a re-sort invalidates the current page window
+    const next = activityHead(cols, sort, onSort);
+    tbl.replaceChild(next, thead);
+    thead = next;
+    draw();
+  }
+
   const draw = () => {
-    const pg = paginate(groups, page, ACTIVITY_PAGE);
+    const pg = paginate(sortActivityGroups(groups, sort), page, ACTIVITY_PAGE);
     page = pg.page;
     body.innerHTML = "";
     pg.items.forEach((g) => {

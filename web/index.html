@@ -50,6 +50,7 @@
         <button class="subtab" data-view="today" type="button" role="tab">Today</button>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="history" type="button" role="tab">History</button>
+        <button class="subtab" data-view="activity" type="button" role="tab">Activity</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
         <button class="subtab" data-view="attribution" type="button" role="tab">Attribution</button>
         <button class="subtab" data-view="tax" type="button" role="tab">Tax</button>
@@ -643,6 +644,21 @@
       </div>
       <div class="status" id="hist-status"></div>
       <div id="hist-result"></div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="view" id="view-activity">
+      <div class="reb-head">
+        <div class="reb-head-text">
+          <h2>Activity</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">A durable, newest-first log of the tickers you've opened and the background tasks that have finished (analyses, Deep Research, IBKR syncs, reviews). Unlike the Tasks panel (which resets when the server restarts), this is written to disk so it survives restarts and follows the server across devices. Click any row to jump back to what it produced.</p></details>
+        </div>
+        <div class="reb-head-actions">
+          <div class="act-filters" id="act-filters"></div>
+        </div>
+      </div>
+      <div class="status" id="act-status"></div>
+      <div id="act-result"></div>
     </section>
 
     <!-- SETUP -->

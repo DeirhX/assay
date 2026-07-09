@@ -394,10 +394,37 @@ async function apiLoad<T = any>(o: ApiLoadOpts<T>): Promise<void> {
   }
 }
 
+// Copy text to the clipboard, with a hidden-textarea fallback for non-secure
+// contexts (a LAN/dev server on plain http has no navigator.clipboard). Returns
+// whether the copy actually went through so the caller can toast success/failure.
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the legacy path */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export {
   state,
   $,
   $$,
+  copyToClipboard,
   el,
   esc,
   relAge,

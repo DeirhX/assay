@@ -48,6 +48,11 @@ ANALYSIS_DIR = RESEARCH_DIR / "analysis"
 # and the browser-jobs service that refreshes it on every run.
 AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"
 
+# Durable, cross-restart activity feed (gitignored): one JSONL line per event --
+# tickers visited + background tasks finished. Lives under data/cache/ so it
+# survives server restarts but never gets committed. Read by the Activity view.
+ACTIVITY_LOG = DATA_DIR / "cache" / "activity-log.jsonl"
+
 # Curated segment definitions (the membership lists) and the generated segment
 # dossiers. Referenced by the server, the deep-run/peer-stats services, and the
 # segment readers, so centralize them.

@@ -116,6 +116,9 @@ export function priceLevelsBlock(
   const sugBuy: Row[] = sortLadder((suggested.buy_ladder || []).map((t) => ({ price: num(t.price), size: num(t.size_pct), margin: num(t.discount_pct) })), "buy");
   const sugTrim: Row[] = sortLadder((suggested.trim_ladder || []).map((t) => ({ price: num(t.price), size: num(t.size_pct), margin: num(t.premium_pct) })), "trim");
   const sugFair = num(suggested.fair_value);
+  // Is there anything worth showing as a collapsed pill summary? (ladder or a
+  // legacy single level or a fair value on the analysis suggestion.)
+  const hasSug = !!(ladderOf(suggested, "buy").length || ladderOf(suggested, "trim").length || sugFair != null);
 
   const block = el("div", "price-levels");
 
@@ -447,28 +450,82 @@ export function priceLevelsBlock(
     block.appendChild(msg);
   }
 
+  // The box opens collapsed to a compact pill summary of the effective levels
+  // (locked if locked, else the analysis suggestion; a "set levels" prompt when
+  // neither) so it doesn't dominate the dossier. Click the pills or "Edit…" to
+  // open the full editor.
+  let collapsed = true;
+
+  function pill(cls: string, text: string, title?: string): HTMLElement {
+    const p = el("span", "pl-pill " + cls, text);
+    if (title) p.title = title;
+    return p;
+  }
+
+  // Collapsed body: the effective levels as pills. Clicking anywhere expands.
+  function renderPills() {
+    const lockedHasData = !!(locked && (ladderOf(locked, "buy").length || ladderOf(locked, "trim").length || num(locked.fair_value) != null));
+    const effRec: LevelRecord | null = lockedHasData ? locked : (hasSug ? suggested : null);
+    const suggestedOnly = !lockedHasData && hasSug;
+
+    const wrap = el("div", "pl-pills");
+    wrap.title = "Click to edit price levels";
+    wrap.addEventListener("click", () => { collapsed = false; render(); });
+
+    if (!effRec) {
+      wrap.appendChild(pill("pl-pill--empty", "Set price levels\u2026", "No buy/trim levels yet \u2014 click to add"));
+      block.appendChild(wrap);
+      return;
+    }
+    if (suggestedOnly) wrap.appendChild(pill("pl-pill--tag", "Suggested", "From the latest analysis; not locked yet"));
+
+    const fv = num(effRec.fair_value);
+    if (fv != null) wrap.appendChild(pill("pl-pill--fv", "FV " + fmtLvl(fv), "Fair-value anchor"));
+
+    const buy = sortLadder(ladderOf(effRec, "buy"), "buy");
+    const trim = sortLadder(ladderOf(effRec, "trim"), "trim");
+    const sugCls = suggestedOnly ? " pl-pill--suggested" : "";
+    const sizeTag = (rows: Row[], r: Row) => (rows.length > 1 && r.size != null) ? ` \u00b7 ${Math.round(r.size * 100)}%` : "";
+    buy.forEach((r) => { if (r.price != null) wrap.appendChild(pill("pl-pill--buy" + sugCls, `Buy \u2264 ${fmtLvl(r.price)}${sizeTag(buy, r)}`)); });
+    trim.forEach((r) => { if (r.price != null) wrap.appendChild(pill("pl-pill--trim" + sugCls, `Trim \u2265 ${fmtLvl(r.price)}${sizeTag(trim, r)}`)); });
+    if (spot != null) wrap.appendChild(pill("pl-pill--spot", "spot " + fmtLvl(spot), "Current price"));
+    block.appendChild(wrap);
+  }
+
+  function renderHead() {
+    const head = el("div", "pl-head");
+    head.appendChild(el("h3", "pl-title", "Price levels"));
+    if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
+    head.appendChild(el("span", "pl-head-spacer"));
+    // Advanced (fair value / sizes / multi-tranche) only matters in the editor.
+    if (!collapsed) {
+      const laddered = !advanced && ladderNonTrivial();
+      const toggle = el("button", "ghost pl-adv-toggle" + (laddered ? " pl-adv-toggle--ladder" : ""),
+        advanced ? "Simpler" : laddered ? "Advanced \u00b7 ladder\u2026" : "Advanced\u2026");
+      toggle.type = "button";
+      toggle.title = advanced
+        ? "Hide the fair-value anchor, sizes and multi-tranche ladder"
+        : laddered
+          ? "This name has a multi-tranche ladder; the basic view only shows the first price per side. Open Advanced to see and edit all tranches."
+          : "Show the fair-value anchor, per-tranche sizes and multi-tranche laddering";
+      toggle.addEventListener("click", (e) => { e.stopPropagation(); advanced = !advanced; render(); });
+      head.appendChild(toggle);
+    }
+    const coll = el("button", "ghost pl-collapse-toggle", collapsed ? "Edit\u2026" : "Collapse");
+    coll.type = "button";
+    coll.title = collapsed ? "Expand to set or edit price levels" : "Collapse to a compact pill summary";
+    coll.addEventListener("click", (e) => { e.stopPropagation(); collapsed = !collapsed; render(); });
+    head.appendChild(coll);
+    block.appendChild(head);
+  }
+
   function render() {
     block.innerHTML = "";
     block.classList.toggle("pl-is-locked", !!locked);
     block.classList.toggle("pl-advanced", advanced);
-    const head = el("div", "pl-head");
-    head.appendChild(el("h3", "pl-title", "Price levels"));
-    if (locked) head.appendChild(el("span", "abadge ok pl-locked", "Locked"));
-    // When collapsed but a real ladder is seeded, badge the toggle so the hidden
-    // tranches aren't silent (the basic view only edits the first price per side).
-    const laddered = !advanced && ladderNonTrivial();
-    const toggle = el("button", "ghost pl-adv-toggle" + (laddered ? " pl-adv-toggle--ladder" : ""),
-      advanced ? "Simpler" : laddered ? "Advanced \u00b7 ladder\u2026" : "Advanced\u2026");
-    toggle.type = "button";
-    toggle.title = advanced
-      ? "Hide the fair-value anchor, sizes and multi-tranche ladder"
-      : laddered
-        ? "This name has a multi-tranche ladder; the basic view only shows the first price per side. Open Advanced to see and edit all tranches."
-        : "Show the fair-value anchor, per-tranche sizes and multi-tranche laddering";
-    toggle.addEventListener("click", () => { advanced = !advanced; render(); });
-    head.appendChild(toggle);
-    block.appendChild(head);
-
+    block.classList.toggle("pl-collapsed", collapsed);
+    renderHead();
+    if (collapsed) { renderPills(); return; }
     if (advanced) renderAdvancedBody();
     else renderSimpleBody();
     renderFooter();

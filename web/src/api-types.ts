@@ -51,6 +51,34 @@ export type BandStatus = "BELOW" | "IN" | "ABOVE";
 // band's suggested side (see PriceGate / serve._apply_price_gate).
 export type PlanAction = "trim" | "buy" | "review" | "wait" | null;
 
+// One option leg on an underlying, as the overlay reports it.
+export interface OptionLeg {
+  right: "C" | "P";
+  strike: number;
+  contracts: number;
+  exercise_pct: number;
+  label: string;
+}
+
+// Pending option exposure attached to a plan row/member: what the options book
+// would add to the stock on assignment/exercise (NOT counted as owned shares).
+// `covers` is set only on a buy the bullish exposure already fills — "full"
+// downgrades the action and zeroes the pre-staged default (originals kept in
+// full_*), "partial" is annotated but left to act.
+export interface PendingOptionExposure {
+  long_pct: number;
+  short_pct: number;
+  net_pct: number;
+  contracts: number;
+  label: string;
+  legs: OptionLeg[];
+  covers?: "full" | "partial";
+  gap_pct?: number;
+  covered_pct?: number;
+  full_suggest_delta_pct?: number;
+  full_suggest_delta_czk?: number | null;
+}
+
 export interface PlanMember {
   symbol: string;
   current_pct: number;
@@ -65,6 +93,7 @@ export interface PlanMember {
   suggest_delta_czk?: number | null;
   member_action?: "buy" | "trim" | null;
   order?: number;
+  options?: PendingOptionExposure | null;
 }
 
 // One tranche of a locked ladder as the overlay reports it to the planner: a
@@ -169,6 +198,7 @@ export interface PlanRow {
   research?: ResearchInfo | null;
   research_conflict?: boolean;
   tax?: TaxInfo | null;
+  options?: PendingOptionExposure | null;
 }
 
 // First-class cash line (rebalance.cash_block): current cash vs the
@@ -317,6 +347,33 @@ export type JobListing = Job;
 
 export interface JobsResponse {
   jobs: JobListing[];
+}
+
+// One entry in the durable Activity feed (GET /api/activity). Either a ticker
+// the user opened ("view") or a background task that finished ("task"). Task
+// rows carry the same small routing identifiers navForTask reads, so the feed
+// can deep-link a finished task back to its result.
+export interface ActivityEvent {
+  ts: string;
+  type: "view" | "task";
+  // view
+  symbol?: string | null;
+  name?: string | null;
+  // task
+  id?: string | null;
+  kind?: string | null;
+  state?: JobState | null;
+  segment?: string | null;
+  run_id?: string | null;
+  stem?: string | null;
+  artifact_stem?: string | null;
+  slug?: string | null;
+  error?: string | null;
+  message?: string | null;
+}
+
+export interface ActivityResponse {
+  events: ActivityEvent[];
 }
 
 // ---- setup / status (GET /api/setup/status) -------------------------------

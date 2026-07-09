@@ -205,6 +205,31 @@ function priceGateLine(r: RebRow) {
   return line;
 }
 
+// Pending option exposure on a row/sleeve: what the short puts / long calls would
+// add to the stock on assignment (NOT owned shares). When that bullish exposure
+// already covers a buy, the backend downgraded the action and zeroed the default;
+// this line explains why, so you don't write more puts or buy stock on top.
+export function optionsLine(o: import("./api-types").PendingOptionExposure | null | undefined) {
+  if (!o) return null;
+  const pct = (v: number | null | undefined) => (typeof v === "number" ? `${Math.round(v * 10) / 10}%` : "?");
+  const covers = o.covers;
+  let label = "Options", cls = " reb-opt-info";
+  if (covers === "full") { label = "\u25cf Covered by options"; cls = " reb-opt-full"; }
+  else if (covers === "partial") { label = "\u25d1 Partly covered"; cls = " reb-opt-partial"; }
+
+  const bits: string[] = [`~${pct(o.long_pct)} pending`];
+  if (covers === "full" && typeof o.full_suggest_delta_pct === "number") {
+    bits.push(`would double the +${pct(o.full_suggest_delta_pct)} buy \u2014 hold off`);
+  } else if (covers === "partial" && typeof o.gap_pct === "number") {
+    bits.push(`covers ${pct(o.covered_pct)} of a +${pct(o.gap_pct)} buy`);
+  }
+  const detail = ` <small class="muted reb-opt-detail">${esc(bits.join(" \u00b7 "))}</small>`;
+  const line = el("div", "reb-opt" + cls,
+    `<span class="reb-opt-label" title="Assignment/exercise exposure from your options — not counted as owned shares, but it already commits you to this name">${label}:</span> ` +
+    `<span class="reb-opt-legs">${esc(o.label)}</span>${detail}`);
+  return line;
+}
+
 // Take an unresolved planner conflict into the guided "Direction -> Rebalance"
 // flow, pre-filling a direction that names the disagreement. Phase 1 stays
 // read-only: this only navigates + seeds the input; the human still drives every
@@ -368,6 +393,16 @@ function renderRebalance(plan: RebPlan) {
       const cls = cc === "high" ? "good" : cc === "low" ? "warn" : "muted";
       symWrap.appendChild(el("span", `chip reb-mem-conv ${cls}`, esc(cc)));
     }
+    if (m.options) {
+      const covers = m.options.covers;
+      const cls = covers === "full" ? "warn" : "muted";
+      const pct = Math.round((m.options.long_pct || 0) * 10) / 10;
+      const chip = el("span", `chip reb-mem-opt ${cls}`,
+        covers === "full" ? "puts cover" : `puts ~${pct}%`);
+      chip.title = `Short-put / long-call exposure ${esc(m.options.label)} — ~${pct}% pending on assignment, not owned shares` +
+        (covers === "full" ? "; already covers this name's buy, so none staged" : "");
+      symWrap.appendChild(chip);
+    }
 
     const curCell = el("span", "reb-mem-cur",
       `<span>${cur.toFixed(2)}%</span>` +
@@ -382,9 +417,11 @@ function renderRebalance(plan: RebPlan) {
     input.type = "number";
     input.step = "0.1";
     input.value = String(r1(def));
-    input.title = m.member_action
-      ? `suggested ${fmtSignedWeight(def)} toward its ${target.toFixed(1)}% share`
-      : "at or above its share — no buy suggested; type an amount to stage one anyway";
+    input.title = m.options && m.options.covers === "full"
+      ? `covered by your options (${m.options.label}) — nothing staged so you don't double up; type an amount to add stock anyway`
+      : m.member_action
+        ? `suggested ${fmtSignedWeight(def)} toward its ${target.toFixed(1)}% share`
+        : "at or above its share — no buy suggested; type an amount to stage one anyway";
     wrap.appendChild(input);
     wrap.appendChild(el("span", "reb-unit", "%"));
     planCell.appendChild(wrap);
@@ -451,6 +488,11 @@ function renderRebalance(plan: RebPlan) {
     if (gate) {
       nameCell.appendChild(gate);
       if (r.price_gate && r.price_gate.blocked_action) row.classList.add("reb-gated");
+    }
+    const opt = optionsLine(r.options);
+    if (opt) {
+      nameCell.appendChild(opt);
+      if (r.options && r.options.covers === "full") row.classList.add("reb-opt-covered");
     }
 
     const { cell: posC, refs: posRefs } = posCell(r, scaleMax);

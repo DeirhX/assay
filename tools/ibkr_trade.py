@@ -821,8 +821,65 @@ def _reply_prompts(resp: Any) -> list[str]:
     return out
 
 
+# Signals in a CPAPI error body that the orders subsystem is only half-up right
+# after a gateway (re)start / fresh login / idle timeout -- both recover by
+# priming the session and retrying once, rather than surfacing a 502:
+#   * "query /accounts": a 500 when the iserver session was never initialized
+#     with a /iserver/accounts call (distinct from the /portfolio/accounts that
+#     accounts() hits).
+#   * "no bridge": a 400 when auth/status is healthy but the orders subsystem's
+#     backend connection ("bridge") isn't up yet. The gateway establishes it on
+#     demand, so a prime (which pings /iserver/accounts) + retry clears it.
+_ACCOUNTS_UNPRIMED = "query /accounts"
+_NO_BRIDGE = "no bridge"
+
+
+def _orders_session_recoverable(exc: CPAPIError) -> bool:
+    """True if an orders-endpoint failure is a known half-up-session state that
+    a prime + single retry should clear, rather than a real error to surface."""
+    msg = str(exc)
+    return _ACCOUNTS_UNPRIMED in msg or _NO_BRIDGE in msg
+
+
+def prime_iserver_session() -> None:
+    """Initialize the iserver brokerage session so /iserver/account/* endpoints
+    answer instead of ``500 {"error":"Please query /accounts first"}``.
+
+    Two distinct post-(re)start states produce that same orders error:
+      * the brokerage session is up but was never queried -- a plain
+        ``GET /iserver/accounts`` primes it; but
+      * only the SSO/web session is up (``/portfolio/*`` works, yet
+        ``/iserver/*`` answers ``401 not authenticated``) -- the brokerage
+        session must first be brought up with ``POST /iserver/auth/ssodh/init``
+        (reauthenticate), which reuses the existing SSO cookie and needs no
+        browser 2FA. Only then does querying accounts stick.
+
+    Best-effort throughout: any failure is left for the caller's retry to
+    surface as the real error."""
+    try:
+        if not auth_status().get("authenticated"):
+            reauthenticate()
+        _request("GET", "/iserver/accounts")
+    except CPAPIError:
+        pass
+
+
 def live_orders() -> list[dict]:
-    res = _request("GET", "/iserver/account/orders")
+    def _fetch() -> Any:
+        return _request("GET", "/iserver/account/orders")
+
+    try:
+        res = _fetch()
+    except CPAPIError as exc:
+        # Half-up session right after a gateway (re)start / idle: either it was
+        # never primed with /iserver/accounts ("query /accounts"), or the orders
+        # bridge isn't connected yet ("no bridge"). Prime and retry once --
+        # self-healing, so it recovers without a manual reconnect. Anything else
+        # is a real error and propagates as a 502.
+        if not _orders_session_recoverable(exc):
+            raise
+        prime_iserver_session()
+        res = _fetch()
     if isinstance(res, dict):
         return res.get("orders") or []
     return res if isinstance(res, list) else []

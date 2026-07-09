@@ -293,5 +293,70 @@ class PriceGate(unittest.TestCase):
         self.assertEqual(row["price_gate"]["current"], 100.0)
 
 
+class OptionsOverlay(unittest.TestCase):
+    """Folding pending option exposure onto plan rows/members: a buy the short
+    puts already cover is downgraded and its pre-staged default dropped."""
+
+    # Short 2x KLAC puts: on this fixture ~3.5% of invested pending long exposure.
+    def _holdings(self):
+        return {"positions": [
+            {"symbol": "STK", "base_market_value": 28_697_329.0},
+            {"symbol": "KLAC  260717P00238000", "asset_class": "OPT", "quantity": -2.0,
+             "mark_price": 27.4615, "market_value": -5492.3, "base_market_value": -116650.96},
+        ]}
+
+    def test_full_cover_downgrades_target_buy_and_drops_default(self):
+        plan = {"rows": [{"kind": "target", "held": False, "name": "KLAC",
+                          "action": "buy", "suggest_delta_pct": 2.5, "suggest_delta_czk": 700_000}]}
+        rebalance_overlay.attach_research_overlay(plan, self._holdings())
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "wait")          # 3.5% covers a 2.5% buy
+        self.assertEqual(row["options"]["covers"], "full")
+        self.assertEqual(row["options"]["full_suggest_delta_pct"], 2.5)
+        self.assertEqual(row["suggest_delta_pct"], 0.0)  # not pre-staged
+        self.assertEqual(row["suggest_delta_czk"], 0)
+
+    def test_partial_cover_annotates_but_keeps_the_buy(self):
+        plan = {"rows": [{"kind": "target", "held": False, "name": "KLAC",
+                          "action": "buy", "suggest_delta_pct": 6.0, "suggest_delta_czk": 1_000_000}]}
+        rebalance_overlay.attach_research_overlay(plan, self._holdings())
+        row = plan["rows"][0]
+        self.assertEqual(row["action"], "buy")           # 3.5% only partly covers 6%
+        self.assertEqual(row["options"]["covers"], "partial")
+        self.assertEqual(row["suggest_delta_pct"], 6.0)  # left to act
+        self.assertGreater(row["options"]["covered_pct"], 0)
+
+    def test_sleeve_aggregates_members_and_tempers_each(self):
+        plan = {"rows": [{
+            "kind": "sleeve", "held": False, "name": "semis-equipment",
+            "action": "buy", "suggest_delta_pct": 2.5,
+            "members": [
+                {"symbol": "KLAC", "member_action": "buy",
+                 "suggest_delta_pct": 2.5, "suggest_delta_czk": 700_000},
+                {"symbol": "OTHER", "member_action": "buy", "suggest_delta_pct": 1.0},
+            ],
+        }]}
+        rebalance_overlay.attach_research_overlay(plan, self._holdings())
+        row = plan["rows"][0]
+        klac = row["members"][0]
+        other = row["members"][1]
+        self.assertEqual(klac["options"]["covers"], "full")   # covered member
+        self.assertIsNone(klac["member_action"])              # no move staged
+        self.assertEqual(klac["suggest_delta_pct"], 0.0)
+        self.assertNotIn("options", other)                    # no exposure -> untouched
+        self.assertEqual(other["member_action"], "buy")
+        self.assertIn("options", row)                         # sleeve aggregate present
+        self.assertEqual(row["action"], "wait")               # sleeve buy covered too
+
+    def test_no_options_leaves_rows_untouched(self):
+        plan = {"rows": [{"kind": "target", "held": True, "name": "KLAC",
+                          "action": "buy", "suggest_delta_pct": 2.5}]}
+        rebalance_overlay.attach_research_overlay(plan, {"positions": [
+            {"symbol": "KLAC", "base_market_value": 100.0}]})
+        row = plan["rows"][0]
+        self.assertNotIn("options", row)
+        self.assertEqual(row["action"], "buy")
+
+
 if __name__ == "__main__":
     unittest.main()
