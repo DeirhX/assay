@@ -28,6 +28,7 @@ Standard library only.
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -410,35 +411,149 @@ def _cpapi_order(order: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Preview / place / status / cancel
 # --------------------------------------------------------------------------- #
+# CPAPI reads a multi-order `orders` array as a bracket/OCA group: every order
+# after the first is a *child* that must carry a `parentId` (or `isSingleGroup`
+# for OCA). A basket of INDEPENDENT trades has neither, so posting >1 at once
+# fails with "parentId parameter is required and not set for child order(s)".
+# Both preview and place therefore go one order per request -- the single-order
+# array that has always worked -- and recombine the per-order results here.
+
+_MONEY_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
+
+
+def _money(text: Any) -> float:
+    """Leading number from a CPAPI money string ("23,000 USD", "1.1 USD",
+    "1.10 - 1.20 USD"), 0.0 for anything unparseable. A range yields its first
+    (lower) figure -- a conservative floor for a summed commission."""
+    if isinstance(text, (int, float)):
+        return float(text)
+    m = _MONEY_RE.search(str(text or ""))
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(0).replace(",", ""))
+    except ValueError:
+        return 0.0
+
+
+def _currency(text: Any) -> str:
+    """Trailing 3-letter currency code from a money string ("23,000 USD" -> USD)."""
+    tail = str(text or "").strip().split()
+    last = tail[-1] if tail else ""
+    return last if len(last) == 3 and last.isalpha() else ""
+
+
+def _money_field(total: float, ccy: str) -> str:
+    n = round(total, 2)
+    n = int(n) if n == int(n) else n
+    return f"{n} {ccy}".strip()
+
+
+def _whatif_impact(resp: Any) -> dict | None:
+    """The margin/commission object from a whatif response (a dict, or the first
+    qualifying dict in a list); ``None`` when it carries no impact/error fields."""
+    for row in (resp if isinstance(resp, list) else [resp]):
+        if isinstance(row, dict) and any(
+                k in row for k in ("amount", "initial", "maintenance", "equity", "error")):
+            return row
+    return None
+
+
+def _combine_margin(impacts: list[dict], key: str) -> dict | None:
+    """Recombine a margin block (initial/maintenance/equity) across per-order
+    previews: ``current`` is the shared pre-basket figure, so the basket
+    ``change`` is the sum of per-order changes and ``after = current + change``."""
+    blocks = [i[key] for i in impacts if isinstance(i.get(key), dict)]
+    if not blocks:
+        return None
+    ccy = next((c for b in blocks for c in [_currency(b.get("current") or b.get("after"))] if c), "")
+    current = _money(blocks[0].get("current"))
+    change = sum(_money(b.get("change")) for b in blocks)
+    return {"current": _money_field(current, ccy),
+            "change": _money_field(change, ccy),
+            "after": _money_field(current + change, ccy)}
+
+
+def _aggregate_whatif(impacts: list[dict]) -> dict:
+    """Fold per-order whatif previews into one basket-level impact in the shape
+    the UI reads: summed order value + commission, recombined margins, joined
+    warnings. A single order is returned untouched (exact, as CPAPI gave it)."""
+    if len(impacts) == 1:
+        return impacts[0]
+    amt_ccy = next((c for i in impacts
+                    for c in [_currency((i.get("amount") or {}).get("amount"))] if c), "")
+    total_amount = sum(_money((i.get("amount") or {}).get("amount")) for i in impacts)
+    total_comm = sum(_money((i.get("amount") or {}).get("commission")) for i in impacts)
+    warns: list[str] = []
+    for i in impacts:
+        w = i.get("warn")
+        if w and str(w) not in warns:
+            warns.append(str(w))
+    out: dict[str, Any] = {
+        "amount": {"amount": _money_field(total_amount, amt_ccy),
+                   "commission": _money_field(total_comm, amt_ccy)},
+        "basket_orders": len(impacts),
+    }
+    for key in ("initial", "maintenance", "equity"):
+        block = _combine_margin(impacts, key)
+        if block:
+            out[key] = block
+    if warns:
+        out["warn"] = " | ".join(warns)
+    return out
+
+
 def preview_orders(account_id: str, orders: list[dict]) -> dict:
     """Margin/commission impact of a basket WITHOUT placing it (CPAPI whatif).
-    The same discipline as the local what-if simulator, but from IBKR itself."""
-    return _request("POST", f"/iserver/account/{urllib.parse.quote(account_id)}/orders/whatif",
-                    {"orders": [_cpapi_order(o) for o in orders]})
+    The same discipline as the local what-if simulator, but from IBKR itself.
+
+    Each order is previewed on its own (a basket can't share one array -- see the
+    module note above) and the per-order impacts are recombined. A per-order
+    ``error`` in the body is surfaced instead of being silently dropped."""
+    endpoint = f"/iserver/account/{urllib.parse.quote(account_id)}/orders/whatif"
+    impacts: list[dict] = []
+    errors: list[str] = []
+    for order in orders:
+        impact = _whatif_impact(_request("POST", endpoint, {"orders": [_cpapi_order(order)]}))
+        if impact is None:
+            continue
+        err = impact.get("error")
+        if err:
+            sym = order.get("symbol")
+            errors.append(f"{sym}: {err}" if sym else str(err))
+        else:
+            impacts.append(impact)
+    if errors:
+        raise CPAPIError("whatif preview rejected: " + "; ".join(errors))
+    return _aggregate_whatif(impacts) if impacts else {}
 
 
 def place_orders(account_id: str, orders: list[dict], *,
                  max_replies: int = 8, auto_confirm: bool = True) -> list[dict]:
     """Place a basket and clear IBKR's confirmation questions.
 
-    CPAPI answers an order POST with EITHER order acknowledgements OR a list of
-    {id, message[...]} confirmation prompts (margin warnings, price caps, etc.)
-    that must each be affirmed via /iserver/reply/{id}. We loop, replying
-    ``confirmed: true`` until we get order objects back or hit a reply cap.
-    ``auto_confirm=False`` returns the first prompt batch unanswered so a caller
-    can surface the exact warnings to the human."""
-    resp = _request("POST", f"/iserver/account/{urllib.parse.quote(account_id)}/orders",
-                    {"orders": [_cpapi_order(o) for o in orders]})
-    for _ in range(max_replies):
-        prompts = _reply_prompts(resp)
-        if not prompts:
-            break
-        if not auto_confirm:
-            return resp if isinstance(resp, list) else [resp]
-        reply_id = prompts[0]
-        resp = _request("POST", f"/iserver/reply/{urllib.parse.quote(str(reply_id))}",
-                        {"confirmed": True})
-    return resp if isinstance(resp, list) else [resp]
+    Each order is submitted on its own request (a basket can't share one array --
+    see the module note above). CPAPI answers an order POST with EITHER order
+    acknowledgements OR a list of {id, message[...]} confirmation prompts (margin
+    warnings, price caps, etc.) that must each be affirmed via /iserver/reply/{id}.
+    We loop, replying ``confirmed: true`` until we get order objects back or hit a
+    reply cap. ``auto_confirm=False`` returns the first prompt batch unanswered so
+    a caller can surface the exact warnings to the human before committing."""
+    endpoint = f"/iserver/account/{urllib.parse.quote(account_id)}/orders"
+    placed: list[dict] = []
+    for order in orders:
+        resp = _request("POST", endpoint, {"orders": [_cpapi_order(order)]})
+        for _ in range(max_replies):
+            prompts = _reply_prompts(resp)
+            if not prompts:
+                break
+            if not auto_confirm:
+                return resp if isinstance(resp, list) else [resp]
+            reply_id = prompts[0]
+            resp = _request("POST", f"/iserver/reply/{urllib.parse.quote(str(reply_id))}",
+                            {"confirmed": True})
+        placed.extend(resp if isinstance(resp, list) else [resp])
+    return placed
 
 
 def _reply_prompts(resp: Any) -> list[str]:
