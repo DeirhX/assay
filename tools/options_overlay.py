@@ -375,6 +375,7 @@ def _covered_call(
                         break
         bid = (call_row or {}).get("bid")
         ask = (call_row or {}).get("ask")
+        last = (call_row or {}).get("last")
         if (
             isinstance((call_row or {}).get("conid"), int)
             and isinstance(bid, (int, float)) and isinstance(ask, (int, float))
@@ -385,8 +386,7 @@ def _covered_call(
                 "conid": (call_row or {}).get("conid"),
                 "bid": round(float(bid), 4),
                 "ask": round(float(ask), 4),
-                "last": round(float((call_row or {}).get("last")), 4)
-                if isinstance((call_row or {}).get("last"), (int, float)) else None,
+                "last": round(float(last), 4) if isinstance(last, (int, float)) else None,
                 "quote_at": (call_row or {}).get("quote_at"),
                 "multiplier": CONTRACT_SIZE,
                 "underlying_quote": {

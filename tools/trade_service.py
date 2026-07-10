@@ -146,8 +146,9 @@ def _canonicalize_input_leg(raw: dict) -> dict:
         sym = clean_symbol(raw.get("symbol"))
         if not sym:
             raise ValueError("each trade needs a symbol")
+        raw_delta = raw.get("delta_czk")
         try:
-            delta = float(raw.get("delta_czk"))
+            delta = float(str(raw_delta))
         except (TypeError, ValueError):
             raise ValueError(f"trade for {sym} needs a numeric delta_czk") from None
         prov = _coerce_provenance(raw.get("provenance"))
@@ -157,8 +158,10 @@ def _canonicalize_input_leg(raw: dict) -> dict:
         missing = [k for k in required if raw.get(k) in (None, "")]
         if missing:
             raise ValueError(f"covered_call leg missing fields: {', '.join(missing)}")
-        quote = raw.get("quote") if isinstance(raw.get("quote"), dict) else {}
-        uq = raw.get("underlying_quote") if isinstance(raw.get("underlying_quote"), dict) else {}
+        raw_quote = raw.get("quote")
+        raw_uq = raw.get("underlying_quote")
+        quote: dict[str, Any] = dict(raw_quote) if isinstance(raw_quote, dict) else {}
+        uq: dict[str, Any] = dict(raw_uq) if isinstance(raw_uq, dict) else {}
         return _canonical_covered_call_leg(
             symbol=str(raw["symbol"]),
             contracts=int(raw["contracts"]),
@@ -552,11 +555,11 @@ def _validate_covered_call_leg(
     resolved = ibkr_trade.resolve_option_contract(
         sym,
         str(leg.get("expiry")),
-        float(leg.get("strike")),
+        float(str(leg.get("strike"))),
         str(leg.get("right") or "C"),
         for_execution=True,
     )
-    if int(resolved["conid"]) != int(leg.get("conid")):
+    if int(resolved["conid"]) != int(str(leg.get("conid"))):
         raise ValueError(f"{sym}: contract conid changed — restage from the exit plan")
 
     quote = {
@@ -978,7 +981,7 @@ def _normalized_working_orders(
         cid_raw = raw.get("conid")
         cid: int | None
         try:
-            cid = int(cid_raw) if cid_raw not in (None, "") else None
+            cid = int(str(cid_raw)) if cid_raw not in (None, "") else None
         except (TypeError, ValueError):
             cid = None
         matched = (
