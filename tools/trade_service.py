@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import ibkr_trade
@@ -168,6 +169,11 @@ def _locked_limit(sym: str, side: str) -> float | None:
     return price_levels.limit_price_for(level, side)
 
 
+# Bound the conid-resolution fan-out so we don't flood the single local gateway
+# session; a handful of concurrent secdef lookups is plenty to kill the serial stall.
+_PREPARE_MAX_WORKERS = 6
+
+
 def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
     """Translate a token-bound CZK basket into CPAPI order dicts, server-side.
     Resolves conids, prices held names from the snapshot and unheld names from a
@@ -175,11 +181,16 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     ibkr_trade.build_orders. Returns (orders, warnings)."""
     price_map = _trade_price_map()
     fx_map = _fx_by_currency()
-    conids: dict[str, int] = {}
-    for t in basket:
-        cid = ibkr_trade.resolve_conid(t["symbol"])
-        if cid is not None:
-            conids[t["symbol"]] = cid
+    # resolve_conid is a gateway secdef/search round-trip per symbol (cached in
+    # process, but cold on the first preview after a restart). Serially, a big
+    # basket over a sluggish gateway spent ~40s here alone -- the bulk of the
+    # "Previewing…" hang -- so resolve them in parallel. Writes into the shared
+    # conid cache are idempotent and GIL-safe.
+    symbols = [t["symbol"] for t in basket]
+    workers = min(_PREPARE_MAX_WORKERS, len(symbols) or 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        resolved = list(pool.map(lambda s: (s, ibkr_trade.resolve_conid(s)), symbols))
+    conids: dict[str, int] = {s: cid for s, cid in resolved if cid is not None}
 
     missing = [s for s in conids if s not in price_map]
     snap = ibkr_trade.market_snapshot([conids[s] for s in missing]) if missing else {}
