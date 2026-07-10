@@ -35,6 +35,10 @@ export interface HoldingPosition {
   unrealized_pnl: number | null;
   issuer_country_code: string | null;
   option: OptionExposure | null;
+  // Set only on the /api/holdings/live payload: true when this row's mark was
+  // refreshed from the live CPAPI feed, false when it's still on the delayed
+  // Flex snapshot (options / unmatched names). Absent on the base snapshot.
+  live_mark?: boolean;
 }
 
 export interface HoldingsPayload {
@@ -43,6 +47,16 @@ export interface HoldingsPayload {
   generated_at: string | null;
   sizing_legend: Record<string, number>;
   positions: HoldingPosition[];
+}
+
+// GET /api/holdings/live — best-effort live-mark overlay. `available:false` means
+// the gateway is down/unauthenticated (or the fetch timed out): keep the snapshot.
+export interface HoldingsLiveResponse {
+  available: boolean;
+  reason?: string;
+  as_of?: string;
+  coverage?: { live: number; eligible: number; total: number };
+  payload?: HoldingsPayload;
 }
 
 // ---- rebalance plan (GET /api/rebalance) ----------------------------------

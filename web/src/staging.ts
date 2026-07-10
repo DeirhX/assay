@@ -259,8 +259,16 @@ function render(s: Staging): void {
               + `<div id="stage-revert-panel"></div></div>`
             : "")
         + `</div>`
-      : `<div class="empty"><strong>No working draft yet.</strong><br>`
-        + `Run a strategy and choose <em>"Add to working draft"</em>, or stage changes from the Rebalance planner. They'll collect here so you can review the whole book and commit once.</div>`;
+      : `<div class="stage-empty-hero">`
+        + `<strong>No working draft in progress.</strong>`
+        + `<p>This is where proposed plan changes collect so you can review the whole book and commit once. Build one from:</p>`
+        + `<div class="stage-empty-actions">`
+        + `<button type="button" class="ghost" id="stage-go-rebalance">Open Rebalance planner &rarr;</button>`
+        + `<button type="button" class="ghost" id="stage-go-strategy">Run a strategy &rarr;</button>`
+        + `</div></div>`;
+    // Even with no draft, the reconciliation snapshot ("where your book stands,
+    // what's unallocated, funding order") is a genuinely useful destination —
+    // lead with it so the page isn't a dead end when the draft is empty.
     body.innerHTML = head
       + (s.reconciliation ? `<div class="stage-section"><div class="subhead">Where your live portfolio stands</div>${reconHtml(s.reconciliation)}</div>` : "");
     return;
@@ -346,6 +354,16 @@ function initStaging(): void {
     if (goTrade) {
       const tab = document.querySelector<HTMLElement>('.subtab[data-view="trade"], .tab[data-view="trade"]');
       if (tab) tab.click();
+      return;
+    }
+    // Empty-state launchers: route to the two places a draft is built. Click the
+    // real nav elements so the shell owns the routing (staging stays cycle-free).
+    if ((e.target as HTMLElement).closest<HTMLElement>("#stage-go-rebalance")) {
+      document.querySelector<HTMLElement>('.subtab[data-view="rebalance"], .tab[data-view="rebalance"]')?.click();
+      return;
+    }
+    if ((e.target as HTMLElement).closest<HTMLElement>("#stage-go-strategy")) {
+      document.querySelector<HTMLElement>('.group[data-group="strategy"]')?.click();
       return;
     }
     // Post-commit revert: open the diff preview, then confirm/cancel. The backup

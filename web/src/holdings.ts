@@ -1,4 +1,4 @@
-import type { HoldingPosition, HoldingsPayload, RebalancePlan } from "./api-types";
+import type { HoldingPosition, HoldingsLiveResponse, HoldingsPayload, RebalancePlan } from "./api-types";
 import { $$, api, copyToClipboard, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { buildPortfolioPrompt } from "./prompt-export";
@@ -22,12 +22,44 @@ export async function copyPortfolioPrompt(btn: HTMLButtonElement, holdings: Hold
 }
 
 // ---- holdings -------------------------------------------------------------
+// Bumped on every (re)load so a slow live overlay can't repaint a view the user
+// already navigated away from (or a newer snapshot load).
+let _holdToken = 0;
+
+interface RenderOpts { live: boolean; asOf?: string | null; coverage?: { live: number; eligible: number; total: number }; }
+
 async function loadHoldings() {
   const status = $$("#hold-status");
-  const out = $$("#hold-result");
+  const token = ++_holdToken;
   status.textContent = "Loading portfolio snapshot...";
   try {
     const h = await api<HoldingsPayload>("/api/holdings");
+    if (token !== _holdToken) return;
+    status.textContent = "";
+    // Paint the delayed Flex snapshot immediately, then overlay live marks when
+    // the gateway answers (the user chose fast-first-paint over one blocking call).
+    renderHoldings(h, { live: false });
+    overlayLive(token);
+  } catch (e) {
+    loadError(status, "Could not load holdings", e);
+  }
+}
+
+// Best-effort live-mark overlay. The gateway auth + positions fetch is a few
+// seconds; it runs after first paint and silently no-ops when the gateway is
+// down/unauthenticated, so the delayed snapshot always stands on its own.
+async function overlayLive(token: number) {
+  try {
+    const live = await api<HoldingsLiveResponse>("/api/holdings/live");
+    if (token !== _holdToken) return;                 // navigated away / reloaded
+    if (!live.available || !live.payload) return;     // gateway down: keep snapshot
+    renderHoldings(live.payload, { live: true, asOf: live.as_of, coverage: live.coverage });
+  } catch { /* offline / gateway hiccup: the delayed snapshot is fine */ }
+}
+
+function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
+  const out = $$("#hold-result");
+  {
     state.nav = h.net_asset_value;
     state.holdings = {};
     (h.positions || []).forEach((p) => {
@@ -40,8 +72,7 @@ async function loadHoldings() {
     // rather than a muted text line -- and keep it in #hold-result, not the
     // transient #hold-status, so a "Synced…" message can't overwrite it.
     const synced = $$("#hold-synced");
-    if (synced) synced.innerHTML = h.generated_at ? `Last synced ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}` : "No snapshot yet";
-    status.textContent = "";
+    if (synced) synced.innerHTML = freshnessLabel(h, opts);
     out.innerHTML = "";
 
     const rows = (h.positions || [])
@@ -116,12 +147,17 @@ async function loadHoldings() {
       const displaySymbol = providerSymbol && providerSymbol !== p.symbol ? `${p.symbol} \u2192 ${providerSymbol}` : p.symbol;
       const label = isOpt ? (p.description || p.symbol) : displaySymbol;
       const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
+      // When live marks are on, flag any equity still riding the delayed Flex
+      // mark (no live match) so coverage is honest at the row level.
+      const delayed = opts.live && !isOpt && p.live_mark === false;
+      const delayTag = delayed
+        ? ` <span class="pos-delayed" title="Delayed \u2014 still on the Flex snapshot mark (no live match)">\u23f1</span>` : "";
       const valText = p.base_market_value == null
         ? "\u2014"
         : sensitive(`${Math.round(p.base_market_value).toLocaleString()} CZK`, "position value");
       const row = el("div", "pos-row tier-" + tier);
       row.innerHTML =
-        `<span class="pos-sym">${esc(label)}${tag}</span>` +
+        `<span class="pos-sym">${esc(label)}${tag}${delayTag}</span>` +
         `<span class="pos-bar-track"><span class="${barClass}" style="width:${barW.toFixed(2)}%"></span></span>` +
         `<span class="pos-w">${right}</span>` +
         `<span class="pos-val">${valText}</span>`;
@@ -145,9 +181,20 @@ async function loadHoldings() {
       list.classList.toggle("show-values", valToggle.checked);
       localStorage.setItem("holdings.showValues", valToggle.checked ? "1" : "0");
     });
-  } catch (e) {
-    loadError(status, "Could not load holdings", e);
   }
+}
+
+// The freshness line: delayed Flex snapshot, or live marks with coverage and the
+// Flex base age (so it's clear what's live vs. what's still on the snapshot).
+function freshnessLabel(h: HoldingsPayload, opts: RenderOpts): string {
+  if (!opts.live) {
+    return h.generated_at ? `Last synced ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}` : "No snapshot yet";
+  }
+  const when = opts.asOf ? esc(fmtStamp(opts.asOf)) : "now";
+  const cov = opts.coverage;
+  const covTxt = cov ? ` \u00b7 ${cov.live}/${cov.eligible} marks live` : "";
+  const flex = h.generated_at ? ` \u00b7 Flex base ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}` : "";
+  return `<span class="hold-live-dot" title="Marks refreshed from the live IBKR gateway"></span> Live ${when}${covTxt}${flex}`;
 }
 
 const fmtCzkNum = (v: number | null | undefined) => `${Math.round(Number(v) || 0).toLocaleString()}`;

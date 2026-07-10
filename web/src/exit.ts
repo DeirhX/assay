@@ -138,10 +138,12 @@ function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
   }
   head.appendChild(title);
 
+  // Just the drift here — the "how much to sell" lives (once) in the
+  // recommendation block below, so we don't print the same numbers twice.
   const meta = el("div", "exit-meta");
   meta.innerHTML =
-    `<span>${pct(p.current_pct, 2)} → <strong>${pct(p.target_pct, 2)}</strong></span>` +
-    `<span title="Total market value to sell to reach the end state">sell ${czk(p.exit_czk)} · ${fmtNum(p.exit_shares)} sh</span>`;
+    `<span class="exit-drift" title="Current weight → target weight (% of invested book)">` +
+    `${pct(p.current_pct, 2)} <span class="exit-arrow">→</span> <strong>${pct(p.target_pct, 2)}</strong></span>`;
   head.appendChild(meta);
   card.appendChild(head);
 
@@ -412,13 +414,17 @@ function coveredCallLadder(rungs: ExitCoveredCallRung[], ccy: string | null): HT
 function coveredCallCard(c: ExitCoveredCall, ccy: string | null): HTMLElement {
   const card = el("div", "exit-opt-card");
   const cur = ccy || "";
+  const assign = c.assignment_prob_pct == null ? "" : ` if assigned (~${pct(c.assignment_prob_pct, 0)})`;
+  const lead =
+    `Sell <strong>${c.contracts}× ${fmtNum(c.strike)} ${esc(cur)}</strong> calls (${c.dte}d) to ` +
+    `collect ~<strong>${fmtNum(c.premium)} ${esc(cur)}</strong>/sh;${assign} you exit at ` +
+    `<strong>${fmtNum(c.effective_exit)} ${esc(cur)}</strong>.`;
   card.innerHTML =
     `<div class="exit-opt-title">Covered call ${sourceBadge(c.source, c.estimate)}` +
     (c.assignment_guard ? ` <span class="warn" title="Pushed far-OTM / post-exemption to protect a deferred lot">tax-guarded</span>` : "") +
     `</div>` +
+    `<div class="exit-opt-lead">${lead}</div>` +
     `<div class="exit-opt-grid">` +
-      kv("Sell", `${c.contracts}× ${fmtNum(c.strike)} ${esc(cur)} call`) +
-      kv("Expiry", `${esc(c.expiry)} (${c.dte}d)`) +
       kv("Premium", `${fmtNum(c.premium)} ${esc(cur)} · ${czk(c.premium_czk)}`) +
       kv("Effective exit", `${fmtNum(c.effective_exit)} ${esc(cur)}`) +
       kv("Ann. yield", c.premium_yield_annual_pct == null ? "n/a" : pct(c.premium_yield_annual_pct, 1)) +
@@ -433,8 +439,12 @@ function protectivePutCard(pp: ExitProtectivePut, ccy: string | null): HTMLEleme
   const net = pp.net_collar_premium;
   const collar = net == null ? "n/a"
     : (net >= 0 ? `${fmtNum(net)} ${esc(cur)} debit` : `${fmtNum(-net)} ${esc(cur)} credit`) + ` · ${czk(pp.net_collar_czk)}`;
+  const lead =
+    `Buy <strong>${pp.contracts}× ${fmtNum(pp.put_strike)} ${esc(cur)}</strong> puts to floor the exit at ` +
+    `<strong>${fmtNum(pp.protected_floor)} ${esc(cur)}</strong> through the ${pp.days_to_exempt}-day wait to ${esc(pp.exempt_on)}.`;
   card.innerHTML =
     `<div class="exit-opt-title">Protective put / collar ${sourceBadge(pp.source, pp.estimate)}</div>` +
+    `<div class="exit-opt-lead">${lead}</div>` +
     `<div class="exit-opt-grid">` +
       kv("Buy put", `${pp.contracts}× ${fmtNum(pp.put_strike)} ${esc(cur)}`) +
       kv("Expiry", `${esc(pp.expiry)} (${pp.dte}d · after ${esc(pp.exempt_on)})`) +
@@ -442,8 +452,7 @@ function protectivePutCard(pp: ExitProtectivePut, ccy: string | null): HTMLEleme
       kv("Protected floor", `${fmtNum(pp.protected_floor)} ${esc(cur)}`) +
       kv("Collar (sell call)", `${fmtNum(pp.collar_call_strike)} ${esc(cur)} → ${collar}`) +
       kv("Tax saved by waiting", czk(pp.tax_saved_by_waiting_czk)) +
-    `</div>` +
-    `<div class="hint">Hedges the ${pp.days_to_exempt}-day wait until the near-exempt gain turns tax-free on ${esc(pp.exempt_on)}.</div>`;
+    `</div>`;
   return card;
 }
 
