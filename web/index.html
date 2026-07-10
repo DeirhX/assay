@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Research Console</title>
+  <title>Assay</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
-    <h1>Research Console</h1>
+    <h1><button class="brand-home active" id="brand-home" type="button" aria-label="Open Today dashboard" aria-current="page">Assay</button></h1>
     <div class="groups" role="tablist" aria-label="Sections">
-      <button class="group active" data-group="strategy" type="button" role="tab">Plan</button>
+      <button class="group" data-group="strategy" type="button" role="tab">Plan</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
       <button class="group" data-group="rebalance" type="button" role="tab">Rebalance</button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
@@ -48,7 +48,6 @@
         <button class="subtab" data-view="target-state" type="button" role="tab">Target state</button>
       </div>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
-        <button class="subtab" data-view="today" type="button" role="tab">Today</button>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="history" type="button" role="tab">History</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
@@ -87,7 +86,7 @@
     <nav class="flowbar" id="flowbar" aria-label="Rebalance pipeline" hidden></nav>
 
     <!-- STRATEGY (guided Direction -> Rebalance) -->
-    <section class="view active" id="view-strategy">
+    <section class="view" id="view-strategy">
       <div class="strat-head">
         <h2>Direction → Rebalance</h2>
         <details class="view-help"><summary>How this works</summary><p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. <span class="signpost">This is the <strong>guided</strong> path — it runs the whole flow for you. The <strong>Optimizer</strong> resizes the book automatically; the <strong>Rebalance</strong> planner is manual, one name at a time.</span> (The Research tabs hold these same steps as standalone tools.)</p></details>
@@ -388,11 +387,11 @@
 
     <!-- REBALANCE -->
     <!-- TODAY (portfolio cockpit: process state + next step) -->
-    <section class="view" id="view-today">
+    <section class="view active" id="view-today">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Today</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Where the whole loop stands — holdings freshness, plan drift, anything staged mid-flight, and the research funnel — with the single most useful next step on top. Everything here is a summary; each card links to the view that owns it.</p></details>
+          <h2 id="today-heading">Today</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Assay puts the most useful next action first, then shows only the other exceptions that deserve attention. The portfolio pulse is a compact current-state check; recent activity and upcoming maintenance supply the time context. Full subsystem diagnostics stay collapsed unless you need them.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="today-refresh" type="button" title="Recompute the overview">Refresh</button>

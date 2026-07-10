@@ -3,8 +3,8 @@
 // research triage/queue rendering.
 import { describe, expect, it } from "vitest";
 import {
-  basketTriageCard, draftCard, journalCard, nextStepHtml, planCard,
-  segmentsCard, snapshotCard, stagedBasketCard,
+  attentionItems, basketTriageCard, draftCard, journalCard, nextStepHtml, planCard,
+  recentActivityHtml, segmentsCard, snapshotCard, stagedBasketCard,
 } from "../src/overview";
 import type { Overview } from "../src/overview";
 
@@ -154,5 +154,38 @@ describe("research lane", () => {
     }));
     expect(html).toContain('data-segment="semis"');
     expect(html).toContain("60d old");
+  });
+});
+
+describe("daily command center", () => {
+  const base = (): Overview => ({
+    snapshot: { exists: true, positions: 30, age_days: 1, stale: false },
+    plan: { rows: 10, out_of_band: 3, buy: 2, trim: 1, review: 0, actionable: 3,
+      conflicts: 0, gates_waiting: 2, gates_open: 0, untargeted: 0 },
+    draft: { has_draft: true, pending: 2 },
+    staged_basket: { count: 4, buys: 3, sells: 1, total_abs_czk: 1000 },
+    journal: { total: 2, pending_outcomes: 2, review_due: 1 },
+    research: {
+      basket: { count: 1, unresearched_count: 1, aging_count: 0, unresearched: [] },
+      segments: { total: 2, cached: 2, stale: [], stale_count: 1 },
+      queue: [],
+    },
+    next_step: { id: "commit-draft", view: "working-draft", label: "Review", reason: "pending" },
+  });
+
+  it("shows at most three secondary exceptions and omits the primary action", () => {
+    const rows = attentionItems(base());
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.id)).not.toContain("commit-draft");
+    expect(rows[0].id).toBe("place-basket");
+  });
+
+  it("shows only activity newer than the previous visit", () => {
+    const html = recentActivityHtml([
+      { ts: "2026-07-10T20:00:00Z", type: "view", symbol: "ARM" },
+      { ts: "2026-07-09T20:00:00Z", type: "view", symbol: "OLD" },
+    ], "2026-07-10T10:00:00Z");
+    expect(html).toContain("Viewed ARM");
+    expect(html).not.toContain("Viewed OLD");
   });
 });

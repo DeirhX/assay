@@ -43,7 +43,7 @@ WEB_DIST = WEB_DIR / "dist"  # Vite build output; served in prod when present
 # a dedicated profile so it never fights the MCP browser for the profile lock.
 DEFAULT_PPLX_PROFILE_DIR = Path.home() / ".cursor" / "pplx-automation-profile"
 
-from portfolio import holdings_payload  # noqa: E402
+from portfolio import decision_label, holdings_payload, portfolio_context  # noqa: E402
 from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
@@ -897,7 +897,14 @@ class Handler(BaseHTTPRequestHandler):
         sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))
         provider_sym = _resolve_symbol(sym)
         rec = _load(RESEARCH_DIR / f"{provider_sym}.json")
-        return self._send_json(_annotate_symbol_record(rec, sym, provider_sym)) if rec else self._send_error_json(404, f"no cached research for {sym}")
+        if not rec:
+            return self._send_error_json(404, f"no cached research for {sym}")
+        # Holdings change much more often than the cached dossier. Refresh this
+        # slice on every read so the detail header never shows a stale position.
+        rec = dict(rec)
+        rec["portfolio"] = portfolio_context(provider_sym)
+        rec["decision"] = decision_label(rec["portfolio"])
+        return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
     def _get_analysis(self, path, query):
         sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))

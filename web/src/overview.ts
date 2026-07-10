@@ -6,12 +6,13 @@
 // Pure HTML builders below are exported for tests; DOM wiring stays in
 // initOverview()/loadOverview() (same import-cycle discipline as the peers).
 import { starHtml } from "./basket";
-import { $, api, esc, fmtCZK, sensitive } from "./core";
+import { $, api, esc, fmtCZK, relAge, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { pollDeepJob } from "./jobs";
 import { pushNav, setActiveView } from "./shell";
 import { openTicker } from "./ticker-nav";
 import { loadCachedSegment } from "./segment";
+import type { ActivityEvent, ActivityResponse } from "./api-types";
 
 // ---- payload shapes (GET /api/overview) ------------------------------------
 interface SnapshotSum {
@@ -78,6 +79,7 @@ export interface AttributionVerdictSum {
   stale?: boolean;
 }
 export interface Overview {
+  generated_at?: string;
   snapshot: SnapshotSum;
   drift?: DriftSum | null;
   plan?: PlanSum | null;
@@ -88,6 +90,15 @@ export interface Overview {
   research: ResearchSum;
   automation?: AutomationSum;
   next_step: NextStep;
+}
+
+interface AttentionItem {
+  id: string;
+  tone: "bad" | "warn" | "info";
+  title: string;
+  detail: string;
+  view: string;
+  action: string;
 }
 
 // ---- tiny shared bits -------------------------------------------------------
@@ -301,17 +312,120 @@ export function segmentsCard(r: ResearchSum): string {
     `These peer pulls are over 45 days old — the comparison tables have drifted: ${rows}`, "");
 }
 
+// ---- daily command center --------------------------------------------------
+// The primary recommendation already owns the loudest CTA. This queue contains
+// only the next three *other* exceptions, in workflow-risk order, so the home
+// view reads as a decision surface instead of a catalogue of subsystems.
+export function attentionItems(v: Overview): AttentionItem[] {
+  const rows: AttentionItem[] = [];
+  if (!v.snapshot.exists) {
+    rows.push({ id: "setup", tone: "bad", title: "Holdings are unavailable",
+      detail: "Portfolio decisions have no broker snapshot underneath them.", view: "setup", action: "Set up" });
+  } else if (v.snapshot.stale) {
+    rows.push({ id: "resync", tone: "bad", title: "Holdings snapshot is stale",
+      detail: `Last synced ${agoText(v.snapshot.age_days)}; sizing may no longer match the account.`, view: "holdings", action: "Resync" });
+  } else if (v.drift?.stale_vs_ledger) {
+    rows.push({ id: "drift-resync", tone: "bad", title: "Trades postdate the snapshot",
+      detail: `${v.drift.n_trades_after} execution${v.drift.n_trades_after === 1 ? "" : "s"} are missing from the current book.`, view: "holdings", action: "Resync" });
+  }
+  if (v.draft.pending) rows.push({ id: "commit-draft", tone: "warn", title: "Working draft needs a decision",
+    detail: `${v.draft.pending} target change${v.draft.pending === 1 ? "" : "s"} remain uncommitted.`, view: "working-draft", action: "Review" });
+  if (v.staged_basket.count) rows.push({ id: "place-basket", tone: "warn", title: "Trades are staged",
+    detail: `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} are waiting in the Trade desk.`, view: "trade", action: "Open desk" });
+  if (v.plan?.gates_open) rows.push({ id: "gates-open", tone: "warn", title: "Price levels have triggered",
+    detail: `${v.plan.gates_open} locked level${v.plan.gates_open === 1 ? " is" : "s are"} actionable.`, view: "rebalance", action: "Review" });
+  if (v.plan?.actionable) rows.push({ id: "rebalance", tone: "warn", title: "The portfolio is outside plan",
+    detail: `${v.plan.actionable} name${v.plan.actionable === 1 ? "" : "s"} have suggested actions.`, view: "rebalance", action: "Review" });
+  if (v.research.basket.unresearched_count) rows.push({ id: "research-picks", tone: "info", title: "Shortlist needs research",
+    detail: `${v.research.basket.unresearched_count} pick${v.research.basket.unresearched_count === 1 ? "" : "s"} have no saved analysis.`, view: "basket", action: "Triage" });
+  if (v.journal.review_due) rows.push({ id: "journal", tone: "info", title: "Decision outcomes are due",
+    detail: `${v.journal.review_due} journal entr${v.journal.review_due === 1 ? "y is" : "ies are"} ready to score.`, view: "journal", action: "Score" });
+  if (v.research.segments.stale_count) rows.push({ id: "segments", tone: "info", title: "Segment data has aged",
+    detail: `${v.research.segments.stale_count} peer universe${v.research.segments.stale_count === 1 ? " is" : "s are"} stale.`, view: "leaderboard", action: "Inspect" });
+  return rows.filter((row) => row.id !== v.next_step.id).slice(0, 3);
+}
+
+function attentionHtml(v: Overview): string {
+  const rows = attentionItems(v);
+  return `<section class="today-section today-attention">` +
+    `<div class="today-section-head"><h3>Needs attention</h3><span class="muted">${rows.length ? "after the next step" : "nothing else is pressing"}</span></div>` +
+    (rows.length
+      ? `<div class="today-attention-list">${rows.map((r) =>
+          `<div class="today-attention-row today-attention-${r.tone}">` +
+            `<span class="today-attention-mark"></span><div class="today-attention-copy">` +
+            `<strong>${esc(r.title)}</strong><span>${esc(r.detail)}</span></div>` +
+            goBtn(r.view, esc(r.action)) + `</div>`).join("")}</div>`
+      : `<div class="today-clear">No secondary exceptions. The dashboard can shut up for a minute.</div>`) +
+    `</section>`;
+}
+
+function pulseHtml(v: Overview): string {
+  const plan = v.plan;
+  const cash = plan?.cash;
+  const inFlight = v.draft.pending + v.staged_basket.count;
+  const stat = (label: string, value: string, note: string, tone = "") =>
+    `<div class="today-pulse-stat${tone ? ` today-pulse-${tone}` : ""}">` +
+      `<span class="today-pulse-label">${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`;
+  return `<section class="today-section today-pulse">` +
+    `<div class="today-section-head"><h3>Portfolio pulse</h3>${goBtn("holdings", "Positions →")}</div>` +
+    `<div class="today-pulse-grid">` +
+      stat("Holdings", `${v.snapshot.positions} positions`, v.snapshot.exists ? `synced ${agoText(v.snapshot.age_days)}` : "snapshot missing", !v.snapshot.exists || v.snapshot.stale ? "warn" : "") +
+      stat("Plan", plan ? `${plan.actionable} actions` : "not configured", plan && !plan.actionable ? "all targeted names in band" : `${plan?.out_of_band || 0} outside band`, plan?.actionable ? "warn" : "") +
+      stat("Cash", cash ? `${cash.pct_of_nav.toFixed(1)}%` : "n/a", cash ? `${cash.low}–${cash.high}% band` : "no cash target", cash && cash.status !== "IN" ? "warn" : "") +
+      stat("In flight", `${inFlight}`, inFlight ? `${v.draft.pending} plan · ${v.staged_basket.count} trades` : "no draft or staged trades", inFlight ? "warn" : "") +
+    `</div></section>`;
+}
+
+function eventLabel(ev: ActivityEvent): string {
+  if (ev.type === "view") return `Viewed ${(ev.symbol || "ticker").toUpperCase()}`;
+  const kind = String(ev.kind || "task").replace(/[-_]+/g, " ");
+  return `${kind.charAt(0).toUpperCase()}${kind.slice(1)} ${ev.state || "finished"}`;
+}
+
+export function recentActivityHtml(events: ActivityEvent[], since: string | null): string {
+  const sinceMs = since ? Date.parse(since) : Date.now() - 24 * 60 * 60 * 1000;
+  const recent = events.filter((e) => {
+    const stamp = Date.parse(e.ts);
+    return Number.isFinite(stamp) && stamp > sinceMs;
+  }).slice(0, 5);
+  return `<section class="today-section today-recent">` +
+    `<div class="today-section-head"><h3>${since ? "Since your last visit" : "In the last 24 hours"}</h3>${goBtn("activity", "All activity →")}</div>` +
+    (recent.length
+      ? `<div class="today-recent-list">${recent.map((e) =>
+          `<div class="today-recent-row"><span>${esc(eventLabel(e))}</span><small>${esc(relAge(e.ts))}</small></div>`).join("")}</div>`
+      : `<div class="today-clear">No completed tasks or newly visited tickers.</div>`) +
+    `</section>`;
+}
+
+function comingUpHtml(v: Overview): string {
+  const rows: string[] = [];
+  if (v.plan?.gates_waiting) rows.push(`${v.plan.gates_waiting} price gate${v.plan.gates_waiting === 1 ? "" : "s"} waiting`);
+  if (v.journal.pending_outcomes) rows.push(`${v.journal.pending_outcomes} journal outcome${v.journal.pending_outcomes === 1 ? "" : "s"} unscored`);
+  if (v.research.segments.stale_count) rows.push(`${v.research.segments.stale_count} segment refresh${v.research.segments.stale_count === 1 ? "" : "es"} due`);
+  const refresh = taskOf(v.automation, "holdings-resync");
+  if (v.automation?.enabled && refresh?.enabled && refresh.next_eligible) {
+    rows.push(`Automatic holdings check ${onDay(refresh.next_eligible).trim()}`);
+  }
+  if (!rows.length) return "";
+  return `<section class="today-section today-upcoming"><div class="today-section-head"><h3>Coming up</h3></div>` +
+    `<div class="today-upcoming-list">${rows.slice(0, 4).map((r) => `<span>${esc(r)}</span>`).join("")}</div></section>`;
+}
+
 // ---- render + wiring --------------------------------------------------------
-export function overviewHtml(v: Overview): string {
+export function overviewHtml(v: Overview, events: ActivityEvent[] = [], since: string | null = null): string {
   const portfolio = [snapshotCard(v.snapshot, v.automation, v.drift), planCard(v.plan), draftCard(v.draft),
     stagedBasketCard(v.staged_basket), journalCard(v.journal), attributionCard(v.attribution)].filter(Boolean).join("");
   const research = [basketTriageCard(v.research), queueCard(v.research),
     segmentsCard(v.research)].filter(Boolean).join("");
   return nextStepHtml(v.next_step) +
-    `<div class="today-lanes">` +
-    `<section class="today-lane"><div class="subhead">Portfolio</div><div class="today-cards">${portfolio}</div></section>` +
-    `<section class="today-lane"><div class="subhead">Research</div><div class="today-cards">${research}</div></section>` +
-    `</div>`;
+    attentionHtml(v) +
+    pulseHtml(v) +
+    `<div class="today-lower">${recentActivityHtml(events, since)}${comingUpHtml(v)}</div>` +
+    `<details class="today-more"><summary>Full system status</summary>` +
+      `<div class="today-lanes">` +
+      `<section class="today-lane"><div class="subhead">Portfolio</div><div class="today-cards">${portfolio}</div></section>` +
+      `<section class="today-lane"><div class="subhead">Research</div><div class="today-cards">${research}</div></section>` +
+      `</div></details>`;
 }
 
 async function loadOverview(): Promise<void> {
@@ -320,8 +434,21 @@ async function loadOverview(): Promise<void> {
   if (!body) return;
   if (status) { status.textContent = ""; status.classList.remove("err"); }
   try {
-    const v = await api<Overview>("/api/overview");
-    body.innerHTML = overviewHtml(v);
+    const previousVisit = localStorage.getItem("assay.home.lastVisit");
+    const [v, activity] = await Promise.all([
+      api<Overview>("/api/overview"),
+      api<ActivityResponse>("/api/activity").catch(() => ({ events: [] })),
+    ]);
+    const stamp = v.generated_at || new Date().toISOString();
+    const heading = $("#today-heading");
+    if (heading) {
+      const when = new Date(stamp);
+      heading.textContent = Number.isFinite(when.getTime())
+        ? new Intl.DateTimeFormat(undefined, { weekday: "long", day: "numeric", month: "long" }).format(when)
+        : "Today";
+    }
+    body.innerHTML = overviewHtml(v, activity.events || [], previousVisit);
+    localStorage.setItem("assay.home.lastVisit", stamp);
   } catch (e) {
     if (status) { status.textContent = "Could not load the overview: " + (e as Error).message; status.classList.add("err"); }
   }

@@ -12,17 +12,17 @@ const holdings = (): HoldingsPayload => ({
   positions: [
     // base_market_value/unrealized_pnl drive uPnL%: (mv - pnl) is cost.
     { symbol: "NVDA", provider_symbol: "NVDA", researchable: true, description: null,
-      asset_class: "STK", percent_of_nav: 12.34, broker_percent_of_nav: null,
+      asset_class: "STK", quantity: 10, percent_of_nav: 12.34, broker_percent_of_nav: null,
       base_market_value: 110, currency: "USD", unrealized_pnl: 10, issuer_country_code: null, option: null },
     { symbol: "KLAC", provider_symbol: "KLAC", researchable: true, description: null,
-      asset_class: "STK", percent_of_nav: 2.0, broker_percent_of_nav: null,
+      asset_class: "STK", quantity: 2, percent_of_nav: 2.0, broker_percent_of_nav: null,
       base_market_value: 100, currency: "USD", unrealized_pnl: -5, issuer_country_code: null, option: null },
     { symbol: "UNH", provider_symbol: "UNH", researchable: true, description: null,
-      asset_class: "STK", percent_of_nav: 6.0, broker_percent_of_nav: null,
+      asset_class: "STK", quantity: 3, percent_of_nav: 6.0, broker_percent_of_nav: null,
       base_market_value: 60, currency: "USD", unrealized_pnl: 0, issuer_country_code: null, option: null },
     // A short put on KLAC -> bullish (+) exercise exposure.
     { symbol: "KLAC  260717P00238000", provider_symbol: "KLAC", researchable: false, description: "KLAC 17JUL26 238 P",
-      asset_class: "OPT", percent_of_nav: 0.1, broker_percent_of_nav: null,
+      asset_class: "OPT", quantity: -2, percent_of_nav: 0.1, broker_percent_of_nav: null,
       base_market_value: -100, currency: "USD", unrealized_pnl: 0, issuer_country_code: null,
       option: { right: "P", strike: 238, contracts: -2, multiplier: 100, notional_base: 1000, exercise_pct: 3.5 } },
   ],

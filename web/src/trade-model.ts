@@ -35,6 +35,8 @@ export interface OrderReconciliation {
   working_same_qty?: number;
   working_qty?: number;
   residual_qty: number;
+  current_position_qty?: number;
+  projected_position_qty?: number;
   proposed_delta_czk?: number;
   working_delta_czk?: number;
   residual_delta_czk?: number;
@@ -71,6 +73,17 @@ export interface OrderBand {
   before_pct?: number | null;
   after_pct?: number | null;
   status_after?: string | null;
+  scope?: "target" | "sleeve";
+  scope_name?: string;
+  scope_members?: string[];
+}
+
+export function orderBandScopeLabel(sym: string, band: OrderBand): string {
+  if (band.scope !== "sleeve") return "";
+  const name = String(band.scope_name || "sleeve").replace(/[-_]+/g, " ");
+  const title = name.replace(/\b\w/g, (c) => c.toUpperCase());
+  const members = (band.scope_members || []).join(" + ");
+  return `${title} sleeve${members ? ` (${members})` : ""} · ${sym}'s order moves the combined band`;
 }
 
 // Shared axis max across the previewed names' bands, rounded to a friendly

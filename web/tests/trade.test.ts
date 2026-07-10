@@ -77,14 +77,13 @@ describe("trade desk placement gating", () => {
     expect(place).toBeTruthy();
     expect(place.disabled).toBe(true); // nothing ticked yet
 
-    // Tick a single box: still blocked while the other order is unconfirmed.
-    const boxes = [...document.querySelectorAll<HTMLInputElement>('#trade-result input[type="checkbox"]')];
-    expect(boxes).toHaveLength(2);
-    boxes[0].checked = true;
-    boxes[0].dispatchEvent(new Event("change"));
+    // Marking one order ready still leaves placement blocked by the other.
+    const ready = [...document.querySelectorAll<HTMLButtonElement>('#trade-result .trade-order-ready')];
+    expect(ready).toHaveLength(2);
+    ready[0].click();
     expect(place.disabled).toBe(true);
 
-    byText((t) => t === "Confirm all")!.click();
+    byText((t) => t === "Mark all ready")!.click();
     expect(place.disabled).toBe(false); // all confirmed -> placement unlocked
   });
 
@@ -99,11 +98,9 @@ describe("trade desk placement gating", () => {
     expect(place).toBeTruthy();
     expect(place.disabled).toBe(true);
 
-    // No "Confirm all" on live; tick the box directly — the live lock still wins.
-    expect(byText((t) => t === "Confirm all")).toBeFalsy();
-    const box = document.querySelector<HTMLInputElement>('#trade-result input[type="checkbox"]')!;
-    box.checked = true;
-    box.dispatchEvent(new Event("change"));
+    // No bulk-ready shortcut on live; marking the order cannot bypass the lock.
+    expect(byText((t) => t === "Mark all ready")).toBeFalsy();
+    document.querySelector<HTMLButtonElement>('#trade-result .trade-order-ready')!.click();
     expect(place.disabled).toBe(true); // confirming the order cannot override the live lock
   });
 
@@ -115,7 +112,7 @@ describe("trade desk placement gating", () => {
         warnings: [], ibkr_preview: null, orders: [order()] },
       { placed: [{ order_id: "o-1" }], kind: "paper", account: "DU1" },
     );
-    byText((t) => t === "Confirm all")!.click();
+    byText((t) => t === "Mark all ready")!.click();
     const place = byText((t) => t.startsWith("Place"))!;
 
     // Opening the desk Place button raises the modal; cancelling it must not place.
@@ -152,11 +149,9 @@ describe("trade desk live confirmation modal", () => {
       trades: [{ symbol: "AAPL", delta_czk: 1000 }],
       warnings: [], ibkr_preview: null, orders: [order()],
     });
-    // No "Confirm all" on a live account; tick the single order directly.
-    expect(byText((t) => t === "Confirm all")).toBeFalsy();
-    const box = document.querySelector<HTMLInputElement>('#trade-result input[type="checkbox"]')!;
-    box.checked = true;
-    box.dispatchEvent(new Event("change"));
+    // No bulk-ready shortcut on a live account; mark the single order directly.
+    expect(byText((t) => t === "Mark all ready")).toBeFalsy();
+    document.querySelector<HTMLButtonElement>('#trade-result .trade-order-ready')!.click();
 
     const place = byText((t) => t.startsWith("Place"))!;
     expect(place.disabled).toBe(false);
@@ -215,6 +210,32 @@ describe("trade desk safety gates", () => {
     expect(document.querySelector<HTMLElement>('[data-trade-panel="orders"]')!.hidden).toBe(false);
   });
 
+  it("opens a deep-linked review tab immediately while its data is loading", async () => {
+    window.history.replaceState({}, "", "/?view=trade&tab=review");
+    let resolveBasket!: (value: object) => void;
+    const basket = new Promise<object>((resolve) => { resolveBasket = resolve; });
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/basket") return basket;
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/preview") return Promise.resolve({
+        is_paper: true, live_allowed: true, account: "DU1", warnings: [],
+        ibkr_preview: null, orders: [order()],
+      });
+      return Promise.resolve({ orders: [] });
+    });
+
+    const loading = loadTrade();
+    await flush();
+    expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!
+      .getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector(".trade-review-loading")!.textContent).toContain("Preparing order review");
+
+    resolveBasket({ trades: [{ symbol: "AAPL", delta_czk: 1000 }] });
+    await loading;
+    await flush();
+    expect(document.querySelector(".trade-preview-card")).toBeTruthy();
+  });
+
   it("renders reconciled working-order next steps and confirms only residual orders", async () => {
     const basket = [{ symbol: "NVDA", delta_czk: -1000 }, { symbol: "AAPL", delta_czk: 500 }];
     apiMock.mockImplementation((path: string) => {
@@ -229,6 +250,7 @@ describe("trade desk safety gates", () => {
           order_context: [
             { symbol: "NVDA", side: "SELL", classification: "fully_covered",
               proposed_qty: 3, working_same_qty: 3, residual_qty: 0, placeable: false,
+              current_position_qty: 10, projected_position_qty: 7,
               working: [{ order_id: "o-1", side: "SELL", remaining_qty: 3,
                 order_type: "LMT", price: 180, status: "Submitted" }],
               next_step: "No new order needed — monitor the existing working order." },
@@ -249,8 +271,9 @@ describe("trade desk safety gates", () => {
     const nvda = cards.find((n) => n.textContent?.includes("NVDA"))!;
     expect(nvda.textContent).toContain("Already covered");
     expect(nvda.textContent).toContain("Informational");
-    expect(nvda.querySelector('input[type="checkbox"]')).toBeFalsy();
-    expect(document.querySelectorAll('.trade-order-grid input[type="checkbox"]')).toHaveLength(1);
+    expect(nvda.textContent).toContain("10 shares → 7 shares");
+    expect(nvda.querySelector(".trade-order-ready")).toBeFalsy();
+    expect(document.querySelectorAll(".trade-order-grid .trade-order-ready")).toHaveLength(1);
     expect(document.querySelector(".trade-preview-summary")!.textContent).toContain("Working adjustments");
   });
 
@@ -313,7 +336,7 @@ describe("trade desk safety gates", () => {
       is_paper: true, live_allowed: true, account: "DU1", warnings: ["snapshot old"],
       snapshot_stale: true, snapshot_age_days: 30, ibkr_preview: null, orders: [order()],
     });
-    byText((t) => t === "Confirm all")!.click();
+    byText((t) => t === "Mark all ready")!.click();
     const place = byText((t) => t.startsWith("Place"))!;
     expect(place.disabled).toBe(true); // confirmed, but the stale gate still holds
 

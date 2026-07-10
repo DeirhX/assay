@@ -6,7 +6,7 @@
 // and the placement-result HTML blurs the account id and closes the loop.
 import { describe, expect, it } from "vitest";
 import {
-  basketMoneyFacts, gatewayOrigin, placeResultHtml, previewStats, reconciliationTitle, riskPanelHtml,
+  basketMoneyFacts, gatewayOrigin, orderBandScopeLabel, placeResultHtml, previewStats, reconciliationTitle, riskPanelHtml,
   weightBandCaption, weightScaleMax,
 } from "../src/trade-model";
 
@@ -83,6 +83,18 @@ describe("weightBandCaption", () => {
   it("flags an out-of-band land", () => {
     const cap = weightBandCaption({ low: 5, high: 7, before_pct: 9, after_pct: 8, status_after: "OUT" });
     expect(cap).toContain("out of band");
+  });
+});
+
+describe("orderBandScopeLabel", () => {
+  it("explains when an order moves a combined sleeve band", () => {
+    expect(orderBandScopeLabel("ADI", {
+      scope: "sleeve", scope_name: "analog", scope_members: ["TXN", "ADI"],
+    })).toBe("Analog sleeve (TXN + ADI) · ADI's order moves the combined band");
+  });
+
+  it("stays quiet for a standalone target", () => {
+    expect(orderBandScopeLabel("AMAT", { scope: "target" })).toBe("");
   });
 });
 

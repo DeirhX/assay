@@ -154,14 +154,16 @@ class BandStatus(unittest.TestCase):
         self.assertEqual(ctx["gap_to_band_pct"], 0.0)
 
     def test_held_no_target(self):
-        holdings = {"positions": [{"symbol": "Z", "base_market_value": 50.0},
+        holdings = {"positions": [{"symbol": "Z", "base_market_value": 50.0, "quantity": 12},
                                   {"symbol": "_", "base_market_value": 50.0}]}
         ctx = pf.portfolio_context("Z", holdings=holdings, model={"targets": {}})
         self.assertEqual(ctx["status"], "held_no_target")
+        self.assertEqual(ctx["current_quantity"], 12)
 
     def test_not_held(self):
         ctx = pf.portfolio_context("NOPE", holdings={"positions": []}, model={"targets": {}})
         self.assertEqual(ctx["status"], "not_held")
+        self.assertIsNone(ctx["current_quantity"])
 
 
 class DecisionLabel(unittest.TestCase):
