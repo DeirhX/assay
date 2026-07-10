@@ -2880,7 +2880,13 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
 .trade-order-breakdown strong { color: var(--text); font-variant-numeric: tabular-nums; }
 .trade-order-details { margin-top: 8px; }
 .trade-order-details > summary, .trade-preview-details > summary, .trade-impact-wrap > summary {
-  color: var(--muted); cursor: pointer; font-size: 11.5px;
+  display: inline-block; margin-left: -6px; padding: 3px 6px;
+  border-radius: 5px; color: var(--muted); cursor: pointer; font-size: 11.5px;
+  transition: color .15s ease, background-color .15s ease;
+}
+.trade-order-details > summary:hover, .trade-order-details > summary:focus-visible {
+  color: var(--text); background: var(--panel);
+  outline: none;
 }
 .trade-order-details[open] > summary, .trade-preview-details[open] > summary, .trade-impact-wrap[open] > summary {
   color: var(--text);
