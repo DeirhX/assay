@@ -161,5 +161,29 @@ class TradeQuotes(unittest.TestCase):
                 trade_service._trade_quotes([111])
 
 
+class DropBlockedBuys(unittest.TestCase):
+    """KID/PRIIPs-blocked names (US-domiciled ETFs) can't be bought directly, so
+    their BUY orders are stripped before preview/placement. SELLs must survive --
+    closing an existing position is always allowed."""
+
+    ORDERS = [
+        {"conid": 1, "side": "BUY", "symbol": "AMD"},
+        {"conid": 2, "side": "BUY", "symbol": "XSD"},    # blocked buy -> dropped
+        {"conid": 3, "side": "SELL", "symbol": "SOXX"},  # blocked SELL -> kept
+    ]
+
+    def test_drops_blocked_buys_keeps_sells_and_others(self):
+        kept = trade_service._drop_blocked_buys(self.ORDERS, {"XSD", "SOXX"})
+        self.assertEqual([o["symbol"] for o in kept], ["AMD", "SOXX"])
+
+    def test_empty_blocked_set_is_a_noop(self):
+        kept = trade_service._drop_blocked_buys(self.ORDERS, set())
+        self.assertIs(kept, self.ORDERS)
+
+    def test_symbol_match_is_case_insensitive(self):
+        orders = [{"conid": 9, "side": "BUY", "symbol": "xsd"}]
+        self.assertEqual(trade_service._drop_blocked_buys(orders, {"XSD"}), [])
+
+
 if __name__ == "__main__":
     unittest.main()

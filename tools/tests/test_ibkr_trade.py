@@ -308,8 +308,12 @@ class PreviewAggregation(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("NVDA", msg)          # attributed to the offending symbol
         self.assertIn("UCITS", msg)          # translated to the actionable gist
+        self.assertIn("options", msg.lower())  # names the real path to exposure
         self.assertNotIn("Ineligibility reasons", msg)  # raw legal wall dropped
         self.assertEqual(len(req.call_args_list), 2)     # sibling still previewed
+        # The blocked symbol is carried out-of-band so the service layer can learn
+        # it and convert future buys to options-only (the good sibling stays off it).
+        self.assertEqual(getattr(ctx.exception, "kid_symbols", None), ["NVDA"])
 
 
 class ModifyOrder(unittest.TestCase):

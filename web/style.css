@@ -2803,6 +2803,16 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .trade-impact { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0; font-size: 13px; }
 .trade-impact-cell { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
 .trade-warn { color: var(--bad); font-size: 12.5px; margin: 4px 0; }
+
+/* Options-only callout: names EU retail can't buy directly (no PRIIPs KID). Not
+   an error -- an alternate route -- so it reads as an accent note, not red. */
+.trade-optonly {
+  margin: 8px 0; padding: 8px 12px; border-radius: var(--radius-soft);
+  border: 1px solid rgba(120,180,255,.4); border-left: 3px solid var(--accent);
+  background: rgba(120,180,255,.07);
+}
+.trade-optonly-hd { font-weight: 700; color: var(--accent); font-size: 13px; }
+.trade-optonly-body { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.45; }
 /* A limit order from a locked price trigger stands out from plain MKT lines. */
 .trade-lmt { color: var(--accent); font-weight: 700; }
 

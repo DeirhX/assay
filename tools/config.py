@@ -53,6 +53,12 @@ AUTH_STATE_FILE = DATA_DIR / "cache" / "pplx-auth.json"
 # survives server restarts but never gets committed. Read by the Activity view.
 ACTIVITY_LOG = DATA_DIR / "cache" / "activity-log.jsonl"
 
+# Symbols this (EU retail) account can't BUY directly for want of a PRIIPs KID --
+# typically US-domiciled ETFs. The trade desk converts their buys to options-only
+# instead of emitting a guaranteed-reject direct order. Self-populating from
+# whatif KID rejections and hand-editable; gitignored under data/cache.
+KID_BLOCK_JSON = DATA_DIR / "cache" / "kid-blocked.json"
+
 # Curated segment definitions (the membership lists) and the generated segment
 # dossiers. Referenced by the server, the deep-run/peer-stats services, and the
 # segment readers, so centralize them.
