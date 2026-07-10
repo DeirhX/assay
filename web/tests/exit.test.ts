@@ -246,13 +246,19 @@ describe("Exit planner rendering", () => {
     const route = [...document.querySelectorAll<HTMLButtonElement>(".exit-route-tab")]
       .find((b) => b.textContent === "Covered-call exit")!;
     expect(route).toBeTruthy();
+    expect(route.getAttribute("role")).toBe("tab");
+    expect(route.getAttribute("aria-controls")).toBeTruthy();
     route.click();
     const panel = document.querySelector<HTMLElement>('[data-exit-route="covered_call"]')!;
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(route.id);
     expect(panel.textContent).toContain("Underlying last 101.25 USD");
     expect(panel.textContent).toContain("Bid (sell)");
     expect(panel.textContent).toContain("Ask (buy)");
+    expect(panel.textContent).toContain("just now");
     expect(panel.textContent).toContain("7 contracts available before working orders");
     expect(panel.textContent).toContain("700 shares available to cover calls");
+    expect(panel.textContent).toContain("estimated from holdings");
     expect(panel.textContent).toContain("Assignment is not guaranteed");
 
     panel.querySelector<HTMLButtonElement>(".exit-stage-call")!.click();
@@ -279,8 +285,26 @@ describe("Exit planner rendering", () => {
 
     const panel = document.querySelector<HTMLElement>('[data-exit-route="covered_call"]')!;
     expect(panel.textContent).toContain("No executable covered call");
+    expect(panel.textContent).toContain("analysis only");
     expect(panel.textContent).toContain("Unavailable");
     expect(panel.textContent).toContain("—");
+    expect(panel.querySelector<HTMLButtonElement>(".exit-stage-call")!.disabled).toBe(true);
+  });
+
+  it("explains why an executable quote cannot stage a sub-contract reduction", async () => {
+    const plan = coveredCallPlan();
+    const options = plan.positions[0].options!;
+    options.route_contracts = 0;
+    options.route_assigned_shares = 0;
+    apiMock.mockResolvedValue(plan);
+    await loadExit();
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>(".exit-route-tab")]
+      .find((b) => b.textContent === "Covered-call exit")!.click();
+
+    const panel = document.querySelector<HTMLElement>('[data-exit-route="covered_call"]')!;
+    expect(panel.textContent).toContain("Fewer than 100 shares are planned");
+    expect(panel.textContent).toContain("No whole contract is planned");
     expect(panel.querySelector<HTMLButtonElement>(".exit-stage-call")!.disabled).toBe(true);
   });
 });

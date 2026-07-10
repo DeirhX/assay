@@ -3704,6 +3704,7 @@ button.trade-live-h.sortable.active { color: var(--accent); }
 .exit-route-tabs { display: inline-flex; gap: 3px; margin: -3px 0 10px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
 .exit-route-tab { border: 0; border-radius: 6px; padding: 5px 10px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 650; }
 .exit-route-tab:hover { color: var(--text); background: var(--panel-2); }
+.exit-route-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .exit-route-tab.active { color: var(--text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent); }
 .exit-route-panel { display: none; }
 .exit-route-panel.active { display: block; }
@@ -3769,6 +3770,7 @@ table.exit-sched th { color: var(--muted); font-weight: 600; font-size: 11px; te
 .exit-ladder .num { text-align: right; }
 .exit-stage-call { white-space: nowrap; font-size: 11px; padding: 3px 9px; }
 .exit-stage-call:disabled { opacity: .45; cursor: not-allowed; }
+.exit-stage-reason { display: block; max-width: 180px; margin-top: 3px; font-size: 10px; line-height: 1.25; }
 .exit-ladder tbody tr:last-child td { border-bottom: none; }
 .exit-ladder-rec { background: color-mix(in srgb, var(--accent, #4a9) 12%, transparent); }
 .exit-ladder-rec td:first-child { font-weight: 700; }

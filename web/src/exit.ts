@@ -169,20 +169,35 @@ function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
 function recommendationBlock(p: ExitPosition): HTMLElement {
   const box = el("div", "exit-reco");
   const hasCallRoute = !!p.options?.covered_call_ladder?.length;
+  const routeId = `exit-route-${p.symbol.replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`;
   if (hasCallRoute) {
     const tabs = el("div", "exit-route-tabs");
     tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", `${p.symbol} execution route`);
     const shares = el("button", "exit-route-tab active", "Sell shares") as HTMLButtonElement;
     const calls = el("button", "exit-route-tab", "Covered-call exit") as HTMLButtonElement;
     shares.type = calls.type = "button";
+    shares.id = `${routeId}-shares-tab`;
+    calls.id = `${routeId}-calls-tab`;
+    shares.setAttribute("role", "tab");
+    calls.setAttribute("role", "tab");
+    shares.setAttribute("aria-controls", `${routeId}-shares-panel`);
+    calls.setAttribute("aria-controls", `${routeId}-calls-panel`);
     shares.setAttribute("aria-selected", "true");
     calls.setAttribute("aria-selected", "false");
+    shares.tabIndex = 0;
+    calls.tabIndex = -1;
     tabs.append(shares, calls);
     box.appendChild(tabs);
   }
 
   const sharePanel = el("div", "exit-route-panel active");
   sharePanel.dataset.exitRoute = "shares";
+  if (hasCallRoute) {
+    sharePanel.id = `${routeId}-shares-panel`;
+    sharePanel.setAttribute("role", "tabpanel");
+    sharePanel.setAttribute("aria-labelledby", `${routeId}-shares-tab`);
+  }
   const t = p.tax;
   const s = p.schedule;
   const keepPct = p.current_czk > 0 ? (100 * (p.current_czk - p.exit_czk)) / p.current_czk : 0;
@@ -230,6 +245,9 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
 
   if (hasCallRoute) {
     const callPanel = coveredCallRoute(p);
+    callPanel.id = `${routeId}-calls-panel`;
+    callPanel.setAttribute("role", "tabpanel");
+    callPanel.setAttribute("aria-labelledby", `${routeId}-calls-tab`);
     box.appendChild(callPanel);
     const [shares, calls] = Array.from(box.querySelectorAll<HTMLButtonElement>(".exit-route-tab"));
     const select = (route: "shares" | "covered_call") => {
@@ -237,11 +255,24 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
       calls.classList.toggle("active", route === "covered_call");
       shares.setAttribute("aria-selected", String(route === "shares"));
       calls.setAttribute("aria-selected", String(route === "covered_call"));
+      shares.tabIndex = route === "shares" ? 0 : -1;
+      calls.tabIndex = route === "covered_call" ? 0 : -1;
       sharePanel.classList.toggle("active", route === "shares");
       callPanel.classList.toggle("active", route === "covered_call");
     };
     shares.addEventListener("click", () => select("shares"));
     calls.addEventListener("click", () => select("covered_call"));
+    [shares, calls].forEach((tab, index, all) => {
+      tab.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === "Home" ? 0
+          : event.key === "End" ? all.length - 1
+          : (index + (event.key === "ArrowRight" ? 1 : -1) + all.length) % all.length;
+        select(next === 0 ? "shares" : "covered_call");
+        all[next].focus();
+      });
+    });
   }
   return box;
 }
@@ -437,12 +468,17 @@ function coveredCallRoute(p: ExitPosition): HTMLElement {
       `<span><strong>${fmtNum(o.route_assigned_shares)}</strong> maximum assigned shares</span>` +
       `<span><strong>${fmtNum(o.available_contracts)}</strong> contracts available before working orders</span>` +
       `<span><strong>${fmtNum(o.available_covered_shares)}</strong> shares available to cover calls</span>` +
-      `<span class="muted">held calls included; working orders are rechecked before staging</span>` +
+      `<span class="muted">${o.working_orders_checked
+        ? "held and working calls included"
+        : "estimated from holdings; working orders are rechecked when you stage"}</span>` +
     `</div>`;
   const executable = rungs.filter((r) => r.executable).length;
   if (!executable) {
     panel.appendChild(el("div", "trade-action-item blocker",
       "No executable covered call. Connect IBKR and require an exact contract with a live, uncrossed bid and ask; modeled, Yahoo, and Alpaca rungs stay analysis-only."));
+  } else if (Number(o.route_contracts) < 1) {
+    panel.appendChild(el("div", "trade-action-item blocker",
+      "Fewer than 100 shares are planned for this reduction, so there is no whole covered-call contract to write."));
   }
   panel.appendChild(coveredCallLadder(rungs, o.currency, p.symbol, true, o.route_contracts));
   return panel;
@@ -451,7 +487,11 @@ function coveredCallRoute(p: ExitPosition): HTMLElement {
 // Name the provenance of the premium: a live IBKR/Yahoo chain quote, or a
 // Black-Scholes estimate when no chain quote was available (`estimate` is set
 // server-side exactly when the premium was modeled, so it wins over `source`).
-function sourceBadge(source: string, estimate: boolean): string {
+function sourceBadge(source: string, estimate: boolean, stageable = false, executable = false): string {
+  if (stageable && !executable) {
+    const label = source === "ibkr" ? "IBKR unavailable" : "analysis only";
+    return `<span class="exit-est" title="Not placeable: execution requires an exact IBKR contract with a live bid and ask">${label}</span>`;
+  }
   if (!estimate && source === "ibkr")
     return `<span class="exit-live" title="Live from your IBKR option chain">IBKR</span>`;
   if (!estimate && source === "alpaca")
@@ -486,11 +526,16 @@ function coveredCallLadder(
     const star = r.recommended ? ` <span class="exit-ladder-star" title="Matches the recommended strike above">★</span>` : "";
     const mny = `${r.moneyness_pct >= 0 ? "+" : ""}${r.moneyness_pct.toFixed(1)}%`;
     const canStage = stageable && !!r.executable && Number(routeContracts) > 0;
+    const unavailableReason = Number(routeContracts) < 1
+      ? "No whole contract is planned for this reduction"
+      : "Requires an exact IBKR contract with live bid and ask";
     const action = stageable
       ? `<button class="ghost exit-stage-call" type="button" data-rung-index="${index}" ${canStage ? "" : "disabled"} ` +
-        `title="${canStage ? "Stage this exact IBKR contract in the Trade desk" : "Requires an exact IBKR contract with live bid and ask"}">` +
-        `${canStage ? `Stage ${fmtNum(routeContracts)}× →` : "Unavailable"}</button>`
+        `title="${canStage ? "Stage this exact IBKR contract in the Trade desk" : unavailableReason}">` +
+        `${canStage ? `Stage ${fmtNum(routeContracts)}× →` : "Unavailable"}</button>` +
+        (canStage ? "" : `<span class="muted exit-stage-reason">${unavailableReason}</span>`)
       : "";
+    const quoteAge = r.quote_at ? (relAge(r.quote_at) || "age unavailable") : "quote age unavailable";
     return `<tr class="${r.recommended ? "exit-ladder-rec" : ""}">` +
       `<td>${fmtNum(r.strike)} ${esc(cur)} <span class="muted">(${mny})</span>${star}</td>` +
       `<td class="num">${quotePrice(r.bid)}</td>` +
@@ -499,7 +544,7 @@ function coveredCallLadder(
       `<td>${fmtNum(r.premium)} · ${czk(r.premium_czk)}</td>` +
       `<td>${r.assignment_prob_pct == null ? "n/a" : "~" + pct(r.assignment_prob_pct, 0)}</td>` +
       `<td class="muted">${oi} / ${vol}</td>` +
-      `<td>${liqBadge(r.liquidity)} ${sourceBadge(r.source, r.estimate)}</td>` +
+      `<td>${liqBadge(r.liquidity)} ${sourceBadge(r.source, r.estimate, stageable, !!r.executable)} <span class="muted">${esc(quoteAge)}</span></td>` +
       (stageable ? `<td>${action}</td>` : "") +
     `</tr>`;
   }).join("");

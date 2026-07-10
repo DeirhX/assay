@@ -32,6 +32,24 @@ describe("basketMoneyFacts", () => {
     expect(f.buy).toBe(0);
     expect(f.sell).toBe(0);
   });
+
+  it("excludes covered-call premium from immediate stock cash totals", () => {
+    const f = basketMoneyFacts([
+      { symbol: "AMD", delta_czk: -2500 },
+      {
+        leg_type: "covered_call", leg_id: "covered_call:AMD:2026-08-21:105:C",
+        symbol: "AMD", contracts: 1, conid: 999, expiry: "2026-08-21",
+        strike: 105, right: "C", limit_price: 2.5, multiplier: 100,
+        quote: { bid: 2.4, ask: 2.6, last: 2.5 },
+        underlying_quote: { last: 100 }, provenance: [],
+      },
+    ]);
+    expect(f).toEqual({
+      buy: 0,
+      sell: 2500,
+      largest: { symbol: "AMD", czk: -2500 },
+    });
+  });
 });
 
 describe("working-order preview model", () => {
