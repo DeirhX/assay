@@ -220,36 +220,60 @@ type AppError = Error & { _recorded?: unknown; status?: number };
 // Generic so typed call sites can pin a response shape from ./api-types, e.g.
 // `await api<HoldingsPayload>("/api/holdings")`. Defaults to any for the call
 // sites that haven't pinned a DTO yet; prefer passing an explicit type param.
-async function api<T = any>(path: string, method: string = "GET", body: unknown = null): Promise<T> {
+// Optional per-call knobs. `timeoutMs` aborts a stalled request so the UI can
+// never spin forever with no feedback -- essential for the trade endpoints,
+// which talk to a local IBKR gateway that can wedge (accept the socket but never
+// answer). Do NOT set it on a request whose server side has side effects you
+// can't take back (e.g. placing an order): aborting the fetch does not cancel
+// the server's work, so a timeout there would lie about the outcome.
+interface ApiOpts { timeoutMs?: number; }
+
+async function api<T = any>(path: string, method: string = "GET", body: unknown = null,
+                            opts: ApiOpts = {}): Promise<T> {
   const opt: RequestInit = { method, headers: {} };
   if (body) {
     (opt.headers as Record<string, string>)["Content-Type"] = "application/json";
     opt.body = JSON.stringify(body);
   }
-  let res: Response;
+  const timeoutMs = opts.timeoutMs ?? 0;
+  let ac: AbortController | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  if (timeoutMs > 0) {
+    ac = new AbortController();
+    opt.signal = ac.signal;
+    timer = setTimeout(() => ac!.abort(), timeoutMs);
+  }
   try {
-    res = await fetch(path, opt);
-  } catch (netErr) {
-    // The server is down / unreachable -- always a genuine failure worth the
-    // central error center, regardless of who (if anyone) catches it locally.
-    const e = new Error(`can't reach the server (${method} ${path})`) as AppError;
-    e._recorded = _errorSink && _errorSink("network", e.message, { detail: String((netErr as any) && (netErr as any).message || netErr) });
-    throw e;
-  }
-  const data = await res.json().catch(() => ({ error: "bad response" }));
-  if (!res.ok) {
-    const e = new Error(data.error || `HTTP ${res.status}`) as AppError;
-    e.status = res.status;
-    // 5xx is the server blowing up -- record centrally. 4xx is usually expected
-    // control flow (missing cache, validation) that callers handle inline, so we
-    // leave those to local status; if a 4xx goes uncaught it still surfaces via
-    // the global unhandledrejection handler below.
-    if (res.status >= 500) {
-      e._recorded = _errorSink && _errorSink("api", `${method} ${path}: ${e.message}`, { detail: `HTTP ${res.status}` });
+    let res: Response;
+    try {
+      res = await fetch(path, opt);
+    } catch (netErr) {
+      // The server is down / unreachable / too slow -- always a genuine failure
+      // worth the central error center, regardless of who (if anyone) catches it.
+      const aborted = ac?.signal.aborted || (netErr as any)?.name === "AbortError";
+      const e = new Error(aborted
+        ? `timed out after ${Math.round(timeoutMs / 1000)}s (${method} ${path}) — is the gateway responding?`
+        : `can't reach the server (${method} ${path})`) as AppError;
+      e._recorded = _errorSink && _errorSink("network", e.message, { detail: String((netErr as any) && (netErr as any).message || netErr) });
+      throw e;
     }
-    throw e;
+    const data = await res.json().catch(() => ({ error: "bad response" }));
+    if (!res.ok) {
+      const e = new Error(data.error || `HTTP ${res.status}`) as AppError;
+      e.status = res.status;
+      // 5xx is the server blowing up -- record centrally. 4xx is usually expected
+      // control flow (missing cache, validation) that callers handle inline, so we
+      // leave those to local status; if a 4xx goes uncaught it still surfaces via
+      // the global unhandledrejection handler below.
+      if (res.status >= 500) {
+        e._recorded = _errorSink && _errorSink("api", `${method} ${path}: ${e.message}`, { detail: `HTTP ${res.status}` });
+      }
+      throw e;
+    }
+    return data;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return data;
 }
 
 // ---- shared load / status / empty-state choreography ----------------------
