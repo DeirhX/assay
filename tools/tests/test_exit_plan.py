@@ -1,5 +1,6 @@
 import datetime as dt
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -207,12 +208,46 @@ def _yahoo_chain():
 
 
 def test_session_ready_reads_auth_status():
+    # The result is memoized (auth_status is a ~2s gateway round-trip), so reset
+    # the short-lived cache before each read to assert a fresh auth_status pull.
+    exit_plan._session_ready_cache = None
     with mock.patch.object(ibkr_trade, "auth_status", return_value={"authenticated": True}):
         assert exit_plan._ibkr_session_ready() is True
+    exit_plan._session_ready_cache = None
     with mock.patch.object(ibkr_trade, "auth_status", return_value={}):
         assert exit_plan._ibkr_session_ready() is False
+    exit_plan._session_ready_cache = None
     with mock.patch.object(ibkr_trade, "auth_status", side_effect=RuntimeError("down")):
         assert exit_plan._ibkr_session_ready() is False
+
+
+def test_session_ready_memoizes_within_ttl():
+    # A second call inside the TTL must not re-hit auth_status (the whole point:
+    # a cold multi-name plan shouldn't pay the ~2s check per candidate).
+    exit_plan._session_ready_cache = None
+    with mock.patch.object(ibkr_trade, "auth_status", return_value={"authenticated": True}) as auth:
+        assert exit_plan._ibkr_session_ready() is True
+        assert exit_plan._ibkr_session_ready() is True
+    auth.assert_called_once()
+
+
+def test_ibkr_chain_budget_times_out_and_yahoo_wins():
+    # A chain fetch that outlives the budget must NOT block: the caller drops to
+    # Yahoo while the slow IBKR thread is abandoned (this is the exact hang fix).
+    def slow_chain(_sym):
+        time.sleep(5.0)
+        return _ibkr_chain()
+
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
+            mock.patch.object(ibkr_trade, "option_chain", side_effect=slow_chain), \
+            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn, \
+            mock.patch.object(exit_plan, "IBKR_CHAIN_BUDGET_SECONDS", 0.05):
+        t0 = time.perf_counter()
+        out = exit_plan._fetch_option_chain("NVDA")
+        elapsed = time.perf_counter() - t0
+    assert out["source"] == "yahoo"
+    yahoo_fn.assert_called_once()
+    assert elapsed < 1.0, f"budget not honored; took {elapsed:.2f}s"
 
 
 def test_fetch_prefers_ibkr_when_authenticated():

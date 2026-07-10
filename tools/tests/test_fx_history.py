@@ -228,6 +228,20 @@ class WindowReport(unittest.TestCase):
         self.assertEqual(rep["window"], [])
         self.assertTrue(any("No FX history" in c for c in rep["caveats"]))
 
+    def test_multiple_uncovered_currencies_share_one_caveat(self):
+        # Two uncovered pairs must fold into a single line -- one "...its FX effect
+        # is omitted." caveat per currency reads like the same sentence twice.
+        holdings = {"base_currency": "CZK", "positions": [
+            {"currency": "KRW", "base_market_value": 5000.0},
+            {"currency": "HKD", "base_market_value": 5000.0}]}   # panel covers neither
+        rep = fx_history.window_report(holdings, rng="1y", panel=self._panel(),
+                                       today=dt.date(2025, 1, 1))
+        omitted = [c for c in rep["caveats"] if "No FX history" in c]
+        self.assertEqual(len(omitted), 1)
+        self.assertIn("KRWCZK=X", omitted[0])
+        self.assertIn("HKDCZK=X", omitted[0])
+        self.assertIn("their FX effects are omitted", omitted[0])
+
 
 if __name__ == "__main__":
     unittest.main()

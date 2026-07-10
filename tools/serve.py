@@ -82,6 +82,7 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
     start_history_sync as _start_history_sync, start_holdings_sync as _start_holdings_sync,
     start_sectors_sync as _start_sectors_sync,
 )
+import holdings_live  # noqa: E402  -- read-only live-mark overlay (CPAPI) for the holdings view
 import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
 import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
 import overview  # noqa: E402  -- "Today" cockpit: pure lane summaries + next-step pick
@@ -266,6 +267,7 @@ def _exit_cfg_from_query(query: dict) -> dict:
 _GET_EXACT = {
     "/api/dev/livereload": "_get_livereload",
     "/api/holdings": "_get_holdings",
+    "/api/holdings/live": "_get_holdings_live",
     "/api/overview": "_get_overview",
     "/api/portfolio-history": "_get_portfolio_history",
     "/api/ibkr/status": "_get_ibkr_status",
@@ -513,6 +515,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_holdings(self, path, query):
         return self._send_json(holdings_payload())
+
+    def _get_holdings_live(self, path, query):
+        # Best-effort live-mark overlay: the delayed Flex snapshot stays the base
+        # (tax lots, cost, country); this refreshes equity marks from the CPAPI
+        # gateway when it's authenticated. Never an error — {available:false} just
+        # tells the UI to keep showing the delayed snapshot.
+        snapshot = _load(HOLDINGS_JSON)
+        if not snapshot:
+            return self._send_json({"available": False, "reason": "no snapshot yet"})
+        try:
+            res = holdings_live.refresh_marks(snapshot)
+        except Exception as exc:  # noqa: BLE001 -- overlay must never break the view
+            return self._send_json({"available": False, "reason": f"{type(exc).__name__}"})
+        if not res:
+            return self._send_json({"available": False, "reason": "live gateway unavailable"})
+        return self._send_json(res)
 
     def _get_portfolio_history(self, path, query):
         payload = _history_payload()

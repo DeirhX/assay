@@ -1143,6 +1143,15 @@ details.collapse[open] > .collapse-head .collapse-caret { transform: rotate(90de
 .hold-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
 .hold-controls .hint { margin: 0; }
 #hold-synced { color: var(--muted); font-size: 13px; }
+/* Live-mark overlay: a green pulsing dot means marks came from the IBKR gateway
+   (not the delayed Flex snapshot); a small clock flags any equity row that
+   couldn't be matched live and is still on the snapshot mark. */
+.hold-live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--good, #4caf82); margin-right: 5px; vertical-align: middle;
+  box-shadow: 0 0 0 0 rgba(76, 175, 130, .55); animation: hold-live-pulse 2s ease-out infinite; }
+@keyframes hold-live-pulse { 70% { box-shadow: 0 0 0 6px rgba(76, 175, 130, 0); } 100% { box-shadow: 0 0 0 0 rgba(76, 175, 130, 0); } }
+@media (prefers-reduced-motion: reduce) { .hold-live-dot { animation: none; } }
+.pos-delayed { font-size: 11px; color: var(--muted); margin-left: 4px; vertical-align: middle; cursor: help; }
 
 /* ---- analyses ----------------------------------------------------------- */
 .analyses-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -2988,6 +2997,14 @@ button.trade-live-h.sortable.active { color: var(--accent); }
 .stage-committed strong { color: var(--good); }
 .stage-committed code { font-size: 12px; }
 
+/* Empty-state hero: no draft in progress. Kept compact so the reconciliation
+   snapshot below it (the actual useful content) leads the page. */
+.stage-empty-hero { border: 1px solid var(--border); background: var(--panel);
+  border-radius: var(--radius-soft); padding: 14px 16px; margin-bottom: 16px; }
+.stage-empty-hero strong { color: var(--text); font-size: 14px; }
+.stage-empty-hero p { margin: 6px 0 12px; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.stage-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* Revert-to-pre-commit: the visible undo. A muted affordance that expands into a
    reviewed band diff before it touches the live model. */
 .stage-revert-affordance { margin-top: 12px; }
@@ -3433,10 +3450,31 @@ button.trade-live-h.sortable.active { color: var(--accent); }
 .exit-rule { font-size: 12px; text-transform: capitalize; }
 .exit-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .exit-meta strong { color: var(--text); }
+.exit-drift { font-size: 14px; }
+.exit-arrow { color: var(--muted); padding: 0 2px; }
 
 .exit-section { margin: 14px 0; }
 .exit-h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; font-weight: 700; }
 .exit-h3-sub { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 8px; font-size: 12px; }
+
+/* Inside the expander, the three sections (tax / schedule / options) were a
+   single undifferentiated stream. Chunk each into an outlined panel with a
+   full-width, color-ticked header so they read as three distinct blocks. */
+.exit-details > .exit-section { margin: 10px 0 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; }
+.exit-details > .exit-section > .exit-h3 {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  color: var(--text); margin: 0 0 10px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.exit-details > .exit-section > .exit-h3::before {
+  content: ""; align-self: center; width: 3px; height: 13px; border-radius: 2px;
+  background: var(--muted); flex: 0 0 auto;
+}
+/* Per-section accent so the eye can tell them apart at a glance. */
+.exit-details > .exit-section:nth-of-type(1) > .exit-h3::before { background: var(--good, #4caf82); }
+.exit-details > .exit-section:nth-of-type(2) > .exit-h3::before { background: var(--accent); }
+.exit-details > .exit-section.exit-options > .exit-h3::before { background: var(--muted); }
+.exit-details > .exit-section:last-of-type { margin-bottom: 2px; }
 
 /* Headline recommendation: lead with "do this", math on demand. */
 .exit-reco { margin: 12px 0 6px; padding: 11px 13px; background: var(--panel-2); border-radius: 8px; border-left: 3px solid var(--accent); }
@@ -3479,13 +3517,17 @@ table.exit-sched th:nth-child(2), table.exit-sched td:nth-child(2) { text-align:
 table.exit-sched th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .exit-stage-btn { font-size: 12px; padding: 3px 12px; }
 
-.exit-options { border-top: 1px dashed var(--border); padding-top: 12px; }
 .exit-opt-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; }
+.exit-opt-card:last-of-type { margin-bottom: 0; }
 .exit-opt-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.exit-opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 18px; }
+/* Plain-language takeaway so the card isn't parsed cell-by-cell; the grid below
+   is the precise breakdown. */
+.exit-opt-lead { font-size: 12.5px; line-height: 1.5; color: var(--muted); margin-bottom: 8px; }
+.exit-opt-lead strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.exit-opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; padding-top: 8px; border-top: 1px solid var(--border); }
 .exit-kv { display: flex; flex-direction: column; gap: 1px; }
-.exit-kv-k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
-.exit-kv-v { font-size: 13px; font-variant-numeric: tabular-nums; }
+.exit-kv-k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.exit-kv-v { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text); }
 .exit-est, .exit-live { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px; }
 .exit-est { color: var(--warn, #d9a441); border: 1px solid currentColor; }
 .exit-live { color: var(--muted); border: 1px solid var(--border); }

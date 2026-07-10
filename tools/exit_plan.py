@@ -29,6 +29,8 @@ from __future__ import annotations
 import datetime as dt
 import math
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,20 @@ _OPT_CACHE_DIR = REPO_ROOT / "data" / "cache" / "options"
 OPT_CACHE_TTL_SECONDS = 3 * 3600
 _RATE_CACHE = _OPT_CACHE_DIR / "risk-free-rate.json"
 RATE_CACHE_TTL_SECONDS = 6 * 3600
+
+# The IBKR CPAPI option chain is a serial fan-out of secdef/market-snapshot calls
+# against the local gateway; when the gateway is sluggish a single cold chain can
+# take *minutes*, which used to hang the whole Exit view (the overlay fetches one
+# per trim candidate). It's advisory data with a fast, reliable Yahoo fallback,
+# so we give IBKR a strict wall-clock budget and drop to Yahoo the moment it's
+# exceeded. The abandoned IBKR fetch keeps running as a daemon (best-effort: it
+# may still populate its own cache for a later load) but never blocks the plan.
+IBKR_CHAIN_BUDGET_SECONDS = 5.0
+# auth_status() is itself a ~2s gateway round-trip; memoize it briefly so a cold
+# multi-name plan doesn't pay it once per candidate.
+_SESSION_READY_TTL_SECONDS = 20.0
+_session_ready_cache: tuple[float, bool] | None = None
+_session_ready_lock = threading.Lock()
 
 
 # --------------------------------------------------------------------------- #
@@ -541,26 +557,57 @@ def _ibkr_session_ready() -> bool:
     option-chain read will actually resolve. Best-effort and quiet: any failure
     (gateway not running, import error) simply means 'use the Yahoo fallback'.
     Reading a chain is not trading, so this is intentionally NOT gated behind
-    IBKR_TRADING_ENABLED."""
+    IBKR_TRADING_ENABLED.
+
+    Memoized for ``_SESSION_READY_TTL_SECONDS``: ``auth_status()`` is a ~2s
+    gateway round-trip and a cold plan checks it once per candidate otherwise."""
+    global _session_ready_cache
+    with _session_ready_lock:
+        cached = _session_ready_cache
+        if cached is not None and (time.monotonic() - cached[0]) < _SESSION_READY_TTL_SECONDS:
+            return cached[1]
     try:
         import ibkr_trade
-        return bool(ibkr_trade.auth_status().get("authenticated"))
+        ready = bool(ibkr_trade.auth_status().get("authenticated"))
     except Exception:  # noqa: BLE001
-        return False
+        ready = False
+    with _session_ready_lock:
+        _session_ready_cache = (time.monotonic(), ready)
+    return ready
+
+
+def _ibkr_chain_within_budget(symbol: str, budget: float) -> dict[str, Any] | None:
+    """Run ``ibkr_trade.option_chain`` on a daemon thread and wait at most
+    ``budget`` seconds. Returns the chain if it resolved in time, else None so
+    the caller falls back to Yahoo. The thread is *not* cancelled (Python can't
+    interrupt a blocking socket read); it keeps running best-effort and may still
+    warm IBKR's own cache for a later load, but it never blocks the exit plan."""
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            import ibkr_trade
+            box["chain"] = ibkr_trade.option_chain(symbol)
+        except Exception:  # noqa: BLE001 -- IBKR hiccup: caller uses Yahoo
+            box["chain"] = None
+
+    th = threading.Thread(target=_run, name=f"ibkr-chain-{symbol}", daemon=True)
+    th.start()
+    th.join(budget)
+    return None if th.is_alive() else box.get("chain")
 
 
 def _fetch_option_chain(symbol: str) -> dict[str, Any] | None:
     """Live option chain for a canonical ticker: IBKR (CPAPI) first when the
     gateway is authenticated, else Yahoo. IBKR gives real strikes/expiries even
     without an options market-data subscription (quotes are just absent, and the
-    overlay estimates the premium); a resolve miss or any error falls through to
-    Yahoo, and both failing degrades to None -> Black-Scholes downstream."""
+    overlay estimates the premium); a resolve miss, a timeout, or any error falls
+    through to Yahoo, and both failing degrades to None -> Black-Scholes.
+
+    The IBKR attempt is time-boxed (``IBKR_CHAIN_BUDGET_SECONDS``): a sluggish
+    gateway would otherwise take minutes per name and hang the whole view."""
     if _ibkr_session_ready():
-        try:
-            import ibkr_trade
-            chain = ibkr_trade.option_chain(symbol)
-        except Exception:  # noqa: BLE001 -- IBKR hiccup: fall back to Yahoo
-            chain = None
+        chain = _ibkr_chain_within_budget(symbol, IBKR_CHAIN_BUDGET_SECONDS)
         if chain and chain.get("expiries"):
             return chain
     try:

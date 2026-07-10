@@ -165,8 +165,11 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", activity: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
+  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
   basket: "basket",
+  // Activity is a global audit log (tickers viewed + tasks run), not part of any
+  // one workflow, so it's its own top-level group rather than a Portfolio sub-tab.
+  activity: "activity",
   setup: "setup",
 };
 // Which sub-tab lights up for a given view. With History promoted to its own
@@ -174,14 +177,14 @@ const VIEW_GROUP: Record<string, string> = {
 const VIEW_SUBTAB: Record<string, string> = {
   leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade", "target-state": "target-state",
-  today: "today", holdings: "holdings", history: "history", activity: "activity", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
+  today: "today", holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
 };
 // The portfolio group opens on the Today cockpit: the loop's front door, which
 // routes to whichever step actually needs attention.
-const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket" };
+const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket", activity: "activity" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket" };
+const lastViewByGroup: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket", activity: "activity" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();

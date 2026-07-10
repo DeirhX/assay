@@ -295,12 +295,13 @@ def window_report(
         panel = load_panel()
     days = RANGE_DAYS.get(rng, 365)
     by_weight = {str(e["currency"]): float(e["weight_pct"]) for e in exposure}
+    missing: list[str] = []
     for e in exposure:
         ccy = str(e["currency"])
         pair = f"{ccy}{base}"
         mv = window_move(panel, pair, days=days, today=today)
         if mv is None:
-            caveats.append(f"No FX history for {pair}=X; its FX effect is omitted.")
+            missing.append(f"{pair}=X")
             continue
         w = by_weight.get(ccy, 0.0)
         window.append({
@@ -310,6 +311,11 @@ def window_report(
             "from": mv["from"],
             "to": mv["to"],
         })
+    if missing:
+        # One line, not one per currency: the repeated "...its FX effect is
+        # omitted." boilerplate reads like the same sentence pasted twice.
+        subject = "its FX effect is" if len(missing) == 1 else "their FX effects are"
+        caveats.append(f"No FX history for {', '.join(missing)}; {subject} omitted.")
     if window:
         caveats.append(
             "FX contribution assumes the current book was held across the whole "
