@@ -244,6 +244,18 @@ class PreviewAggregation(unittest.TestCase):
         {"conid": 1, "side": "BUY", "quantity": 2, "orderType": "MKT", "tif": "DAY", "symbol": "AMD"},
         {"conid": 2, "side": "BUY", "quantity": 1, "orderType": "MKT", "tif": "DAY", "symbol": "NVDA"}]
 
+    # Previews fan out on a thread pool, so a positional side_effect list would be
+    # racy -- key the mock responses by the order's conid instead.
+    @staticmethod
+    def _by_conid(mapping):
+        def _fn(_method, _endpoint, body):
+            conid = body["orders"][0]["conid"]
+            resp = mapping[conid]
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+        return _fn
+
     def test_previews_each_order_separately_and_recombines(self):
         r1 = {"amount": {"amount": "1,000 USD", "commission": "1.0 USD"},
               "initial": {"current": "5,000 USD", "change": "200 USD", "after": "5,200 USD"},
@@ -251,7 +263,7 @@ class PreviewAggregation(unittest.TestCase):
         r2 = {"amount": {"amount": "500 USD", "commission": "1.0 USD"},
               "initial": {"current": "5,000 USD", "change": "100 USD", "after": "5,100 USD"},
               "maintenance": {"current": "4,000 USD", "change": "50 USD", "after": "4,050 USD"}}
-        with mock.patch.object(ibt, "_request", side_effect=[r1, r2]) as req:
+        with mock.patch.object(ibt, "_request", side_effect=self._by_conid({1: r1, 2: r2})) as req:
             out = ibt.preview_orders("DU1", self.ORDERS)
         # One whatif POST per order, each a single-element array (never a bracket).
         self.assertEqual(len(req.call_args_list), 2)
@@ -276,11 +288,28 @@ class PreviewAggregation(unittest.TestCase):
     def test_a_per_order_error_is_surfaced_not_swallowed(self):
         good = {"amount": {"amount": "1,000 USD"}}
         bad = {"error": "no market data permissions for this contract"}
-        with mock.patch.object(ibt, "_request", side_effect=[good, bad]):
+        with mock.patch.object(ibt, "_request", side_effect=self._by_conid({1: good, 2: bad})):
             with self.assertRaises(ibt.CPAPIError) as ctx:
                 ibt.preview_orders("DU1", self.ORDERS)
         self.assertIn("NVDA", str(ctx.exception))
         self.assertIn("market data", str(ctx.exception))
+
+    def test_hard_gateway_rejection_is_attributed_and_explained(self):
+        # The PRIIPs/KID block on a US ETF comes back as a raised 500, not a body
+        # error. It must be caught, tied to the symbol, and translated -- and it
+        # must NOT abort the sibling order's preview (both are still attempted).
+        good = {"amount": {"amount": "1,000 USD"}}
+        kid = ibt.CPAPIError('gateway HTTP 500: {"error":"No Trading Permission, '
+                             'Customer Ineligible; Ineligibility reasons: \\nThis product '
+                             'does not have a KID in English ..."}', status=500)
+        with mock.patch.object(ibt, "_request", side_effect=self._by_conid({1: good, 2: kid})) as req:
+            with self.assertRaises(ibt.CPAPIError) as ctx:
+                ibt.preview_orders("DU1", self.ORDERS)
+        msg = str(ctx.exception)
+        self.assertIn("NVDA", msg)          # attributed to the offending symbol
+        self.assertIn("UCITS", msg)          # translated to the actionable gist
+        self.assertNotIn("Ineligibility reasons", msg)  # raw legal wall dropped
+        self.assertEqual(len(req.call_args_list), 2)     # sibling still previewed
 
 
 class ModifyOrder(unittest.TestCase):

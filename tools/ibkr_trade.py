@@ -34,6 +34,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from config import TOOLS_SECRETS, config_value as _config_value
@@ -789,25 +790,66 @@ def _aggregate_whatif(impacts: list[dict]) -> dict:
     return out
 
 
+# Each whatif is its own gateway round-trip and the CPAPI gateway is often
+# sluggish (~2-3s/call), so a big rebalance basket previewed serially crawled --
+# 17 orders spent ~45s on "Previewing…". They're independent read-only POSTs, so
+# fan them out on a small pool; the wall-clock collapses to ~ceil(N/workers)
+# round-trips. Kept modest so we don't hammer the single local gateway session.
+_PREVIEW_MAX_WORKERS = 6
+
+
+def _explain_whatif_error(raw: str) -> str:
+    """Turn a raw CPAPI whatif rejection into something a human can act on.
+
+    The common one for EU retail accounts is the PRIIPs/KID block on
+    US-domiciled ETFs (and other packaged products): IBKR answers the whatif with
+    a 500 and a wall of legal text. Collapse it to the actionable gist; anything
+    else passes through unchanged."""
+    low = raw.lower()
+    if "kid" in low or "customer ineligible" in low or "priip" in low:
+        return ("no IBKR trading permission for this product \u2014 it lacks an "
+                "approved KID (EU PRIIPs rule). US-domiciled ETFs and other "
+                "packaged products are blocked for EU retail clients; drop it or "
+                "use a UCITS-domiciled equivalent.")
+    return raw
+
+
 def preview_orders(account_id: str, orders: list[dict]) -> dict:
     """Margin/commission impact of a basket WITHOUT placing it (CPAPI whatif).
     The same discipline as the local what-if simulator, but from IBKR itself.
 
     Each order is previewed on its own (a basket can't share one array -- see the
-    module note above) and the per-order impacts are recombined. A per-order
-    ``error`` in the body is surfaced instead of being silently dropped."""
+    module note above); the per-order impacts are recombined. Both a per-order
+    ``error`` in the body AND a hard gateway rejection (e.g. the PRIIPs/KID block
+    on US ETFs, which comes back as a 500) are surfaced -- attributed to the
+    symbol and explained -- instead of being silently dropped or aborting the
+    whole basket on the first bad order. The previews run in parallel because a
+    serial fan-out over a sluggish gateway made a full basket take ~45s."""
+    if not orders:
+        return {}
     endpoint = f"/iserver/account/{urllib.parse.quote(account_id)}/orders/whatif"
+
+    def _preview_one(order: dict) -> tuple[dict, dict | None, str | None]:
+        """(order, impact, error) -- a hard CPAPIError is caught here so one bad
+        order can't cancel the whole fan-out; the caller aggregates."""
+        try:
+            impact = _whatif_impact(_request("POST", endpoint, {"orders": [_cpapi_order(order)]}))
+        except CPAPIError as exc:
+            return order, None, _explain_whatif_error(str(exc))
+        body_err = impact.get("error") if impact else None
+        return order, impact, (_explain_whatif_error(str(body_err)) if body_err else None)
+
+    workers = min(_PREVIEW_MAX_WORKERS, len(orders))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(_preview_one, orders))  # map preserves input order
+
     impacts: list[dict] = []
     errors: list[str] = []
-    for order in orders:
-        impact = _whatif_impact(_request("POST", endpoint, {"orders": [_cpapi_order(order)]}))
-        if impact is None:
-            continue
-        err = impact.get("error")
+    for order, impact, err in results:
         if err:
             sym = order.get("symbol")
-            errors.append(f"{sym}: {err}" if sym else str(err))
-        else:
+            errors.append(f"{sym}: {err}" if sym else err)
+        elif impact is not None:
             impacts.append(impact)
     if errors:
         raise CPAPIError("whatif preview rejected: " + "; ".join(errors))
