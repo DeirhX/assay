@@ -238,14 +238,14 @@
                  setting that up before exposing the prompt workflow. The escape
                  hatches (deterministic pull, import on Step 3) stay reachable. -->
             <div class="login-gate" id="pipe-login-gate" hidden>
-              <strong>Perplexity login required</strong>
-              <p>Deep Research runs your prompt through a logged-in Perplexity session in an off-screen browser. Set that up once before building a prompt — a visible login window opens, you sign in, and later runs reuse the session.</p>
+              <strong>Deep Research needs Perplexity (optional)</strong>
+              <p>The automated prompt run goes through a logged-in Perplexity session in an off-screen browser. It's optional — set it up once to enable it (a visible login window opens, you sign in, later runs reuse the session), or skip it entirely and use the escape hatches below.</p>
               <div class="thesis-actions">
                 <button class="primary" id="pipe-pplx-login">Set up Perplexity login</button>
                 <button class="ghost" id="pipe-login-recheck">Re-check login</button>
               </div>
               <div class="status" id="pipe-login-gate-status"></div>
-              <div class="hint">Rather run it yourself? Skip the automation and import a finished Perplexity run on the Report step, or pull deterministic data below.</div>
+              <div class="hint">Rather not? Skip the automation and import a finished Perplexity run on the Report step, or just pull deterministic data below — neither needs a login.</div>
             </div>
 
             <div id="pipe-prompt-area">

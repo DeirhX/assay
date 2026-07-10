@@ -444,6 +444,23 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+// Perplexity Deep Research is an OPTIONAL integration -- it drives the pipeline's
+// web-sourced crawls and the per-ticker Deep Research card. When there's no
+// logged-in session the run controls are withheld and this passive notice takes
+// their place: it explains the requirement and links to Settings, but never nags
+// (setup treats the login as optional). Centralized so every view gates alike.
+function pplxRequiredNotice(what = "Deep Research"): HTMLElement {
+  const box = el("div", "pplx-gate",
+    `<span class="pplx-gate-ic" aria-hidden="true">\u2139</span>` +
+    `<span>${esc(what)} needs a logged-in <strong>Perplexity</strong> session ` +
+    `(optional). <button type="button" class="linklike" data-go-setup>Set it up in ` +
+    `Settings</button> to enable it \u2014 or skip it; everything else works without it.</span>`);
+  box.querySelector<HTMLButtonElement>("[data-go-setup]")?.addEventListener("click", () => {
+    document.querySelector<HTMLElement>('.tab[data-view="setup"]')?.click();
+  });
+  return box;
+}
+
 export {
   state,
   $,
@@ -451,6 +468,7 @@ export {
   copyToClipboard,
   el,
   esc,
+  pplxRequiredNotice,
   relAge,
   fmtStamp,
   freshnessNote,

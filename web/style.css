@@ -2472,6 +2472,18 @@ a.tlink:hover { border-bottom-style: solid; }
 .hist-note .linklike { font-size: inherit; }
 .hist-empty .hist-note { margin-bottom: 14px; }
 
+/* Optional-Perplexity gate: a passive note that replaces a Deep Research run
+   control when there's no logged-in session. Informational (accent), not an
+   error -- the feature is opt-in. */
+.pplx-gate {
+  display: flex; gap: 8px; align-items: flex-start;
+  margin: 8px 0; padding: 10px 14px; border-radius: var(--radius-soft);
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  background: var(--panel-2); color: var(--muted); font-size: 13px; line-height: 1.5;
+}
+.pplx-gate-ic { color: var(--accent); font-weight: 700; }
+.pplx-gate .linklike { font-size: inherit; }
+
 .hist-chart-wrap {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-soft);
   padding: 10px 12px; margin-top: 6px;

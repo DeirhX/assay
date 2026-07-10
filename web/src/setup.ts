@@ -346,10 +346,10 @@ function setupSteps(st: SetupState): SetupStep[] {
     {
       id: "pplx",
       title: "Perplexity Deep Research login",
-      required: true,
+      required: false,
       done: pplxOk,
       partial: false,
-      state: pplxOk ? "Logged in" : "Not logged in",
+      state: pplxOk ? "Logged in" : "Optional — enables web-sourced Deep Research",
       render: () => renderPerplexity(st),
     },
     {
@@ -520,7 +520,7 @@ function renderIbkr(st: SetupState) {
     `<div class="setup-row"><strong>1. Flex credentials</strong>${badge(k.configured, k.configured ? "saved" : "not set")}</div>` +
     `<ul class="setup-list">` +
       `<li>IBKR Client Portal &rarr; Settings &rarr; Account Settings &rarr; <strong>Flex Web Service</strong>: enable it and copy the <strong>token</strong>.</li>` +
-      `<li>Create a <strong>Flex Query</strong> (positions, cash, open tax lots) and copy its <strong>Query ID</strong>.</li>` +
+      `<li>Create a <strong>Flex Query</strong> with the <strong>Cash Report</strong>, <strong>Net Asset Value (NAV) in Base</strong>, and <strong>Open Positions</strong> sections (set Open Positions to <em>Lot</em>-level detail to get tax lots), then copy its <strong>Query ID</strong>.</li>` +
     `</ul>` +
     (k.from_env ? `<p class="setup-small">A value is currently set via environment variable; that takes precedence over what you save here.</p>` : "") +
     `<label class="setup-field">Flex Query ID` +
@@ -652,7 +652,7 @@ function renderPerplexity(st: SetupState) {
   const wrap = el("div", "setup-body-inner");
   wrap.innerHTML =
     `<div class="setup-row"><strong>Browser session</strong>${badge(pplx.logged_in, pplx.logged_in ? "logged in" : "not logged in")}</div>` +
-    `<p class="hint">Deep Research uses the persistent browser profile below. The login window is visible so you can complete Google/Perplexity auth and CAPTCHA if those bastards show up.</p>` +
+    `<p class="hint"><strong>Optional.</strong> Skip this and everything else still works — you just won't get the web-sourced Deep Research crawls (the per-ticker Deep Research card and the pipeline's Step 2 stay gated behind a notice until you log in). Deep Research uses the persistent browser profile below; the login window is visible so you can complete Google/Perplexity auth and CAPTCHA if those bastards show up.</p>` +
     commandBlock([env.pplx_profile_dir || "~/.cursor/pplx-automation-profile"]) +
     `<div class="thesis-actions">` +
       `<button class="primary" id="setup-pplx-login" type="button">Set up Perplexity login</button>` +
