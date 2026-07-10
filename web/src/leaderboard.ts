@@ -1,7 +1,7 @@
 import { $, api, esc, fmtPct, fmtWeight, loadError, pctClass, relAge, sensitive, spinner } from "./core";
 import { loadCachedSegment, loadSegmentList } from "./segment";
 import { prefillDirection } from "./strategy";
-import { pushNav, setActiveView } from "./shell";
+import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
 
 // ---- leaderboard: rank every cached segment by "promise" ------------------
 // The "which segment is hottest, and am I in it?" screen. Renders entirely from
@@ -267,7 +267,12 @@ function wire(): void {
   body.addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
     const sortBtn = t.closest<HTMLElement>(".lb-sort");
-    if (sortBtn) { _sort = sortBtn.dataset.sort as SortMode; draw(); return; }
+    if (sortBtn) {
+      _sort = sortBtn.dataset.sort as SortMode;
+      replaceViewState({ sort: _sort === "promise" ? "" : _sort });
+      draw();
+      return;
+    }
     const plan = t.closest<HTMLElement>("[data-plan]");
     if (plan) { exploreInPlan(plan.dataset.plan || ""); return; }
     const seg = t.closest<HTMLElement>("[data-segment]");
@@ -276,6 +281,9 @@ function wire(): void {
 }
 
 export async function loadLeaderboard(): Promise<void> {
+  const requested = navFromUrl().sort;
+  _sort = (["promise", "momentum", "breadth", "gap"] as string[]).includes(requested)
+    ? requested as SortMode : "promise";
   const status = $("#lb-status");
   const body = $("#lb-body");
   wire();

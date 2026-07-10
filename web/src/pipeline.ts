@@ -15,7 +15,7 @@ import {
 import { pollDeepJob, setNeedsLoginHandler } from "./jobs";
 import { mdToHtml, openRunInAnalyses } from "./analyses";
 import { loadSegmentList, renderSegment } from "./segment";
-import { pushNav, setActiveView, setSegmentControls } from "./shell";
+import { navFromUrl, pushNav, replaceViewState, setActiveView, setSegmentControls } from "./shell";
 
 // ---- pipeline -------------------------------------------------------------
 // The pipeline is a strict sequence, not four free-floating panels. You may
@@ -52,7 +52,7 @@ function showPipeLock(n: number) {
   _pipeLockTimer = setTimeout(() => { note.hidden = true; }, 4500);
 }
 
-function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
+function setPipeStep(n: number, { silent = false, persist = true }: { silent?: boolean; persist?: boolean } = {}) {
   n = clampStep(n);
   const max = pipeUnlockedMax();
   if (n > max) {
@@ -63,6 +63,7 @@ function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
     if (note) note.hidden = true;
   }
   state.pipeStep = n;
+  if (persist) replaceViewState({ step: n === 1 ? "" : String(n) });
   document.querySelectorAll<HTMLElement>("#pipe-wizard .wizard-step").forEach((s) => {
     s.classList.toggle("active", Number(s.dataset.step) === n);
   });
@@ -82,7 +83,7 @@ function setPipeStep(n: number, { silent = false }: { silent?: boolean } = {}) {
 // Re-evaluate the locked frontier after data changes (segment picked, report
 // saved/loaded, pipeline reset) without forcing a navigation.
 function refreshPipeLocks() {
-  setPipeStep(state.pipeStep, { silent: true });
+  setPipeStep(state.pipeStep, { silent: true, persist: false });
 }
 
 document.querySelectorAll<HTMLElement>("#pipe-stepper .step-pill").forEach((p) => {
@@ -109,7 +110,7 @@ $$("#pipe-restart").addEventListener("click", () => {
   });
   updateStep2Actions();
   setRepMode("current");
-  pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
+  pushNav({ view: "pipeline", segment: pipeSegment(), run: "", step: "", repmode: "" }, { replace: true });
   setPipeStep(1);
 });
 
@@ -121,6 +122,10 @@ $$<HTMLSelectElement>("#pipe-segment-select").addEventListener("change", () => {
 
 
 async function loadPipeline() {
+  const nav = navFromUrl();
+  state.segMode = nav.segmode === "new" ? "new" : "existing";
+  state.repMode = nav.repmode === "import" ? "import" : "current";
+  state.pipeStep = /^[1-4]$/.test(nav.step) ? Number(nav.step) : 1;
   await loadSegmentList();
   // A launch from the Analyses pane stashes the segment to preselect here, since
   // the dropdown only exists after loadSegmentList has populated it.
@@ -130,18 +135,19 @@ async function loadPipeline() {
   }
   await refreshDeepRuns();
   refreshLoginStatus();
-  setSegMode(state.segMode);
-  setRepMode(state.repMode);
+  setSegMode(state.segMode, false);
+  setRepMode(state.repMode, false);
   updateStep2Actions();
-  setPipeStep(state.pipeStep);
+  setPipeStep(state.pipeStep, { persist: false });
   if (!$$<HTMLInputElement>("#pipe-date").value) $$<HTMLInputElement>("#pipe-date").value = new Date().toISOString().slice(0, 10);
 }
 
 // Step 1 shows exactly one path at a time: an approved-segment dropdown, or a
 // new-segment drafter that only reveals its editor + approve action after a draft.
-function setSegMode(mode: string) {
+function setSegMode(mode: string, persist = true) {
   mode = mode === "new" ? "new" : "existing";
   state.segMode = mode;
+  if (persist) replaceViewState({ segmode: mode === "existing" ? "" : mode });
   $$("#seg-pane-existing").hidden = mode !== "existing";
   $$("#seg-pane-new").hidden = mode !== "new";
   $$("#seg-mode-existing").classList.toggle("active", mode === "existing");
@@ -169,9 +175,10 @@ $$("#seg-mode-new").addEventListener("click", () => setSegMode("new"));
 
 // Step 3 is one-lane too: review the report this run produced (or paste one you
 // ran yourself), OR import an existing run. Never both at once.
-function setRepMode(mode: string) {
+function setRepMode(mode: string, persist = true) {
   mode = mode === "import" ? "import" : "current";
   state.repMode = mode;
+  if (persist) replaceViewState({ repmode: mode === "current" ? "" : mode });
   $$("#rep-pane-current").hidden = mode !== "current";
   $$("#rep-pane-import").hidden = mode !== "import";
   $$("#rep-mode-current").classList.toggle("active", mode === "current");

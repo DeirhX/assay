@@ -35,6 +35,34 @@ MODEL = {
 }
 
 
+class TradeSizingFx(unittest.TestCase):
+    def test_derives_missing_fx_from_base_and_local_market_values(self):
+        position = {
+            "symbol": "ARM", "currency": "USD", "mark_price": 300.24,
+            "market_value": 90072.0, "base_market_value": 1914030.0,
+        }
+        self.assertAlmostEqual(
+            trade_service._position_fx_to_base(position), 21.25, places=6,
+        )
+        with mock.patch.object(trade_service, "_load",
+                               return_value={"positions": [position]}):
+            prices = trade_service._trade_price_map()
+            fx = trade_service._fx_by_currency()
+        self.assertAlmostEqual(prices["ARM"]["fx_to_base"], 21.25, places=6)
+        self.assertAlmostEqual(fx["USD"], 21.25, places=6)
+
+    def test_explicit_fx_wins_and_one_is_last_resort(self):
+        self.assertEqual(
+            trade_service._position_fx_to_base({
+                "fx_rate_to_base": 22.0,
+                "market_value": 100.0,
+                "base_market_value": 2125.0,
+            }),
+            22.0,
+        )
+        self.assertEqual(trade_service._position_fx_to_base({}), 1.0)
+
+
 class OrderBandContext(unittest.TestCase):
     def test_merges_before_and_after_weights_per_target(self):
         holdings = _holdings()
@@ -183,6 +211,80 @@ class DropBlockedBuys(unittest.TestCase):
     def test_symbol_match_is_case_insensitive(self):
         orders = [{"conid": 9, "side": "BUY", "symbol": "xsd"}]
         self.assertEqual(trade_service._drop_blocked_buys(orders, {"XSD"}), [])
+
+
+class WorkingOrderReconciliation(unittest.TestCase):
+    PROPOSED = [{
+        "symbol": "AMD", "conid": 1, "side": "BUY", "quantity": 10,
+        "orderType": "MKT", "tif": "DAY", "cOID": "assay-token-AMD-10",
+    }]
+    BASKET = [{"symbol": "AMD", "delta_czk": 10000}]
+
+    def test_same_side_partial_fill_uses_only_remaining_and_reduces_new_order(self):
+        working = trade_service._normalized_working_orders([{
+            "orderId": "7", "ticker": "AMD", "side": "BUY", "totalSize": 8,
+            "filledQuantity": 5, "remainingQuantity": 3, "status": "Submitted",
+            "orderType": "LMT", "price": 95, "tif": "GTC",
+        }], {"AMD"})
+        residual, ctx, effective = trade_service._reconcile_working_orders(
+            self.PROPOSED, self.BASKET, working,
+        )
+        self.assertEqual(residual[0]["quantity"], 7)
+        self.assertEqual(residual[0]["cOID"], "assay-token-AMD-7")
+        self.assertEqual(ctx[0]["classification"], "same_side_partial")
+        self.assertEqual(ctx[0]["working_same_qty"], 3)
+        self.assertEqual(effective, [{"symbol": "AMD", "delta_czk": 10000.0}])
+
+    def test_same_side_full_coverage_omits_new_order(self):
+        working = trade_service._normalized_working_orders([{
+            "orderId": "7", "ticker": "AMD", "side": "BUY",
+            "remainingQuantity": 12, "status": "PreSubmitted",
+        }], {"AMD"})
+        residual, ctx, effective = trade_service._reconcile_working_orders(
+            self.PROPOSED, self.BASKET, working,
+        )
+        self.assertEqual(residual, [])
+        self.assertEqual(ctx[0]["classification"], "fully_covered")
+        self.assertFalse(ctx[0]["placeable"])
+        self.assertEqual(effective, [{"symbol": "AMD", "delta_czk": 12000.0}])
+
+    def test_opposite_side_suppresses_new_order_and_recommends_resolution(self):
+        working = trade_service._normalized_working_orders([{
+            "orderId": "8", "ticker": "AMD", "side": "SELL",
+            "remainingQuantity": 4, "status": "Submitted",
+        }], {"AMD"})
+        residual, ctx, effective = trade_service._reconcile_working_orders(
+            self.PROPOSED, self.BASKET, working,
+        )
+        self.assertEqual(residual, [])
+        self.assertEqual(ctx[0]["classification"], "opposite_side")
+        self.assertIn("Cancel or modify", ctx[0]["next_step"])
+        self.assertEqual(effective, [{"symbol": "AMD", "delta_czk": -4000.0}])
+
+    def test_terminal_and_zero_remaining_orders_do_not_reconcile(self):
+        working = trade_service._normalized_working_orders([
+            {"orderId": "1", "ticker": "AMD", "side": "BUY",
+             "remainingQuantity": 10, "status": "Filled"},
+            {"orderId": "2", "ticker": "AMD", "side": "BUY",
+             "remainingQuantity": 0, "status": "Submitted"},
+        ], {"AMD"})
+        self.assertEqual(working, [])
+
+    def test_missing_remaining_quantity_is_total_minus_filled(self):
+        working = trade_service._normalized_working_orders([{
+            "orderId": "3", "ticker": "AMD", "side": "BUY", "totalSize": 10,
+            "filledQuantity": 6, "status": "Submitted",
+        }], {"AMD"})
+        self.assertEqual(working[0]["remaining_qty"], 4)
+
+    def test_fingerprint_changes_with_remaining_quantity(self):
+        a = [{"order_id": "1", "symbol": "AMD", "side": "BUY",
+              "remaining_qty": 3, "status": "Submitted"}]
+        b = [{**a[0], "remaining_qty": 2}]
+        self.assertNotEqual(
+            trade_service._working_fingerprint(a),
+            trade_service._working_fingerprint(b),
+        )
 
 
 if __name__ == "__main__":

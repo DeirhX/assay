@@ -437,7 +437,14 @@ class TradeServiceGuards(unittest.TestCase):
     @staticmethod
     def _arm_preview(token: str, age_s: float = 0.0) -> None:
         """Register a preview time for a token, as _trade_preview would."""
-        trade_service._preview_issued[token] = time.time() - age_s
+        trade_service._preview_issued[token] = {
+            "issued_at": time.time() - age_s,
+            "orders": [{"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
+                        "orderType": "MKT", "tif": "DAY"}],
+            "working_fingerprint": trade_service._working_fingerprint([]),
+            "working_symbols": ["AMD"],
+            "working_available": True,
+        }
 
     def test_basket_token_is_stable_and_account_bound(self):
         basket = trade_service._normalize_basket([{"symbol": "amd", "delta_czk": 100}])
@@ -488,6 +495,7 @@ class TradeServiceGuards(unittest.TestCase):
                     mock.patch.object(ibt, "trading_enabled", return_value=True), \
                     mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
                     mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                    mock.patch.object(ibt, "live_orders", return_value=[]), \
                     mock.patch.object(ibt, "place_orders",
                                       return_value=[{"order_id": "1"}]) as place:
                 # The planner staged this basket; a successful place must retire it
@@ -519,6 +527,7 @@ class TradeServiceGuards(unittest.TestCase):
                     mock.patch.object(ibt, "trading_enabled", return_value=True), \
                     mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
                     mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                    mock.patch.object(ibt, "live_orders", return_value=[]), \
                     mock.patch.object(ibt, "place_orders",
                                       side_effect=ibt.CPAPIError("gateway down")):
                 trade_service.save_basket([{"symbol": "AMD", "delta_czk": 1000}])
@@ -553,6 +562,7 @@ class TradeServiceGuards(unittest.TestCase):
         with mock.patch.object(ibt, "trading_enabled", return_value=True), \
                 mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
                 mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                mock.patch.object(ibt, "live_orders", return_value=[]), \
                 mock.patch.object(ibt, "preview_orders", return_value={}), \
                 mock.patch.object(trade_service, "_load", return_value=stale):
             res = trade_service._trade_preview({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
@@ -560,6 +570,68 @@ class TradeServiceGuards(unittest.TestCase):
         self.assertEqual(res["preview_ttl_s"], trade_service.PREVIEW_TTL_S)
         self.assertIn(res["token"], trade_service._preview_issued)
         self.assertTrue(any("snapshot is" in w and "days old" in w for w in res["warnings"]))
+
+    def test_preview_surfaces_unavailable_working_orders_as_safety_blocker(self):
+        order = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
+                 "orderType": "MKT", "tif": "DAY"}
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
+                mock.patch.object(ibt, "live_orders",
+                                  side_effect=ibt.CPAPIError("orders bridge unavailable")), \
+                mock.patch.object(ibt, "preview_orders", return_value={}), \
+                mock.patch.object(trade_service, "_load", return_value={}):
+            res = trade_service._trade_preview({
+                "trades": [{"symbol": "AMD", "delta_czk": 1000}], "account": "DU1",
+            })
+        self.assertFalse(res["working_orders_available"])
+        self.assertIn("bridge unavailable", res["working_orders_error"])
+        self.assertFalse(trade_service._preview_issued[res["token"]]["working_available"])
+
+    def test_preview_sends_only_residual_to_ibkr_and_effective_book_to_local_whatif(self):
+        proposed = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 10,
+                    "orderType": "MKT", "tif": "DAY", "cOID": "assay-x-AMD-10"}
+        working = [{"orderId": "4", "ticker": "AMD", "side": "BUY",
+                    "remainingQuantity": 4, "status": "Submitted"}]
+        holdings = {"generated_at": "2026-07-10T00:00:00+00:00", "positions": []}
+        model = {"targets": {}}
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_prepare_trade_orders",
+                                  return_value=([proposed], [])), \
+                mock.patch.object(ibt, "live_orders", return_value=working), \
+                mock.patch.object(ibt, "preview_orders", return_value={}) as ibkr_preview, \
+                mock.patch.object(trade_service, "_load", return_value=holdings), \
+                mock.patch("target_staging.active_model", return_value=model), \
+                mock.patch.object(trade_service.whatif, "simulate",
+                                  return_value={"after": {"rows": []}}) as local:
+            res = trade_service._trade_preview({
+                "trades": [{"symbol": "AMD", "delta_czk": 10000}], "account": "DU1",
+            })
+        self.assertEqual(res["orders"][0]["quantity"], 6)
+        self.assertEqual(res["order_context"][0]["classification"], "same_side_partial")
+        ibkr_preview.assert_called_once()
+        self.assertEqual(ibkr_preview.call_args.args[1][0]["quantity"], 6)
+        local.assert_called_once_with(
+            holdings, model, [{"symbol": "AMD", "delta_czk": 10000.0}],
+        )
+
+    def test_place_rejects_when_relevant_working_orders_changed(self):
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("DU1", basket)
+        self._arm_preview(token)
+        changed = [{"orderId": "9", "ticker": "AMD", "side": "BUY",
+                    "remainingQuantity": 1, "status": "Submitted"}]
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(ibt, "live_orders", return_value=changed), \
+                mock.patch.object(ibt, "place_orders") as place:
+            with self.assertRaises(apierror.Conflict) as ctx:
+                trade_service._trade_place({
+                    "trades": basket, "account": "DU1", "confirm": True, "token": token,
+                })
+        self.assertIn("changed", str(ctx.exception))
+        place.assert_not_called()
 
 
 class SessionLifecycle(unittest.TestCase):
@@ -577,9 +649,10 @@ class SessionLifecycle(unittest.TestCase):
                 mock.patch.object(ibt, "reauthenticate", return_value={"authenticated": True}) as reauth, \
                 mock.patch.object(ibt, "auth_status",
                                   return_value={"authenticated": True, "connected": True}), \
-                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]):
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]) as accounts:
             res = trade_service._trade_reconnect()
         reauth.assert_called_once()
+        accounts.assert_called_once()  # display + default selection share one response
         self.assertTrue(res["authenticated"])
         self.assertIsNone(res["reconnect_error"])
         self.assertEqual(res["accounts"], [{"id": "DU1", "kind": "paper"}])

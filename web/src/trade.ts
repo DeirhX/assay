@@ -2,11 +2,13 @@ import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } fr
 import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
+import { navFromUrl, replaceViewState } from "./shell";
 import {
-  basketMoneyFacts, gatewayOrigin, placeResultHtml, riskPanelHtml, sideTag,
+  basketMoneyFacts, gatewayOrigin, placeResultHtml, previewStats, reconciliationTitle,
+  riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
-import type { OrderBand, PlaceResult, RiskDelta } from "./trade-model";
+import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -64,11 +66,17 @@ interface TradePreview {
   options_only?: string[];
   preview_ttl_s?: number;
   orders?: TradeOrder[];
+  proposed_orders?: TradeOrder[];
+  order_context?: OrderReconciliation[];
+  working_orders_available?: boolean;
+  working_orders_error?: string | null;
   // The raw IBKR margin/commission blob; shape varies per account/order type.
   ibkr_preview?: any;
   // The normalized basket the token binds to: [{symbol, delta_czk}]. Echoed to
   // /api/trade/place and used here for the last-mile money facts on the modal.
   trades?: Array<{ symbol: string; delta_czk: number }>;
+  effective_trades?: Array<{ symbol: string; delta_czk: number }>;
+  residual_trades?: Array<{ symbol: string; delta_czk: number }>;
   token?: string;
   // Structured snapshot staleness (mirrors the prose warning) so the UI can
   // turn it into a soft gate instead of parsing the warnings[] strings.
@@ -141,11 +149,6 @@ let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
 // enforces the same window on its side). Interval, not timeout, so the button
 // can show "1:42 left" instead of silently flipping to expired.
 let _previewTimer: ReturnType<typeof setInterval> | null = null;
-// Symbols of the working orders resting at IBKR, upper-cased, cached from the
-// last renderLiveOrders. The preview cross-checks the staged basket against
-// these so a new SELL NVDA on top of a live GTC trim ladder is flagged before
-// it double-fills — the preview path never fetches orders itself.
-let _workingSymbols = new Set<string>();
 // While any order is being pegged, poll the working-orders card so reprices
 // show without the user hitting Refresh. Cleared when no peg is active.
 let _pegPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -157,11 +160,108 @@ const PEG_POLL_MS = 5000;
 let _tickleTimer: ReturnType<typeof setInterval> | null = null;
 const TICKLE_MS = 60000;
 
+type TradeDeskTab = "basket" | "review" | "orders";
+let _tradeDeskTab: TradeDeskTab = "basket";
+
+function ensureTradeWorkspace(): HTMLElement | null {
+  const wrap = $("#trade-result");
+  if (!wrap) return null;
+  if (wrap.querySelector(".trade-workspace")) return wrap;
+  const tabs = el("div", "trade-workspace-tabs");
+  tabs.setAttribute("role", "tablist");
+  const labels: Record<TradeDeskTab, string> = {
+    basket: "Staged basket", review: "Order review", orders: "Working orders",
+  };
+  (Object.keys(labels) as TradeDeskTab[]).forEach((key) => {
+    const btn = el("button", "trade-workspace-tab", labels[key]);
+    btn.type = "button";
+    btn.dataset.tradeTab = key;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-controls", `trade-panel-${key}`);
+    if (key === "review") btn.disabled = true;
+    btn.onclick = () => {
+      if (key === "review" && !_preview) {
+        replaceViewState({ tab: "review" });
+        void doPreview(btn);
+        return;
+      }
+      setTradeDeskTab(key, true);
+    };
+    tabs.appendChild(btn);
+  });
+  const workspace = el("div", "trade-workspace");
+  workspace.appendChild(tabs);
+  (Object.keys(labels) as TradeDeskTab[]).forEach((key) => {
+    const panel = el("div", "trade-workspace-panel");
+    panel.id = `trade-panel-${key}`;
+    panel.dataset.tradePanel = key;
+    panel.setAttribute("role", "tabpanel");
+    workspace.appendChild(panel);
+  });
+  wrap.appendChild(workspace);
+  const requested = _tradeDeskTab;
+  setTradeDeskTab(requested === "review" ? "basket" : requested);
+  _tradeDeskTab = requested;
+  return wrap;
+}
+
+function tradePanel(tab: TradeDeskTab): HTMLElement | null {
+  const wrap = ensureTradeWorkspace();
+  return wrap?.querySelector<HTMLElement>(`[data-trade-panel="${tab}"]`) || null;
+}
+
+function setTradeDeskTab(tab: TradeDeskTab, persist = false): void {
+  const wrap = $("#trade-result");
+  if (!wrap) return;
+  const button = wrap.querySelector<HTMLButtonElement>(`[data-trade-tab="${tab}"]`);
+  if (!button || button.disabled) return;
+  _tradeDeskTab = tab;
+  if (persist) replaceViewState({ tab: tab === "basket" ? "" : tab });
+  wrap.querySelectorAll<HTMLButtonElement>("[data-trade-tab]").forEach((b) => {
+    const active = b.dataset.tradeTab === tab;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", String(active));
+    b.tabIndex = active ? 0 : -1;
+  });
+  wrap.querySelectorAll<HTMLElement>("[data-trade-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.tradePanel !== tab;
+  });
+}
+
+function enableTradeReview(label = "Order review"): void {
+  const wrap = ensureTradeWorkspace();
+  const btn = wrap?.querySelector<HTMLButtonElement>('[data-trade-tab="review"]');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = label;
+}
+
+function updateTradeReviewAvailability(): void {
+  const wrap = ensureTradeWorkspace();
+  const btn = wrap?.querySelector<HTMLButtonElement>('[data-trade-tab="review"]');
+  if (!btn || _preview) return;
+  const hasBasket = !!(state.stagedBasket || []).length;
+  const connected = !!(_status && _status.trading_enabled && _status.authenticated);
+  btn.disabled = !(hasBasket && connected);
+  btn.textContent = "Order review";
+  btn.title = btn.disabled
+    ? "Stage a basket and connect the IBKR gateway first"
+    : "Preview the staged basket through IBKR";
+}
+
 async function loadTrade() {
   const token = nextToken("trade");
   stopPreviewCountdown();  // a re-entry drops any previous preview's countdown
   const wrap = $("#trade-result");
   if (wrap) wrap.innerHTML = "";
+  const requestedTab = navFromUrl().tab;
+  const requestedSort = navFromUrl().sort.match(/^(age|lastdist)-(asc|desc)$/);
+  _ordersSort = requestedSort
+    ? { key: requestedSort[1] as OrdersSortKey, dir: requestedSort[2] as "asc" | "desc" }
+    : null;
+  _tradeDeskTab = requestedTab === "orders" || requestedTab === "review" ? requestedTab : "basket";
+  _preview = null;
+  ensureTradeWorkspace();
   const refresh = $("#trade-refresh");
   // "Refresh connection" actively re-establishes the brokerage session (not just
   // a status re-read) so a session that idled out can recover without a browser
@@ -183,6 +283,13 @@ async function loadTrade() {
   }
   renderBasket();
   await renderConnection(token);
+  if (_tradeDeskTab === "review" && !_preview) {
+    const review = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]');
+    if (review && !review.disabled) await doPreview(review);
+    else setTradeDeskTab("basket");
+  } else {
+    setTradeDeskTab(_tradeDeskTab);
+  }
 }
 
 // Placeholder banner while the (slow) gateway status call is in flight.
@@ -301,7 +408,7 @@ function basketBar(delta: number, maxAbs: number): string {
 }
 
 function renderBasket() {
-  const wrap = $("#trade-result");
+  const wrap = tradePanel("basket");
   if (!wrap) return;
   wrap.innerHTML = "";
   const basket = state.stagedBasket || [];
@@ -317,6 +424,7 @@ function renderBasket() {
       "No basket staged. Go to the Rebalance tab, edit the planned amounts, press " +
       "\u201cSimulate basket\u201d, then come back here to preview and place it."));
     wrap.appendChild(card);
+    updateTradeReviewAvailability();
     return;
   }
 
@@ -362,17 +470,12 @@ function renderBasket() {
   // a blank cell for a name with no cached series).
   void hydrateSparks(table);
 
-  const actions = el("div", "trade-actions");
-  const previewBtn = el("button", "primary", "Preview through IBKR");
-  previewBtn.type = "button";
-  previewBtn.disabled = !(_status && _status.trading_enabled && _status.authenticated);
-  if (previewBtn.disabled) previewBtn.title = "Enable trading and connect the gateway first";
-  previewBtn.onclick = () => doPreview(previewBtn);
-  actions.appendChild(previewBtn);
-  card.appendChild(actions);
+  card.appendChild(el("div", "hint trade-preview-hint",
+    "Open Order review above to reconcile this basket with IBKR working orders."));
   card.appendChild(el("div", "status", "")).id = "trade-preview-status";
 
   wrap.appendChild(card);
+  updateTradeReviewAvailability();
 }
 
 // The bare preview round-trip + render, factored out so the stale-snapshot
@@ -392,14 +495,16 @@ async function requestPreview(): Promise<void> {
 async function doPreview(btn: HTMLButtonElement) {
   const status = $("#trade-preview-status");
   if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> previewing\u2026`; }
-  if (btn) btn.disabled = true;
+  const isTab = btn.dataset.tradeTab === "review";
+  btn.disabled = true;
+  if (isTab) btn.textContent = "Previewing…";
   try {
     await requestPreview();
     if (status) status.textContent = "";
   } catch (e) {
     if (status) { status.classList.add("err"); status.textContent = "preview failed: " + (e as Error).message; }
   } finally {
-    if (btn) btn.disabled = false;
+    if (!_preview) updateTradeReviewAvailability();
   }
 }
 
@@ -408,59 +513,83 @@ function stopPreviewCountdown() {
 }
 
 function renderPreview() {
-  const wrap = $("#trade-result");
+  const wrap = tradePanel("review");
   if (!wrap || !_preview) return;
   const p = _preview;
 
-  // Drop any earlier preview/place card, keep the basket card.
-  wrap.querySelectorAll(".trade-preview-card").forEach((n) => n.remove());
+  // A preview is a workspace, not another card in the vertical page stream.
+  wrap.innerHTML = "";
+  enableTradeReview("Order review");
+  setTradeDeskTab("review");
 
   const card = el("div", "card trade-preview-card");
   const isLive = !p.is_paper;
   const liveBlocked = isLive && !p.live_allowed;
 
-  card.appendChild(el("div", "trade-card-title",
-    `Preview \u2014 ${isLive ? "LIVE" : "paper"} account ${sensitive(esc(p.account), "account id")}`));
+  const contexts: OrderReconciliation[] = p.order_context || (p.orders || []).map((o) => ({
+    symbol: String(o.symbol || ""), side: String(o.side || ""), classification: "none",
+    proposed_qty: Number(o.quantity) || 0, residual_qty: Number(o.quantity) || 0,
+    placeable: true, next_step: "Review and confirm this new order.",
+  }));
+  const residualOrders = p.orders || [];
+  const stats = previewStats(residualOrders, contexts);
+  const bandRows = Object.values(p.order_bands || {}).filter((b) => b.after_pct != null);
+  const bandsIn = bandRows.filter((b) => String(b.status_after || "").toUpperCase() === "IN").length;
+  const riskMove = p.local_whatif?.risk?.top5_pct?.delta;
 
-  (p.warnings || []).forEach((w) =>
-    card.appendChild(el("div", "trade-warn", esc(w))));
+  const head = el("div", "trade-preview-head");
+  head.innerHTML = `<div><div class="trade-card-title">Order preview</div>` +
+    `<div class="muted">${isLive ? "LIVE" : "paper"} account ${sensitive(esc(p.account), "account id")} · reconciled with IBKR now</div></div>` +
+    `<span class="trade-preview-posture ${liveBlocked ? "blocked" : "ready"}">${liveBlocked ? "placement locked" : "ready to review"}</span>`;
+  card.appendChild(head);
+  const summary = el("div", "trade-preview-summary");
+  const stat = (label: string, value: string, tone = "") =>
+    `<div class="trade-preview-stat ${tone}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  summary.innerHTML =
+    stat("Residual orders", String(residualOrders.length)) +
+    stat("Buy / sell", `${stats.buys} / ${stats.sells}`) +
+    stat("New value", `${fmtCZK(stats.residualValue)} CZK`) +
+    stat("Band outcome", bandRows.length ? `${bandsIn}/${bandRows.length} in band` : "n/a") +
+    stat("Working adjustments", String(stats.adjusted), stats.adjusted ? "warn" : "") +
+    stat("Top-5 risk", typeof riskMove === "number" ? `${riskMove >= 0 ? "+" : ""}${riskMove.toFixed(1)}pp` : "n/a",
+      typeof riskMove === "number" && riskMove > 0 ? "bad" : "");
+  card.appendChild(summary);
 
+  const actionPanel = el("div", "trade-preview-actions-panel");
+  if (p.working_orders_available === false) {
+    actionPanel.appendChild(el("div", "trade-action-item blocker",
+      `<strong>Safety check unavailable.</strong> Working orders could not be read. Reconnect the gateway and preview again; placement is disabled. ` +
+      `<span class="muted">${esc(p.working_orders_error || "")}</span>`));
+  }
+  contexts.filter((c) => c.classification === "opposite_side").forEach((c) =>
+    actionPanel.appendChild(el("div", "trade-action-item blocker",
+      `<strong>${tickerLink(c.symbol)}: opposite working order.</strong> ${esc(c.next_step || "")}`)));
+  contexts.filter((c) => c.classification === "fully_covered" || c.classification === "same_side_partial").forEach((c) =>
+    actionPanel.appendChild(el("div", "trade-action-item working",
+      `<strong>${tickerLink(c.symbol)}: ${esc(reconciliationTitle(c))}.</strong> ${esc(c.next_step || "")}`)));
+  const warnings = p.warnings || [];
+  if (warnings.length) {
+    const details = el("details", "trade-action-details");
+    details.open = warnings.length <= 2;
+    details.innerHTML = `<summary>${warnings.length} sizing warning${warnings.length === 1 ? "" : "s"}</summary>` +
+      warnings.map((w) => `<div class="trade-action-item warning">${esc(w)}</div>`).join("");
+    actionPanel.appendChild(details);
+  }
   const optionsOnly = p.options_only || [];
   if (optionsOnly.length) {
-    const note = el("div", "trade-optonly");
-    note.appendChild(el("div", "trade-optonly-hd",
-      `Options-only \u2014 ${optionsOnly.map((s) => sensitive(esc(s), "ticker")).join(", ")}`));
-    note.appendChild(el("div", "trade-optonly-body",
-      "US-domiciled / no PRIIPs KID: EU retail can't buy the shares directly, so these buys were dropped from the order set. Get the exposure via options \u2014 sell a put or buy a call and take assignment / exercise into shares. (Selling or closing an existing position is unaffected.)"));
-    card.appendChild(note);
+    actionPanel.appendChild(el("div", "trade-action-item info",
+      `<strong>Options-only: ${optionsOnly.map((s) => sensitive(esc(s), "ticker")).join(", ")}.</strong> ` +
+      `Direct share buys were omitted because no PRIIPs KID is available. Use a put/call route if the exposure is still intended.`));
   }
+  if (actionPanel.childNodes.length) card.appendChild(actionPanel);
 
-  if (!p.orders || !p.orders.length) {
-    const msg = optionsOnly.length
-      ? "Every buy in this basket is options-only (see above); nothing left to place directly."
-      : "No orders could be sized from this basket. See the warnings above (no contract / no price / rounds to zero shares).";
-    card.appendChild(el("div", "hint", msg));
-    wrap.appendChild(card);
-    return;
-  }
-
-  // IBKR margin/commission impact, when the gateway returned it.
-  const impact = Array.isArray(p.ibkr_preview) ? p.ibkr_preview[0] : p.ibkr_preview;
-  if (impact && (impact.amount || impact.initial || impact.maintenance || impact.commission)) {
-    const grid = el("div", "trade-impact");
-    const add = (label: string, val: any) => { if (val) grid.appendChild(el("div", "trade-impact-cell", `<span class="muted">${esc(label)}</span> ${esc(typeof val === "object" ? (val.amount || JSON.stringify(val)) : val)}`)); };
-    add("Order value", impact.amount && (impact.amount.amount || impact.amount));
-    add("Init margin", impact.initial && (impact.initial.after || impact.initial.amount));
-    add("Maint margin", impact.maintenance && (impact.maintenance.after || impact.maintenance.amount));
-    add("Est. commission", impact.commission || (impact.amount && impact.amount.commission));
-    if (grid.childNodes.length) card.appendChild(grid);
-  } else {
-    card.appendChild(el("div", "hint", "IBKR did not return a margin/commission preview (some accounts or order types omit it). Confirm carefully."));
-  }
+  // Portfolio risk is decision-relevant; broker mechanics come after it.
+  const riskHtml = riskPanelHtml(p.local_whatif?.risk);
+  if (riskHtml) card.insertAdjacentHTML("beforeend", riskHtml);
 
   // Per-order confirmation. Place stays disabled until every box is ticked, the
   // stale-snapshot gate is cleared, and the preview hasn't timed out.
-  const confirmState = p.orders.map(() => false);
+  const confirmState = residualOrders.map(() => false);
   // A stale holdings snapshot arms a soft gate: the sizing math trusts its marks,
   // so Place is locked until the user resyncs or explicitly accepts stale marks.
   let staleAck = !p.snapshot_stale;
@@ -474,6 +603,13 @@ function renderPreview() {
   const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.max(0, s % 60)).padStart(2, "0")}`;
 
   const paintPlaceBtn = () => {
+    if (p.working_orders_available === false || !residualOrders.length) {
+      placeBtn.disabled = true;
+      placeBtn.textContent = p.working_orders_available === false
+        ? "Working orders unavailable — preview again"
+        : "No residual orders to place";
+      return;
+    }
     if (liveBlocked) {
       placeBtn.disabled = true;
       placeBtn.textContent = "Live placement locked";
@@ -486,70 +622,94 @@ function renderPreview() {
       return;
     }
     placeBtn.disabled = !(confirmState.every(Boolean) && staleAck);
-    const n = (p.orders || []).length;
+    const n = residualOrders.length;
     const base = `Place ${n} order${n === 1 ? "" : "s"} on ${isLive ? "LIVE" : "paper"}`;
     placeBtn.textContent = secondsLeft != null ? `${base} — ${mmss(secondsLeft)} left` : base;
   };
 
-  const table = el("table", "trade-orders-table");
-  table.innerHTML = `<thead><tr><th>Confirm</th><th>Symbol</th><th>Side</th><th class="num">Qty</th><th>Type</th><th>conid</th></tr></thead>`;
-  const tbody = el("tbody");
-  // One shared axis for every band track, sized to the previewed names only.
+  const orderGrid = el("div", "trade-order-grid");
   const bands = p.order_bands || {};
   const bandScale = weightScaleMax(
-    p.orders.map((o) => bands[String(o.symbol || "").trim().toUpperCase()]).filter(Boolean) as OrderBand[]);
-  p.orders.forEach((o, i) => {
-    const tr = el("tr");
-    const cb = el("input");
-    cb.type = "checkbox";
-    cb.addEventListener("change", () => { confirmState[i] = cb.checked; paintPlaceBtn(); });
-    const td = el("td");
-    td.appendChild(cb);
-    tr.appendChild(td);
-    const sym = String(o.symbol || "").trim().toUpperCase();
-    const collides = !!sym && _workingSymbols.has(sym);
-    if (collides) tr.classList.add("trade-collide-row");
-    tr.insertAdjacentHTML("beforeend",
-      `<td>${o.symbol ? tickerLink(o.symbol) : esc(String(o.conid ?? ""))}</td>` +
-      `<td>${sideTag(o.side ?? "")}</td>` +
-      `<td class="num">${esc(o.quantity)}</td>` +
-      `<td>${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} / ${esc(o.tif)}</td>` +
-      `<td class="muted">${esc(o.conid)}</td>`);
-    tbody.appendChild(tr);
-    if (collides) {
-      // A working order already rests on this symbol — placing another risks a
-      // double fill. Loud, row-level, but not a hard block (the user may be
-      // deliberately reconciling); they still tick the box to own the decision.
-      const note = el("tr", "trade-collide-note");
-      const cell = el("td");
-      cell.colSpan = 6;
-      cell.innerHTML = `\u26a0 <strong>${tickerLink(sym)}</strong> already has a working order at IBKR \u2014 ` +
-        `placing this could double-trade. Cancel or reconcile the existing order (see Working orders below) before you tick this.`;
-      note.appendChild(cell);
-      tbody.appendChild(note);
+    contexts.map((c) => bands[c.symbol]).filter(Boolean) as OrderBand[]);
+  contexts.forEach((c) => {
+    const sym = String(c.symbol || "").trim().toUpperCase();
+    const orderIndex = residualOrders.findIndex((o) =>
+      String(o.symbol || "").trim().toUpperCase() === sym && o.side === c.side);
+    const o = orderIndex >= 0 ? residualOrders[orderIndex] : undefined;
+    const tone = c.classification === "opposite_side" ? "blocked"
+      : c.classification === "fully_covered" ? "covered"
+      : c.classification === "same_side_partial" ? "adjusted" : "plain";
+    const item = el("article", `trade-order-item ${tone}`);
+    const top = el("div", "trade-order-top");
+    const identity = el("div", "trade-order-identity");
+    identity.innerHTML = `<div>${tickerLink(sym)} ${sideTag(c.side)}</div>` +
+      `<span class="trade-recon-chip ${tone}">${esc(reconciliationTitle(c))}</span>`;
+    top.appendChild(identity);
+    if (o) {
+      const label = el("label", "trade-order-confirm");
+      const cb = el("input") as HTMLInputElement;
+      cb.type = "checkbox";
+      cb.dataset.orderIndex = String(orderIndex);
+      cb.addEventListener("change", () => { confirmState[orderIndex] = cb.checked; paintPlaceBtn(); });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(" Confirm residual"));
+      top.appendChild(label);
+    } else {
+      top.appendChild(el("span", "trade-order-noplace", "Informational · not submitted"));
     }
-    // Effect-on-band track: ties this order back to its reason — where it moves
-    // the name's weight relative to its target band. Out-of-band lands are a red
-    // flag the plain qty/price row can't show.
+    item.appendChild(top);
+
+    const flow = el("div", "trade-order-flow");
+    flow.innerHTML =
+      `<div><span>Proposed</span><strong>${esc(c.proposed_qty)} sh</strong></div>` +
+      `<b aria-hidden="true">\u2192</b>` +
+      `<div><span>Already working</span><strong>${esc(c.working_qty ?? c.working_same_qty ?? 0)} sh</strong></div>` +
+      `<b aria-hidden="true">\u2192</b>` +
+      `<div class="residual"><span>New residual</span><strong>${esc(c.residual_qty)} sh</strong></div>`;
+    item.appendChild(flow);
+
+    if ((c.working || []).length) {
+      const working = el("div", "trade-order-working");
+      working.innerHTML = (c.working || []).map((w) =>
+        `<span>${sideTag(w.side || "")} ${esc(w.remaining_qty)} remaining · ${esc(w.order_type || "order")}` +
+        `${w.price != null ? ` @ ${esc(w.price)}` : ""} · ${esc(w.status || "working")}</span>`).join("");
+      item.appendChild(working);
+    }
+    if (o) {
+      item.appendChild(el("div", "trade-order-mechanics",
+        `${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} · ${esc(o.tif)} · conid ${esc(o.conid)}`));
+    }
     const band = bands[sym];
     if (band && (band.before_pct != null || band.after_pct != null)) {
-      const brow = el("tr", "trade-band-row" +
-        (String(band.status_after || "").toUpperCase() === "IN" ? "" : " out"));
-      const cell = el("td");
-      cell.colSpan = 6;
-      cell.innerHTML = `<div class="trade-band-wrap">${weightBandTrackHtml(sym, band, bandScale)}` +
-        `<span class="trade-band-cap">${weightBandCaption(band)}</span></div>`;
-      brow.appendChild(cell);
-      tbody.appendChild(brow);
+      const bandTone = String(band.status_after || "").toUpperCase() === "IN" ? "" : " out";
+      item.insertAdjacentHTML("beforeend",
+        `<div class="trade-band-row${bandTone}"><div class="trade-band-wrap">${weightBandTrackHtml(sym, band, bandScale)}` +
+        `<span class="trade-band-cap">${weightBandCaption(band)}</span></div></div>`);
     }
+    item.appendChild(el("div", "trade-order-next", `<strong>Next:</strong> ${esc(c.next_step || "")}`));
+    orderGrid.appendChild(item);
   });
-  table.appendChild(tbody);
-  card.appendChild(table);
+  if (orderGrid.childNodes.length) card.appendChild(orderGrid);
+  else card.appendChild(el("div", "hint", optionsOnly.length
+    ? "Every proposed buy is options-only; no direct share order remains."
+    : "No order could be sized. Review the warnings above."));
 
-  // Basket-level risk delta: concentration/diversification before -> after, with
-  // threshold breaches surfaced as pre-flight warnings right where the decision is.
-  const riskHtml = riskPanelHtml(p.local_whatif?.risk);
-  if (riskHtml) card.insertAdjacentHTML("beforeend", riskHtml);
+  // IBKR values apply only to the newly submitted residual set, not resting orders.
+  const impact = Array.isArray(p.ibkr_preview) ? p.ibkr_preview[0] : p.ibkr_preview;
+  const impactWrap = el("div", "trade-impact-wrap");
+  impactWrap.appendChild(el("div", "trade-impact-title", "IBKR impact · new residual orders only"));
+  if (impact && (impact.amount || impact.initial || impact.maintenance || impact.commission)) {
+    const grid = el("div", "trade-impact");
+    const add = (label: string, val: any) => { if (val) grid.appendChild(el("div", "trade-impact-cell", `<span class="muted">${esc(label)}</span> ${esc(typeof val === "object" ? (val.amount || JSON.stringify(val)) : val)}`)); };
+    add("Order value", impact.amount && (impact.amount.amount || impact.amount));
+    add("Init margin", impact.initial && (impact.initial.after || impact.initial.amount));
+    add("Maint margin", impact.maintenance && (impact.maintenance.after || impact.maintenance.amount));
+    add("Est. commission", impact.commission || (impact.amount && impact.amount.commission));
+    impactWrap.appendChild(grid);
+  } else {
+    impactWrap.appendChild(el("div", "hint", "IBKR did not return margin or commission estimates."));
+  }
+  card.appendChild(impactWrap);
 
   if (liveBlocked) {
     card.appendChild(el("div", "trade-warn",
@@ -582,11 +742,14 @@ function renderPreview() {
   const actions = el("div", "trade-actions");
   // "Confirm all" nukes the per-order attention ritual in one click — fine on
   // paper, exactly wrong on a live account, so it's omitted there.
-  if (!isLive) {
+  if (!isLive && residualOrders.length) {
     const allBtn = el("button", "ghost", "Confirm all");
     allBtn.type = "button";
     allBtn.onclick = () => {
-      table.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb, i) => { cb.checked = true; confirmState[i] = true; });
+      orderGrid.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((cb) => {
+        cb.checked = true;
+        confirmState[Number(cb.dataset.orderIndex)] = true;
+      });
       paintPlaceBtn();
     };
     actions.appendChild(allBtn);
@@ -652,7 +815,7 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
   return new Promise((resolve) => {
     const isLive = !p.is_paper;
     const n = (p.orders || []).length;
-    const facts = basketMoneyFacts(p.trades);
+    const facts = basketMoneyFacts(p.residual_trades || p.trades);
 
     const overlay = el("div", "modal-overlay");
     const panel = el("div", "modal trade-confirm-modal");
@@ -794,9 +957,11 @@ function logPlacedToJournal(res: PlaceResult) {
 }
 
 function renderPlaceResult(res: PlaceResult) {
-  const wrap = $("#trade-result");
+  const wrap = tradePanel("review");
   if (!wrap) return;
-  wrap.querySelectorAll(".trade-result-card").forEach((n) => n.remove());
+  wrap.innerHTML = "";
+  enableTradeReview("Order result");
+  setTradeDeskTab("review");
   const card = el("div", "card trade-result-card");
   card.appendChild(el("div", "trade-card-title", "Placement result"));
   const body = el("div");
@@ -817,11 +982,11 @@ function renderPlaceResult(res: PlaceResult) {
 // Flex snapshot that feeds Holdings. We surface them on every trade-desk load
 // and offer a manual refresh, so a GTC ladder placed earlier (e.g. a graceful
 // exit) is visible without having to place something new first. Rendered as its
-// own card in #trade-result; degrades to a note when the gateway is offline.
+// own tab in the Trade workspace; degrades to a note when the gateway is offline.
 async function renderLiveOrders(token?: number) {
-  const wrap = $("#trade-result");
+  const wrap = tradePanel("orders");
   if (!wrap) return;
-  wrap.querySelectorAll(".trade-live-card").forEach((n) => n.remove());
+  wrap.innerHTML = "";
   const s = _status;
   if (!s || !s.trading_enabled) return;  // the banner already explains why
 
@@ -871,11 +1036,6 @@ async function renderLiveOrders(token?: number) {
   // refetch (which would re-hit IBKR on every click).
   _ordersData = { orders: all, pegs };
   const working = all.filter((o) => !orderTerminal(o));
-  // Refresh the cross-check set for the preview: only names with a live working
-  // order count as a collision risk.
-  _workingSymbols = new Set(
-    working.map((o) => String(o.ticker || o.symbol || "").trim().toUpperCase()).filter(Boolean),
-  );
   // The market snapshot is a separate ~2s call; paint the list now and stream
   // the quotes into the market cells once they arrive, rather than blocking the
   // whole list on them (which used to double this endpoint's latency).
@@ -942,9 +1102,10 @@ type OrdersSortKey = "lastdist" | "age";
 let _ordersSort: { key: OrdersSortKey; dir: "asc" | "desc" } | null = null;
 
 function cycleOrdersSort(key: OrdersSortKey): void {
-  if (!_ordersSort || _ordersSort.key !== key) { _ordersSort = { key, dir: "desc" }; return; }
-  if (_ordersSort.dir === "desc") { _ordersSort.dir = "asc"; return; }
-  _ordersSort = null;  // third click restores IBKR's own order
+  if (!_ordersSort || _ordersSort.key !== key) _ordersSort = { key, dir: "desc" };
+  else if (_ordersSort.dir === "desc") _ordersSort.dir = "asc";
+  else _ordersSort = null;  // third click restores IBKR's own order
+  replaceViewState({ sort: _ordersSort ? `${_ordersSort.key}-${_ordersSort.dir}` : "" });
 }
 
 // |limit - last| / last: how far the resting price has drifted from the last

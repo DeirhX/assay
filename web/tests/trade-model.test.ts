@@ -6,7 +6,7 @@
 // and the placement-result HTML blurs the account id and closes the loop.
 import { describe, expect, it } from "vitest";
 import {
-  basketMoneyFacts, gatewayOrigin, placeResultHtml, riskPanelHtml,
+  basketMoneyFacts, gatewayOrigin, placeResultHtml, previewStats, reconciliationTitle, riskPanelHtml,
   weightBandCaption, weightScaleMax,
 } from "../src/trade-model";
 
@@ -31,6 +31,32 @@ describe("basketMoneyFacts", () => {
     const f = basketMoneyFacts([{ symbol: "X", delta_czk: NaN as unknown as number }]);
     expect(f.buy).toBe(0);
     expect(f.sell).toBe(0);
+  });
+});
+
+describe("working-order preview model", () => {
+  it("summarizes only residual orders and counts reconciled symbols", () => {
+    const stats = previewStats(
+      [{ side: "BUY" }, { side: "SELL" }],
+      [
+        { symbol: "A", side: "BUY", classification: "same_side_partial",
+          proposed_qty: 10, residual_qty: 4, residual_delta_czk: 4000 },
+        { symbol: "B", side: "SELL", classification: "opposite_side",
+          proposed_qty: 3, residual_qty: 0, residual_delta_czk: 0 },
+      ],
+    );
+    expect(stats).toEqual({ buys: 1, sells: 1, adjusted: 2, residualValue: 4000 });
+  });
+
+  it("uses concise decision labels for non-placeable rows", () => {
+    expect(reconciliationTitle({
+      symbol: "A", side: "BUY", classification: "fully_covered",
+      proposed_qty: 3, residual_qty: 0,
+    })).toBe("Already covered");
+    expect(reconciliationTitle({
+      symbol: "A", side: "BUY", classification: "opposite_side",
+      proposed_qty: 3, residual_qty: 0,
+    })).toBe("Resolve opposite order");
   });
 });
 
@@ -97,8 +123,8 @@ describe("gatewayOrigin", () => {
   });
 
   it("falls back to the default gateway when unset", () => {
-    expect(gatewayOrigin(null)).toBe("https://localhost:5000");
-    expect(gatewayOrigin(undefined)).toBe("https://localhost:5000");
+    expect(gatewayOrigin(null)).toBe("https://127.0.0.1:5000");
+    expect(gatewayOrigin(undefined)).toBe("https://127.0.0.1:5000");
   });
 });
 

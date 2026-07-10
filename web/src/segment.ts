@@ -4,7 +4,7 @@ import type { SegmentSummary } from "./api-types";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { startPipeline } from "./analyses";
 import { analyzeFromAnywhere } from "./ticker-nav";
-import { cleanSlug, isSegmentSlug, pushNav, setActiveView } from "./shell";
+import { cleanSlug, isSegmentSlug, navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
 
 // ---- segment --------------------------------------------------------------
 async function loadSegmentList() {
@@ -80,6 +80,11 @@ async function runSegmentPull(name: string, { push = true }: { push?: boolean } 
 }
 
 async function loadCachedSegment(name: string, { push = false }: { push?: boolean } = {}) {
+  const requestedSort = navFromUrl().sort.match(/^([^:]+):(asc|desc)$/);
+  const validSortKeys = new Set(SEG_COLS.map(([key]) => key).filter((key) => key !== "__spark"));
+  state.segSort = requestedSort && validSortKeys.has(requestedSort[1])
+    ? { key: requestedSort[1], dir: requestedSort[2] === "asc" ? 1 : -1 }
+    : { key: "research_score", dir: -1 };
   const status = $$("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
@@ -184,6 +189,10 @@ function renderSegment(rec: SegmentRec) {
         const s = state.segSort;
         s.dir = s.key === key ? -s.dir : (num ? -1 : 1);
         s.key = key;
+        replaceViewState({
+          sort: key === "research_score" && s.dir < 0
+            ? "" : `${key}:${s.dir < 0 ? "desc" : "asc"}`,
+        });
         if (state.lastSegment) renderSegment(state.lastSegment);
       });
       if (state.segSort.key === key) th.innerHTML += state.segSort.dir < 0 ? " ↓" : " ↑";

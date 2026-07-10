@@ -16,6 +16,53 @@ export { r1 };
 export const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
 
+export interface WorkingOrderPreview {
+  order_id?: string;
+  side?: string;
+  remaining_qty?: number;
+  filled_qty?: number;
+  status?: string;
+  order_type?: string;
+  price?: number | null;
+  tif?: string;
+}
+
+export interface OrderReconciliation {
+  symbol: string;
+  side: string;
+  classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side";
+  proposed_qty: number;
+  working_same_qty?: number;
+  working_qty?: number;
+  residual_qty: number;
+  proposed_delta_czk?: number;
+  working_delta_czk?: number;
+  residual_delta_czk?: number;
+  effective_delta_czk?: number;
+  working?: WorkingOrderPreview[];
+  next_step?: string;
+  placeable?: boolean;
+}
+
+export function reconciliationTitle(c: OrderReconciliation): string {
+  if (c.classification === "opposite_side") return "Resolve opposite order";
+  if (c.classification === "fully_covered") return "Already covered";
+  if (c.classification === "same_side_partial") return "Reduced by working order";
+  return "New order";
+}
+
+export function previewStats(
+  orders: Array<{ side?: string }> = [],
+  contexts: OrderReconciliation[] = [],
+): { buys: number; sells: number; adjusted: number; residualValue: number } {
+  return {
+    buys: orders.filter((o) => o.side === "BUY").length,
+    sells: orders.filter((o) => o.side === "SELL").length,
+    adjusted: contexts.filter((c) => c.classification !== "none").length,
+    residualValue: contexts.reduce((sum, c) => sum + Math.abs(Number(c.residual_delta_czk) || 0), 0),
+  };
+}
+
 // Per-order band context (from the server's what-if recompute): where this
 // name's weight sits before/after the trade, relative to its target band.
 export interface OrderBand {
@@ -136,7 +183,7 @@ export function riskPanelHtml(risk: RiskDelta | undefined): string {
 }
 
 export function gatewayOrigin(base: string | null | undefined) {
-  return String(base || "").replace(/\/v1\/api\/?$/, "") || "https://localhost:5000";
+  return String(base || "").replace(/\/v1\/api\/?$/, "") || "https://127.0.0.1:5000";
 }
 
 // Buy/sell gross and the single largest trade, from the token-bound basket —
