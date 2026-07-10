@@ -56,6 +56,11 @@ py -3 tools/research_pull.py --segment semiconductors   # CLI: whole peer set
   than pretending it verified anything.
 - `providers/fmp.py` -- optional third opinion; enabled only if `FMP_API_KEY` is
   set (read from `secrets.env`, gitignored).
+- `providers/alpaca.py` -- options-chain fallback for the exit overlay; enabled
+  only if `ALPACA_API_KEY_ID` + `ALPACA_API_SECRET_KEY` are set (env or
+  `secrets.env`). Defaults to the free `indicative` feed (~15-min delayed); set
+  `ALPACA_OPTIONS_FEED=opra` for the realtime OPRA entitlement. Gives bid/ask/last
+  + daily volume + near-the-money greeks; open interest is not on the data feed.
 - `portfolio.py` -- shared holdings/target-model helpers: computed position
   weights, target context, holdings payloads, and decision labels used by the
   server, puller, and generated-site checks.

@@ -301,7 +301,7 @@ describe("trade desk working orders", () => {
     expect(card!.textContent).toContain("Working orders (1)");
     expect(card!.textContent).toContain("NVDA");
     expect(card!.textContent).toContain("GTC");
-    expect(apiMock).toHaveBeenCalledWith("/api/trade/orders");
+    expect(apiMock).toHaveBeenCalledWith("/api/trade/orders", "GET", null, { timeoutMs: 20_000 });
   });
 
   it("shows an empty state when connected with no working orders", async () => {
@@ -413,7 +413,8 @@ describe("trade desk working orders", () => {
       { "265598": { bid: 100, ask: 100.5, last: 100.2 } },
     );
     // The quotes call is keyed by the working order's conid.
-    expect(apiMock).toHaveBeenCalledWith(expect.stringContaining("/api/trade/quotes?conids=265598"));
+    expect(apiMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/trade/quotes?conids=265598"), "GET", null, { timeoutMs: 15_000 });
     const mkt = document.querySelector(".trade-live-row")!;
     expect(mkt.textContent).not.toContain("quote\u2026");  // placeholder resolved
     expect(mkt.textContent).toContain("100.00");            // bid, hydrated in

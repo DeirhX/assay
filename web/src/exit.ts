@@ -11,6 +11,7 @@ import {
 } from "./core";
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
+  ExitCoveredCallRung,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
 import { pushNav, setActiveView } from "./shell";
@@ -349,6 +350,8 @@ function optionsBlock(p: ExitPosition): HTMLElement | null {
   box.appendChild(el("h3", "exit-h3", "Options overlay <span class=\"muted exit-h3-sub\">analysis only — no option orders are placed</span>"));
 
   if (o.covered_call) box.appendChild(coveredCallCard(o.covered_call, o.currency));
+  if (o.covered_call_ladder && o.covered_call_ladder.length > 1)
+    box.appendChild(coveredCallLadder(o.covered_call_ladder, o.currency));
   if (o.protective_put) box.appendChild(protectivePutCard(o.protective_put, o.currency));
 
   if (o.notes.length) {
@@ -365,9 +368,47 @@ function optionsBlock(p: ExitPosition): HTMLElement | null {
 function sourceBadge(source: string, estimate: boolean): string {
   if (!estimate && source === "ibkr")
     return `<span class="exit-live" title="Live from your IBKR option chain">IBKR</span>`;
+  if (!estimate && source === "alpaca")
+    return `<span class="exit-live" title="From Alpaca's option feed (indicative/delayed unless OPRA-entitled)">Alpaca</span>`;
   if (!estimate && source === "yahoo")
     return `<span class="exit-live" title="From a live-ish Yahoo option chain (delayed/mid)">Yahoo</span>`;
   return `<span class="exit-est" title="Black-Scholes estimate — no live chain quote for this name">estimate</span>`;
+}
+
+function liqBadge(liq: ExitCoveredCallRung["liquidity"]): string {
+  if (liq === "ok")
+    return `<span class="exit-liq exit-liq-ok" title="Tight spread and some open interest/volume">liquid</span>`;
+  if (liq === "thin")
+    return `<span class="exit-liq exit-liq-thin" title="Wide spread or little open interest/volume — mind the fill">thin</span>`;
+  return `<span class="exit-liq exit-liq-unknown" title="No live quote — premium is modeled">n/a</span>`;
+}
+
+// StrikePeek-style ladder: annualized yield vs. assignment odds across OTM
+// strikes for the recommended expiry, so the user can pick their own cushion.
+function coveredCallLadder(rungs: ExitCoveredCallRung[], ccy: string | null): HTMLElement {
+  const cur = ccy || "";
+  const wrap = el("div", "exit-opt-card exit-ladder-wrap");
+  const rows = rungs.map((r) => {
+    const oi = r.open_interest == null ? "–" : String(r.open_interest);
+    const vol = r.volume == null ? "–" : String(r.volume);
+    const star = r.recommended ? ` <span class="exit-ladder-star" title="Matches the recommended strike above">★</span>` : "";
+    const mny = `${r.moneyness_pct >= 0 ? "+" : ""}${r.moneyness_pct.toFixed(1)}%`;
+    return `<tr class="${r.recommended ? "exit-ladder-rec" : ""}">` +
+      `<td>${fmtNum(r.strike)} ${esc(cur)} <span class="muted">(${mny})</span>${star}</td>` +
+      `<td>${pct(r.premium_yield_annual_pct, 1)}</td>` +
+      `<td>${fmtNum(r.premium)} · ${czk(r.premium_czk)}</td>` +
+      `<td>${r.assignment_prob_pct == null ? "n/a" : "~" + pct(r.assignment_prob_pct, 0)}</td>` +
+      `<td class="muted">${oi} / ${vol}</td>` +
+      `<td>${liqBadge(r.liquidity)} ${sourceBadge(r.source, r.estimate)}</td>` +
+    `</tr>`;
+  }).join("");
+  wrap.innerHTML =
+    `<div class="exit-opt-title">Strike ladder <span class="muted exit-h3-sub">yield vs. assignment across OTM strikes` +
+      (rungs[0]?.expiry ? ` · ${esc(rungs[0].expiry)} expiry` : "") + `</span></div>` +
+    `<table class="exit-ladder"><thead><tr>` +
+      `<th>Strike</th><th>Yield p.a.</th><th>Premium</th><th>Assign</th><th>OI / Vol</th><th>Quality</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
+  return wrap;
 }
 
 function coveredCallCard(c: ExitCoveredCall, ccy: string | null): HTMLElement {

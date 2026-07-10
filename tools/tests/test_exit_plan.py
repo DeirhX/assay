@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import exit_plan  # noqa: E402
 import ibkr_trade  # noqa: E402
 import tax_lots  # noqa: E402
+from providers import alpaca  # noqa: E402
 from providers import yahoo  # noqa: E402
 
 AS_OF = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
@@ -195,10 +196,15 @@ def test_build_exit_plan_skips_in_band_names():
 
 # --------------------------------------------------------------------------- #
 # Option-chain source selection: IBKR first when the gateway is authenticated,
-# Yahoo fallback otherwise / on an IBKR miss.
+# then Alpaca when keyed, then Yahoo -- each miss/error falls to the next.
 # --------------------------------------------------------------------------- #
 def _ibkr_chain():
     return {"source": "ibkr", "symbol": "NVDA",
+            "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
+
+
+def _alpaca_chain():
+    return {"source": "alpaca", "symbol": "NVDA",
             "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
 
 
@@ -232,14 +238,16 @@ def test_session_ready_memoizes_within_ttl():
 
 
 def test_ibkr_chain_budget_times_out_and_yahoo_wins():
-    # A chain fetch that outlives the budget must NOT block: the caller drops to
-    # Yahoo while the slow IBKR thread is abandoned (this is the exact hang fix).
+    # A chain fetch that outlives the budget must NOT block: the caller drops
+    # through the slow, abandoned IBKR thread to a fallback (the exact hang fix).
+    # Alpaca is pinned off so the deterministic fallback here is Yahoo.
     def slow_chain(_sym):
         time.sleep(5.0)
         return _ibkr_chain()
 
     with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
             mock.patch.object(ibkr_trade, "option_chain", side_effect=slow_chain), \
+            mock.patch.object(alpaca, "enabled", return_value=False), \
             mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn, \
             mock.patch.object(exit_plan, "IBKR_CHAIN_BUDGET_SECONDS", 0.05):
         t0 = time.perf_counter()
@@ -263,6 +271,7 @@ def test_fetch_prefers_ibkr_when_authenticated():
 def test_fetch_falls_back_to_yahoo_when_not_authenticated():
     with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
             mock.patch.object(ibkr_trade, "option_chain") as ibkr_fn, \
+            mock.patch.object(alpaca, "enabled", return_value=False), \
             mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
         out = exit_plan._fetch_option_chain("NVDA")
     assert out["source"] == "yahoo"
@@ -273,6 +282,7 @@ def test_fetch_falls_back_to_yahoo_when_not_authenticated():
 def test_fetch_falls_back_when_ibkr_resolves_nothing():
     with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
             mock.patch.object(ibkr_trade, "option_chain", return_value=None), \
+            mock.patch.object(alpaca, "enabled", return_value=False), \
             mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
         out = exit_plan._fetch_option_chain("NVDA")
     assert out["source"] == "yahoo"
@@ -282,10 +292,44 @@ def test_fetch_falls_back_when_ibkr_resolves_nothing():
 def test_fetch_falls_back_when_ibkr_raises():
     with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
             mock.patch.object(ibkr_trade, "option_chain", side_effect=RuntimeError("gateway boom")), \
+            mock.patch.object(alpaca, "enabled", return_value=False), \
             mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
         out = exit_plan._fetch_option_chain("NVDA")
     assert out["source"] == "yahoo"
     yahoo_fn.assert_called_once()
+
+
+def test_fetch_uses_alpaca_between_ibkr_and_yahoo():
+    # IBKR down, Alpaca keyed -> Alpaca wins and Yahoo is never consulted.
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
+            mock.patch.object(alpaca, "enabled", return_value=True), \
+            mock.patch.object(alpaca, "option_chain", return_value=_alpaca_chain()) as alpaca_fn, \
+            mock.patch.object(yahoo, "option_chain") as yahoo_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "alpaca"
+    alpaca_fn.assert_called_once()
+    yahoo_fn.assert_not_called()
+
+
+def test_fetch_falls_through_alpaca_to_yahoo_on_miss():
+    # Alpaca enabled but resolves nothing -> Yahoo still gets its turn.
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
+            mock.patch.object(alpaca, "enabled", return_value=True), \
+            mock.patch.object(alpaca, "option_chain", return_value=None), \
+            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "yahoo"
+    yahoo_fn.assert_called_once()
+
+
+def test_fetch_ibkr_beats_alpaca_when_authenticated():
+    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
+            mock.patch.object(ibkr_trade, "option_chain", return_value=_ibkr_chain()), \
+            mock.patch.object(alpaca, "enabled", return_value=True), \
+            mock.patch.object(alpaca, "option_chain") as alpaca_fn:
+        out = exit_plan._fetch_option_chain("NVDA")
+    assert out["source"] == "ibkr"
+    alpaca_fn.assert_not_called()
 
 
 def test_cached_option_chain_persists_and_serves(tmp_path, monkeypatch):

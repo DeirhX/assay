@@ -41,6 +41,11 @@ from config import TOOLS_SECRETS, config_value as _config_value
 SECRETS_FILE = TOOLS_SECRETS
 USER_AGENT = "assay-ibkr-trade/1.0 (+stdlib)"
 DEFAULT_GATEWAY_BASE = "https://localhost:5000/v1/api"
+# Short timeout for the frequent session-status pings (auth_status / tickle). A
+# healthy gateway answers these in well under a second; capping them keeps a
+# wedged gateway from stalling the Trade view's polling and the exit overlay's
+# readiness probe for the full 30s default.
+_SESSION_TIMEOUT = 8.0
 
 
 # --------------------------------------------------------------------------- #
@@ -137,9 +142,13 @@ def _http(method: str, url: str, body: dict | None = None, *, timeout: float = 3
         raise CPAPIError(f"gateway returned non-JSON: {exc}") from exc
 
 
-def _request(method: str, endpoint: str, body: dict | None = None) -> Any:
-    """Call a CPAPI endpoint by its path (e.g. ``/iserver/auth/status``)."""
-    return _http(method, f"{gateway_base()}{endpoint}", body)
+def _request(method: str, endpoint: str, body: dict | None = None,
+             *, timeout: float = 30.0) -> Any:
+    """Call a CPAPI endpoint by its path (e.g. ``/iserver/auth/status``). The
+    session-status pings pass a short ``timeout`` so a wedged gateway (socket
+    accepted, no answer) degrades to 'not connected' in seconds instead of
+    stalling the Trade view's polling and the exit overlay's readiness probe."""
+    return _http(method, f"{gateway_base()}{endpoint}", body, timeout=timeout)
 
 
 # --------------------------------------------------------------------------- #
@@ -150,10 +159,10 @@ def auth_status() -> dict:
     competing (another session stole the slot). Empty dict if the call fails so
     callers can render 'not connected' instead of erroring."""
     try:
-        res = _request("POST", "/iserver/auth/status")
+        res = _request("POST", "/iserver/auth/status", timeout=_SESSION_TIMEOUT)
     except CPAPIError:
         try:
-            res = _request("GET", "/iserver/auth/status")
+            res = _request("GET", "/iserver/auth/status", timeout=_SESSION_TIMEOUT)
         except CPAPIError:
             return {}
     return res if isinstance(res, dict) else {}
@@ -169,7 +178,7 @@ def reauthenticate() -> dict:
 def tickle() -> dict:
     """Keepalive ping. The brokerage session times out after a few idle minutes;
     a periodic tickle keeps it warm during an active rebalancing sitting."""
-    return _request("GET", "/tickle")
+    return _request("GET", "/tickle", timeout=_SESSION_TIMEOUT)
 
 
 def logout() -> dict:
@@ -259,7 +268,12 @@ def market_snapshot(conids: list[int], fields: tuple[str, ...] = ("31", "84", "8
 #   * quote (bid/ask/last/IV) -- needs an options market-data (OPRA) subscription;
 #     absent without one, so the caller (options_overlay) estimates the premium.
 _MD_LAST, _MD_BID, _MD_ASK, _MD_IV = "31", "84", "86", "7283"
-_OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV)
+# Option-specific fields: 87 = day volume (may arrive as "1.2K"), 7308 = delta,
+# 7638 = option open interest. Delta/OI need an options market-data (OPRA)
+# subscription; absent without one, in which case the overlay models them.
+_MD_VOLUME, _MD_DELTA, _MD_OI = "87", "7308", "7638"
+_OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV, _MD_VOLUME, _MD_DELTA, _MD_OI)
+_COUNT_MULT = {"K": 1e3, "M": 1e6, "B": 1e9}
 _MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
@@ -285,6 +299,21 @@ def _snap_num(value: Any) -> float | None:
         return None
     num = float(match.group())
     return num / 100.0 if pct else num
+
+
+def _snap_count(value: Any) -> int | None:
+    """A whole count (volume / open interest) out of a CPAPI field, honoring a
+    ``K``/``M``/``B`` multiplier suffix (``"1.2K"`` -> ``1200``). None on empty."""
+    num = _snap_num(value)
+    if num is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip().upper()
+        for suf, mult in _COUNT_MULT.items():
+            if s.endswith(suf):
+                num *= mult
+                break
+    return int(round(num))
 
 
 def _fmt_strike(strike: float) -> str:
@@ -427,6 +456,9 @@ def _quote_contract(info: dict[str, Any], quotes: dict[int, dict]) -> dict[str, 
         "ask": _snap_num(row.get(_MD_ASK)),
         "last": _snap_num(row.get(_MD_LAST)),
         "implied_vol": _snap_num(row.get(_MD_IV)),
+        "delta": _snap_num(row.get(_MD_DELTA)),
+        "volume": _snap_count(row.get(_MD_VOLUME)),
+        "open_interest": _snap_count(row.get(_MD_OI)),
     }
 
 

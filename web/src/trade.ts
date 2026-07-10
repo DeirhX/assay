@@ -195,7 +195,7 @@ async function renderConnection(token?: number) {
   const status = $("#trade-status");
   if (status) status.textContent = "";
   try {
-    _status = await api<TradeStatus>("/api/trade/status");
+    _status = await api<TradeStatus>("/api/trade/status", "GET", null, { timeoutMs: 15_000 });
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
     if (banner) banner.innerHTML = `<div class="trade-bnr bad">Could not read trade status: ${esc((e as Error).message)}</div>`;
@@ -212,7 +212,7 @@ async function reconnect(): Promise<void> {
   const banner = $("#trade-banner");
   if (banner) banner.innerHTML = `<div class="trade-bnr warn"><span class="spinner"></span> reconnecting to the IBKR gateway\u2026</div>`;
   try {
-    _status = await api<TradeStatus>("/api/trade/reconnect", "POST");
+    _status = await api<TradeStatus>("/api/trade/reconnect", "POST", null, { timeoutMs: 30_000 });
   } catch (_e) {
     if (isStaleToken("trade", token)) return;
     return void renderConnection(token);
@@ -274,7 +274,7 @@ async function keepaliveTick() {
   if (!view || !view.classList.contains("active")) return stopKeepalive();
   let t: TradeTickle;
   try {
-    t = await api<TradeTickle>("/api/trade/tickle");
+    t = await api<TradeTickle>("/api/trade/tickle", "GET", null, { timeoutMs: 10_000 });
   } catch (_e) {
     return;  // transient; the next tick tries again
   }
@@ -376,10 +376,13 @@ function renderBasket() {
 // resync can re-issue it (fresh marks -> the staleness gate clears itself)
 // without owning a Preview button.
 async function requestPreview(): Promise<void> {
+  // A wedged gateway can accept the socket yet never answer; without a bound this
+  // spins forever with no feedback. Preview is read-only (whatif), so aborting it
+  // is safe -- unlike Place, which we never time out client-side.
   _preview = await api<TradePreview>("/api/trade/preview", "POST", {
     trades: state.stagedBasket || [],
     account: _status && _status.default_account,
-  });
+  }, { timeoutMs: 60_000 });
   renderPreview();
 }
 
@@ -828,7 +831,7 @@ async function renderLiveOrders(token?: number) {
   body.innerHTML = `<span class="spinner"></span> loading working orders\u2026`;
   let data: { orders?: LiveOrder[]; pegs?: PegState[] } | undefined;
   try {
-    data = await api<{ orders?: LiveOrder[]; pegs?: PegState[] }>("/api/trade/orders");
+    data = await api<{ orders?: LiveOrder[]; pegs?: PegState[] }>("/api/trade/orders", "GET", null, { timeoutMs: 20_000 });
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
     stopPegPoll();
@@ -897,7 +900,7 @@ async function hydrateQuotes(token: number | undefined, body: HTMLElement, title
   }
   let map: Record<string, Quote> = {};
   try {
-    const res = await api<{ quotes?: Record<string, Quote> }>(`/api/trade/quotes?conids=${conids.join(",")}`);
+    const res = await api<{ quotes?: Record<string, Quote> }>(`/api/trade/quotes?conids=${conids.join(",")}`, "GET", null, { timeoutMs: 15_000 });
     map = (res && res.quotes) || {};
   } catch {
     // leave the placeholder; a later poll/refresh may succeed

@@ -3534,6 +3534,19 @@ table.exit-sched th { color: var(--muted); font-weight: 600; font-size: 11px; te
 .exit-opt-notes { margin: 6px 0 0; padding-left: 18px; }
 .exit-opt-notes li { margin: 3px 0; }
 
+/* Covered-call strike ladder (yield vs. assignment). */
+.exit-ladder { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.exit-ladder th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); }
+.exit-ladder td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border); }
+.exit-ladder tbody tr:last-child td { border-bottom: none; }
+.exit-ladder-rec { background: color-mix(in srgb, var(--accent, #4a9) 12%, transparent); }
+.exit-ladder-rec td:first-child { font-weight: 700; }
+.exit-ladder-star { color: var(--accent, #4a9); }
+.exit-liq { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; }
+.exit-liq-ok { color: var(--ok, #47a76a); }
+.exit-liq-thin { color: var(--warn, #d9a441); }
+.exit-liq-unknown { color: var(--muted); }
+
 /* ---- Rebalance flow bar (current book -> plan changes -> orders -> target) ---- */
 /* One persistent strip above every rebalance-group view: numbered stages with
    live counts, connected by hairlines, the active stage lit. Turns five sibling

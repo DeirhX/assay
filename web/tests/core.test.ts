@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { decisionPill } from "../src/core";
+import { api, decisionPill } from "../src/core";
 
 describe("decisionPill", () => {
   it("spaces every underscore, not just the first", () => {
@@ -27,5 +27,43 @@ describe("decisionPill", () => {
 
   it("escapes the token", () => {
     expect(decisionPill("<b>x")).toContain("&lt;b&gt;x");
+  });
+});
+
+describe("api timeout", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("aborts a stalled request and reports a timeout instead of hanging", async () => {
+    // A fetch that never answers until the AbortController fires -- exactly a
+    // wedged IBKR gateway that accepts the socket but never responds.
+    vi.stubGlobal("fetch", (_url: string, opt: RequestInit) => new Promise((_resolve, reject) => {
+      opt.signal?.addEventListener("abort", () => {
+        const e = new Error("aborted");
+        (e as { name: string }).name = "AbortError";
+        reject(e);
+      });
+    }));
+    await expect(api("/api/trade/preview", "POST", {}, { timeoutMs: 20 }))
+      .rejects.toThrow(/timed out after/);
+  });
+
+  it("resolves normally and clears the timer when the server answers", async () => {
+    vi.stubGlobal("fetch", () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: 1 }),
+    } as Response));
+    await expect(api("/api/trade/status", "GET", null, { timeoutMs: 5_000 }))
+      .resolves.toEqual({ ok: 1 });
+  });
+
+  it("does not abort when no timeout is set", async () => {
+    let sawSignal = false;
+    vi.stubGlobal("fetch", (_url: string, opt: RequestInit) => {
+      sawSignal = opt.signal != null;
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as Response);
+    });
+    await api("/api/holdings");
+    expect(sawSignal).toBe(false);
   });
 });
