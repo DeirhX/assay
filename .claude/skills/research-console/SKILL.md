@@ -21,7 +21,7 @@ py -3 tools/serve.py            # http://127.0.0.1:6060  (localhost only)
 For frontend development use `npm run dev` (Vite on `http://localhost:5173`
 with HMR, proxying `/api` to the Python server) alongside `serve.py`. To start
 both halves together, use the `run-web` skill
-(`pwsh .cursor/skills/run-web/scripts/run-web.ps1`).
+(`pwsh .claude/skills/run-web/scripts/run-web.ps1`).
 
 CLI equivalents (no server):
 

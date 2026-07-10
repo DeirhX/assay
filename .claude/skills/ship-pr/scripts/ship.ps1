@@ -12,9 +12,9 @@
   merge happens after the pipeline passes), then waits and fast-forwards main.
 
 .EXAMPLE
-  pwsh .cursor/skills/ship-pr/scripts/ship.ps1 -Title "Fix flaky pull" -BodyFile PR_BODY.txt
+  pwsh .claude/skills/ship-pr/scripts/ship.ps1 -Title "Fix flaky pull" -BodyFile PR_BODY.txt
 .EXAMPLE
-  pwsh .cursor/skills/ship-pr/scripts/ship.ps1 -Title "Tidy console" -NoWait
+  pwsh .claude/skills/ship-pr/scripts/ship.ps1 -Title "Tidy console" -NoWait
 #>
 [CmdletBinding()]
 param(

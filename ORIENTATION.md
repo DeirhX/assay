@@ -34,7 +34,7 @@ private data repo).
 | MCP server (read-only) | `tools/mcp_server.py` | Stdio MCP adapter exposing an allowlisted read-only slice of the API to LLM clients (`claude mcp add assay -- py -3 tools/mcp_server.py`). No trade routes, by construction. |
 | Research segments | `data/segments/*.json` (submodule) | Website-managed research lenses. Overlap is allowed; these are not allocation sleeves. |
 | Deep Research artifacts | `data/research/deep/` (submodule) | Perplexity reports, source sidecars, review-gate output, and target proposals. |
-| Project skills | `.cursor/skills/` | Cursor instructions for future chats. |
+| Project skills | `.claude/skills/` | Shared agent instructions for future chats. |
 
 ## Standard Workflow
 
@@ -186,7 +186,7 @@ Critical trap:
 - Use the composer Search dropdown's `Deep research` option. After submission,
   the URL must be `/search/...`.
 
-See `.cursor/skills/perplexity-deep-research/SKILL.md` for the exact browser
+See `.claude/skills/perplexity-deep-research/SKILL.md` for the exact browser
 automation workflow.
 
 Pipeline discipline:
@@ -201,7 +201,7 @@ Pipeline discipline:
 ## What To Commit
 
 **Code repo (this one, public):** code under `tools/`, the `web/` client, root
-assets (`site.css`), `.cursor/skills/`, and docs. The derived holdings summary
+assets (`site.css`), `.claude/skills/`, and docs. The derived holdings summary
 (`data/current-holdings-summary.md`) is built locally from private data and
 lives in the private `data/` submodule, not here.
 
