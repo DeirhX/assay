@@ -511,7 +511,7 @@ class PreviewPlaceSafety(unittest.TestCase):
         }
         fresh_order = {**preview_order, "price": 2.6}
         trade_service._preview_issued[token] = {
-            "issued_at": time.time(), "orders": [preview_order],
+            "issued_at": time.time(), "orders": [preview_order], "basket": [leg],
             "working_fingerprint": trade_service._working_fingerprint([]),
             "working_symbols": ["AMD"], "working_conids": [999],
             "working_available": True,
