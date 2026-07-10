@@ -57,6 +57,36 @@ function planFixture(over: Partial<ExitPlanResponse> = {}): ExitPlanResponse {
   };
 }
 
+function coveredCallPlan(): ExitPlanResponse {
+  const plan = planFixture();
+  plan.positions[0].options = {
+    symbol: "EXITME",
+    underlying: 101.25,
+    currency: "USD",
+    source: "ibkr",
+    available_covered_shares: 700,
+    available_contracts: 7,
+    route_contracts: 7,
+    route_assigned_shares: 700,
+    working_orders_checked: false,
+    covered_call: null,
+    covered_call_ladder: [{
+      strike: 110, expiry: "2026-08-21", dte: 51,
+      premium: 2.5, premium_czk: 4000, effective_exit: 112.5,
+      moneyness_pct: 8.6, premium_yield_annual_pct: 16.2,
+      assignment_prob_pct: 24, open_interest: 500, volume: 40,
+      spread_pct: 8, liquidity: "ok", source: "ibkr", estimate: false,
+      recommended: true, executable: true, conid: 12345,
+      bid: 2.4, ask: 2.6, last: 2.5, quote_at: new Date().toISOString(),
+      multiplier: 100,
+      underlying_quote: { conid: 500, last: 101.25, bid: 101.2, ask: 101.3, quote_at: new Date().toISOString() },
+    }],
+    protective_put: null,
+    notes: [],
+  };
+  return plan;
+}
+
 beforeEach(() => {
   apiMock.mockReset();
   state.stagedBasket = [];
@@ -196,5 +226,61 @@ describe("Exit planner rendering", () => {
     );
     // The returned basket is mirrored into shared state for the Trade desk.
     expect(state.stagedBasket).toEqual([{ symbol: "EXITME", delta_czk: -200_000 }]);
+  });
+
+  it("offers a live-quoted covered-call route and stages only its rung index", async () => {
+    const plan = coveredCallPlan();
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith("/api/exit-plan?")) return Promise.resolve(plan);
+      if (path === "/api/exit-plan/stage-call") {
+        return Promise.resolve({
+          staged: true, symbol: "EXITME", rung: plan.positions[0].options!.covered_call_ladder[0],
+          leg: {}, basket: [],
+        });
+      }
+      return Promise.resolve({ orders: [] });
+    });
+    await loadExit();
+    await flush();
+
+    const route = [...document.querySelectorAll<HTMLButtonElement>(".exit-route-tab")]
+      .find((b) => b.textContent === "Covered-call exit")!;
+    expect(route).toBeTruthy();
+    route.click();
+    const panel = document.querySelector<HTMLElement>('[data-exit-route="covered_call"]')!;
+    expect(panel.textContent).toContain("Underlying last 101.25 USD");
+    expect(panel.textContent).toContain("Bid (sell)");
+    expect(panel.textContent).toContain("Ask (buy)");
+    expect(panel.textContent).toContain("7 contracts available before working orders");
+    expect(panel.textContent).toContain("700 shares available to cover calls");
+    expect(panel.textContent).toContain("Assignment is not guaranteed");
+
+    panel.querySelector<HTMLButtonElement>(".exit-stage-call")!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/exit-plan/stage-call", "POST",
+      expect.objectContaining({ symbol: "EXITME", rung_index: 0, cfg: expect.any(Object) }),
+      { timeoutMs: 60_000 },
+    );
+  });
+
+  it("shows unavailable option quotes honestly and disables staging", async () => {
+    const plan = coveredCallPlan();
+    const rung = plan.positions[0].options!.covered_call_ladder[0];
+    Object.assign(rung, {
+      executable: false, bid: null, ask: null, last: null,
+      source: "black_scholes", estimate: true, conid: undefined,
+    });
+    apiMock.mockResolvedValue(plan);
+    await loadExit();
+    await flush();
+    [...document.querySelectorAll<HTMLButtonElement>(".exit-route-tab")]
+      .find((b) => b.textContent === "Covered-call exit")!.click();
+
+    const panel = document.querySelector<HTMLElement>('[data-exit-route="covered_call"]')!;
+    expect(panel.textContent).toContain("No executable covered call");
+    expect(panel.textContent).toContain("Unavailable");
+    expect(panel.textContent).toContain("—");
+    expect(panel.querySelector<HTMLButtonElement>(".exit-stage-call")!.disabled).toBe(true);
   });
 });

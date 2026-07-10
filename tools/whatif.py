@@ -28,9 +28,16 @@ EPS = 0.01
 
 
 def _coerce_trades(trades: Any) -> dict[str, float]:
-    """Validate the staged basket and net duplicate symbols. Thin wrapper over the
-    canonical ``portfolio.normalize_basket`` so the simulator and the live trade
-    desk agree, byte-for-byte, on symbol normalization and netting."""
+    """Validate the staged basket and net duplicate symbols. Typed baskets may
+    include covered-call legs; those are excluded from weight/tax simulation."""
+    if isinstance(trades, list) and any(
+            isinstance(t, dict) and t.get("leg_type") for t in trades):
+        stock_rows = [
+            {"symbol": t["symbol"], "delta_czk": t["delta_czk"]}
+            for t in trades
+            if isinstance(t, dict) and t.get("leg_type") == "stock"
+        ]
+        return portfolio.normalize_basket(stock_rows)
     return portfolio.normalize_basket(trades)
 
 

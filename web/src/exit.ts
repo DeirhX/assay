@@ -7,11 +7,11 @@
 // — "Stage tranche" just drops one slice into the shared trade-desk basket, which
 // you still preview and place by hand on the Trade view.
 import {
-  $, api, el, esc, fmtCZK, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
+  $, api, el, esc, fmtCZK, loadError, relAge, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
 } from "./core";
 import type {
-  ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
-  ExitCoveredCallRung,
+  ExitPlanResponse, ExitPosition, ExitStageResponse, ExitStageCallResponse,
+  ExitProtectivePut, ExitCoveredCallRung,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
 import { pushNav, setActiveView } from "./shell";
@@ -168,6 +168,21 @@ function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
 // One-sentence "what to do", built from the same numbers the details expand on.
 function recommendationBlock(p: ExitPosition): HTMLElement {
   const box = el("div", "exit-reco");
+  const hasCallRoute = !!p.options?.covered_call_ladder?.length;
+  if (hasCallRoute) {
+    const tabs = el("div", "exit-route-tabs");
+    tabs.setAttribute("role", "tablist");
+    const shares = el("button", "exit-route-tab active", "Sell shares") as HTMLButtonElement;
+    const calls = el("button", "exit-route-tab", "Covered-call exit") as HTMLButtonElement;
+    shares.type = calls.type = "button";
+    shares.setAttribute("aria-selected", "true");
+    calls.setAttribute("aria-selected", "false");
+    tabs.append(shares, calls);
+    box.appendChild(tabs);
+  }
+
+  const sharePanel = el("div", "exit-route-panel active");
+  sharePanel.dataset.exitRoute = "shares";
   const t = p.tax;
   const s = p.schedule;
   const keepPct = p.current_czk > 0 ? (100 * (p.current_czk - p.exit_czk)) / p.current_czk : 0;
@@ -195,10 +210,10 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
 
   const lead = el("div", "exit-reco-lead");
   lead.innerHTML = `<span class="exit-reco-verb">${verb}:</span> sell <strong>${fmtNum(p.exit_shares)} sh</strong> (${czk(p.exit_czk)}).${keepStr}`;
-  box.appendChild(lead);
+  sharePanel.appendChild(lead);
   const sub = el("div", "exit-reco-sub");
   sub.innerHTML = `${timing}${taxStr}.${liq}${thin}`;
-  box.appendChild(sub);
+  sharePanel.appendChild(sub);
 
   if (s.tranches.length) {
     const first = s.tranches[0];
@@ -209,7 +224,24 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
       : `Stage the sell (${fmtNum(first.shares)} sh) →`;
     cta.title = "Drop this slice into the Trade desk basket (you still preview & place it)";
     cta.addEventListener("click", () => stageTranche(p.symbol, first.index, cta));
-    box.appendChild(cta);
+    sharePanel.appendChild(cta);
+  }
+  box.appendChild(sharePanel);
+
+  if (hasCallRoute) {
+    const callPanel = coveredCallRoute(p);
+    box.appendChild(callPanel);
+    const [shares, calls] = Array.from(box.querySelectorAll<HTMLButtonElement>(".exit-route-tab"));
+    const select = (route: "shares" | "covered_call") => {
+      shares.classList.toggle("active", route === "shares");
+      calls.classList.toggle("active", route === "covered_call");
+      shares.setAttribute("aria-selected", String(route === "shares"));
+      calls.setAttribute("aria-selected", String(route === "covered_call"));
+      sharePanel.classList.toggle("active", route === "shares");
+      callPanel.classList.toggle("active", route === "covered_call");
+    };
+    shares.addEventListener("click", () => select("shares"));
+    calls.addEventListener("click", () => select("covered_call"));
   }
   return box;
 }
@@ -342,16 +374,32 @@ async function stageTranche(symbol: string, index: number, btn: HTMLButtonElemen
   }
 }
 
+async function stageCoveredCall(symbol: string, rungIndex: number, btn: HTMLButtonElement): Promise<void> {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Validating…";
+  try {
+    const resp = await api<ExitStageCallResponse>("/api/exit-plan/stage-call", "POST", {
+      symbol, rung_index: rungIndex, cfg,
+    }, { timeoutMs: 60_000 });
+    state.stagedBasket = resp.basket.slice();
+    btn.textContent = "Staged ✓";
+    pushNav({ view: "trade", tab: "review" });
+    setActiveView("trade");
+  } catch (e) {
+    btn.textContent = "Unavailable";
+    btn.title = (e as Error)?.message || "covered-call staging failed";
+    setTimeout(() => { btn.disabled = false; btn.textContent = prev; }, 1800);
+  }
+}
+
 // ---- options overlay -------------------------------------------------------
 function optionsBlock(p: ExitPosition): HTMLElement | null {
   const o = p.options;
-  if (!o || (!o.covered_call && !o.protective_put)) return null;
+  if (!o || !o.protective_put) return null;
   const box = el("div", "exit-section exit-options");
-  box.appendChild(el("h3", "exit-h3", "Options overlay <span class=\"muted exit-h3-sub\">analysis only — no option orders are placed</span>"));
+  box.appendChild(el("h3", "exit-h3", "Other options <span class=\"muted exit-h3-sub\">analysis only in this release</span>"));
 
-  if (o.covered_call) box.appendChild(coveredCallCard(o.covered_call, o.currency));
-  if (o.covered_call_ladder && o.covered_call_ladder.length > 1)
-    box.appendChild(coveredCallLadder(o.covered_call_ladder, o.currency));
   if (o.protective_put) box.appendChild(protectivePutCard(o.protective_put, o.currency));
 
   if (o.notes.length) {
@@ -360,6 +408,44 @@ function optionsBlock(p: ExitPosition): HTMLElement | null {
     box.appendChild(notes);
   }
   return box;
+}
+
+function quotePrice(v: number | null | undefined): string {
+  return v == null || !Number.isFinite(Number(v)) ? "—" : fmtNum(v);
+}
+
+function coveredCallRoute(p: ExitPosition): HTMLElement {
+  const panel = el("div", "exit-route-panel exit-call-route");
+  panel.dataset.exitRoute = "covered_call";
+  const o = p.options!;
+  const rungs = o.covered_call_ladder || [];
+  const lead = rungs.find((r) => r.recommended) || rungs[0];
+  const uq = lead?.underlying_quote || o.covered_call?.underlying_quote;
+  const hasIbkrUnderlying = uq?.last != null;
+  const last = hasIbkrUnderlying ? uq!.last : o.underlying;
+  const age = uq?.quote_at ? (relAge(uq.quote_at) || "age unavailable") : "age unavailable";
+  const source = hasIbkrUnderlying ? `IBKR · ${age}` : "plan mark · execution quote unavailable";
+  panel.innerHTML =
+    `<div class="exit-call-route-head">` +
+      `<div><span class="muted">Underlying last</span> <strong>${quotePrice(last)} ${esc(o.currency || "")}</strong></div>` +
+      `<span class="${hasIbkrUnderlying ? "exit-live" : "exit-est"}">${esc(source)}</span>` +
+    `</div>` +
+    `<div class="exit-reco-sub"><strong>Conditional exit:</strong> sell calls against held shares. ` +
+      `Premium is collected now, but shares leave only if assigned. Assignment is not guaranteed, so the position may not be reduced.</div>` +
+    `<div class="exit-call-capacity">` +
+      `<span><strong>${fmtNum(o.route_contracts)}</strong> contracts planned for this reduction</span>` +
+      `<span><strong>${fmtNum(o.route_assigned_shares)}</strong> maximum assigned shares</span>` +
+      `<span><strong>${fmtNum(o.available_contracts)}</strong> contracts available before working orders</span>` +
+      `<span><strong>${fmtNum(o.available_covered_shares)}</strong> shares available to cover calls</span>` +
+      `<span class="muted">held calls included; working orders are rechecked before staging</span>` +
+    `</div>`;
+  const executable = rungs.filter((r) => r.executable).length;
+  if (!executable) {
+    panel.appendChild(el("div", "trade-action-item blocker",
+      "No executable covered call. Connect IBKR and require an exact contract with a live, uncrossed bid and ask; modeled, Yahoo, and Alpaca rungs stay analysis-only."));
+  }
+  panel.appendChild(coveredCallLadder(rungs, o.currency, p.symbol, true, o.route_contracts));
+  return panel;
 }
 
 // Name the provenance of the premium: a live IBKR/Yahoo chain quote, or a
@@ -385,52 +471,52 @@ function liqBadge(liq: ExitCoveredCallRung["liquidity"]): string {
 
 // StrikePeek-style ladder: annualized yield vs. assignment odds across OTM
 // strikes for the recommended expiry, so the user can pick their own cushion.
-function coveredCallLadder(rungs: ExitCoveredCallRung[], ccy: string | null): HTMLElement {
+function coveredCallLadder(
+  rungs: ExitCoveredCallRung[],
+  ccy: string | null,
+  symbol = "",
+  stageable = false,
+  routeContracts?: number,
+): HTMLElement {
   const cur = ccy || "";
   const wrap = el("div", "exit-opt-card exit-ladder-wrap");
-  const rows = rungs.map((r) => {
+  const rows = rungs.map((r, index) => {
     const oi = r.open_interest == null ? "–" : String(r.open_interest);
     const vol = r.volume == null ? "–" : String(r.volume);
     const star = r.recommended ? ` <span class="exit-ladder-star" title="Matches the recommended strike above">★</span>` : "";
     const mny = `${r.moneyness_pct >= 0 ? "+" : ""}${r.moneyness_pct.toFixed(1)}%`;
+    const canStage = stageable && !!r.executable && Number(routeContracts) > 0;
+    const action = stageable
+      ? `<button class="ghost exit-stage-call" type="button" data-rung-index="${index}" ${canStage ? "" : "disabled"} ` +
+        `title="${canStage ? "Stage this exact IBKR contract in the Trade desk" : "Requires an exact IBKR contract with live bid and ask"}">` +
+        `${canStage ? `Stage ${fmtNum(routeContracts)}× →` : "Unavailable"}</button>`
+      : "";
     return `<tr class="${r.recommended ? "exit-ladder-rec" : ""}">` +
       `<td>${fmtNum(r.strike)} ${esc(cur)} <span class="muted">(${mny})</span>${star}</td>` +
-      `<td>${pct(r.premium_yield_annual_pct, 1)}</td>` +
+      `<td class="num">${quotePrice(r.bid)}</td>` +
+      `<td class="num">${quotePrice(r.ask)}</td>` +
+      `<td class="num">${quotePrice(r.last)}</td>` +
       `<td>${fmtNum(r.premium)} · ${czk(r.premium_czk)}</td>` +
       `<td>${r.assignment_prob_pct == null ? "n/a" : "~" + pct(r.assignment_prob_pct, 0)}</td>` +
       `<td class="muted">${oi} / ${vol}</td>` +
       `<td>${liqBadge(r.liquidity)} ${sourceBadge(r.source, r.estimate)}</td>` +
+      (stageable ? `<td>${action}</td>` : "") +
     `</tr>`;
   }).join("");
   wrap.innerHTML =
-    `<div class="exit-opt-title">Strike ladder <span class="muted exit-h3-sub">yield vs. assignment across OTM strikes` +
+    `<div class="exit-opt-title">Covered-call strike ladder <span class="muted exit-h3-sub">live execution prices across OTM strikes` +
       (rungs[0]?.expiry ? ` · ${esc(rungs[0].expiry)} expiry` : "") + `</span></div>` +
     `<table class="exit-ladder"><thead><tr>` +
-      `<th>Strike</th><th>Yield p.a.</th><th>Premium</th><th>Assign</th><th>OI / Vol</th><th>Quality</th>` +
+      `<th>Strike</th><th class="num">Bid (sell)</th><th class="num">Ask (buy)</th><th class="num">Last</th>` +
+      `<th>Limit credit</th><th>Assign</th><th>OI / Vol</th><th>Quality</th>${stageable ? "<th></th>" : ""}` +
     `</tr></thead><tbody>${rows}</tbody></table>`;
+  if (stageable && symbol) {
+    wrap.querySelectorAll<HTMLButtonElement>("[data-rung-index]").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        void stageCoveredCall(symbol, Number(btn.dataset.rungIndex), btn));
+    });
+  }
   return wrap;
-}
-
-function coveredCallCard(c: ExitCoveredCall, ccy: string | null): HTMLElement {
-  const card = el("div", "exit-opt-card");
-  const cur = ccy || "";
-  const assign = c.assignment_prob_pct == null ? "" : ` if assigned (~${pct(c.assignment_prob_pct, 0)})`;
-  const lead =
-    `Sell <strong>${c.contracts}× ${fmtNum(c.strike)} ${esc(cur)}</strong> calls (${c.dte}d) to ` +
-    `collect ~<strong>${fmtNum(c.premium)} ${esc(cur)}</strong>/sh;${assign} you exit at ` +
-    `<strong>${fmtNum(c.effective_exit)} ${esc(cur)}</strong>.`;
-  card.innerHTML =
-    `<div class="exit-opt-title">Covered call ${sourceBadge(c.source, c.estimate)}` +
-    (c.assignment_guard ? ` <span class="warn" title="Pushed far-OTM / post-exemption to protect a deferred lot">tax-guarded</span>` : "") +
-    `</div>` +
-    `<div class="exit-opt-lead">${lead}</div>` +
-    `<div class="exit-opt-grid">` +
-      kv("Premium", `${fmtNum(c.premium)} ${esc(cur)} · ${czk(c.premium_czk)}`) +
-      kv("Effective exit", `${fmtNum(c.effective_exit)} ${esc(cur)}`) +
-      kv("Ann. yield", c.premium_yield_annual_pct == null ? "n/a" : pct(c.premium_yield_annual_pct, 1)) +
-      kv("Assignment", c.assignment_prob_pct == null ? "n/a" : `~${pct(c.assignment_prob_pct, 0)}`) +
-    `</div>`;
-  return card;
 }
 
 function protectivePutCard(pp: ExitProtectivePut, ccy: string | null): HTMLElement {

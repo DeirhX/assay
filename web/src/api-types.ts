@@ -554,6 +554,14 @@ export interface ExitCoveredCall {
   vol_used: number;
   estimate: boolean;
   assignment_guard?: boolean;
+  executable?: boolean;
+  conid?: number;
+  bid?: number | null;
+  ask?: number | null;
+  last?: number | null;
+  quote_at?: string | null;
+  multiplier?: number;
+  underlying_quote?: ExecutionQuote;
 }
 
 export interface ExitCoveredCallRung {
@@ -573,7 +581,60 @@ export interface ExitCoveredCallRung {
   source: string;
   estimate: boolean;
   recommended?: boolean;
+  executable?: boolean;
+  conid?: number;
+  bid?: number | null;
+  ask?: number | null;
+  last?: number | null;
+  quote_at?: string | null;
+  multiplier?: number;
+  underlying_quote?: ExecutionQuote;
 }
+
+export interface ExecutionQuote {
+  conid?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  last?: number | null;
+  quote_at?: string | null;
+}
+
+export interface ExitProvenance {
+  route?: "shares" | "covered_call" | string;
+  plan_as_of?: string | null;
+  plan_snapshot?: string | null;
+  plan_fingerprint?: string;
+  tranche_index?: number;
+  rung_index?: number;
+  intended_assigned_shares?: number;
+}
+
+export interface StagedStockLeg {
+  leg_type: "stock";
+  leg_id: string;
+  symbol: string;
+  delta_czk: number;
+  provenance: ExitProvenance[];
+}
+
+export interface StagedCoveredCallLeg {
+  leg_type: "covered_call";
+  leg_id: string;
+  symbol: string;
+  contracts: number;
+  conid: number;
+  expiry: string;
+  strike: number;
+  right: "C";
+  limit_price: number;
+  multiplier: number;
+  quote: ExecutionQuote;
+  underlying_quote: ExecutionQuote;
+  provenance: ExitProvenance[];
+}
+
+export type StagedTradeLeg = StagedStockLeg | StagedCoveredCallLeg;
+export type TradeBasketLeg = StagedTradeLeg | { symbol: string; delta_czk: number; leg_type?: undefined };
 
 export interface ExitProtectivePut {
   type: "protective_put";
@@ -605,6 +666,11 @@ export interface ExitOptionsOverlay {
   covered_call_ladder: ExitCoveredCallRung[];
   protective_put: ExitProtectivePut | null;
   notes: string[];
+  available_covered_shares?: number;
+  available_contracts?: number;
+  route_contracts?: number;
+  route_assigned_shares?: number;
+  working_orders_checked?: boolean;
 }
 
 export interface ExitPosition {
@@ -649,8 +715,16 @@ export interface ExitPlanResponse {
 
 export interface ExitStageResponse {
   staged: boolean;
-  basket: Array<{ symbol: string; delta_czk: number }>;
+  basket: StagedTradeLeg[];
   tranche: ExitTranche;
+  symbol: string;
+}
+
+export interface ExitStageCallResponse {
+  staged: boolean;
+  basket: StagedTradeLeg[];
+  leg: StagedCoveredCallLeg;
+  rung: ExitCoveredCallRung;
   symbol: string;
 }
 

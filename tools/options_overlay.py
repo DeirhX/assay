@@ -135,6 +135,7 @@ def _liquidity(contract: dict[str, Any], premium_source: str) -> tuple[str, floa
 def _call_candidate(
     call: dict[str, Any], spot: float, vol: float, rate: float, as_of: dt.date,
     edate: dt.date, chain_source: str, *, contracts: int, fx: float,
+    underlying_quote: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """One covered-call ladder rung for a listed (or synthetic) call strike:
     premium (chain mid, else Black-Scholes), annualized yield, assignment
@@ -157,7 +158,7 @@ def _call_candidate(
     dte = max(1, (edate - as_of).days)
     yield_annual = (premium / strike) * (365.0 / dte)
     liq, spread = _liquidity(call, source)
-    return {
+    row: dict[str, Any] = {
         "strike": round(float(strike), 2),
         "premium": round(premium, 4),
         "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
@@ -171,7 +172,29 @@ def _call_candidate(
         "liquidity": liq,
         "source": source,
         "estimate": source == "black_scholes",
+        "executable": False,
     }
+    bid, ask, last = call.get("bid"), call.get("ask"), call.get("last")
+    if (
+        chain_source == "ibkr"
+        and source != "black_scholes"
+        and isinstance(call.get("conid"), int)
+        and isinstance(bid, (int, float)) and bid > 0
+        and isinstance(ask, (int, float)) and ask > 0
+        and bid <= ask
+    ):
+        row.update({
+            "executable": True,
+            "conid": call.get("conid"),
+            "bid": round(float(bid), 4),
+            "ask": round(float(ask), 4),
+            "last": round(float(last), 4) if isinstance(last, (int, float)) else None,
+            "quote_at": call.get("quote_at"),
+            "multiplier": int(call.get("multiplier") or CONTRACT_SIZE),
+        })
+        if isinstance(underlying_quote, dict) and underlying_quote:
+            row["underlying_quote"] = dict(underlying_quote)
+    return row
 
 
 def covered_call_ladder(
@@ -189,6 +212,15 @@ def covered_call_ladder(
     otm = GUARD_CALL_OTM_PCT if guard_after else CALL_OTM_PCT
     floor_strike = spot * (1.0 + otm)
     chain_source = _chain_source(chain)
+    underlying_quote: dict[str, Any] | None = None
+    if chain_source == "ibkr" and isinstance(chain, dict):
+        underlying_quote = {
+            "conid": chain.get("underlying_conid"),
+            "last": chain.get("underlying_last", chain.get("underlying_price")),
+            "bid": chain.get("underlying_bid"),
+            "ask": chain.get("underlying_ask"),
+            "quote_at": chain.get("quote_at"),
+        }
 
     edate: dt.date | None = None
     expiry_iso: str | None = None
@@ -215,7 +247,8 @@ def covered_call_ladder(
     rungs: list[dict[str, Any]] = []
     for call in calls[:LADDER_SIZE]:
         cand = _call_candidate(call, spot, vol, rate, as_of, edate, chain_source,
-                               contracts=contracts, fx=fx)
+                               contracts=contracts, fx=fx,
+                               underlying_quote=underlying_quote)
         if cand:
             cand["expiry"] = expiry_iso
             cand["dte"] = max(1, (edate - as_of).days)
@@ -314,7 +347,7 @@ def _covered_call(
     dte = max(1, (edate - as_of).days)
     yield_annual = (premium / strike) * (365.0 / dte) if strike else None
     premium_czk = premium * CONTRACT_SIZE * contracts * fx
-    return {
+    out: dict[str, Any] = {
         "type": "covered_call",
         "source": source,
         "contracts": contracts,
@@ -328,7 +361,43 @@ def _covered_call(
         "assignment_prob_pct": round(delta * 100.0, 1) if delta is not None else None,
         "vol_used": round(use_vol, 4),
         "estimate": source == "black_scholes",
+        "executable": False,
     }
+    if chain and chain_source == "ibkr" and source != "black_scholes":
+        call_row = None
+        if chain.get("expiries"):
+            exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
+                               dte_max=COVERED_CALL_DTE[1], after=guard_after)
+            if exp:
+                for c in exp.get("calls") or []:
+                    if abs(float(c.get("strike") or 0) - float(strike)) < 1e-6:
+                        call_row = c
+                        break
+        bid = (call_row or {}).get("bid")
+        ask = (call_row or {}).get("ask")
+        if (
+            isinstance((call_row or {}).get("conid"), int)
+            and isinstance(bid, (int, float)) and isinstance(ask, (int, float))
+            and bid > 0 and ask > 0 and bid <= ask
+        ):
+            out.update({
+                "executable": True,
+                "conid": (call_row or {}).get("conid"),
+                "bid": round(float(bid), 4),
+                "ask": round(float(ask), 4),
+                "last": round(float((call_row or {}).get("last")), 4)
+                if isinstance((call_row or {}).get("last"), (int, float)) else None,
+                "quote_at": (call_row or {}).get("quote_at"),
+                "multiplier": CONTRACT_SIZE,
+                "underlying_quote": {
+                    "conid": chain.get("underlying_conid"),
+                    "last": chain.get("underlying_last", chain.get("underlying_price")),
+                    "bid": chain.get("underlying_bid"),
+                    "ask": chain.get("underlying_ask"),
+                    "quote_at": chain.get("quote_at"),
+                },
+            })
+    return out
 
 
 # --------------------------------------------------------------------------- #

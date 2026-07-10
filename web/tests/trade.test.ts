@@ -135,6 +135,45 @@ describe("trade desk placement gating", () => {
       expect.objectContaining({ confirm: true, token: "tok-1", account: "DU1" }),
     );
   });
+
+  it("renders a covered call as conditional SELL TO OPEN and keeps ready gating", async () => {
+    const call = order({
+      leg_type: "covered_call", leg_id: "covered_call:AAPL:2026-08-21:110:C",
+      symbol: "AAPL", side: "SELL", quantity: 2, orderType: "LMT", price: 2.5, conid: 9001,
+    });
+    await previewWith(PAPER_STATUS, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [call],
+      order_context: [{
+        leg_type: "covered_call", leg_id: "covered_call:AAPL:2026-08-21:110:C",
+        symbol: "AAPL", conid: 9001, side: "SELL", classification: "none",
+        proposed_qty: 2, residual_qty: 2, contracts: 2, expiry: "2026-08-21",
+        strike: 110, right: "C", limit_price: 2.5, current_shares: 300,
+        covered_shares_available: 300, if_assigned_shares: 200,
+        shares_after_assignment: 100, premium_credit: 500,
+        provenance: [{ route: "covered_call", plan_as_of: "2026-07-10", rung_index: 0,
+          intended_assigned_shares: 200 }],
+        placeable: true,
+      }],
+    });
+
+    const card = document.querySelector(".trade-order-item")!;
+    expect(card.textContent).toContain("SELL TO OPEN");
+    expect(card.textContent).toContain("2 covered-call contracts");
+    expect(card.textContent).toContain("300 shares → 100 shares if assigned");
+    expect(card.textContent).toContain("Assignment is not guaranteed");
+    const place = byText((t) => t.startsWith("Place"))!;
+    expect(place.disabled).toBe(true);
+    card.querySelector<HTMLButtonElement>(".trade-order-ready")!.click();
+    expect(place.disabled).toBe(false);
+
+    place.click();
+    await flush();
+    const modal = document.querySelector(".trade-confirm-modal")!;
+    expect(modal.textContent).toContain("Covered calls");
+    expect(modal.textContent).toContain("Conditional exit");
+    modalBtn("Cancel")!.click();
+  });
 });
 
 describe("trade desk live confirmation modal", () => {
@@ -671,6 +710,35 @@ describe("trade desk staged basket", () => {
     expect(foot.textContent).toContain("1 sell");
     expect(foot.textContent).toContain("net");
     expect(foot.textContent).toContain("gross");
+  });
+
+  it("renders mixed stock and covered-call legs without treating contracts as CZK", async () => {
+    const basket = [
+      { leg_type: "stock", leg_id: "stock:AMD", symbol: "AMD", delta_czk: -1000,
+        provenance: [] },
+      { leg_type: "covered_call", leg_id: "covered_call:AMD:2026-08-21:110:C",
+        symbol: "AMD", contracts: 2, conid: 9001, expiry: "2026-08-21",
+        strike: 110, right: "C", limit_price: 2.5, multiplier: 100,
+        quote: { bid: 2.4, ask: 2.6, last: 2.5 },
+        underlying_quote: { last: 101.25 }, provenance: [] },
+    ];
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket") return Promise.resolve({ trades: basket });
+      if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
+      return Promise.resolve({ orders: [] });
+    });
+    await loadTrade();
+    await flush();
+
+    const option = document.querySelector(".trade-basket-table tr.tb-option")!;
+    expect(option.textContent).toContain("Sell to open 2 calls");
+    expect(option.textContent).toContain("2026-08-21 · 110C");
+    expect(option.textContent).toContain("max 200 assigned shares");
+    expect(option.textContent).toContain("underlying last 101.25");
+    const foot = document.querySelector(".trade-basket-table tfoot")!;
+    expect(foot.textContent).toContain("2 sells");
+    expect(foot.textContent).toContain("stock gross");
   });
 });
 

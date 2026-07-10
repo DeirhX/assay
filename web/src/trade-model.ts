@@ -7,6 +7,7 @@
 // way — if a new figure or fragment needs to appear on the desk, derive it here
 // first so it stays testable.
 import { esc, sensitive } from "./core";
+import type { TradeBasketLeg } from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 
 // r1 now lives in the shared weight-axis module; re-export for the desk's own
@@ -28,7 +29,10 @@ export interface WorkingOrderPreview {
 }
 
 export interface OrderReconciliation {
+  leg_type?: "stock" | "covered_call";
+  leg_id?: string;
   symbol: string;
+  conid?: number;
   side: string;
   classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side";
   proposed_qty: number;
@@ -37,6 +41,18 @@ export interface OrderReconciliation {
   residual_qty: number;
   current_position_qty?: number;
   projected_position_qty?: number;
+  contracts?: number;
+  expiry?: string;
+  strike?: number;
+  right?: string;
+  limit_price?: number;
+  current_shares?: number;
+  covered_shares_available?: number;
+  if_assigned_shares?: number;
+  shares_after_assignment?: number;
+  premium_per_share?: number;
+  premium_credit?: number;
+  provenance?: Array<Record<string, unknown>>;
   proposed_delta_czk?: number;
   working_delta_czk?: number;
   residual_delta_czk?: number;
@@ -202,12 +218,13 @@ export function gatewayOrigin(base: string | null | undefined) {
 // Buy/sell gross and the single largest trade, from the token-bound basket —
 // the CZK the human actually reasoned about (orders carry shares, not CZK). Used
 // for the last-mile confirmation modal.
-export function basketMoneyFacts(trades?: Array<{ symbol: string; delta_czk: number }>): {
+export function basketMoneyFacts(trades?: TradeBasketLeg[]): {
   buy: number; sell: number; largest: { symbol: string; czk: number } | null;
 } {
   let buy = 0, sell = 0;
   let largest: { symbol: string; czk: number } | null = null;
   for (const t of trades || []) {
+    if (t.leg_type === "covered_call") continue;
     const d = Number(t.delta_czk) || 0;
     if (d >= 0) buy += d; else sell += -d;
     if (!largest || Math.abs(d) > Math.abs(largest.czk)) largest = { symbol: t.symbol, czk: d };

@@ -1,6 +1,6 @@
 import { starHtml } from "./basket";
 import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
+import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, TradeBasketLeg, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
@@ -978,20 +978,30 @@ function renderRebalance(plan: RebPlan) {
       // Share the staged basket with the Trade desk so it can preview/place the
       // exact same trades you just simulated here. Persisted server-side too, so
       // it survives a reload / navigation instead of living only in this tab.
-      state.stagedBasket = trades.slice();
-      void api("/api/trade/basket", "POST", { trades }).catch(() => { /* best-effort */ });
       const box = $$("#reb-whatif");
       if (!trades.length) {
-        box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name or a sleeve member, then simulate.</div>`;
+        try {
+          const saved = await api<{ trades: TradeBasketLeg[] }>("/api/trade/basket", "POST", { trades });
+          state.stagedBasket = saved.trades || [];
+          box.innerHTML = `<div class="hint">${state.stagedBasket.length
+            ? "No stock trades staged; existing Exit option legs were retained."
+            : "Nothing staged — edit a Plan amount on a targeted name or a sleeve member, then simulate."}</div>`;
+        } catch (e) {
+          box.innerHTML = `<div class="status err">Could not persist the basket: ${esc((e as Error).message)}</div>`;
+        }
         return;
       }
       box.innerHTML = `<div class="status">Simulating…</div>`;
       simBtn.disabled = true;
       try {
-        const wf = await api("/api/whatif", "POST", { trades });
+        const [saved, wf] = await Promise.all([
+          api<{ trades: TradeBasketLeg[] }>("/api/trade/basket", "POST", { trades }),
+          api("/api/whatif", "POST", { trades }),
+        ]);
+        state.stagedBasket = saved.trades || [];
         renderWhatif(wf);
       } catch (e) {
-        box.innerHTML = `<div class="status err">Simulation failed: ${esc((e as Error).message)}</div>`;
+        box.innerHTML = `<div class="status err">Simulation or basket persistence failed: ${esc((e as Error).message)}</div>`;
       } finally {
         simBtn.disabled = false;
       }

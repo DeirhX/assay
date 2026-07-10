@@ -126,7 +126,8 @@ from ticker_directory import (  # noqa: E402  -- known-symbol universe, recents 
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
-    _trade_tickle, load_basket as _load_basket, save_basket as _save_basket,
+    _trade_tickle, load_basket as _load_basket,
+    replace_stock_basket as _replace_stock_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -363,6 +364,7 @@ _POST_EXACT = {
     "/api/rebalance/funding": "_post_rebalance_funding",
     "/api/tax-plan": "_post_tax_plan",
     "/api/exit-plan/stage": "_post_exit_plan_stage",
+    "/api/exit-plan/stage-call": "_post_exit_plan_stage_call",
     "/api/whatif": "_post_whatif",
     "/api/trade/reconnect": "_post_trade_reconnect",
     "/api/trade/preview": "_post_trade_preview",
@@ -1386,6 +1388,31 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self._send_error_json(400, str(exc))
 
+    def _post_exit_plan_stage_call(self, path):
+        # Rebuild the exit plan under lock, then stage one server-validated
+        # covered-call ladder rung (symbol + rung index only — never contract fields).
+        body = self._read_body()
+        model = target_staging.active_model()
+        holdings = _load(HOLDINGS_JSON)
+        if not model or not holdings:
+            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        symbol = str(body.get("symbol") or "").strip()
+        if not symbol:
+            return self._send_error_json(400, "symbol is required")
+        try:
+            rung_index = int(body.get("rung_index"))
+        except (TypeError, ValueError):
+            return self._send_error_json(400, "rung_index must be an integer ladder index")
+        include = body.get("include") if isinstance(body.get("include"), list) else []
+        full = body.get("full_exit") if isinstance(body.get("full_exit"), list) else []
+        cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else None
+        with _PULL_LOCK:
+            plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
+        try:
+            return self._send_json(exit_plan.stage_covered_call(plan, symbol, rung_index))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+
     def _post_whatif(self, path):
         body = self._read_body()
         holdings = _load(HOLDINGS_JSON)
@@ -1416,10 +1443,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_peg_stop(self._read_body()))
 
     def _post_trade_basket(self, path):
-        # Persist (or clear) the planner-staged basket. Normalizes server-side and
-        # echoes the stored basket back so the client and disk stay in sync.
+        # Rebalance owns stock legs only. Preserve option legs staged through the
+        # server-validated Exit endpoint and reject client-invented option specs.
         body = self._read_body()
-        return self._send_json({"trades": _save_basket(body.get("trades"))})
+        return self._send_json({"trades": _replace_stock_basket(body.get("trades"))})
 
     def _post_journal(self, path):
         body = self._read_body()

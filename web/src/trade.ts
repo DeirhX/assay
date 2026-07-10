@@ -9,6 +9,7 @@ import {
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
 import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
+import type { StagedCoveredCallLeg, TradeBasketLeg } from "./api-types";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -46,6 +47,8 @@ interface TradeTickle {
 
 // One sized order inside a /api/trade/preview response.
 interface TradeOrder {
+  leg_type?: "stock" | "covered_call";
+  leg_id?: string;
   symbol?: string;
   conid?: string | number;
   side?: string;
@@ -74,9 +77,9 @@ interface TradePreview {
   ibkr_preview?: any;
   // The normalized basket the token binds to: [{symbol, delta_czk}]. Echoed to
   // /api/trade/place and used here for the last-mile money facts on the modal.
-  trades?: Array<{ symbol: string; delta_czk: number }>;
-  effective_trades?: Array<{ symbol: string; delta_czk: number }>;
-  residual_trades?: Array<{ symbol: string; delta_czk: number }>;
+  trades?: TradeBasketLeg[];
+  effective_trades?: TradeBasketLeg[];
+  residual_trades?: TradeBasketLeg[];
   token?: string;
   // Structured snapshot staleness (mirrors the prose warning) so the UI can
   // turn it into a soft gate instead of parsing the warnings[] strings.
@@ -143,7 +146,7 @@ let _status: TradeStatus | null = null;   // last /api/trade/status
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
 // The basket as it was placed — snapshotted before the staged store is cleared,
 // so the "Log to journal" next step can still describe the executed trades.
-let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
+let _placedBasket: TradeBasketLeg[] = [];
 // Mirrors the server's preview TTL: a 1s interval both counts the remaining time
 // down on the Place button and locks it when the window lapses (the server
 // enforces the same window on its side). Interval, not timeout, so the button
@@ -303,7 +306,7 @@ async function loadTrade() {
   // Its own fetch is fast (~40ms), so we render it NOW rather than gating it
   // behind the slow status call, which is what made the basket appear late.
   try {
-    const res = await api<{ trades?: Array<{ symbol: string; delta_czk: number }> }>("/api/trade/basket");
+    const res = await api<{ trades?: TradeBasketLeg[] }>("/api/trade/basket");
     if (isStaleToken("trade", token)) return;
     if (Array.isArray(res.trades)) state.stagedBasket = res.trades;
   } catch (_e) {
@@ -444,22 +447,23 @@ function renderBasket() {
   const card = el("div", "trade-card");
   const head = el("div", "trade-card-head");
   head.innerHTML = `<span class="trade-card-title">Staged basket</span>` +
-    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from the Rebalance planner</span>`;
+    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from Rebalance and Exit</span>`;
   card.appendChild(head);
 
   if (!basket.length) {
     card.appendChild(el("div", "hint",
-      "No basket staged. Go to the Rebalance tab, edit the planned amounts, press " +
-      "\u201cSimulate basket\u201d, then come back here to preview and place it."));
+      "No basket staged. Build share trades in Rebalance, or choose a share / covered-call route in Exit, then return here to preview and place it."));
     wrap.appendChild(card);
     updateTradeReviewAvailability();
     return;
   }
 
+  const optionLegs = basket.filter((t): t is StagedCoveredCallLeg => t.leg_type === "covered_call");
+  const stockLegs = basket.filter((t) => t.leg_type !== "covered_call");
   const facts = basketMoneyFacts(basket);
   const maxAbs = facts.largest ? Math.abs(facts.largest.czk) : 0;
-  const buys = basket.filter((t) => t.delta_czk >= 0).length;
-  const sells = basket.length - buys;
+  const buys = stockLegs.filter((t) => Number(t.delta_czk) >= 0).length;
+  const sells = stockLegs.length - buys + optionLegs.length;
   const net = facts.buy - facts.sell;      // >0 net cash out (buying), <0 net in
   const gross = facts.buy + facts.sell;
 
@@ -469,18 +473,30 @@ function renderBasket() {
       `<th>Symbol</th>` +
       `<th class="tb-trend">3M trend</th>` +
       `<th>Side</th>` +
-      `<th class="num">Planned (CZK)</th>` +
-      `<th class="tb-weight">Relative size</th>` +
+      `<th>Planned order</th>` +
+      `<th>Route / price</th>` +
     `</tr></thead>` +
     `<tbody>${basket.map((t) => {
-      const buy = t.delta_czk >= 0;
-      const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`;
+      if (t.leg_type === "covered_call") {
+        const last = t.underlying_quote?.last;
+        return `<tr class="tb-option">` +
+          `<td>${tickerLink(t.symbol)}</td>` +
+          `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
+          `<td>${sideTag("SELL")}</td>` +
+          `<td><strong>Sell to open ${esc(t.contracts)} call${t.contracts === 1 ? "" : "s"}</strong>` +
+            `<span class="tb-option-meta">${esc(t.expiry)} · ${esc(t.strike)}C · max ${esc(t.contracts * t.multiplier)} assigned shares</span></td>` +
+          `<td><span class="trade-lmt">LMT @ ${esc(t.limit_price)}</span>` +
+            `<span class="tb-option-meta">underlying last ${last == null ? "—" : esc(last)}</span></td>` +
+        `</tr>`;
+      }
+      const buy = Number(t.delta_czk) >= 0;
+      const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(Number(t.delta_czk)))}`;
       return `<tr>` +
         `<td>${tickerLink(t.symbol)}</td>` +
         `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
         `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
-        `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
-        `<td class="tb-weight">${sensitive(basketBar(t.delta_czk, maxAbs), "relative trade size")}</td>` +
+        `<td class="${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt + " CZK", "planned trade size")}</td>` +
+        `<td class="tb-weight">${sensitive(basketBar(Number(t.delta_czk), maxAbs), "relative trade size")}</td>` +
       `</tr>`;
     }).join("")}</tbody>` +
     `<tfoot><tr>` +
@@ -488,10 +504,10 @@ function renderBasket() {
         `<span class="trade-side buy">${buys} buy${buys === 1 ? "" : "s"}</span> · ` +
         `<span class="trade-side sell">${sells} sell${sells === 1 ? "" : "s"}</span>` +
       `</td>` +
-      `<td class="num" title="net cash impact — buys minus sells">` +
+      `<td title="net stock cash impact — option premium is conditional on fill">` +
         `<span class="muted">net</span> ${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(net))}`, "net basket cash")}` +
       `</td>` +
-      `<td class="tb-weight muted" title="gross traded value — buys plus sells">gross ${sensitive(fmtCZK(gross), "gross basket value")}</td>` +
+      `<td class="tb-weight muted" title="gross stock value; option premium excluded">stock gross ${sensitive(fmtCZK(gross), "gross basket value")}</td>` +
     `</tr></tfoot>`;
   card.appendChild(table);
   // Trend sparklines: cached-only batch fill after the table paints (degrades to
@@ -534,6 +550,10 @@ async function doPreview(btn: HTMLButtonElement) {
     if (status) { status.classList.add("err"); status.textContent = "preview failed: " + (e as Error).message; }
     showTradeReviewError((e as Error).message);
   } finally {
+    if (isTab) {
+      btn.disabled = false;
+      btn.textContent = "Order review";
+    }
     if (!_preview) updateTradeReviewAvailability();
   }
 }
@@ -557,12 +577,17 @@ function renderPreview() {
   const liveBlocked = isLive && !p.live_allowed;
 
   const contexts: OrderReconciliation[] = p.order_context || (p.orders || []).map((o) => ({
-    symbol: String(o.symbol || ""), side: String(o.side || ""), classification: "none",
+    leg_type: o.leg_type || "stock", leg_id: o.leg_id,
+    symbol: String(o.symbol || ""), conid: Number(o.conid) || undefined,
+    side: String(o.side || ""), classification: "none",
     proposed_qty: Number(o.quantity) || 0, residual_qty: Number(o.quantity) || 0,
     placeable: true, next_step: "Review and confirm this new order.",
   }));
   const residualOrders = p.orders || [];
   const stats = previewStats(residualOrders, contexts);
+  const callContracts = contexts
+    .filter((c) => c.leg_type === "covered_call" && c.placeable !== false)
+    .reduce((sum, c) => sum + Number(c.residual_qty || 0), 0);
 
   const head = el("div", "trade-preview-head");
   head.innerHTML = `<div><div class="trade-card-title">Order preview</div>` +
@@ -574,7 +599,8 @@ function renderPreview() {
     `<div class="trade-preview-stat ${tone}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
   summary.innerHTML =
     stat("Orders to place", `${residualOrders.length} · ${stats.buys} buy / ${stats.sells} sell`) +
-    stat("New order value", `${fmtCZK(stats.residualValue)} CZK`) +
+    stat("New stock value", `${fmtCZK(stats.residualValue)} CZK`) +
+    (callContracts ? stat("Conditional calls", `${callContracts} contract${callContracts === 1 ? "" : "s"}`, "warn") : "") +
     stat("Working adjustments", String(stats.adjusted), stats.adjusted ? "warn" : "");
   card.appendChild(summary);
 
@@ -657,8 +683,11 @@ function renderPreview() {
     contexts.map((c) => bands[c.symbol]).filter(Boolean) as OrderBand[]);
   contexts.forEach((c) => {
     const sym = String(c.symbol || "").trim().toUpperCase();
-    const orderIndex = residualOrders.findIndex((o) =>
-      String(o.symbol || "").trim().toUpperCase() === sym && o.side === c.side);
+    const isCall = c.leg_type === "covered_call";
+    const orderIndex = residualOrders.findIndex((o) => isCall
+      ? o.leg_type === "covered_call" && Number(o.conid) === Number(c.conid)
+      : o.leg_type !== "covered_call" &&
+        String(o.symbol || "").trim().toUpperCase() === sym && o.side === c.side);
     const o = orderIndex >= 0 ? residualOrders[orderIndex] : undefined;
     const tone = c.classification === "opposite_side" ? "blocked"
       : c.classification === "fully_covered" ? "covered"
@@ -666,7 +695,7 @@ function renderPreview() {
     const item = el("article", `trade-order-item ${tone}`);
     const top = el("div", "trade-order-top");
     const identity = el("div", "trade-order-identity");
-    identity.innerHTML = `<div>${tickerLink(sym)} ${sideTag(c.side)}</div>` +
+    identity.innerHTML = `<div>${tickerLink(sym)} ${sideTag(c.side)}${isCall ? ` <span class="trade-option-tag">SELL TO OPEN</span>` : ""}</div>` +
       `<span class="trade-recon-chip ${tone}">${esc(reconciliationTitle(c))}</span>`;
     top.appendChild(identity);
     if (o) {
@@ -696,20 +725,39 @@ function renderPreview() {
       Number(n ?? 0).toLocaleString(undefined, { maximumFractionDigits: 4 });
     const workingQty = Number(c.working_qty ?? c.working_same_qty ?? 0);
     const primary = el("div", "trade-order-primary");
-    primary.innerHTML = o
-      ? `<strong>Place ${esc(c.side)} ${esc(qty(c.residual_qty))} shares</strong>`
-      : `<strong>No new order</strong>`;
-    if (c.current_position_qty != null && c.projected_position_qty != null) {
+    if (isCall) {
+      primary.innerHTML = o
+        ? `<strong>Sell to open ${esc(qty(c.residual_qty))} covered-call contract${Number(c.residual_qty) === 1 ? "" : "s"}</strong>`
+        : `<strong>No new option order</strong>`;
+      primary.innerHTML += `<span class="trade-position-effect">` +
+        `<strong>${esc(c.expiry || "—")} · ${esc(c.strike ?? "—")}C</strong> at ` +
+        `<strong>${esc(c.limit_price ?? "—")} limit credit</strong></span>`;
+      if (c.current_shares != null && c.shares_after_assignment != null) {
+        primary.innerHTML += `<span class="trade-position-effect">Conditional assignment: ` +
+          `<strong>${esc(qty(c.current_shares))} shares</strong> → ` +
+          `<strong>${esc(qty(c.shares_after_assignment))} shares if assigned</strong>. ` +
+          `Assignment is not guaranteed.</span>`;
+      }
+    } else {
+      primary.innerHTML = o
+        ? `<strong>Place ${esc(c.side)} ${esc(qty(c.residual_qty))} shares</strong>`
+        : `<strong>No new order</strong>`;
+    }
+    if (!isCall && c.current_position_qty != null && c.projected_position_qty != null) {
       primary.innerHTML += `<span class="trade-position-effect">Position if all planned orders fill: ` +
         `<strong>${esc(qty(c.current_position_qty))} shares</strong> \u2192 <strong>${esc(qty(c.projected_position_qty))} shares</strong></span>`;
     }
     item.appendChild(primary);
     if (c.classification !== "none") {
-      const intent = c.side === "SELL" ? "Planned sale" : "Planned purchase";
+      const intent = isCall ? "Planned covered calls" : c.side === "SELL" ? "Planned sale" : "Planned purchase";
       item.appendChild(el("div", "trade-order-breakdown",
         `<span>${esc(intent)} <strong>${esc(qty(c.proposed_qty))}</strong> total</span>` +
         `<span><strong>${esc(qty(workingQty))}</strong> already working</span>` +
-        `<span><strong>${esc(qty(c.residual_qty))}</strong> still to place</span>`));
+        `<span><strong>${esc(qty(c.residual_qty))}</strong> still to place</span>` +
+        (isCall
+          ? `<span><strong>${esc(qty(c.covered_shares_available))}</strong> uncovered shares available</span>` +
+            `<span><strong>${esc(qty(c.if_assigned_shares))}</strong> maximum assigned shares</span>`
+          : "")));
     }
 
     const orderDetails = el("details", "trade-order-details");
@@ -725,7 +773,18 @@ function renderPreview() {
       orderDetails.appendChild(el("div", "trade-order-mechanics",
         `${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} · ${esc(o.tif)}`));
     }
-    const band = bands[sym];
+    if (isCall && c.premium_credit != null) {
+      orderDetails.appendChild(el("div", "trade-order-mechanics",
+        `Estimated premium credit <strong>${esc(qty(c.premium_credit))}</strong> in the option currency · ` +
+        `coverage checked against held and working short calls.`));
+    }
+    const provenance = (c.provenance || [])[0] as Record<string, unknown> | undefined;
+    if (isCall && provenance) {
+      orderDetails.appendChild(el("div", "trade-order-mechanics",
+        `From Exit plan ${esc(provenance.plan_as_of || "—")} · rung ${esc(provenance.rung_index ?? "—")} · ` +
+        `intended assignment ${esc(provenance.intended_assigned_shares ?? "—")} shares`));
+    }
+    const band = isCall ? undefined : bands[sym];
     if (band && (band.before_pct != null || band.after_pct != null)) {
       const bandTone = String(band.status_after || "").toUpperCase() === "IN" ? "" : " out";
       const scopeLabel = orderBandScopeLabel(sym, band);
@@ -862,6 +921,10 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
     const isLive = !p.is_paper;
     const n = (p.orders || []).length;
     const facts = basketMoneyFacts(p.residual_trades || p.trades);
+    const callContexts = (p.order_context || []).filter((c) =>
+      c.leg_type === "covered_call" && c.placeable !== false);
+    const callContracts = callContexts.reduce((sum, c) => sum + Number(c.residual_qty || 0), 0);
+    const callCredit = callContexts.reduce((sum, c) => sum + Number(c.premium_credit || 0), 0);
 
     const overlay = el("div", "modal-overlay");
     const panel = el("div", "modal trade-confirm-modal");
@@ -886,16 +949,28 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
       ? `<div class="trade-cf-row"><span>Snapshot age</span><span class="${p.snapshot_stale ? "bad" : ""}">` +
         `${esc(p.snapshot_age_days)} day(s)${p.snapshot_stale ? " \u2014 STALE" : ""}</span></div>`
       : "";
+    const callLines = callContexts.map((c) =>
+      `<div class="trade-cf-row"><span>${esc(c.symbol)} covered call</span>` +
+      `<span>SELL TO OPEN ${esc(c.residual_qty)}× ${esc(c.expiry || "—")} ${esc(c.strike ?? "—")}C @ ${esc(c.limit_price ?? "—")}</span></div>`
+    ).join("");
     panel.innerHTML =
       `<div class="modal-head"><h2 class="section">${isLive ? "Place LIVE orders \u2014 real money" : "Place paper orders"}</h2></div>` +
       `<div class="trade-cf-facts">` +
       `<div class="trade-cf-row"><span>Account</span><span class="${isLive ? "bad" : ""}">${isLive ? "LIVE" : "paper"} ${sensitive(esc(p.account), "account id")}</span></div>` +
       `<div class="trade-cf-row"><span>Orders</span><span>${n}</span></div>` +
-      `<div class="trade-cf-row"><span>Gross buys</span><span>${sensitive(fmtCZK(facts.buy) + " CZK", "gross buys")}</span></div>` +
-      `<div class="trade-cf-row"><span>Gross sells</span><span>${sensitive(fmtCZK(facts.sell) + " CZK", "gross sells")}</span></div>` +
-      `<div class="trade-cf-row"><span>Largest single</span><span>${sensitive(largest, "largest order")}</span></div>` +
+      `<div class="trade-cf-row"><span>Gross stock buys</span><span>${sensitive(fmtCZK(facts.buy) + " CZK", "gross buys")}</span></div>` +
+      `<div class="trade-cf-row"><span>Gross stock sells</span><span>${sensitive(fmtCZK(facts.sell) + " CZK", "gross sells")}</span></div>` +
+      (callContracts
+        ? `<div class="trade-cf-row"><span>Covered calls</span><span>SELL TO OPEN ${esc(callContracts)} contract(s)</span></div>` +
+          `<div class="trade-cf-row"><span>Indicative premium</span><span>${esc(callCredit.toFixed(2))} option currency</span></div>`
+        : "") +
+      callLines +
+      `<div class="trade-cf-row"><span>Largest stock leg</span><span>${sensitive(largest, "largest order")}</span></div>` +
       ageLine +
-      `</div>`;
+      `</div>` +
+      (callContracts
+        ? `<div class="trade-action-item warning"><strong>Conditional exit.</strong> Premium is collected if filled, but the shares leave only if assigned; assignment is not guaranteed.</div>`
+        : "");
 
     const confirm = el("button", "danger", isLive ? "Place LIVE orders" : "Place orders");
     confirm.type = "button";
@@ -990,14 +1065,17 @@ async function resyncAfterPlace(btn: HTMLButtonElement, status: HTMLElement | nu
 
 function logPlacedToJournal(res: PlaceResult) {
   const trades = _placedBasket;
-  const first = trades[0] || ({} as { symbol?: string; delta_czk?: number });
+  const first = trades[0];
   const summary = trades
-    .map((t) => `${t.symbol} ${t.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(t.delta_czk))}`)
+    .map((t) => t.leg_type === "covered_call"
+      ? `${t.symbol} sell ${t.contracts}× ${t.expiry} ${t.strike}C @ ${t.limit_price}`
+      : `${t.symbol} ${Number(t.delta_czk) >= 0 ? "+" : "−"}${fmtCZK(Math.abs(Number(t.delta_czk)))}`)
     .join(", ");
+  const firstDelta = first && first.leg_type !== "covered_call" ? Number(first.delta_czk) : null;
   openJournalWith({
-    symbol: first.symbol || "",
-    action: (first.delta_czk || 0) < 0 ? "trim" : "buy",
-    size_czk: first.delta_czk != null ? Math.abs(first.delta_czk) : "",
+    symbol: first?.symbol || "",
+    action: first?.leg_type === "covered_call" ? "trim" : (firstDelta || 0) < 0 ? "trim" : "buy",
+    size_czk: firstDelta != null ? Math.abs(firstDelta) : "",
     thesis: `Placed basket on ${res.kind} account ${res.account}: ${summary || "(see IBKR)"}.`,
   });
 }
