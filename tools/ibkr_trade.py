@@ -798,19 +798,27 @@ def _aggregate_whatif(impacts: list[dict]) -> dict:
 _PREVIEW_MAX_WORKERS = 6
 
 
+def _is_kid_error(raw: str) -> bool:
+    """A PRIIPs/KID ineligibility rejection (US-domiciled ETFs and other packaged
+    products can't be *sold* to EU retail without an approved KID)."""
+    low = raw.lower()
+    return "kid" in low or "customer ineligible" in low or "priip" in low
+
+
 def _explain_whatif_error(raw: str) -> str:
     """Turn a raw CPAPI whatif rejection into something a human can act on.
 
-    The common one for EU retail accounts is the PRIIPs/KID block on
-    US-domiciled ETFs (and other packaged products): IBKR answers the whatif with
-    a 500 and a wall of legal text. Collapse it to the actionable gist; anything
-    else passes through unchanged."""
-    low = raw.lower()
-    if "kid" in low or "customer ineligible" in low or "priip" in low:
-        return ("no IBKR trading permission for this product \u2014 it lacks an "
-                "approved KID (EU PRIIPs rule). US-domiciled ETFs and other "
-                "packaged products are blocked for EU retail clients; drop it or "
-                "use a UCITS-domiciled equivalent.")
+    The common one for EU retail accounts is the PRIIPs/KID block: IBKR answers
+    the whatif with a 500 and a wall of legal text. Collapse it to the actionable
+    gist -- crucially noting the options route (the KID rule blocks the broker
+    *selling* the product to you, i.e. a direct buy; you can still acquire the
+    shares via assignment/exercise). Anything else passes through unchanged."""
+    if _is_kid_error(raw):
+        return ("IBKR won't let EU retail buy this product's shares directly \u2014 "
+                "it lacks an approved KID (PRIIPs rule). You can still get the "
+                "exposure via options (sell a put / buy a call and take assignment "
+                "or exercise into shares), use a UCITS-domiciled equivalent, or "
+                "drop it. Selling or closing an existing position is unaffected.")
     return raw
 
 
@@ -830,14 +838,16 @@ def preview_orders(account_id: str, orders: list[dict]) -> dict:
     endpoint = f"/iserver/account/{urllib.parse.quote(account_id)}/orders/whatif"
 
     def _preview_one(order: dict) -> tuple[dict, dict | None, str | None]:
-        """(order, impact, error) -- a hard CPAPIError is caught here so one bad
-        order can't cancel the whole fan-out; the caller aggregates."""
+        """(order, impact, raw_error) -- a hard CPAPIError is caught here so one
+        bad order can't cancel the whole fan-out; the caller aggregates. The
+        error is returned raw so the caller can both classify it (KID?) and
+        humanize it."""
         try:
             impact = _whatif_impact(_request("POST", endpoint, {"orders": [_cpapi_order(order)]}))
         except CPAPIError as exc:
-            return order, None, _explain_whatif_error(str(exc))
+            return order, None, str(exc)
         body_err = impact.get("error") if impact else None
-        return order, impact, (_explain_whatif_error(str(body_err)) if body_err else None)
+        return order, impact, (str(body_err) if body_err else None)
 
     workers = min(_PREVIEW_MAX_WORKERS, len(orders))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -845,14 +855,22 @@ def preview_orders(account_id: str, orders: list[dict]) -> dict:
 
     impacts: list[dict] = []
     errors: list[str] = []
-    for order, impact, err in results:
-        if err:
+    kid_symbols: list[str] = []
+    for order, impact, raw_err in results:
+        if raw_err:
             sym = order.get("symbol")
-            errors.append(f"{sym}: {err}" if sym else err)
+            errors.append(f"{sym}: {_explain_whatif_error(raw_err)}" if sym else _explain_whatif_error(raw_err))
+            if sym and _is_kid_error(raw_err):
+                kid_symbols.append(sym)
         elif impact is not None:
             impacts.append(impact)
     if errors:
-        raise CPAPIError("whatif preview rejected: " + "; ".join(errors))
+        exc = CPAPIError("whatif preview rejected: " + "; ".join(errors))
+        # Let the service layer learn which names are direct-buy-blocked so it can
+        # convert them to options-only next time (kept off ibkr_trade's plate --
+        # this module doesn't own the persistent registry).
+        exc.kid_symbols = kid_symbols  # type: ignore[attr-defined]
+        raise exc
     return _aggregate_whatif(impacts) if impacts else {}
 
 

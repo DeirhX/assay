@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import ibkr_trade
+import kid_block
 import order_peg
 import overview
 import price_levels
@@ -174,6 +175,16 @@ def _locked_limit(sym: str, side: str) -> float | None:
 _PREPARE_MAX_WORKERS = 6
 
 
+def _drop_blocked_buys(orders: list[dict], blocked: set[str]) -> list[dict]:
+    """Strip BUY orders for direct-buy-blocked (KID/PRIIPs) names -- they'd only
+    get rejected by the gateway. SELL orders pass through untouched (closing an
+    existing position is always allowed). Pure and order-preserving."""
+    if not blocked:
+        return orders
+    return [o for o in orders
+            if not (o.get("side") == "BUY" and str(o.get("symbol") or "").upper() in blocked)]
+
+
 def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
     """Translate a token-bound CZK basket into CPAPI order dicts, server-side.
     Resolves conids, prices held names from the snapshot and unheld names from a
@@ -217,6 +228,12 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         coid_prefix="assay-" + _basket_token(account_id, basket),
         limit_lookup=_locked_limit,
     )
+    # Convert direct buys of KID-blocked names (US-domiciled ETFs) to options-only:
+    # drop the order so we don't emit a guaranteed-reject. The Preview surfaces the
+    # excluded names separately (see _trade_preview.options_only). The same filter
+    # runs on the place path since orders are re-derived here from the token-bound
+    # basket, so a blocked buy can never slip through to placement.
+    orders = _drop_blocked_buys(orders, kid_block.blocked_symbols())
     return orders, warnings + skip_warnings
 
 
@@ -349,7 +366,19 @@ def _trade_preview(body: dict) -> dict:
         try:
             ibkr_preview = ibkr_trade.preview_orders(account_id, orders)
         except ibkr_trade.CPAPIError as exc:
+            # Learn any newly-discovered KID/PRIIPs-blocked names so the next
+            # preview converts their buys to options-only instead of re-rejecting.
+            for sym in getattr(exc, "kid_symbols", None) or []:
+                kid_block.mark_blocked(sym, "PRIIPs/KID: no direct buy for EU retail (US-domiciled)")
             raise _BadGateway(str(exc)) from exc
+
+    # Names in the basket the account can't buy directly (US-domiciled / no KID):
+    # their buy orders were dropped above; report them so the UI can flag the
+    # options-only route rather than silently omitting them.
+    blocked = kid_block.blocked_symbols()
+    options_only = sorted({str(t["symbol"]).upper() for t in basket
+                           if float(t.get("delta_czk") or 0) > 0
+                           and str(t.get("symbol") or "").upper() in blocked})
 
     local = None
     holdings = _load(HOLDINGS_JSON)
@@ -392,6 +421,7 @@ def _trade_preview(body: dict) -> dict:
         "trades": basket,
         "orders": orders,
         "warnings": warnings,
+        "options_only": options_only,
         "ibkr_preview": ibkr_preview,
         "local_whatif": local,
         "order_bands": _order_band_context(model, holdings, local.get("after") if local else None),

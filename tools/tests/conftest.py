@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import activity  # noqa: E402
 import config  # noqa: E402
+import kid_block  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -42,4 +43,13 @@ def _isolate_activity_log(monkeypatch, tmp_path):
     clear the in-process view debounce so tests never see each other's writes."""
     monkeypatch.setattr(activity, "ACTIVITY_LOG", tmp_path / "activity-log.jsonl", raising=False)
     activity._last_view.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kid_block(monkeypatch, tmp_path):
+    """Point the direct-buy-block registry at a throwaway file so preview tests
+    that learn/mark KID names never touch the developer's real
+    ``data/cache/kid-blocked.json`` (and start each test from an empty set)."""
+    monkeypatch.setattr(kid_block, "KID_BLOCK_JSON", tmp_path / "kid-blocked.json", raising=False)
     yield

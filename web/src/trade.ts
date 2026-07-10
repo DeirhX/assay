@@ -59,6 +59,9 @@ interface TradePreview {
   account?: string;
   kind?: string;
   warnings?: string[];
+  // Basket names the account can't buy directly (US-domiciled / no PRIIPs KID):
+  // their buy orders were dropped server-side; reachable only via options.
+  options_only?: string[];
   preview_ttl_s?: number;
   orders?: TradeOrder[];
   // The raw IBKR margin/commission blob; shape varies per account/order type.
@@ -422,8 +425,21 @@ function renderPreview() {
   (p.warnings || []).forEach((w) =>
     card.appendChild(el("div", "trade-warn", esc(w))));
 
+  const optionsOnly = p.options_only || [];
+  if (optionsOnly.length) {
+    const note = el("div", "trade-optonly");
+    note.appendChild(el("div", "trade-optonly-hd",
+      `Options-only \u2014 ${optionsOnly.map((s) => sensitive(esc(s), "ticker")).join(", ")}`));
+    note.appendChild(el("div", "trade-optonly-body",
+      "US-domiciled / no PRIIPs KID: EU retail can't buy the shares directly, so these buys were dropped from the order set. Get the exposure via options \u2014 sell a put or buy a call and take assignment / exercise into shares. (Selling or closing an existing position is unaffected.)"));
+    card.appendChild(note);
+  }
+
   if (!p.orders || !p.orders.length) {
-    card.appendChild(el("div", "hint", "No orders could be sized from this basket. See the warnings above (no contract / no price / rounds to zero shares)."));
+    const msg = optionsOnly.length
+      ? "Every buy in this basket is options-only (see above); nothing left to place directly."
+      : "No orders could be sized from this basket. See the warnings above (no contract / no price / rounds to zero shares).";
+    card.appendChild(el("div", "hint", msg));
     wrap.appendChild(card);
     return;
   }
