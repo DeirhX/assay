@@ -441,6 +441,9 @@ class TradeServiceGuards(unittest.TestCase):
             "issued_at": time.time() - age_s,
             "orders": [{"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 1,
                         "orderType": "MKT", "tif": "DAY"}],
+            "basket": trade_service._normalize_basket([
+                {"symbol": "AMD", "delta_czk": 1000},
+            ]),
             "working_fingerprint": trade_service._working_fingerprint([]),
             "working_symbols": ["AMD"],
             "working_available": True,
