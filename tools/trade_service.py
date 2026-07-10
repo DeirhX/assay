@@ -318,6 +318,29 @@ def replace_stock_basket(trades: Any) -> list[dict]:
     return save_basket(existing_options + incoming)
 
 
+def _assert_server_staged_option_legs(basket: list[dict]) -> None:
+    """Reject client-invented or client-mutated covered-call preview legs.
+
+    The Exit staging endpoint is the only authority allowed to create an option
+    leg. Preview accepts the browser's basket for token binding, but every option
+    definition must exactly match the durable server-side staged definition.
+    """
+    requested = [leg for leg in basket if leg.get("leg_type") == "covered_call"]
+    if not requested:
+        return
+    staged = {
+        leg["leg_id"]: leg
+        for leg in load_basket()
+        if leg.get("leg_type") == "covered_call"
+    }
+    for leg in requested:
+        if staged.get(leg["leg_id"]) != leg:
+            raise ValueError(
+                f"{leg['symbol']}: covered call is not the exact server-staged Exit leg "
+                "— stage it again from the Exit plan"
+            )
+
+
 def _basket_token(account_id: str, basket: list[dict]) -> str:
     """Stable short hash binding a preview to the exact basket + account. The
     place endpoint requires the caller to echo it, so an unreviewed or mutated
@@ -455,8 +478,9 @@ def _working_short_call_contracts(
                 row_conid = int(row_conid)
             except (TypeError, ValueError):
                 row_conid = None
-        if conid is not None and row_conid == int(conid):
-            total += int(_number(row.get("remaining_qty")))
+        if conid is not None:
+            if row_conid == int(conid):
+                total += int(_number(row.get("remaining_qty")))
             continue
         if row.get("instrument_type") == "option":
             if row.get("option_right") == "C" and clean_symbol(row.get("symbol")) == sym:
@@ -522,7 +546,7 @@ def _validate_covered_call_leg(
             f"{sym}: only {avail} shares available to cover {residual_contracts} new "
             f"contract(s) ({contracts} staged, {same_working} already working; "
             f"{needed} shares needed)")
-    if avail < 100:
+    if residual_contracts > 0 and avail < 100:
         raise ValueError(f"{sym}: fewer than 100 shares available to write calls")
 
     resolved = ibkr_trade.resolve_option_contract(
@@ -1253,6 +1277,7 @@ def _trade_preview(body: dict) -> dict:
     basket = _normalize_basket(body.get("trades"))
     if not basket:
         raise ValueError("nothing staged to preview")
+    _assert_server_staged_option_legs(basket)
     account_id = _resolve_trade_account(body.get("account"))
     relevant_symbols = {str(leg.get("symbol") or "").upper() for leg in basket if leg.get("symbol")}
     relevant_conids = {
@@ -1398,6 +1423,8 @@ def _trade_place(body: dict) -> dict:
     if issued is None or time.time() - _number(issued.get("issued_at")) > PREVIEW_TTL_S:
         raise ValueError("preview expired — prices and sizes may be stale; "
                          "re-preview the basket before placing")
+    if issued.get("basket") != basket:
+        raise ValueError("preview basket record mismatch — re-preview before placing")
     if not issued.get("working_available"):
         raise _Conflict(
             "working orders could not be verified during preview — reconnect the "

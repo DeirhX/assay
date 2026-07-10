@@ -757,7 +757,7 @@ def stage_covered_call(plan: dict[str, Any], symbol: str, rung_index: int) -> di
     residual_contracts = max(0, contracts - same_working)
     needed = residual_contracts * 100
     avail = trade_service.covered_shares_available(sym, holdings, working)
-    if avail < 100:
+    if residual_contracts > 0 and avail < 100:
         raise ValueError(f"{sym}: fewer than 100 shares available to write calls")
     if avail < needed:
         raise ValueError(

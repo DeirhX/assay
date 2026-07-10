@@ -200,6 +200,17 @@ class TypedBasket(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be staged from the Exit plan"):
             trade_service.replace_stock_basket([option])
 
+    def test_preview_option_must_exactly_match_server_staged_leg(self):
+        option = trade_service._canonical_covered_call_leg(
+            symbol="AMD", contracts=1, conid=999, expiry="2026-08-21",
+            strike=105, right="C", limit_price=2.5, quote={}, underlying_quote={},
+            provenance=[{"route": "covered_call", "plan_fingerprint": "abc"}])
+        with mock.patch.object(trade_service, "load_basket", return_value=[option]):
+            trade_service._assert_server_staged_option_legs([option])
+            mutated = {**option, "contracts": 2}
+            with self.assertRaisesRegex(ValueError, "exact server-staged Exit leg"):
+                trade_service._assert_server_staged_option_legs([mutated])
+
 
 class CoverageHelpers(unittest.TestCase):
     HOLDINGS = {
@@ -257,6 +268,46 @@ class CoverageHelpers(unittest.TestCase):
                 leg, self.HOLDINGS, working)
         self.assertEqual(refreshed["contracts"], 2)
 
+    def test_different_contract_working_order_does_not_reduce_residual(self):
+        working = [{
+            "order_id": "1", "symbol": "AMD", "instrument_type": "option",
+            "option_right": "C", "conid": 1110, "side": "SELL",
+            "remaining_qty": 1, "status": "Submitted",
+        }]
+        self.assertEqual(
+            trade_service._working_short_call_contracts(
+                "AMD", working, conid=999),
+            0,
+        )
+
+    def test_fully_working_contract_can_revalidate_with_no_free_shares(self):
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        leg = trade_service._canonical_covered_call_leg(
+            symbol="AMD", contracts=1, conid=999, expiry="2026-08-21",
+            strike=105, right="C", limit_price=2.5,
+            quote={"bid": 2.4, "ask": 2.6, "last": 2.5, "quote_at": now},
+            underlying_quote={"last": 100, "quote_at": now},
+        )
+        holdings = {"positions": [
+            {"symbol": "AMD", "asset_class": "STK", "quantity": 100.0},
+        ]}
+        working = [{
+            "order_id": "1", "symbol": "AMD", "instrument_type": "option",
+            "option_right": "C", "conid": 999, "side": "SELL",
+            "remaining_qty": 1, "status": "Submitted",
+        }]
+        resolved = {
+            "symbol": "AMD", "conid": 999, "expiry": "2026-08-21",
+            "strike": 105, "right": "C", "bid": 2.4, "ask": 2.6, "last": 2.5,
+            "quote_at": now, "multiplier": 100, "underlying_conid": 1,
+            "underlying_bid": 99.9, "underlying_ask": 100.1,
+            "underlying_last": 100, "underlying_quote_at": now, "rules": {},
+        }
+        with mock.patch.object(ibt, "resolve_option_contract", return_value=resolved):
+            refreshed = trade_service._validate_covered_call_leg(
+                leg, holdings, working)
+        self.assertEqual(refreshed["contracts"], 1)
+
     @staticmethod
     def _resolved(symbol, expiry, strike, right="C", **_kwargs):
         now = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -293,6 +344,21 @@ class CoverageHelpers(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "mixed basket leaves only 100 shares"):
                 trade_service._prepare_covered_call_orders(
                     basket, holdings, [], "assay-test", stock_orders)
+
+    def test_working_call_on_other_strike_does_not_cover_staged_contracts(self):
+        holdings = {"positions": [
+            {"symbol": "AMD", "asset_class": "STK", "quantity": 200.0},
+        ]}
+        basket = [self._leg(105, 2)]
+        working = [{
+            "order_id": "1", "symbol": "AMD", "instrument_type": "option",
+            "option_right": "C", "conid": 1110, "side": "SELL",
+            "remaining_qty": 1, "status": "Submitted",
+        }]
+        with mock.patch.object(ibt, "resolve_option_contract", side_effect=self._resolved):
+            with self.assertRaisesRegex(ValueError, "mixed basket leaves only 100 shares"):
+                trade_service._prepare_covered_call_orders(
+                    basket, holdings, working, "assay-test", [])
 
 
 class QuoteFreshness(unittest.TestCase):
