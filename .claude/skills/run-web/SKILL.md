@@ -12,7 +12,7 @@ Launches both halves of the app together: the stdlib Python API
 ## Run it
 
 ```powershell
-pwsh .cursor/skills/run-web/scripts/run-web.ps1
+pwsh .claude/skills/run-web/scripts/run-web.ps1
 ```
 
 Then open http://127.0.0.1:5173 (use the IPv4 literal, **not** `localhost` —

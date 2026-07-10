@@ -12,9 +12,9 @@
   port-in-use zombie. npm deps are installed if node_modules is missing.
 
 .EXAMPLE
-  pwsh .cursor/skills/run-web/scripts/run-web.ps1
+  pwsh .claude/skills/run-web/scripts/run-web.ps1
 .EXAMPLE
-  pwsh .cursor/skills/run-web/scripts/run-web.ps1 -Mode prod
+  pwsh .claude/skills/run-web/scripts/run-web.ps1 -Mode prod
 #>
 [CmdletBinding()]
 param(

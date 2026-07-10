@@ -81,7 +81,7 @@ First line ≤ ~72 chars, imperative; body as grouped bullets explaining the *wh
 Write the PR body to `PR_BODY.txt` (Summary + Test plan), then:
 
 ```powershell
-pwsh .cursor/skills/ship-pr/scripts/ship.ps1 -Title "<pr title>" -BodyFile PR_BODY.txt
+pwsh .claude/skills/ship-pr/scripts/ship.ps1 -Title "<pr title>" -BodyFile PR_BODY.txt
 ```
 
 The script: pushes `-u origin HEAD`; finds the branch's PR or creates one;

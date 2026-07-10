@@ -64,7 +64,7 @@ py -3 -m pytest tools/tests -q
 ## 3. Restart the server (kills all other instances)
 
 ```powershell
-pwsh .cursor/skills/run-web/scripts/run-web.ps1
+pwsh .claude/skills/run-web/scripts/run-web.ps1
 ```
 Run it **in the background** (don't block the session on it). It first kills the
 prior run's supervisor, stray `serve.py`/`vite`, and any owner of :6060/:5173,
