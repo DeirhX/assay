@@ -50,13 +50,14 @@ async function previewWith(status: object, preview: object, place: object = {}) 
   state.stagedBasket = [{ symbol: "AAPL", delta_czk: 1000 }];
   await loadTrade();
   await flush();
-  byText((t) => t.includes("Preview"))!.click();
+  document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.click();
   await flush();
 }
 
 beforeEach(() => {
   apiMock.mockReset();
   state.stagedBasket = [];
+  window.history.replaceState({}, "", "/?view=trade");
   const wrap = document.querySelector("#trade-result");
   if (wrap) wrap.innerHTML = "";
   // The confirmation modal mounts on body; drop any left by a prior test.
@@ -185,7 +186,36 @@ describe("trade desk live confirmation modal", () => {
 });
 
 describe("trade desk safety gates", () => {
-  it("flags an order that collides with an existing working order", async () => {
+  it("shows basket, order review, and working orders as exclusive tabs", async () => {
+    await previewWith(PAPER_STATUS, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [],
+      ibkr_preview: null, orders: [order()],
+    });
+    const reviewTab = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!;
+    const basketPanel = document.querySelector<HTMLElement>('[data-trade-panel="basket"]')!;
+    const reviewPanel = document.querySelector<HTMLElement>('[data-trade-panel="review"]')!;
+    const ordersPanel = document.querySelector<HTMLElement>('[data-trade-panel="orders"]')!;
+    expect(reviewTab.disabled).toBe(false);
+    expect(reviewTab.getAttribute("aria-selected")).toBe("true");
+    expect(reviewPanel.hidden).toBe(false);
+    expect(basketPanel.hidden).toBe(true);
+    expect(ordersPanel.hidden).toBe(true);
+
+    document.querySelector<HTMLButtonElement>('[data-trade-tab="orders"]')!.click();
+    expect(ordersPanel.hidden).toBe(false);
+    expect(reviewPanel.hidden).toBe(true);
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe("orders");
+  });
+
+  it("restores the active workspace tab from the URL on refresh", async () => {
+    window.history.replaceState({}, "", "/?view=trade&tab=orders");
+    await loadWith(PAPER_STATUS, []);
+    expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="orders"]')!
+      .getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector<HTMLElement>('[data-trade-panel="orders"]')!.hidden).toBe(false);
+  });
+
+  it("renders reconciled working-order next steps and confirms only residual orders", async () => {
     const basket = [{ symbol: "NVDA", delta_czk: -1000 }, { symbol: "AAPL", delta_czk: 500 }];
     apiMock.mockImplementation((path: string) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
@@ -195,21 +225,43 @@ describe("trade desk safety gates", () => {
           orderType: "LMT", price: 180, tif: "GTC", status: "Submitted" }] });
       if (path === "/api/trade/preview")
         return Promise.resolve({ is_paper: true, live_allowed: true, account: "DU1", warnings: [],
-          ibkr_preview: null, orders: [order({ symbol: "NVDA", side: "SELL" }), order({ symbol: "AAPL" })] });
+          working_orders_available: true, ibkr_preview: null, orders: [order({ symbol: "AAPL" })],
+          order_context: [
+            { symbol: "NVDA", side: "SELL", classification: "fully_covered",
+              proposed_qty: 3, working_same_qty: 3, residual_qty: 0, placeable: false,
+              working: [{ order_id: "o-1", side: "SELL", remaining_qty: 3,
+                order_type: "LMT", price: 180, status: "Submitted" }],
+              next_step: "No new order needed — monitor the existing working order." },
+            { symbol: "AAPL", side: "BUY", classification: "none",
+              proposed_qty: 3, working_same_qty: 0, residual_qty: 3, placeable: true,
+              next_step: "Review and confirm this new order." },
+          ] });
       return Promise.resolve({ orders: [] });
     });
     state.stagedBasket = basket;
     await loadTrade();
     await flush();
-    byText((t) => t.includes("Preview"))!.click();
+    document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.click();
     await flush();
 
-    const note = document.querySelector(".trade-collide-note");
-    expect(note).toBeTruthy();
-    expect(note!.textContent).toContain("NVDA");
-    expect(note!.textContent).toContain("double-trade");
-    // Only the colliding symbol is flagged, not every order.
-    expect(document.querySelectorAll(".trade-collide-note")).toHaveLength(1);
+    const cards = [...document.querySelectorAll(".trade-order-item")];
+    expect(cards).toHaveLength(2);
+    const nvda = cards.find((n) => n.textContent?.includes("NVDA"))!;
+    expect(nvda.textContent).toContain("Already covered");
+    expect(nvda.textContent).toContain("Informational");
+    expect(nvda.querySelector('input[type="checkbox"]')).toBeFalsy();
+    expect(document.querySelectorAll('.trade-order-grid input[type="checkbox"]')).toHaveLength(1);
+    expect(document.querySelector(".trade-preview-summary")!.textContent).toContain("Working adjustments");
+  });
+
+  it("blocks placement when live working orders could not be read", async () => {
+    await previewWith(PAPER_STATUS, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [],
+      working_orders_available: false, working_orders_error: "no bridge",
+      ibkr_preview: null, orders: [order()],
+    });
+    expect(document.querySelector(".trade-action-item.blocker")!.textContent).toContain("Safety check unavailable");
+    expect(byText((t) => t.includes("Working orders unavailable"))!.disabled).toBe(true);
   });
 
   it("renders an effect-on-band track per order and flags an out-of-band land", async () => {
@@ -607,7 +659,7 @@ describe("trade desk connection banner", () => {
     await flush();
 
     expect(document.querySelector("#trade-banner")!.textContent).toContain("Trading is disabled");
-    const preview = byText((t) => t.includes("Preview"));
+    const preview = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]');
     expect(preview!.disabled).toBe(true); // can't preview without an enabled, connected gateway
   });
 

@@ -202,7 +202,24 @@ interface NavState {
   ticker?: string;
   segment?: string;
   run?: string;
+  tab?: string;
+  step?: string;
+  segmode?: string;
+  repmode?: string;
+  stage?: string;
+  filter?: string;
+  sort?: string;
+  range?: string;
+  benchmark?: string;
+  soon?: string;
+  sec?: string;
 }
+
+const VIEW_STATE_KEYS = [
+  "ticker", "segment", "run", "tab", "step", "segmode", "repmode", "stage",
+  "filter", "sort", "range", "benchmark", "soon",
+  "sec",
+] as const;
 
 // Trigger a client-side download of text content as a file.
 function downloadText(filename: string, text: string) {
@@ -239,6 +256,17 @@ function navFromUrl() {
     ticker: cleanSymbol(params.get("ticker")),
     segment: cleanSlug(params.get("segment")),
     run: cleanSlug(params.get("run")),
+    tab: cleanSlug(params.get("tab")),
+    step: cleanSlug(params.get("step")),
+    segmode: cleanSlug(params.get("segmode")),
+    repmode: cleanSlug(params.get("repmode")),
+    stage: cleanSlug(params.get("stage")),
+    filter: cleanSlug(params.get("filter")),
+    sort: cleanSlug(params.get("sort")),
+    range: cleanSlug(params.get("range")),
+    benchmark: cleanSlug(params.get("benchmark")),
+    soon: cleanSlug(params.get("soon")),
+    sec: cleanSlug(params.get("sec")),
   };
 }
 
@@ -250,20 +278,32 @@ function urlForNav(nav: NavState) {
   if (nav.ticker) url.searchParams.set("ticker", cleanSymbol(nav.ticker));
   if (nav.segment) url.searchParams.set("segment", cleanSlug(nav.segment));
   if (nav.run) url.searchParams.set("run", cleanSlug(nav.run));
+  for (const key of VIEW_STATE_KEYS.slice(3)) {
+    const value = nav[key];
+    if (value) url.searchParams.set(key, cleanSlug(value));
+  }
   return url;
 }
 
 function pushNav(partial: Partial<NavState>, { replace = false }: { replace?: boolean } = {}) {
+  const current = navFromUrl();
+  const nextView = partial.view ?? current.view;
+  const changedView = nextView !== current.view;
+  const cleared = Object.fromEntries(VIEW_STATE_KEYS.map((key) => [key, ""])) as Partial<NavState>;
   const next = {
-    ...navFromUrl(),
-    ticker: "",
-    segment: "",
-    run: "",
+    ...current,
+    ...(changedView ? cleared : {}),
     ...partial,
   };
   const method = replace ? "replaceState" : "pushState";
   window.history[method](next, "", urlForNav(next));
   return next;
+}
+
+// Persist an in-view control without creating dozens of Back-button entries.
+// Unlike cross-view navigation, this intentionally retains ticker/segment/run.
+function replaceViewState(partial: Partial<NavState>) {
+  return pushNav(partial, { replace: true });
 }
 
 function navForView(view: string) {
@@ -377,9 +417,9 @@ async function restoreNav(nav: NavState) {
     await loadCachedSegment(nav.segment);
   } else if (active === "pipeline" && nav.run) {
     await loadDeepRun(nav.run, { push: false });
-    // Deep-linking to a run means "show me this run" -- land on the review gate
-    // (Step 4) with its loaded report/review, not back on Step 1.
-    setPipeStep(4);
+    // A plain run deep-link lands on review; an explicit step survives refresh.
+    const requestedStep = /^[1-4]$/.test(nav.step || "") ? Number(nav.step) : 4;
+    setPipeStep(requestedStep, { persist: false });
   } else if (active === "deepdive") {
     await renderViewedTickers();
   }
@@ -556,6 +596,7 @@ export {
   navFromUrl,
   urlForNav,
   pushNav,
+  replaceViewState,
   navForView,
   setActiveView,
   setSegmentControls,

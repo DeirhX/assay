@@ -14,7 +14,7 @@ import { cleanSymbol, pushNav, setActiveView } from "./shell";
 export function analyzeFromAnywhere(sym: string | null | undefined) {
   const ticker = cleanSymbol(sym);
   if (!ticker) return;
-  pushNav({ view: "deepdive", ticker });
+  pushNav({ view: "deepdive", ticker, sort: "", sec: "" });
   setActiveView("deepdive");
   $$<HTMLInputElement>("#ticker-input").value = ticker;
   pullTicker(ticker, { push: false });
@@ -26,7 +26,7 @@ export function analyzeFromAnywhere(sym: string | null | undefined) {
 export async function openTicker(sym: string | null | undefined) {
   const ticker = cleanSymbol(sym);
   if (!ticker) return;
-  pushNav({ view: "deepdive", ticker });
+  pushNav({ view: "deepdive", ticker, sort: "", sec: "" });
   setActiveView("deepdive");
   $$<HTMLInputElement>("#ticker-input").value = ticker;
   const status = $$("#dd-status");

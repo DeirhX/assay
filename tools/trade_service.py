@@ -6,9 +6,9 @@ the security-sensitive logic lives in one separately-testable module. Unlike
 the read-only Flex path, these helpers can place REAL orders, so every entry
 point checks ibkr_trade.trading_enabled(); placement additionally requires a
 matching preview token, an explicit confirm flag, and (for live, non-paper
-accounts) IBKR_ALLOW_LIVE. Order details are always derived server-side from the
-token-bound basket so a tampered client payload cannot place something the human
-never previewed.
+accounts) IBKR_ALLOW_LIVE. Order details are retained server-side with the
+token-bound preview so a tampered client payload cannot place something the
+human never previewed.
 """
 
 from __future__ import annotations
@@ -26,7 +26,11 @@ import overview
 import price_levels
 import rebalance
 import whatif
-from apierror import BadGateway as _BadGateway, Forbidden as _Forbidden
+from apierror import (
+    BadGateway as _BadGateway,
+    Conflict as _Conflict,
+    Forbidden as _Forbidden,
+)
 from config import DATA_DIR
 from portfolio import HOLDINGS_JSON, normalize_basket, provider_symbol_for
 from store import load as _load, write_json as _write_json
@@ -42,7 +46,7 @@ STAGED_BASKET_JSON = DATA_DIR / "cache" / "staged-basket.json"
 # server restart forgets outstanding previews, which fails safe (place then
 # demands a fresh preview).
 PREVIEW_TTL_S = 600
-_preview_issued: dict[str, float] = {}
+_preview_issued: dict[str, dict] = {}
 
 # A holdings snapshot older than this shouldn't silently size real orders —
 # the CZK->shares math uses its marks. Warning only; the human decides.
@@ -93,6 +97,23 @@ def _basket_token(account_id: str, basket: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _position_fx_to_base(position: dict) -> float:
+    """Read the explicit FX rate, or derive it from the position's paired local
+    and base market values. Current Flex snapshots can omit fx_rate_to_base even
+    though both values are present; defaulting a USD position to 1 would inflate
+    share sizing by roughly USD/CZK."""
+    explicit = _number(position.get("fx_rate_to_base"))
+    if explicit > 0:
+        return explicit
+    local_value = _number(position.get("market_value"))
+    base_value = _number(position.get("base_market_value"))
+    if local_value:
+        derived = base_value / local_value
+        if derived > 0:
+            return derived
+    return 1.0
+
+
 def _trade_price_map() -> dict[str, dict]:
     """Per-symbol {price, fx_to_base, currency} from the holdings snapshot -- the
     very marks the CZK basket was sized against, so held names size precisely.
@@ -105,7 +126,7 @@ def _trade_price_map() -> dict[str, dict]:
         if sym and isinstance(price, (int, float)) and price:
             out[sym] = {
                 "price": float(price),
-                "fx_to_base": float(p.get("fx_rate_to_base") or 1.0),
+                "fx_to_base": _position_fx_to_base(p),
                 "currency": (p.get("currency") or "").upper(),
             }
     return out
@@ -118,17 +139,20 @@ def _fx_by_currency() -> dict[str, float]:
     out: dict[str, float] = {}
     for p in holdings.get("positions") or []:
         ccy = (p.get("currency") or "").upper()
-        fx = p.get("fx_rate_to_base")
-        if ccy and isinstance(fx, (int, float)) and fx:
-            out[ccy] = float(fx)
+        fx = _position_fx_to_base(p)
+        if ccy and fx > 0:
+            out[ccy] = fx
     return out
 
 
-def _resolve_trade_account(requested: str | None) -> str:
+def _resolve_trade_account(requested: str | None, accts: list[dict] | None = None) -> str:
     """Pick the account to trade. An explicit request must be visible to the
     session. Otherwise prefer IBKR_TRADE_ACCOUNT_ID, then a paper (DU) account,
     then the first one -- paper-first by construction."""
-    accts = ibkr_trade.accounts()
+    # Status already fetched the visible accounts for display; accepting that
+    # list avoids a second identical gateway round-trip merely to choose one.
+    if accts is None:
+        accts = ibkr_trade.accounts()
     ids = [str(a.get("accountId") or a.get("id") or "") for a in accts if isinstance(a, dict)]
     ids = [i for i in ids if i]
     if not ids:
@@ -206,10 +230,12 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     missing = [s for s in conids if s not in price_map]
     snap = ibkr_trade.market_snapshot([conids[s] for s in missing]) if missing else {}
     warnings: list[str] = []
+    sizing_price: dict[str, dict] = {}
 
     def price_lookup(sym: str) -> dict | None:
         if sym in price_map:
-            return price_map[sym]
+            sizing_price[sym] = price_map[sym]
+            return sizing_price[sym]
         cid = conids.get(sym)
         row = snap.get(cid) if cid is not None else None
         px = _parse_snapshot_price(row.get("31")) if isinstance(row, dict) else None
@@ -218,7 +244,8 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         # Currency for an unheld name isn't reliably in the snapshot; assume USD
         # (the dominant case) and surface it so the human can sanity-check size.
         warnings.append(f"{sym}: not held — sized from a live price assuming USD FX")
-        return {"price": px, "fx_to_base": fx_map.get("USD", 1.0)}
+        sizing_price[sym] = {"price": px, "fx_to_base": fx_map.get("USD", 1.0)}
+        return sizing_price[sym]
 
     orders, skip_warnings = ibkr_trade.build_orders(
         basket,
@@ -228,6 +255,14 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         coid_prefix="assay-" + _basket_token(account_id, basket),
         limit_lookup=_locked_limit,
     )
+    # Internal estimate metadata is stripped by ibkr_trade._cpapi_order before
+    # any gateway call. Reconciliation uses a locked limit when present,
+    # otherwise the exact mark/FX pair used above to size the shares.
+    for order in orders:
+        px = sizing_price.get(str(order.get("symbol") or "")) or {}
+        estimate_px = order.get("price") if order.get("orderType") == "LMT" else px.get("price")
+        order["_estimate_price"] = _number(estimate_px)
+        order["_estimate_fx_to_base"] = _number(px.get("fx_to_base")) or 1.0
     # Convert direct buys of KID-blocked names (US-domiciled ETFs) to options-only:
     # drop the order so we don't emit a guaranteed-reject. The Preview surfaces the
     # excluded names separately (see _trade_preview.options_only). The same filter
@@ -260,14 +295,15 @@ def _trade_status() -> dict:
     if status["authenticated"]:
         try:
             out = []
-            for a in ibkr_trade.accounts():
+            accts = ibkr_trade.accounts()
+            for a in accts:
                 aid = str(a.get("accountId") or a.get("id") or "")
                 if aid:
                     out.append({"id": aid, "kind": ibkr_trade.account_kind(aid)})
             status["accounts"] = out
             if out:
                 try:
-                    status["default_account"] = _resolve_trade_account(None)
+                    status["default_account"] = _resolve_trade_account(None, accts)
                 except ValueError:
                     pass
         except Exception:  # noqa: BLE001
@@ -300,6 +336,156 @@ def _order_band_context(model: dict, holdings: dict, after_plan: dict | None) ->
             "status_after": r.get("status"),
         }
     return out
+
+
+def _number(raw: Any) -> float:
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalized_working_orders(raw_orders: list[dict], symbols: set[str]) -> list[dict]:
+    """Stable, serializable subset of non-terminal IBKR orders relevant to a
+    preview. Remaining quantity is the only quantity that still affects future
+    exposure; original/filled quantities are retained for explanation."""
+    out: list[dict] = []
+    for raw in raw_orders:
+        if not isinstance(raw, dict) or _order_terminal(raw):
+            continue
+        sym = str(raw.get("ticker") or raw.get("symbol") or "").strip().upper()
+        if not sym or sym not in symbols:
+            continue
+        total = _number(raw.get("totalSize") or raw.get("quantity"))
+        filled = _number(raw.get("filledQuantity"))
+        remaining_raw = raw.get("remainingQuantity")
+        remaining = _number(remaining_raw) if remaining_raw is not None else max(0.0, total - filled)
+        if remaining <= 0:
+            continue
+        out.append({
+            "order_id": str(raw.get("orderId") or raw.get("order_id") or ""),
+            "symbol": sym,
+            "side": str(raw.get("side") or "").strip().upper(),
+            "remaining_qty": remaining,
+            "filled_qty": filled,
+            "total_qty": total,
+            "status": str(raw.get("status") or raw.get("order_status") or ""),
+            "order_type": str(raw.get("orderType") or raw.get("order_type") or ""),
+            "price": _number(raw.get("price")) or None,
+            "tif": str(raw.get("tif") or raw.get("timeInForce") or ""),
+        })
+    return sorted(out, key=lambda o: (
+        o["symbol"], o["side"], o["order_id"], o["remaining_qty"],
+    ))
+
+
+def _working_fingerprint(working: list[dict]) -> str:
+    """Hash only fields whose change alters reconciliation or user intent."""
+    rows = [{
+        "id": o.get("order_id"),
+        "symbol": o.get("symbol"),
+        "side": o.get("side"),
+        "remaining": round(_number(o.get("remaining_qty")), 8),
+        "status": o.get("status"),
+    } for o in working]
+    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _reconcile_working_orders(
+    proposed: list[dict],
+    basket: list[dict],
+    working: list[dict],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return (residual_orders, context, effective_basket).
+
+    Same-side resting quantity reduces a newly proposed order. Any opposite-side
+    resting order suppresses the new order entirely: simultaneous opposing orders
+    are churn, not a position recommendation, so the human must cancel/modify the
+    old intent first. Existing orders are never modified here.
+    """
+    basket_by_symbol = {
+        str(t.get("symbol") or "").upper(): _number(t.get("delta_czk"))
+        for t in basket
+    }
+    working_by_symbol: dict[str, list[dict]] = {}
+    for row in working:
+        working_by_symbol.setdefault(str(row["symbol"]), []).append(row)
+
+    residual: list[dict] = []
+    contexts: list[dict] = []
+    effective: list[dict] = []
+    for order in proposed:
+        sym = str(order.get("symbol") or "").strip().upper()
+        side = str(order.get("side") or "").strip().upper()
+        proposed_qty = _number(order.get("quantity"))
+        rows = working_by_symbol.get(sym, [])
+        same = [r for r in rows if r.get("side") == side]
+        opposite = [r for r in rows if r.get("side") and r.get("side") != side]
+        same_qty = sum(_number(r.get("remaining_qty")) for r in same)
+        original_delta = basket_by_symbol.get(sym, 0.0)
+        unit_base = (
+            _number(order.get("_estimate_price"))
+            * (_number(order.get("_estimate_fx_to_base")) or 1.0)
+        )
+        if unit_base <= 0:
+            unit_base = abs(original_delta) / proposed_qty if proposed_qty else 0.0
+        working_signed_qty = sum(
+            _number(r.get("remaining_qty")) * (1 if r.get("side") == "BUY" else -1)
+            for r in rows
+        )
+
+        if opposite:
+            classification = "opposite_side"
+            residual_qty = 0.0
+            next_step = (
+                f"Cancel or modify the existing {opposite[0]['side']} order first, "
+                f"then preview {side} again."
+            )
+        else:
+            residual_qty = max(0.0, proposed_qty - same_qty)
+            if same_qty <= 0:
+                classification = "none"
+                next_step = "Review and confirm this new order."
+            elif residual_qty <= 0:
+                classification = "fully_covered"
+                next_step = "No new order needed — monitor the existing working order."
+            else:
+                classification = "same_side_partial"
+                next_step = (
+                    f"Existing {side} covers {same_qty:g} shares; confirm only "
+                    f"the {residual_qty:g}-share remainder."
+                )
+
+        if residual_qty > 0:
+            adjusted = dict(order)
+            adjusted["quantity"] = int(residual_qty) if residual_qty.is_integer() else residual_qty
+            coid = str(adjusted.get("cOID") or "")
+            if coid:
+                adjusted["cOID"] = f"{coid.rsplit('-', 1)[0]}-{adjusted['quantity']}"
+            residual.append(adjusted)
+
+        residual_signed_qty = residual_qty * (1 if side == "BUY" else -1)
+        effective_delta = (working_signed_qty + residual_signed_qty) * unit_base
+        if abs(effective_delta) >= 1:
+            effective.append({"symbol": sym, "delta_czk": round(effective_delta, 2)})
+        contexts.append({
+            "symbol": sym,
+            "side": side,
+            "classification": classification,
+            "proposed_qty": proposed_qty,
+            "working_same_qty": same_qty,
+            "working_qty": sum(_number(r.get("remaining_qty")) for r in rows),
+            "residual_qty": residual_qty,
+            "proposed_delta_czk": original_delta,
+            "working_delta_czk": round(working_signed_qty * unit_base, 2),
+            "residual_delta_czk": round(residual_signed_qty * unit_base, 2),
+            "effective_delta_czk": round(effective_delta, 2),
+            "working": rows,
+            "next_step": next_step,
+            "placeable": residual_qty > 0,
+        })
+    return residual, contexts, effective
 
 
 def _trade_reconnect() -> dict:
@@ -359,7 +545,30 @@ def _trade_preview(body: dict) -> dict:
     if not basket:
         raise ValueError("nothing staged to preview")
     account_id = _resolve_trade_account(body.get("account"))
-    orders, warnings = _prepare_trade_orders(account_id, basket)
+    proposed_orders, warnings = _prepare_trade_orders(account_id, basket)
+
+    relevant_symbols = {
+        str(o.get("symbol") or "").strip().upper() for o in proposed_orders
+        if o.get("symbol")
+    }
+    working_available = True
+    working_error: str | None = None
+    try:
+        raw_working = ibkr_trade.live_orders()
+        working_orders = _normalized_working_orders(raw_working, relevant_symbols)
+    except ibkr_trade.CPAPIError as exc:
+        # A preview can still show sizing/risk, but must not arm placement when
+        # we could not rule out a double trade.
+        working_available = False
+        working_error = str(exc)
+        working_orders = []
+    orders, order_context, effective_basket = _reconcile_working_orders(
+        proposed_orders, basket, working_orders,
+    )
+    residual_basket = [
+        {"symbol": c["symbol"], "delta_czk": c["residual_delta_czk"]}
+        for c in order_context if abs(_number(c.get("residual_delta_czk"))) >= 1
+    ]
 
     ibkr_preview = {}
     if orders:
@@ -389,7 +598,7 @@ def _trade_preview(body: dict) -> dict:
     model = target_staging.active_model()
     if holdings and model:
         try:
-            local = whatif.simulate(holdings, model, basket)
+            local = whatif.simulate(holdings, model, effective_basket)
         except ValueError:
             local = None
 
@@ -407,8 +616,15 @@ def _trade_preview(body: dict) -> dict:
     token = _basket_token(account_id, basket)
     now = time.time()
     # Register the preview and prune expired entries so the map can't grow.
-    _preview_issued[token] = now
-    for t in [t for t, at in _preview_issued.items() if now - at > PREVIEW_TTL_S]:
+    _preview_issued[token] = {
+        "issued_at": now,
+        "orders": orders,
+        "working_fingerprint": _working_fingerprint(working_orders),
+        "working_symbols": sorted(relevant_symbols),
+        "working_available": working_available,
+    }
+    for t in [t for t, rec in _preview_issued.items()
+              if now - _number(rec.get("issued_at")) > PREVIEW_TTL_S]:
         _preview_issued.pop(t, None)
 
     return {
@@ -419,7 +635,13 @@ def _trade_preview(body: dict) -> dict:
         "token": token,
         "preview_ttl_s": PREVIEW_TTL_S,
         "trades": basket,
+        "effective_trades": effective_basket,
+        "residual_trades": residual_basket,
         "orders": orders,
+        "proposed_orders": proposed_orders,
+        "order_context": order_context,
+        "working_orders_available": working_available,
+        "working_orders_error": working_error,
         "warnings": warnings,
         "options_only": options_only,
         "ibkr_preview": ibkr_preview,
@@ -434,8 +656,8 @@ def _trade_preview(body: dict) -> dict:
 def _trade_place(body: dict) -> dict:
     """Place a previewed basket. Refuses unless trading is enabled, the caller
     confirmed, the preview token matches the exact basket+account, and (for live
-    accounts) live placement is unlocked. Orders are re-derived server-side from
-    the token-bound basket, never trusted from the client."""
+    accounts) live placement is unlocked. Orders come from the token-bound
+    server-side preview record, never from the client."""
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to place orders")
     if not body.get("confirm"):
@@ -455,12 +677,33 @@ def _trade_place(body: dict) -> dict:
     # only as good as the prices the preview sized from. Unknown tokens (e.g.
     # after a server restart) read as expired — fail safe.
     issued = _preview_issued.get(expected)
-    if issued is None or time.time() - issued > PREVIEW_TTL_S:
+    if issued is None or time.time() - _number(issued.get("issued_at")) > PREVIEW_TTL_S:
         raise ValueError("preview expired — prices and sizes may be stale; "
                          "re-preview the basket before placing")
-    orders, warnings = _prepare_trade_orders(account_id, basket)
+    if not issued.get("working_available"):
+        raise _Conflict(
+            "working orders could not be verified during preview — reconnect the "
+            "gateway and preview again before placing"
+        )
+    symbols = set(issued.get("working_symbols") or [])
+    try:
+        fresh_working = _normalized_working_orders(ibkr_trade.live_orders(), symbols)
+    except ibkr_trade.CPAPIError as exc:
+        raise _Conflict(
+            "working orders could not be rechecked — no orders were placed; "
+            "reconnect the gateway and preview again"
+        ) from exc
+    if _working_fingerprint(fresh_working) != issued.get("working_fingerprint"):
+        raise _Conflict(
+            "working orders changed after this preview — no orders were placed; "
+            "review the updated orders and preview again"
+        )
+    # Place exactly the residual set the preview displayed. Re-sizing here could
+    # silently restore quantities already covered by resting orders.
+    orders = [dict(o) for o in issued.get("orders") or []]
+    warnings: list[str] = []
     if not orders:
-        raise ValueError("no orders could be sized from this basket — see preview warnings")
+        raise ValueError("no residual orders remain to place — preview the updated basket")
     try:
         placed = ibkr_trade.place_orders(account_id, orders)
     except ibkr_trade.CPAPIError as exc:

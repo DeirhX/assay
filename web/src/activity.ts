@@ -1,5 +1,5 @@
 import { $$, api, el, esc, relAge } from "./core";
-import { navFromUrl, pushNav, restoreNav } from "./shell";
+import { navFromUrl, pushNav, replaceViewState, restoreNav } from "./shell";
 import { navForTask, taskTitle } from "./tasks";
 import { openTicker } from "./ticker-nav";
 import { asJob, dayLabel } from "./activity-util";
@@ -70,7 +70,11 @@ function renderFilters(): void {
   ([["all", "All"], ["view", "Tickers"], ["task", "Tasks"]] as [ActFilter, string][]).forEach(([key, label]) => {
     const b = el("button", "chip" + (_filter === key ? " active" : ""), `${label} ${counts[key]}`);
     b.type = "button";
-    b.addEventListener("click", () => { _filter = key; render(); });
+    b.addEventListener("click", () => {
+      _filter = key;
+      replaceViewState({ filter: key === "all" ? "" : key });
+      render();
+    });
     wrap.appendChild(b);
   });
 }
@@ -101,6 +105,8 @@ function render(): void {
 }
 
 export async function loadActivity(): Promise<void> {
+  const requested = navFromUrl().filter;
+  _filter = requested === "view" || requested === "task" ? requested : "all";
   const status = $$("#act-status");
   status.textContent = "Loading activity\u2026";
   try {

@@ -5,7 +5,7 @@ Unlike the read-only Flex reader (``ibkr_portfolio.py``), this module CAN place
 trades, so it is gated hard everywhere it is wired in (see ``serve.py``).
 
 Architecture: CPAPI is REST/JSON served by a local **Client Portal Gateway**
-(a Java program you run yourself, default ``https://localhost:5000/v1/api``). We
+(a Java program you run yourself, default ``https://127.0.0.1:5000/v1/api``). We
 talk to it with stdlib ``urllib`` exactly like the rest of this app talks to
 Yahoo/SEC/Flex -- zero third-party dependencies, no async rewrite. The gateway
 holds the authenticated session; you log in through its browser page once per
@@ -41,7 +41,10 @@ from config import TOOLS_SECRETS, config_value as _config_value
 
 SECRETS_FILE = TOOLS_SECRETS
 USER_AGENT = "assay-ibkr-trade/1.0 (+stdlib)"
-DEFAULT_GATEWAY_BASE = "https://localhost:5000/v1/api"
+# Use the IPv4 literal deliberately. On Windows, Python resolves ``localhost`` to
+# ::1 first; the gateway listens on IPv4, so every new urllib connection waits
+# roughly two seconds for IPv6 to fail before falling back to 127.0.0.1.
+DEFAULT_GATEWAY_BASE = "https://127.0.0.1:5000/v1/api"
 # Short timeout for the frequent session-status pings (auth_status / tickle). A
 # healthy gateway answers these in well under a second; capping them keeps a
 # wedged gateway from stalling the Trade view's polling and the exit overlay's

@@ -1,7 +1,7 @@
 import { $$, api, el, esc } from "./core";
 import { detectStance } from "./deepdive/decorate";
 import { openTicker } from "./ticker-nav";
-import { cleanSymbol } from "./shell";
+import { cleanSymbol, navFromUrl, replaceViewState } from "./shell";
 
 // ---- viewed tickers (browser-local recents) -------------------------------
 const VIEWED_KEY = "rebal.viewedTickers";
@@ -50,6 +50,7 @@ function relTime(iso: string | number | null | undefined): string {
 }
 
 async function renderViewedTickers() {
+  _viewedSort = navFromUrl().sort === "name" ? "name" : "time";
   const out = $$("#dd-result");
   out.innerHTML = "";
   $$("#dd-status").textContent = "";
@@ -61,7 +62,11 @@ async function renderViewedTickers() {
   [["time", "Recent"], ["name", "Name"]].forEach(([key, label]) => {
     const b = el("button", "chip" + (_viewedSort === key ? " active" : ""), label);
     b.type = "button";
-    b.addEventListener("click", () => { _viewedSort = key; renderViewedTickers(); });
+    b.addEventListener("click", () => {
+      _viewedSort = key;
+      replaceViewState({ sort: key === "time" ? "" : key });
+      renderViewedTickers();
+    });
     sortWrap.appendChild(b);
   });
   head.appendChild(sortWrap);

@@ -1,4 +1,5 @@
 import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
+import { navFromUrl, replaceViewState } from "./shell";
 
 // ---- tax calendar ----------------------------------------------------------
 // The Czech 3-year exemption made proactive: every not-yet-exempt lot on a
@@ -182,10 +183,17 @@ function renderTax(r: TaxCalendar) {
 
 function initTaxControls() {
   const sel = $$<HTMLSelectElement & { _wired?: boolean }>("#tax-soon");
+  const requested = navFromUrl().soon;
+  _taxSoon = requested && Array.from(sel.options).some((o) => o.value === requested)
+    ? requested : "60";
+  sel.value = _taxSoon;
   if (sel && !sel._wired) {
     sel._wired = true;
-    sel.value = _taxSoon;
-    sel.addEventListener("change", () => { _taxSoon = sel.value || "60"; loadTax(); });
+    sel.addEventListener("change", () => {
+      _taxSoon = sel.value || "60";
+      replaceViewState({ soon: _taxSoon === "60" ? "" : _taxSoon });
+      loadTax();
+    });
   }
 }
 

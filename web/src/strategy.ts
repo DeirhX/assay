@@ -23,7 +23,7 @@ import {
   toneOf,
   type Band,
 } from "./strategy-model";
-import { openDeepRunInPipeline, pushNav, setActiveView } from "./shell";
+import { navFromUrl, openDeepRunInPipeline, pushNav, replaceViewState, setActiveView } from "./shell";
 
 // ---- manifest shapes (GET /api/strategy/{run_id}) -------------------------
 // One drafted segment member (Gate 1) / Deep Research candidate.
@@ -155,12 +155,13 @@ let _viewStage: string | null = null;
 let _lastM: Manifest | null = null;
 
 function currentRunParam() {
-  return new URLSearchParams(window.location.search).get("run") || "";
+  return navFromUrl().run;
 }
 
 async function loadStrategy() {
   const runId = currentRunParam();
-  _viewStage = null;  // a fresh load always lands on the live/actionable step
+  const requestedStage = navFromUrl().stage;
+  _viewStage = STAGE_ORDER.includes(requestedStage) ? requestedStage : null;
   _lastM = null;
   if (runId) {
     _activeRunId = runId;
@@ -218,7 +219,7 @@ async function startRun() {
     _viewStage = null;
     $$("#strat-start").hidden = true;
     status.textContent = "";
-    pushNav({ view: "strategy", run: m.run_id });
+    pushNav({ view: "strategy", run: m.run_id, stage: "" });
     render(m);
     schedulePoll(m.run_id);
   } catch (e) {
@@ -249,7 +250,7 @@ async function loadRecentRuns() {
       `</button>`;
     }).join("");
     box.querySelectorAll<HTMLElement>(".strat-recent-item").forEach((b) => {
-      b.addEventListener("click", () => { pushNav({ view: "strategy", run: b.dataset.run }); loadStrategy(); });
+      b.addEventListener("click", () => { pushNav({ view: "strategy", run: b.dataset.run, stage: "" }); loadStrategy(); });
     });
   } catch (_e) {
     box.innerHTML = "";
@@ -261,11 +262,18 @@ function render(m: Manifest) {
   _lastM = m;
   renderStages(m);
   const panel = $$("#strat-panel");
-  if (m.state === "error") { _viewStage = null; return renderError(m.error || "the run failed"); }
+  if (m.state === "error") {
+    _viewStage = null;
+    replaceViewState({ stage: "" });
+    return renderError(m.error || "the run failed");
+  }
   // Drop a stale pin (e.g. a run reloaded at an earlier state) and decide whether
   // we're showing the live step (interactive) or a revisited one (read-only).
   const reached = reachedStages(m.state);
-  if (_viewStage && !reached.includes(_viewStage)) _viewStage = null;
+  if (_viewStage && !reached.includes(_viewStage)) {
+    _viewStage = null;
+    replaceViewState({ stage: "" });
+  }
   const live = liveStage(m.state);
   const showing = _viewStage || live;
   if (showing === live) return renderLiveStage(m, panel);
@@ -321,7 +329,11 @@ function viewingBar(m: Manifest, stage: string) {
   bar.innerHTML = `<span>Viewing the <strong>${esc(STAGE_TITLE[stage] || "completed")}</strong> step (read-only).</span>`;
   const btn = el("button", "ghost", `Back to current step: ${esc(STAGE_TITLE[liveStage(m.state)] || "")} →`);
   btn.type = "button";
-  btn.addEventListener("click", () => { _viewStage = null; if (_lastM) render(_lastM); });
+  btn.addEventListener("click", () => {
+    _viewStage = null;
+    replaceViewState({ stage: "" });
+    if (_lastM) render(_lastM);
+  });
   bar.appendChild(btn);
   return bar;
 }
@@ -446,7 +458,7 @@ function renderError(msg: string) {
   const actions = el("div", "thesis-actions");
   const restart = el("button", "ghost", "Start a new run ↺");
   restart.type = "button";
-  restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
+  restart.addEventListener("click", () => { pushNav({ view: "strategy", run: "", stage: "" }); loadStrategy(); });
   actions.appendChild(restart);
   panel.querySelector(".card")?.appendChild(actions);
 }
@@ -622,7 +634,7 @@ function renderStaged(m: Manifest, panel: HTMLElement) {
   const restartBtn = () => {
     const b = el("button", "ghost", "New run ↺");
     b.type = "button";
-    b.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
+    b.addEventListener("click", () => { pushNav({ view: "strategy", run: "", stage: "" }); loadStrategy(); });
     return b;
   };
 
@@ -728,7 +740,7 @@ function renderDone(m: Manifest, panel: HTMLElement) {
   goReb.addEventListener("click", () => { pushNav({ view: "rebalance" }); setActiveView("rebalance"); });
   const restart = el("button", "ghost", "New run ↺");
   restart.type = "button";
-  restart.addEventListener("click", () => { pushNav({ view: "strategy" }); loadStrategy(); });
+  restart.addEventListener("click", () => { pushNav({ view: "strategy", run: "", stage: "" }); loadStrategy(); });
   actions.appendChild(goReb);
   actions.appendChild(restart);
   card.appendChild(actions);
@@ -833,6 +845,7 @@ function initStrategy() {
     const li = tgt.closest ? tgt.closest<HTMLElement>("li") : null;
     if (!li || !li.classList.contains("clickable") || !_lastM) return;
     _viewStage = li.dataset.stage === liveStage(_lastM.state) ? null : (li.dataset.stage ?? null);
+    replaceViewState({ stage: _viewStage || "" });
     render(_lastM);
   });
 }

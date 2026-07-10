@@ -1,6 +1,6 @@
 import { $, $$, api, decisionPill, el, esc, fmtPct, fmtPrice, fmtSignedWeight, fmtWeight, freshnessNote, instrumentBadge, isStaleToken, nextToken, pctClass, sectionCard, state } from "./core";
 import { starHtml } from "./basket";
-import { cleanSymbol, pushNav, setActiveView } from "./shell";
+import { cleanSymbol, navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
 import { recordView, renderViewedTickers } from "./viewed";
 import { renderPriceChart } from "./deepdive/price-chart";
 import { collapsibleCard, dataQualityTag, sourceLine, renderBusiness } from "./deepdive/cards";
@@ -48,7 +48,7 @@ $$("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") 
 // Return to the viewed-tickers overview (the deep-dive landing list).
 function goToOverview() {
   tickerInput().value = "";
-  pushNav({ view: "deepdive", ticker: "" });
+  pushNav({ view: "deepdive", ticker: "", sec: "" });
   setActiveView("deepdive");
   renderViewedTickers();
 }
@@ -260,7 +260,7 @@ async function pullTicker(raw: string, { push = true, aliasFor = "", anchor }: {
   // Latest-wins: a slow live pull for a ticker the user has navigated away from
   // must not paint over the dossier they're now looking at.
   const token = nextToken("deepdive");
-  if (push) pushNav({ view: "deepdive", ticker: sym });
+  if (push) pushNav({ view: "deepdive", ticker: sym, sort: "", sec: "" });
   setActiveView("deepdive");
   tickerInput().value = sym;
   const status = $$("#dd-status");
@@ -393,6 +393,7 @@ function dossierBar(
     b.type = "button";
     b.dataset.sec = s.id;
     b.addEventListener("click", () => {
+      replaceViewState({ sec: s.id === "overview" ? "" : s.id });
       document.getElementById("dd-sec-" + s.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
     tabs.appendChild(b);
@@ -418,6 +419,10 @@ function wireDossierChrome(headerCard: HTMLElement, sections: DossierSection[]):
       if (!e.isIntersecting) return;
       const id = (e.target as HTMLElement).id.replace("dd-sec-", "");
       bar.querySelectorAll(".dd-tab").forEach((t) => t.classList.toggle("active", (t as HTMLElement).dataset.sec === id));
+      const nav = navFromUrl();
+      if (nav.view === "deepdive" && nav.ticker) {
+        replaceViewState({ sec: id === "overview" ? "" : id });
+      }
     });
   }, { rootMargin: "-45% 0px -50% 0px", threshold: 0 });
   sections.forEach((s) => {
@@ -645,6 +650,12 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
   out.appendChild(secHistory);
   wireDossierChrome(card, sections);
 
+  const requestedSection = navFromUrl().sec;
+  if (sections.some((s) => s.id === requestedSection)) {
+    requestAnimationFrame(() =>
+      document.getElementById("dd-sec-" + requestedSection)?.scrollIntoView({ block: "start" }));
+    return;
+  }
   // Anchor a fresh open on the price history once layout has settled. The chart
   // card carries its own scroll-margin so it clears the sticky bar; if there's
   // no chart (no price series), stay at the top rather than jumping to nothing.
