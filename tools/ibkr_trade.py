@@ -41,6 +41,11 @@ from config import TOOLS_SECRETS, config_value as _config_value
 SECRETS_FILE = TOOLS_SECRETS
 USER_AGENT = "assay-ibkr-trade/1.0 (+stdlib)"
 DEFAULT_GATEWAY_BASE = "https://localhost:5000/v1/api"
+# Short timeout for the frequent session-status pings (auth_status / tickle). A
+# healthy gateway answers these in well under a second; capping them keeps a
+# wedged gateway from stalling the Trade view's polling and the exit overlay's
+# readiness probe for the full 30s default.
+_SESSION_TIMEOUT = 8.0
 
 
 # --------------------------------------------------------------------------- #
@@ -137,9 +142,13 @@ def _http(method: str, url: str, body: dict | None = None, *, timeout: float = 3
         raise CPAPIError(f"gateway returned non-JSON: {exc}") from exc
 
 
-def _request(method: str, endpoint: str, body: dict | None = None) -> Any:
-    """Call a CPAPI endpoint by its path (e.g. ``/iserver/auth/status``)."""
-    return _http(method, f"{gateway_base()}{endpoint}", body)
+def _request(method: str, endpoint: str, body: dict | None = None,
+             *, timeout: float = 30.0) -> Any:
+    """Call a CPAPI endpoint by its path (e.g. ``/iserver/auth/status``). The
+    session-status pings pass a short ``timeout`` so a wedged gateway (socket
+    accepted, no answer) degrades to 'not connected' in seconds instead of
+    stalling the Trade view's polling and the exit overlay's readiness probe."""
+    return _http(method, f"{gateway_base()}{endpoint}", body, timeout=timeout)
 
 
 # --------------------------------------------------------------------------- #
@@ -150,10 +159,10 @@ def auth_status() -> dict:
     competing (another session stole the slot). Empty dict if the call fails so
     callers can render 'not connected' instead of erroring."""
     try:
-        res = _request("POST", "/iserver/auth/status")
+        res = _request("POST", "/iserver/auth/status", timeout=_SESSION_TIMEOUT)
     except CPAPIError:
         try:
-            res = _request("GET", "/iserver/auth/status")
+            res = _request("GET", "/iserver/auth/status", timeout=_SESSION_TIMEOUT)
         except CPAPIError:
             return {}
     return res if isinstance(res, dict) else {}
@@ -169,7 +178,7 @@ def reauthenticate() -> dict:
 def tickle() -> dict:
     """Keepalive ping. The brokerage session times out after a few idle minutes;
     a periodic tickle keeps it warm during an active rebalancing sitting."""
-    return _request("GET", "/tickle")
+    return _request("GET", "/tickle", timeout=_SESSION_TIMEOUT)
 
 
 def logout() -> dict:
