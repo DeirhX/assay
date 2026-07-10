@@ -374,10 +374,11 @@ $$("#pipe-existing-use").addEventListener("click", async () => {
   setPipeStep(3);
 });
 
-// Deep Research only works through a logged-in Perplexity session. When we are
-// not logged in, block the prompt workflow behind the login gate and insist the
-// user sets it up first. The deterministic pull and the Step 3 import path stay
-// reachable, so this gates the prompt, not the whole step.
+// Deep Research only works through a logged-in Perplexity session, which is
+// OPTIONAL. When we're not logged in, withhold the prompt workflow behind a
+// notice that frames the login as optional (never a hard requirement). The
+// deterministic pull and the Step 3 import path stay reachable, so this gates
+// the prompt, not the whole step.
 function updateStep2LoginGate() {
   const gate = $$("#pipe-login-gate");
   const area = $$("#pipe-prompt-area");
@@ -409,7 +410,8 @@ async function buildPrompt() {
   status.classList.remove("err");
   if (!state.pplxLoggedIn) {
     updateStep2LoginGate();
-    $$("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
+    $$("#pipe-login-gate-status").textContent =
+      "Deep Research is optional — set up Perplexity to enable it, or use the escape hatches below.";
     return;
   }
   if (!seg) {

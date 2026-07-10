@@ -5,7 +5,7 @@
 //     Research crawl that reuses the segment run/save/Q&A machinery.
 //   - openAnalysisConfig: the modal to edit CLI backend order/models/web policy.
 // Extracted from deepdive.ts; all I/O via /api/*, all rendering self-contained.
-import { api, el, esc } from "../core";
+import { api, el, esc, pplxRequiredNotice } from "../core";
 import { pollDeepJob } from "../jobs";
 import { ensureTickerSet, linkifyTickers, mdToHtml } from "../analyses";
 import { modelLabel, downloadText, pushNav, setActiveView } from "../shell";
@@ -247,11 +247,6 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     setActiveView("analyses");
   }
 
-  function goLogin() {
-    pushNav({ view: "pipeline" });
-    setActiveView("pipeline");
-  }
-
   function runRowEl(r: DeepRun): HTMLElement {
     const btn = el("button", "dr-run-row");
     btn.type = "button";
@@ -300,21 +295,18 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
         `Research crawl for a fuller, web-sourced single-name report &mdash; a few ` +
         `minutes, and quota-limited, so it's opt-in.`));
     }
-    const actions = el("div", "analysis-actions");
+    // Perplexity is optional: with no session, don't offer a run at all -- just
+    // a passive notice (past runs above stay readable, they need no login).
     if (loggedIn === false) {
-      body.appendChild(el("p", "hint muted",
-        "A logged-in Perplexity session is required to run a new one."));
-      const a = el("button", "primary", "Set up Perplexity login");
-      a.type = "button";
-      a.addEventListener("click", goLogin);
-      actions.appendChild(a);
-    } else {
-      const btn = el("button", runs.length ? "ghost" : "primary",
-        runs.length ? "\u21bb Run new Deep Research" : "Run Deep Research");
-      btn.type = "button";
-      btn.addEventListener("click", startRun);
-      actions.appendChild(btn);
+      body.appendChild(pplxRequiredNotice("Deep Research"));
+      return;
     }
+    const actions = el("div", "analysis-actions");
+    const btn = el("button", runs.length ? "ghost" : "primary",
+      runs.length ? "\u21bb Run new Deep Research" : "Run Deep Research");
+    btn.type = "button";
+    btn.addEventListener("click", startRun);
+    actions.appendChild(btn);
     body.appendChild(actions);
   }
 
