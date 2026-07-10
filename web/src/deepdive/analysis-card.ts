@@ -280,7 +280,12 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     }
   }
 
-  function renderIdle(loggedIn: boolean | null, runs: DeepRun[]) {
+  function renderIdle(
+    enabled: boolean,
+    available: boolean | null,
+    loggedIn: boolean | null,
+    runs: DeepRun[],
+  ) {
     status.textContent = "";
     status.classList.remove("err");
     body.innerHTML = "";
@@ -297,8 +302,9 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     }
     // Perplexity is optional: with no session, don't offer a run at all -- just
     // a passive notice (past runs above stay readable, they need no login).
-    if (loggedIn === false) {
-      body.appendChild(pplxRequiredNotice("Deep Research"));
+    if (!enabled || available === false || loggedIn === false) {
+      const reason = !enabled ? "disabled" : available === false ? "unavailable" : "login";
+      body.appendChild(pplxRequiredNotice("Deep Research", reason));
       return;
     }
     const actions = el("div", "analysis-actions");
@@ -314,17 +320,27 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     status.innerHTML = `<span class="spinner"></span> loading&hellip;`;
     body.innerHTML = "";
     let runs: DeepRun[] = [];
+    let enabled = true;
+    let available: boolean | null = null;
     let loggedIn: boolean | null = null;
     let live: Job | null = null;
     try {
       const [runsRes, loginRes, jobsRes] = await Promise.all([
         api<{ runs?: DeepRun[] }>("/api/deep-runs").then((d) => d.runs || []).catch((): DeepRun[] => []),
-        api<{ logged_in?: boolean } | null>("/api/deep-research/login-status").catch((): { logged_in?: boolean } | null => null),
+        api<{ enabled?: boolean; logged_in?: boolean; deep_research_available?: boolean | null } | null>(
+          "/api/deep-research/login-status",
+        ).catch((): {
+          enabled?: boolean;
+          logged_in?: boolean;
+          deep_research_available?: boolean | null;
+        } | null => null),
         api<{ jobs?: Job[] }>("/api/jobs").then((d) => d.jobs || []).catch((): Job[] => []),
       ]);
       runs = runsRes
         .filter((r: DeepRun) => r.kind === "ticker" && norm(r.symbol) === want)
         .sort((a: DeepRun, b: DeepRun) => (a.stem < b.stem ? 1 : -1));
+      enabled = loginRes?.enabled !== false;
+      available = loginRes?.deep_research_available ?? null;
       loggedIn = loginRes ? !!loginRes.logged_in : null;
       live = jobsRes.find((j: Job) => j.kind === "deep_research" &&
         (j.state === "running" || j.state === "queued") &&
@@ -337,7 +353,7 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
         `Deep Research \u00b7 ${sym}`, async () => { await show(); });
       return;
     }
-    renderIdle(loggedIn, runs);
+    renderIdle(enabled, available, loggedIn, runs);
   }
 
   show();

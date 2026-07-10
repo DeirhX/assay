@@ -8,6 +8,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import _support  # noqa: F401
 import pplx_deep_research as pdr
@@ -65,6 +66,26 @@ class CloneBaseProfile(unittest.TestCase):
 
     def test_cleanup_tolerates_none(self):
         pdr.cleanup_clone(None)  # must not raise
+
+    def test_forget_profile_removes_saved_login_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = _make_base(Path(tmp))
+            pdr.forget_profile(base)
+            self.assertFalse(base.exists())
+
+    def test_forget_profile_refuses_home_directory(self):
+        with self.assertRaisesRegex(ValueError, "unsafe profile path"):
+            pdr.forget_profile(Path.home())
+
+    def test_missing_deep_research_menu_means_no_entitlement(self):
+        page = mock.Mock()
+        search = mock.Mock()
+        search.count.return_value = 1
+        menu = mock.Mock()
+        menu.click.side_effect = RuntimeError("missing")
+        page.get_by_role.side_effect = lambda role, **kw: search if role == "button" else menu
+        page.evaluate.return_value = "not found"
+        self.assertFalse(pdr._deep_research_access(page))
 
 
 if __name__ == "__main__":

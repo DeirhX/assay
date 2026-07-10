@@ -103,6 +103,7 @@ from analysis_jobs import (  # noqa: E402  -- single-ticker analysis + the two Q
     start_qa as _start_qa,
 )
 from browser_jobs import (  # noqa: E402  -- Perplexity auth + deep-research/login/import jobs
+    forget_integration as _forget_pplx,
     get_auth_state as _get_auth_state, start_deep_research as _start_deep_research,
     start_import as _start_import, start_login as _start_login,
     verify_login as _verify_login,
@@ -338,6 +339,7 @@ _POST_EXACT = {
     "/api/setup/check": "_post_setup_check",
     "/api/setup/ibkr": "_post_setup_ibkr",
     "/api/setup/automation": "_post_setup_automation",
+    "/api/setup/perplexity/forget": "_post_forget_perplexity",
     "/api/deep-research/save": "_post_deep_save",
     "/api/deep-research/run": "_post_deep_run",
     "/api/deep-research/login": "_post_deep_login",
@@ -1111,6 +1113,9 @@ class Handler(BaseHTTPRequestHandler):
     def _post_deep_save(self, path):
         body = self._read_body()
         return self._send_json(_save_deep_artifact(body))
+
+    def _post_forget_perplexity(self, path):
+        return self._send_json(_forget_pplx())
 
     def _post_deep_run(self, path):
         body = self._read_body()

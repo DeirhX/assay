@@ -34,22 +34,85 @@ from store import load, slugify, write_json
 def get_auth_state() -> dict:
     st = load(AUTH_STATE_FILE) or {}
     return {
+        # Missing config means not opted in. Existing installs migrate naturally:
+        # their cached logged_in=true state keeps the integration enabled.
+        "enabled": bool(st.get("enabled", st.get("logged_in", False))),
         "logged_in": bool(st.get("logged_in")),
+        "deep_research_available": st.get("deep_research_available"),
         "updated_at": st.get("updated_at"),
         "note": st.get("note", ""),
     }
 
 
 def set_auth_state(logged_in: bool, note: str = "") -> None:
+    current = get_auth_state()
     write_json(AUTH_STATE_FILE, {
+        "enabled": current["enabled"] or bool(logged_in),
         "logged_in": bool(logged_in),
+        "deep_research_available": current.get("deep_research_available"),
         "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "note": note,
     })
 
 
+def _set_integration_enabled(enabled: bool) -> dict:
+    current = get_auth_state()
+    write_json(AUTH_STATE_FILE, {
+        **current,
+        "enabled": bool(enabled),
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "note": "enabled in Settings" if enabled else "disabled in Settings",
+    })
+    return get_auth_state()
+
+
+def _save_access_probe(res: dict, note: str) -> None:
+    """Persist login + Deep Research entitlement from a browser probe."""
+    current = get_auth_state()
+    write_json(AUTH_STATE_FILE, {
+        **current,
+        "enabled": bool(res.get("logged_in")),
+        "logged_in": bool(res.get("logged_in")),
+        "deep_research_available": res.get("deep_research_available"),
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "note": note,
+    })
+
+
+def forget_integration() -> dict:
+    """Disable Perplexity and erase its dedicated browser profile/login."""
+    if jobs.active_count():
+        raise Conflict(
+            "A Perplexity browser job is running. Cancel or wait for it before forgetting the login."
+        )
+    # Disable first so a failed filesystem cleanup still gates all new work.
+    write_json(AUTH_STATE_FILE, {
+        "enabled": False,
+        "logged_in": False,
+        "deep_research_available": None,
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "note": "forgotten in Settings",
+    })
+    try:
+        import pplx_deep_research as worker
+        worker.forget_profile()
+    except Exception as exc:  # noqa: BLE001
+        raise Conflict(
+            f"Perplexity was disabled, but its saved browser profile could not be removed: {exc}"
+        ) from exc
+    return get_auth_state()
+
+
+def _require_enabled() -> None:
+    if not get_auth_state()["enabled"]:
+        raise Conflict(
+            "Perplexity integration is turned off. Enable it in Settings to use Deep Research."
+        )
+
+
 def verify_login() -> dict:
     """Synchronous, ~8s live probe that refreshes the cached login flag."""
+    _require_enabled()
     if not claim_active():
         raise Conflict(slots_busy_msg())
     try:
@@ -57,7 +120,10 @@ def verify_login() -> dict:
         res = worker.check_login()
         if res.get("status") == "error":
             raise Conflict(res.get("detail") or "login check failed")
-        set_auth_state(res.get("status") == "logged_in", "active check")
+        _save_access_probe({
+            "logged_in": res.get("status") == "logged_in",
+            "deep_research_available": res.get("deep_research_available"),
+        }, "active check")
         return get_auth_state()
     finally:
         release_active()
@@ -178,6 +244,23 @@ def run_deep_job(job_id: str, segment: str, date: str, prompt: str, window_mode:
         elif status == "computer_trap":
             update_job(job_id, state="error",
                        error=f"Hit the paid Computer path ({res.get('url')}); aborted to protect credits.")
+        elif status == "deep_research_unavailable":
+            current = get_auth_state()
+            write_json(AUTH_STATE_FILE, {
+                **current,
+                "deep_research_available": False,
+                "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                "note": "Deep Research unavailable for this Perplexity account",
+            })
+            update_job(
+                job_id,
+                state="error",
+                error=(
+                    "This Perplexity account does not have Deep Research access "
+                    "(it may be on the Free tier). Upgrade Perplexity or use the "
+                    "deterministic/manual research paths instead."
+                ),
+            )
         elif status == "needs_clarification":
             update_job(job_id, state="error",
                        error=("Perplexity kept asking clarifying questions. Open "
@@ -204,7 +287,10 @@ def run_login_job(job_id: str) -> None:
 
     def handle(res: dict) -> None:
         if res.get("status") == "logged_in":
-            set_auth_state(True, "login window")
+            _save_access_probe({
+                "logged_in": True,
+                "deep_research_available": res.get("deep_research_available"),
+            }, "login window")
             update_job(job_id, state="done", message="Perplexity login confirmed")
         elif res.get("status") == "cancelled":
             update_job(job_id, state="cancelled", message="cancelled")
@@ -216,6 +302,7 @@ def run_login_job(job_id: str) -> None:
 
 
 def start_deep_research(body: dict) -> dict:
+    _require_enabled()
     segment = slugify(str(body.get("segment") or ""))
     date = str(body.get("date") or dt.datetime.now(dt.timezone.utc).date().isoformat())
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
@@ -273,6 +360,7 @@ def run_import_job(job_id: str, segment: str, date: str, url: str) -> None:
 
 
 def start_import(body: dict) -> dict:
+    _require_enabled()
     segment = slugify(str(body.get("segment") or ""))
     if not segment:
         raise ValueError("segment is required")

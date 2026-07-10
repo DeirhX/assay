@@ -399,7 +399,9 @@ export interface DataStatus {
 }
 
 export interface PerplexityStatus {
+  enabled: boolean;
   logged_in: boolean;
+  deep_research_available?: boolean | null;
   updated_at?: string | null;
   note?: string;
 }

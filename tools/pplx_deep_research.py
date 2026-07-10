@@ -256,6 +256,24 @@ def cleanup_clone(clone: Optional[Path]) -> None:
     shutil.rmtree(clone.parent, ignore_errors=True)
 
 
+def forget_profile(profile_dir: Optional[Path] = None) -> None:
+    """Delete the dedicated Perplexity browser profile (cookies/login included).
+
+    The base lock prevents racing a login or profile clone. Callers should reject
+    this operation while browser jobs are active so the HTTP request cannot wait
+    behind a several-minute login window.
+    """
+    profile_dir = (profile_dir or default_profile_dir()).expanduser().resolve()
+    home = Path.home().resolve()
+    # PPLX_PROFILE_DIR is user-configurable. Never recursively delete a filesystem
+    # root or the user's home if somebody fat-fingered that environment variable.
+    if profile_dir == home or profile_dir == Path(profile_dir.anchor):
+        raise ValueError(f"refusing to delete unsafe profile path: {profile_dir}")
+    with _BASE_LOCK:
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir)
+
+
 def _noop(_msg: str) -> None:
     pass
 
@@ -377,6 +395,21 @@ def _select_deep_research(page) -> Optional[str]:
     return "mode did not switch to Deep research"
 
 
+def _deep_research_access(page) -> Optional[bool]:
+    """Probe whether this logged-in account exposes Deep Research.
+
+    Selecting the composer mode spends no quota. A missing Deep Research item is
+    the reliable free-tier/no-entitlement signal; other failures are treated as
+    unknown rather than falsely declaring the user's plan unsupported.
+    """
+    err = _select_deep_research(page)
+    if err is None:
+        return True
+    if err == "Deep research menu item not found":
+        return False
+    return None
+
+
 def _logged_in(page) -> bool:
     try:
         page.wait_for_selector("#ask-input", timeout=15000)
@@ -478,7 +511,8 @@ def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
                 return {"status": "timeout"}
             if _logged_in(page):
                 progress("Already logged in.")
-                return {"status": "logged_in"}
+                return {"status": "logged_in",
+                        "deep_research_available": _deep_research_access(page)}
             progress("Complete the Perplexity login in the opened window...")
             deadline = time.time() + timeout_s
             while time.time() < deadline:
@@ -486,7 +520,8 @@ def ensure_login(profile_dir: Optional[Path] = None, timeout_s: int = 240,
                     return {"status": "cancelled"}
                 if _logged_in(page):
                     progress("Login detected.")
-                    return {"status": "logged_in"}
+                    return {"status": "logged_in",
+                            "deep_research_available": _deep_research_access(page)}
                 time.sleep(3)
             return {"status": "timeout"}
         finally:
@@ -514,7 +549,10 @@ def check_login(profile_dir: Optional[Path] = None,
             _dismiss_cookies(page)
             if not _handle_captcha(page, window_mode="offscreen", progress=progress):
                 return {"status": "needs_captcha"}
-            return {"status": "logged_in" if _logged_in(page) else "needs_login"}
+            if not _logged_in(page):
+                return {"status": "needs_login", "deep_research_available": None}
+            return {"status": "logged_in",
+                    "deep_research_available": _deep_research_access(page)}
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
         finally:
@@ -695,6 +733,14 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
             progress("Selecting Deep research mode...")
             mode_err = _select_deep_research(page)
             if mode_err:
+                if mode_err == "Deep research menu item not found":
+                    return {
+                        "status": "deep_research_unavailable",
+                        "detail": (
+                            "Deep Research is not available for this Perplexity account "
+                            "(likely Free tier or missing entitlement)."
+                        ),
+                    }
                 return {"status": "mode_failed", "detail": mode_err}
 
             if dry_run:
