@@ -29,6 +29,8 @@ interface AppState {
   // Stems pinning the active deep-research run / analysis being viewed.
   currentDeepRun: string | null;
   privacyMode: boolean;
+  pplxEnabled: boolean;
+  pplxDeepResearchAvailable: boolean | null;
   pplxLoggedIn: boolean;
   pipeStep: number;
   segMode: string;
@@ -53,6 +55,8 @@ const state: AppState = {
   segSort: { key: "research_score", dir: -1 },
   currentDeepRun: null,
   privacyMode: localStorage.getItem("financeRebalancingPrivacyMode") === "1",
+  pplxEnabled: true,
+  pplxDeepResearchAvailable: null,
   pplxLoggedIn: false,
   pipeStep: 1,
   segMode: "existing",
@@ -449,12 +453,22 @@ async function copyToClipboard(text: string): Promise<boolean> {
 // logged-in session the run controls are withheld and this passive notice takes
 // their place: it explains the requirement and links to Settings, but never nags
 // (setup treats the login as optional). Centralized so every view gates alike.
-function pplxRequiredNotice(what = "Deep Research"): HTMLElement {
+function pplxRequiredNotice(
+  what = "Deep Research",
+  reason: "login" | "disabled" | "unavailable" = "login",
+): HTMLElement {
+  const message = reason === "disabled"
+    ? `${esc(what)} is unavailable because the <strong>Perplexity integration is turned off</strong>. ` +
+      `<button type="button" class="linklike" data-go-setup>Enable it in Settings</button> to use it.`
+    : reason === "unavailable"
+      ? `<strong>Deep Research is not available for this Perplexity account.</strong> ` +
+        `It may be on the Free tier. Upgrade Perplexity, or use the deterministic/manual research paths instead.`
+    : `${esc(what)} needs a logged-in <strong>Perplexity</strong> session ` +
+      `(optional). <button type="button" class="linklike" data-go-setup>Set it up in ` +
+      `Settings</button> to enable it — or skip it; everything else works without it.`;
   const box = el("div", "pplx-gate",
     `<span class="pplx-gate-ic" aria-hidden="true">\u2139</span>` +
-    `<span>${esc(what)} needs a logged-in <strong>Perplexity</strong> session ` +
-    `(optional). <button type="button" class="linklike" data-go-setup>Set it up in ` +
-    `Settings</button> to enable it \u2014 or skip it; everything else works without it.</span>`);
+    `<span>${message}</span>`);
   box.querySelector<HTMLButtonElement>("[data-go-setup]")?.addEventListener("click", () => {
     document.querySelector<HTMLElement>('.tab[data-view="setup"]')?.click();
   });

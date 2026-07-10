@@ -45,14 +45,37 @@ class TempFiles(unittest.TestCase):
 
 class AuthState(TempFiles):
     def test_missing_state_reads_as_logged_out(self):
-        self.assertEqual(bj.get_auth_state(), {"logged_in": False, "updated_at": None, "note": ""})
+        self.assertEqual(bj.get_auth_state(), {
+            "enabled": False,
+            "logged_in": False,
+            "deep_research_available": None,
+            "updated_at": None,
+            "note": "",
+        })
 
     def test_set_then_get_round_trips(self):
         bj.set_auth_state(True, "active check")
         st = bj.get_auth_state()
+        self.assertTrue(st["enabled"])
         self.assertTrue(st["logged_in"])
         self.assertEqual(st["note"], "active check")
         self.assertIsNotNone(st["updated_at"])
+
+    def test_forget_disables_and_erases_profile(self):
+        bj.set_auth_state(True, "active check")
+        forgotten = mock.Mock()
+        with mock.patch.object(bj.jobs, "active_count", return_value=0), \
+             fake_worker(forget_profile=forgotten):
+            out = bj.forget_integration()
+        self.assertFalse(out["enabled"])
+        self.assertFalse(out["logged_in"])
+        self.assertIsNone(out["deep_research_available"])
+        forgotten.assert_called_once_with()
+
+    def test_forget_rejects_while_browser_job_runs(self):
+        with mock.patch.object(bj.jobs, "active_count", return_value=1):
+            with self.assertRaisesRegex(Conflict, "browser job is running"):
+                bj.forget_integration()
 
 
 class ClarifyAnswer(TempFiles):
@@ -71,6 +94,10 @@ class ClarifyAnswer(TempFiles):
 
 
 class VerifyLogin(TempFiles):
+    def setUp(self):
+        super().setUp()
+        bj._set_integration_enabled(True)
+
     def test_conflicts_when_no_slot(self):
         with mock.patch.object(bj, "claim_active", return_value=False), \
              mock.patch.object(bj, "slots_busy_msg", return_value="busy"):
@@ -154,6 +181,17 @@ class SaveRunResult(TempFiles):
 
 
 class StartGuards(TempFiles):
+    def setUp(self):
+        super().setUp()
+        bj._set_integration_enabled(True)
+
+    def test_disabled_integration_rejects_deep_research_clearly(self):
+        bj._set_integration_enabled(False)
+        with self.assertRaisesRegex(Conflict, "turned off"):
+            bj.start_deep_research({
+                "segment": "s", "date": "2026-06-20", "prompt": "p",
+            })
+
     def test_deep_research_validates_inputs(self):
         with self.assertRaises(ValueError):
             bj.start_deep_research({"segment": "s", "date": "06-2026", "prompt": "p"})
@@ -214,6 +252,18 @@ class HandleDispatch(TempFiles):
                           "fintech", "2026-06-20", "prompt", "offscreen")
         self.assertEqual(calls[-1]["state"], "needs_login")
         self.assertFalse(bj.get_auth_state()["logged_in"])
+
+    def test_deep_job_free_tier_gets_clear_error_and_caches_capability(self):
+        calls = self._run(
+            bj.run_deep_job,
+            {"run_deep_research": lambda *a, **k: {
+                "status": "deep_research_unavailable",
+            }},
+            "fintech", "2026-06-20", "prompt", "offscreen",
+        )
+        self.assertEqual(calls[-1]["state"], "error")
+        self.assertIn("Free tier", calls[-1]["error"])
+        self.assertFalse(bj.get_auth_state()["deep_research_available"])
 
     def test_login_job_timeout_errors(self):
         calls = self._run(bj.run_login_job, {"ensure_login": lambda **k: {"status": "timeout"}})

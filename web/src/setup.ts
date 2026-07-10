@@ -57,7 +57,11 @@ interface AutomationStatus { enabled?: boolean; tasks?: AutomationTask[] }
 
 interface SetupState {
   llm: LlmStatus;
-  perplexity?: { logged_in?: boolean };
+  perplexity?: {
+    enabled?: boolean;
+    logged_in?: boolean;
+    deep_research_available?: boolean | null;
+  };
   ibkr?: Record<string, any>;
   data?: SetupData;
   automation?: AutomationStatus;
@@ -309,7 +313,9 @@ function setupSteps(st: SetupState): SetupStep[] {
   const anyCliOk = backends.some((b) => b.check?.ok);
   const anyCliReady = backends.some((b) => b.check?.ok || b.authenticated === true);
   const anyLoggedOut = backends.some((b) => b.installed && (b.authenticated === false || b.check?.status === "auth"));
+  const pplxEnabled = st?.perplexity?.enabled !== false;
   const pplxOk = !!st?.perplexity?.logged_in;
+  const pplxAvailable = st?.perplexity?.deep_research_available;
   const secOk = !!(st.environment || {}).sec_user_agent;
   const ibkr = st.ibkr || {};
   const data = st.data || {};
@@ -347,9 +353,12 @@ function setupSteps(st: SetupState): SetupStep[] {
       id: "pplx",
       title: "Perplexity Deep Research login",
       required: false,
-      done: pplxOk,
+      done: !pplxEnabled || pplxOk,
       partial: false,
-      state: pplxOk ? "Logged in" : "Optional — enables web-sourced Deep Research",
+      state: !pplxEnabled ? "Off"
+        : pplxAvailable === false ? "Logged in — Deep Research unavailable (Free tier?)"
+        : pplxOk ? "Logged in"
+        : "Optional — enables web-sourced Deep Research",
       render: () => renderPerplexity(st),
     },
     {
@@ -648,17 +657,31 @@ function renderBackendStatus(st: SetupState, id: string, backend: Backend) {
 
 function renderPerplexity(st: SetupState) {
   const pplx = st.perplexity || {};
+  const enabled = pplx.enabled !== false;
+  const available = pplx.deep_research_available;
   const env = st.environment || {};
   const wrap = el("div", "setup-body-inner");
   wrap.innerHTML =
-    `<div class="setup-row"><strong>Browser session</strong>${badge(pplx.logged_in, pplx.logged_in ? "logged in" : "not logged in")}</div>` +
-    `<p class="hint"><strong>Optional.</strong> Skip this and everything else still works — you just won't get the web-sourced Deep Research crawls (the per-ticker Deep Research card and the pipeline's Step 2 stay gated behind a notice until you log in). Deep Research uses the persistent browser profile below; the login window is visible so you can complete Google/Perplexity auth and CAPTCHA if those bastards show up.</p>` +
-    commandBlock([env.pplx_profile_dir || "~/.cursor/pplx-automation-profile"]) +
+    `<div class="setup-row"><strong>Browser session</strong>${enabled
+      ? badge(pplx.logged_in, pplx.logged_in ? "logged in" : "not logged in")
+      : `<span class="setup-badge">OFF</span>`}</div>` +
+    (enabled && pplx.logged_in
+      ? `<div class="setup-row"><strong>Deep Research access</strong>${available === false
+        ? `<span class="setup-badge bad">UNAVAILABLE</span>`
+        : available === true
+          ? `<span class="setup-badge ok">AVAILABLE</span>`
+          : `<span class="setup-badge warn">NOT CHECKED</span>`}</div>`
+      : "") +
+    `<p class="hint"><strong>Optional.</strong> Skip this and everything else still works — you just won't get the web-sourced Deep Research crawls. Setting it up stores the Perplexity login in a dedicated local browser profile. <strong>Forget</strong> disables the integration and deletes that saved profile and its cookies.</p>` +
     `<div class="thesis-actions">` +
-      `<button class="primary" id="setup-pplx-login" type="button">Set up Perplexity login</button>` +
-      `<button class="ghost" id="setup-pplx-check" type="button">Verify login</button>` +
+      (enabled
+        ? `<button class="primary" id="setup-pplx-login" type="button">Set up Perplexity login</button>` +
+          `<button class="ghost" id="setup-pplx-check" type="button">Verify login</button>` +
+          `<button class="ghost danger" id="setup-pplx-forget" type="button">Forget Perplexity login</button>`
+        : `<button class="primary" id="setup-pplx-login" type="button">Set up Perplexity login</button>`) +
       `<span class="status" id="setup-pplx-status"></span>` +
-    `</div>`;
+    `</div>` +
+    (enabled ? commandBlock([env.pplx_profile_dir || "~/.cursor/pplx-automation-profile"]) : "");
   return wrap;
 }
 
@@ -725,6 +748,21 @@ async function verifyPerplexity() {
   } catch (e) {
     status.classList.add("err");
     status.textContent = "check failed: " + (e as Error).message;
+  }
+}
+
+async function forgetPerplexity() {
+  if (!confirm("Forget the Perplexity login?\n\nThis disables Deep Research and deletes the dedicated local browser profile and its cookies.")) return;
+  const status = $$("#setup-pplx-status");
+  status.classList.remove("err");
+  status.textContent = "forgetting…";
+  try {
+    await api("/api/setup/perplexity/forget", "POST", {});
+    status.textContent = "Perplexity login forgotten.";
+    await loadSetup();
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent = "forget failed: " + (e as Error).message;
   }
 }
 
@@ -795,6 +833,7 @@ const SETUP_ACTIONS: Record<string, () => unknown> = {
   "setup-check-llm": runSmokeChecks,
   "setup-pplx-login": startPerplexityLogin,
   "setup-pplx-check": verifyPerplexity,
+  "setup-pplx-forget": forgetPerplexity,
   "setup-save-ibkr": saveIbkr,
   "setup-sync-ibkr": syncIbkr,
   "setup-errlog-clear": clearErrorLog,

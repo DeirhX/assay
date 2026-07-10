@@ -382,9 +382,35 @@ $$("#pipe-existing-use").addEventListener("click", async () => {
 function updateStep2LoginGate() {
   const gate = $$("#pipe-login-gate");
   const area = $$("#pipe-prompt-area");
-  const blocked = !state.pplxLoggedIn;
+  const blocked = !state.pplxEnabled ||
+    state.pplxDeepResearchAvailable === false ||
+    !state.pplxLoggedIn;
   if (gate) gate.hidden = !blocked;
   if (area) area.hidden = blocked;
+  const login = $$("#pipe-pplx-login");
+  const recheck = $$("#pipe-login-recheck");
+  if (login) login.hidden = !state.pplxEnabled;
+  if (recheck) recheck.hidden = !state.pplxEnabled;
+  if (gate) {
+    const title = gate.querySelector("strong");
+    const copy = gate.querySelector("p");
+    if (!state.pplxEnabled) {
+      if (title) title.textContent = "Perplexity integration is turned off";
+      if (copy) copy.innerHTML =
+        `Deep Research is disabled. Enable the optional Perplexity integration in ` +
+        `<button type="button" class="linklike" data-go-pplx-settings>Settings</button> to use it.`;
+      copy?.querySelector("[data-go-pplx-settings]")?.addEventListener("click", () =>
+        document.querySelector<HTMLElement>('.tab[data-view="setup"]')?.click());
+    } else if (state.pplxDeepResearchAvailable === false) {
+      if (title) title.textContent = "Deep Research is unavailable for this account";
+      if (copy) copy.textContent =
+        "Perplexity is logged in, but this account does not expose Deep Research (likely Free tier). Upgrade Perplexity, or use the deterministic/manual research paths below.";
+    } else {
+      if (title) title.textContent = "Deep Research needs Perplexity (optional)";
+      if (copy) copy.textContent =
+        "The automated prompt run needs a logged-in Perplexity session. Set it up once to enable Deep Research, or skip it entirely and use the escape hatches below.";
+    }
+  }
   if (!blocked) { updateStep2Actions(); maybeAutoBuildPrompt(); }
 }
 
@@ -395,7 +421,9 @@ function updateStep2LoginGate() {
 // same segment is preserved (not clobbered) because the prompt is non-empty and
 // not stale.
 async function maybeAutoBuildPrompt() {
-  if (state.pipeStep !== 2 || !state.pplxLoggedIn || state._autoBuilding) return;
+  if (state.pipeStep !== 2 || !state.pplxEnabled ||
+      state.pplxDeepResearchAvailable === false ||
+      !state.pplxLoggedIn || state._autoBuilding) return;
   const seg = pipeSegment();
   if (!seg) return;
   const stale = !!state.promptSegment && state.promptSegment !== seg;
@@ -408,7 +436,7 @@ async function buildPrompt() {
   const status = $$("#pipe-prompt-status");
   const seg = pipeSegment();
   status.classList.remove("err");
-  if (!state.pplxLoggedIn) {
+  if (!state.pplxEnabled || state.pplxDeepResearchAvailable === false || !state.pplxLoggedIn) {
     updateStep2LoginGate();
     $$("#pipe-login-gate-status").textContent =
       "Deep Research is optional — set up Perplexity to enable it, or use the escape hatches below.";
@@ -527,10 +555,14 @@ async function runDeepResearch(status: HTMLElement) {
   const date = $$<HTMLInputElement>("#pipe-date").value.trim() || undefined;
   const prompt = $$<HTMLTextAreaElement>("#pipe-prompt").value.trim();
   if (!segment) { status.classList.add("err"); status.textContent = "pick or save a segment first"; return; }
-  if (!state.pplxLoggedIn) {
+  if (!state.pplxEnabled || state.pplxDeepResearchAvailable === false || !state.pplxLoggedIn) {
     setPipeStep(2);
     updateStep2LoginGate();
-    $$("#pipe-login-gate-status").textContent = "Set up the Perplexity login first.";
+    $$("#pipe-login-gate-status").textContent = state.pplxDeepResearchAvailable === false
+      ? "This account does not include Deep Research (likely Free tier)."
+      : state.pplxEnabled
+        ? "Set up the Perplexity login first."
+        : "Perplexity is turned off. Set it up in Settings to use Deep Research.";
     return;
   }
   if (!prompt) {
@@ -600,8 +632,10 @@ async function refreshLoginStatus() {
   try {
     st = await api("/api/deep-research/login-status");
   } catch {
-    st = { logged_in: false };
+    st = { enabled: false, logged_in: false, deep_research_available: null };
   }
+  state.pplxEnabled = st.enabled !== false;
+  state.pplxDeepResearchAvailable = st.deep_research_available ?? null;
   state.pplxLoggedIn = !!st.logged_in;
   updateStep2LoginGate();
   return state.pplxLoggedIn;
