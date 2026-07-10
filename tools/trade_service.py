@@ -132,6 +132,22 @@ def _trade_price_map() -> dict[str, dict]:
     return out
 
 
+def _position_quantity_map() -> dict[str, float]:
+    """Current stock quantity by symbol from the same holdings snapshot used for
+    sizing. This is explanation-only context for the preview: it lets the UI
+    distinguish an order remainder from the position left after all orders."""
+    holdings = _load(HOLDINGS_JSON) or {}
+    out: dict[str, float] = {}
+    for p in holdings.get("positions") or []:
+        if p.get("asset_class") == "OPT":
+            continue
+        sym = str(p.get("symbol") or "").strip().upper()
+        qty = p.get("quantity")
+        if sym and isinstance(qty, (int, float)):
+            out[sym] = out.get(sym, 0.0) + float(qty)
+    return out
+
+
 def _fx_by_currency() -> dict[str, float]:
     """currency -> rate-to-base, harvested from held positions. Used to convert a
     live price for a not-yet-held name; absent currencies fall back to 1.0."""
@@ -215,6 +231,7 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     live CPAPI snapshot, then defers the shares math + skips to
     ibkr_trade.build_orders. Returns (orders, warnings)."""
     price_map = _trade_price_map()
+    position_qty = _position_quantity_map()
     fx_map = _fx_by_currency()
     # resolve_conid is a gateway secdef/search round-trip per symbol (cached in
     # process, but cold on the first preview after a restart). Serially, a big
@@ -263,6 +280,8 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         estimate_px = order.get("price") if order.get("orderType") == "LMT" else px.get("price")
         order["_estimate_price"] = _number(estimate_px)
         order["_estimate_fx_to_base"] = _number(px.get("fx_to_base")) or 1.0
+        order["_current_position_qty"] = position_qty.get(
+            str(order.get("symbol") or "").strip().upper(), 0.0)
     # Convert direct buys of KID-blocked names (US-domiciled ETFs) to options-only:
     # drop the order so we don't emit a guaranteed-reject. The Preview surfaces the
     # excluded names separately (see _trade_preview.options_only). The same filter
@@ -312,29 +331,57 @@ def _trade_status() -> dict:
 
 
 def _order_band_context(model: dict, holdings: dict, after_plan: dict | None) -> dict[str, dict]:
-    """Per-target-name band context so the preview can show each order's effect on
-    its band: {SYMBOL: {low, high, before_pct, after_pct, status_after}}. Uses the
-    same rebalance.plan the what-if runs on, so the before/after weights can never
-    disagree with the rest of the app. Only single-ticker target rows are included
-    (a sleeve or untargeted name has no per-symbol band to move within). Empty when
-    there's no model/holdings/after-plan to reconcile."""
+    """Band context for each tradable symbol. Standalone targets use their own
+    band; sleeve members point at the aggregate sleeve band and carry scope
+    metadata so the UI labels that distinction instead of silently omitting a
+    chart. Standalone targets win if a malformed model contains both."""
     if not model or not holdings or not after_plan:
         return {}
-    before = {r["name"]: r for r in rebalance.plan(model, holdings).get("rows", [])
-              if r.get("kind") == "target"}
+    before = {
+        (str(r.get("kind")), str(r.get("name"))): r
+        for r in rebalance.plan(model, holdings).get("rows", [])
+        if r.get("kind") in {"target", "sleeve"}
+    }
     out: dict[str, dict] = {}
-    for r in after_plan.get("rows", []):
+    rows = after_plan.get("rows", [])
+    # Standalone targets first, so they take precedence over accidental overlap.
+    for r in rows:
         if r.get("kind") != "target":
             continue
-        name = r.get("name")
-        br = before.get(name)
-        out[str(name)] = {
+        name = str(r.get("name") or "")
+        br = before.get(("target", name))
+        out[name] = {
             "low": r.get("low"),
             "high": r.get("high"),
             "before_pct": br.get("current_pct") if br else None,
             "after_pct": r.get("current_pct"),
             "status_after": r.get("status"),
+            "scope": "target",
+            "scope_name": name,
+            "scope_members": [name],
         }
+    for r in rows:
+        if r.get("kind") != "sleeve":
+            continue
+        name = str(r.get("name") or "")
+        members = [
+            str(m.get("symbol") or "").strip().upper()
+            for m in r.get("members") or []
+            if isinstance(m, dict) and m.get("symbol")
+        ]
+        br = before.get(("sleeve", name))
+        context = {
+            "low": r.get("low"),
+            "high": r.get("high"),
+            "before_pct": br.get("current_pct") if br else None,
+            "after_pct": r.get("current_pct"),
+            "status_after": r.get("status"),
+            "scope": "sleeve",
+            "scope_name": name,
+            "scope_members": members,
+        }
+        for symbol in members:
+            out.setdefault(symbol, context)
     return out
 
 
@@ -453,8 +500,8 @@ def _reconcile_working_orders(
             else:
                 classification = "same_side_partial"
                 next_step = (
-                    f"Existing {side} covers {same_qty:g} shares; confirm only "
-                    f"the {residual_qty:g}-share remainder."
+                    f"{same_qty:g} shares are already working; place "
+                    f"{residual_qty:g} more to complete the {proposed_qty:g}-share plan."
                 )
 
         if residual_qty > 0:
@@ -467,6 +514,8 @@ def _reconcile_working_orders(
 
         residual_signed_qty = residual_qty * (1 if side == "BUY" else -1)
         effective_delta = (working_signed_qty + residual_signed_qty) * unit_base
+        current_position_qty = _number(order.get("_current_position_qty"))
+        projected_position_qty = current_position_qty + working_signed_qty + residual_signed_qty
         if abs(effective_delta) >= 1:
             effective.append({"symbol": sym, "delta_czk": round(effective_delta, 2)})
         contexts.append({
@@ -477,6 +526,8 @@ def _reconcile_working_orders(
             "working_same_qty": same_qty,
             "working_qty": sum(_number(r.get("remaining_qty")) for r in rows),
             "residual_qty": residual_qty,
+            "current_position_qty": current_position_qty,
+            "projected_position_qty": projected_position_qty,
             "proposed_delta_czk": original_delta,
             "working_delta_czk": round(working_signed_qty * unit_base, 2),
             "residual_delta_czk": round(residual_signed_qty * unit_base, 2),

@@ -12,9 +12,9 @@ const setUrl = (search: string) => {
 describe("navFromUrl", () => {
   beforeEach(() => setUrl(""));
 
-  it("defaults to the guided Plan (strategy) view", () => {
+  it("defaults to the Today cockpit", () => {
     expect(navFromUrl()).toEqual(expect.objectContaining({
-      view: "strategy", ticker: "", segment: "", run: "", tab: "", step: "",
+      view: "today", ticker: "", segment: "", run: "", tab: "", step: "",
     }));
   });
 
@@ -27,7 +27,7 @@ describe("navFromUrl", () => {
 
   it("rejects unknown views", () => {
     setUrl("view=adminpanel");
-    expect(navFromUrl().view).toBe("strategy");
+    expect(navFromUrl().view).toBe("today");
   });
 
   it("uppercases and trims tickers", () => {
@@ -71,7 +71,7 @@ describe("urlForNav", () => {
   beforeEach(() => setUrl(""));
 
   it("omits the default view from the URL", () => {
-    const url = urlForNav({ view: "strategy", ticker: "", segment: "", run: "" });
+    const url = urlForNav({ view: "today", ticker: "", segment: "", run: "" });
     expect(url.search).toBe("");
   });
 

@@ -149,23 +149,23 @@ function wireTickerSearch(input: HTMLInputElement) {
 // ---- location state --------------------------------------------------------
 const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "activity", "basket", "setup"]);
 
-// The guided Plan flow is the dominant path, so it is the landing view and the
-// one omitted from the URL (a bare "/" means Plan). Every other view carries an
-// explicit ?view=.
-const DEFAULT_VIEW = "strategy";
+// Today is the app-level cockpit, so a bare "/" lands there. Workflow tools keep
+// explicit views in the URL.
+const DEFAULT_VIEW = "today";
 
-// Two-level navigation: the header exposes five workflow-ordered top-level GROUPS
-// (Plan -> Research -> Rebalance -> Portfolio -> Watchlist), each of which fans
+// Two-level navigation: the header exposes workflow-ordered top-level GROUPS,
+// some of which fan
 // out to a set of VIEWS via a secondary sub-tab bar. The URL still carries the
 // flat `view` (so deep links + history stay stable); the group is derived.
 // `pipeline` is intentionally absent from any sub-tab bar -- it's the "New run"
 // sub-page of Research, reached via a button and left via its Back button.
 // `setup` (the gear) sits outside the group bar entirely.
 const VIEW_GROUP: Record<string, string> = {
+  today: "today",
   strategy: "strategy",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  today: "portfolio", holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
+  holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
   basket: "basket",
   // Activity is a global audit log (tickers viewed + tasks run), not part of any
   // one workflow, so it's its own top-level group rather than a Portfolio sub-tab.
@@ -177,14 +177,12 @@ const VIEW_GROUP: Record<string, string> = {
 const VIEW_SUBTAB: Record<string, string> = {
   leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade", "target-state": "target-state",
-  today: "today", holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
+  holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
 };
-// The portfolio group opens on the Today cockpit: the loop's front door, which
-// routes to whichever step actually needs attention.
-const GROUP_DEFAULT: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket", activity: "activity" };
+const GROUP_DEFAULT: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "holdings", basket: "basket", activity: "activity" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "today", basket: "basket", activity: "activity" };
+const lastViewByGroup: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "holdings", basket: "basket", activity: "activity" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -330,6 +328,12 @@ function updateChrome(active: string) {
 
   document.querySelectorAll<HTMLElement>(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
   document.querySelectorAll<HTMLElement>(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  const brand = $$("#brand-home");
+  if (brand) {
+    brand.classList.toggle("active", active === "today");
+    if (active === "today") brand.setAttribute("aria-current", "page");
+    else brand.removeAttribute("aria-current");
+  }
 
   // The sub-tab bar only exists for groups that fan out into multiple views.
   const subbar = $$("#subbar");
@@ -485,6 +489,7 @@ function initShell() {
       goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || DEFAULT_VIEW);
     });
   });
+  $$("#brand-home")?.addEventListener("click", () => goToView("today"));
 
   // Persistent header search with autocomplete over tickers we already have.
   const topTicker = $$<HTMLInputElement>("#top-ticker");

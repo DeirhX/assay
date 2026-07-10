@@ -306,6 +306,13 @@ function ddSection(id: string, label: string): HTMLElement {
 let _ddReveal: IntersectionObserver | null = null;
 let _ddSpy: IntersectionObserver | null = null;
 
+function heldPositionLabel(quantity: number | null | undefined, weight: number | null | undefined): string {
+  const qty = quantity == null || !Number.isFinite(Number(quantity))
+    ? ""
+    : `${Number(quantity).toLocaleString(undefined, { maximumFractionDigits: 4 })} shares`;
+  return [qty, weight == null ? "" : `${fmtWeight(weight)} NAV`].filter(Boolean).join(" \u00b7 ");
+}
+
 function teardownDossierChrome(): void {
   if (_ddReveal) { _ddReveal.disconnect(); _ddReveal = null; }
   if (_ddSpy) { _ddSpy.disconnect(); _ddSpy = null; }
@@ -315,9 +322,9 @@ function teardownDossierChrome(): void {
 // straight from rec; fair value + buy/trim fill in async from locked levels.
 function decisionStrip(
   rec: Rec,
-  ctx: { price: number | null; owned: number | null | undefined; decision: string; target: any; portfolio: any },
+  ctx: { price: number | null; owned: number | null | undefined; quantity: number | null | undefined; decision: string; target: any; portfolio: any },
 ): HTMLElement {
-  const { owned, target, portfolio } = ctx;
+  const { owned, quantity, target, portfolio } = ctx;
   const strip = el("div", "dd-strip");
   // Price and verdict already headline the card (big price + the pill by the
   // name), so the strip carries only the position-vs-model story to avoid a row
@@ -340,7 +347,7 @@ function decisionStrip(
   const gap = portfolio.gap_to_band_pct;
   const gapCls = gap == null ? "" : gap > 0 ? "good" : gap < 0 ? "bad" : "";
   strip.innerHTML =
-    chip("Held", esc(fmtWeight(owned)), "", portfolio.status ? portfolio.status.replace("_", " ") : "not held") +
+    chip("Held", esc(heldPositionLabel(quantity, owned)), "", portfolio.status ? portfolio.status.replace("_", " ") : "not held") +
     chip("Target band", esc(band)) +
     (gap == null ? "" : chip("Band gap", esc(fmtSignedWeight(gap)), gapCls, "positive = room to add; negative = trim pressure")) +
     levelsCell;
@@ -369,7 +376,7 @@ async function fillStripLevels(strip: HTMLElement, sym: string): Promise<void> {
 // scrolls past), and the section jump-tabs.
 function dossierBar(
   rec: Rec,
-  ctx: { price: number | null; owned: number | null | undefined; decision: string },
+  ctx: { price: number | null; owned: number | null | undefined; quantity: number | null | undefined; decision: string },
   sections: DossierSection[],
 ): HTMLElement {
   const bar = el("div", "dd-bar");
@@ -383,7 +390,7 @@ function dossierBar(
   summary.innerHTML =
     `<span class="dd-bar-sym">${esc(rec.symbol)}</span>` +
     `<span class="dd-bar-price">${esc(fmtPrice(ctx.price))}</span>` +
-    (ctx.owned != null ? `<span class="owned-pill">held ${esc(fmtWeight(ctx.owned))}</span>` : `<span class="muted">not held</span>`) +
+    (ctx.owned != null ? `<span class="owned-pill">held ${esc(heldPositionLabel(ctx.quantity, ctx.owned))}</span>` : `<span class="muted">not held</span>`) +
     decisionPill(ctx.decision);
   bar.appendChild(summary);
 
@@ -449,6 +456,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
     state.holdings[rec.input_symbol ?? ""] ??
     state.holdings[rec.alias_candidate_for ?? ""] ??
     state.holdings[rec.provider_symbol ?? ""] ?? null;
+  const quantity = portfolio.current_quantity ?? null;
   const decision = rec.decision || "research";
 
   const card = el("div", "card");
@@ -465,7 +473,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
   const sub = el("div", "dd-sub");
   sub.innerHTML =
     `<span>as of ${freshnessNote(rec.as_of) || esc(new Date(rec.as_of ?? "").toLocaleString())}</span>` +
-    (owned != null ? `<span class="owned-pill">held: ${fmtWeight(owned)} NAV</span>` : `<span class="muted">not held</span>`) +
+    (owned != null ? `<span class="owned-pill">held: ${esc(heldPositionLabel(quantity, owned))}</span>` : `<span class="muted">not held</span>`) +
     (target.rule ? `<span>rule: <strong>${esc(target.rule)}</strong></span>` : `<span class="muted">no target rule</span>`);
   // Actions live in their own right-aligned cluster so the clickable controls
   // read as buttons, not as more of the grey "as of / not held" info text. The
@@ -528,7 +536,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
   }
   // A compact "what do I do" strip directly under the header: price, weight vs
   // target band, verdict, and (once loaded) fair value + buy/trim levels.
-  card.appendChild(decisionStrip(rec, { price, owned, decision, target, portfolio }));
+  card.appendChild(decisionStrip(rec, { price, owned, quantity, decision, target, portfolio }));
 
   const biz = renderBusiness(rec);
   const chart = renderPriceChart(rec);
@@ -643,7 +651,7 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
     { id: "analysis", label: "Analysis" },
     { id: "history", label: "History" },
   ];
-  out.appendChild(dossierBar(rec, { price, owned, decision }, sections));
+  out.appendChild(dossierBar(rec, { price, owned, quantity, decision }, sections));
   out.appendChild(secOverview);
   out.appendChild(secFund);
   out.appendChild(secAnalysis);

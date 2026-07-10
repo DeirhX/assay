@@ -316,6 +316,7 @@ def holdings_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
                 "researchable": is_researchable_position(p),
                 "description": p.get("description"),
                 "asset_class": p.get("asset_class"),
+                "quantity": p.get("quantity"),
                 "percent_of_nav": position_weight_pct(p, invested),
                 "broker_percent_of_nav": p.get("percent_of_nav"),
                 "base_market_value": p.get("base_market_value"),
@@ -353,12 +354,24 @@ def target_context(model: dict[str, Any], symbol: str) -> dict[str, Any]:
 
 def portfolio_context(symbol: str, *, holdings: dict[str, Any] | None = None, model: dict[str, Any] | None = None) -> dict[str, Any]:
     symbol = clean_symbol(symbol)
+    holdings = holdings if holdings is not None else load_json(HOLDINGS_JSON) or {}
     weights = holdings_weights(holdings, include_aliases=True)
+    aliases = symbol_aliases()
+    matched_positions = [
+        p for p in holdings.get("positions", [])
+        if clean_symbol(p.get("symbol")) == symbol
+        or provider_symbol_for(p.get("symbol"), aliases) == symbol
+    ]
+    quantities = [
+        float(p["quantity"]) for p in matched_positions
+        if isinstance(p.get("quantity"), (int, float))
+    ]
     model = model if model is not None else load_json(TARGET_MODEL_JSON) or {}
     current = weights.get(symbol)
     target = target_context(model, symbol)
     ctx: dict[str, Any] = {
         "current_weight_pct": current,
+        "current_quantity": sum(quantities) if quantities else None,
         "target": target,
     }
     low = target.get("low")

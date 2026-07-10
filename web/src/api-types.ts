@@ -28,6 +28,7 @@ export interface HoldingPosition {
   researchable: boolean;
   description: string | null;
   asset_class: string | null;
+  quantity: number | null;
   percent_of_nav: number | null;
   broker_percent_of_nav: number | null;
   base_market_value: number | null;

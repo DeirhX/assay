@@ -96,6 +96,26 @@ class OrderBandContext(unittest.TestCase):
         ]}
         self.assertEqual(trade_service._order_band_context(MODEL, holdings, after_plan), {})
 
+    def test_maps_sleeve_band_to_each_member_with_explicit_scope(self):
+        after_plan = {"rows": [{
+            "kind": "sleeve", "name": "analog", "current_pct": 4.8,
+            "low": 5, "high": 6, "status": "BELOW",
+            "members": [{"symbol": "TXN"}, {"symbol": "ADI"}],
+        }]}
+        before_plan = {"rows": [{
+            "kind": "sleeve", "name": "analog", "current_pct": 1.2,
+            "members": [{"symbol": "TXN"}, {"symbol": "ADI"}],
+        }]}
+        with mock.patch.object(rebalance, "plan", return_value=before_plan):
+            ctx = trade_service._order_band_context(
+                {"sleeves": {"analog": {"members": ["TXN", "ADI"]}}},
+                _holdings(), after_plan)
+        self.assertEqual(ctx["ADI"]["scope"], "sleeve")
+        self.assertEqual(ctx["ADI"]["scope_members"], ["TXN", "ADI"])
+        self.assertEqual(ctx["ADI"]["before_pct"], 1.2)
+        self.assertEqual(ctx["ADI"]["after_pct"], 4.8)
+        self.assertIs(ctx["ADI"], ctx["TXN"])
+
 
 class OrderTerminal(unittest.TestCase):
     def test_terminal_statuses(self):
@@ -276,6 +296,20 @@ class WorkingOrderReconciliation(unittest.TestCase):
             "filledQuantity": 6, "status": "Submitted",
         }], {"AMD"})
         self.assertEqual(working[0]["remaining_qty"], 4)
+
+    def test_position_projection_distinguishes_order_remainder_from_shares_left(self):
+        proposed = [{
+            "symbol": "ARM", "side": "SELL", "quantity": 206,
+            "_current_position_qty": 300, "_estimate_price": 250,
+            "_estimate_fx_to_base": 25,
+        }]
+        working = [{"order_id": "1", "symbol": "ARM", "side": "SELL",
+                    "remaining_qty": 100, "status": "Submitted"}]
+        residual, ctx, _effective = trade_service._reconcile_working_orders(
+            proposed, [{"symbol": "ARM", "delta_czk": -1287500}], working)
+        self.assertEqual(residual[0]["quantity"], 106)
+        self.assertEqual(ctx[0]["current_position_qty"], 300)
+        self.assertEqual(ctx[0]["projected_position_qty"], 94)
 
     def test_fingerprint_changes_with_remaining_quantity(self):
         a = [{"order_id": "1", "symbol": "AMD", "side": "BUY",

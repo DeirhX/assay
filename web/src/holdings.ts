@@ -122,6 +122,10 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
       const tier = isOpt ? "opt" : w >= 10 ? "core" : w >= 5 ? "large" : w >= 1 ? "mid" : "small";
       const o = isOpt ? p.option : null;
       const exPct = o ? o.exercise_pct : null;
+      const qty = p.quantity;
+      const qtyText = qty == null || !Number.isFinite(Number(qty))
+        ? "quantity n/a"
+        : `${Number(qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${isOpt ? "contracts" : "shares"}`;
 
       let right, barW, barClass;
       if (isOpt) {
@@ -159,12 +163,14 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
       row.innerHTML =
         `<span class="pos-sym">${esc(label)}${tag}${delayTag}</span>` +
         `<span class="pos-bar-track"><span class="${barClass}" style="width:${barW.toFixed(2)}%"></span></span>` +
-        `<span class="pos-w">${right}</span>` +
+        `<span class="pos-w" title="${esc(`Position: ${qtyText}`)}">` +
+          `<span class="pos-w-pct">${esc(right)}</span><span class="pos-w-qty">${esc(qtyText)}</span>` +
+        `</span>` +
         `<span class="pos-val">${valText}</span>`;
       row.title = isOpt && o
         ? `${p.description || p.symbol} \u00b7 ${Math.abs(o.contracts)} ${o.right === "P" ? "put" : "call"} @ ${o.strike} \u00b7 ` +
           `${(exPct ?? 0).toFixed(1)}% of invested if exercised (notional, not capital)`
-        : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested` +
+        : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested \u00b7 ${qtyText}` +
           (providerSymbol !== p.symbol ? ` \u00b7 opens ${providerSymbol}` : "");
       if (researchable) {
         row.addEventListener("click", () => analyzeFromAnywhere(providerSymbol));
