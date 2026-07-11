@@ -262,14 +262,18 @@ def _ibkr_executable_chain():
             "ask": 100.2,
             "last": 100.0,
             "quote_timestamp": "2026-07-01T12:00:00+00:00",
+            "market_data_availability": "RpB",
+            "market_data_timeline": "real_time",
         },
         "expiries": [
             {"expiry": "2026-08-07",
              "calls": [
                  {"conid": 100105, "strike": 105.0, "bid": 2.0, "ask": 2.4, "last": 2.2,
-                  "quote_timestamp": "2026-07-01T12:00:01+00:00", "implied_vol": 0.3},
+                  "quote_timestamp": "2026-07-01T12:00:01+00:00", "implied_vol": 0.3,
+                  "market_data_availability": "RpB", "market_data_timeline": "real_time"},
                  {"conid": 100110, "strike": 110.0, "bid": 1.0, "ask": 1.2, "last": 1.1,
-                  "quote_timestamp": "2026-07-01T12:00:01+00:00", "implied_vol": 0.31},
+                  "quote_timestamp": "2026-07-01T12:00:01+00:00", "implied_vol": 0.31,
+                  "market_data_availability": "RpB", "market_data_timeline": "real_time"},
              ],
              "puts": []},
         ],
@@ -302,6 +306,20 @@ def test_ibkr_executable_metadata_propagates_to_headline_and_ladder():
     assert rung["quote_timestamp"] == "2026-07-01T12:00:01+00:00"
     assert rung["fetched_at"] == "2026-07-01T12:00:00+00:00"
     assert rung["underlying_quote"]["bid"] == 99.8
+
+
+def test_ibkr_frozen_close_is_visible_but_not_executable():
+    c = _ibkr_executable_chain()
+    call = c["expiries"][0]["calls"][0]
+    call["market_data_availability"] = "ZpB"
+    call["market_data_timeline"] = "frozen"
+    out = ov.suggest_for_position(
+        "TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04,
+    )
+    cc = out["covered_call"]
+    assert cc["bid"] == 2.0
+    assert cc["market_data_timeline"] == "frozen"
+    assert cc["executable"] is False
 
 
 def test_ibkr_missing_conid_not_executable():

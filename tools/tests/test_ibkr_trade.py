@@ -753,7 +753,7 @@ class _FakeGateway:
 
     def __init__(self, *, months="AUG26", strikes=None, spot="100.0",
                  quotes=None, has_opt=True, underlying=500, maturity="20260821",
-                 rules=None):
+                 rules=None, updated=None, availability="RpB"):
         self.months = months
         self.strikes = strikes or {"call": [95, 100, 105, 110], "put": [90, 95, 100, 105]}
         self.spot = spot
@@ -762,6 +762,8 @@ class _FakeGateway:
         self.underlying = underlying
         self.maturity = maturity
         self.rules = rules or {"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]}
+        self.updated = int(time.time() * 1000) if updated is None else updated
+        self.availability = availability
         self.calls: list[tuple[str, str]] = []
 
     @staticmethod
@@ -790,13 +792,24 @@ class _FakeGateway:
             for c in (int(x) for x in q["conids"].split(",")):
                 if c == self.underlying:
                     if isinstance(self.spot, dict):
-                        rows.append({"conid": c, **self.spot})
+                        rows.append({
+                            "conid": c, "_updated": self.updated,
+                            "6509": self.availability, **self.spot,
+                        })
                     else:
-                        rows.append({"conid": c, "31": self.spot})
+                        rows.append({
+                            "conid": c, "31": self.spot,
+                            "_updated": self.updated, "6509": self.availability,
+                        })
                 elif c in self.quotes:
-                    rows.append({"conid": c, **self.quotes[c]})
+                    rows.append({
+                        "conid": c, "_updated": self.updated,
+                        "6509": self.availability, **self.quotes[c],
+                    })
                 else:
-                    rows.append({"conid": c})  # no market-data subscription
+                    rows.append({
+                        "conid": c, "_updated": self.updated, "6509": "NpB",
+                    })  # no market-data subscription
             return rows
         return {}
 
@@ -952,10 +965,12 @@ class ResolveExactCall(unittest.TestCase):
                 "31": "2.50", "84": "2.40", "86": "2.60",
             }},
             rules={"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]},
+            updated=int(dt.datetime.fromisoformat(
+                "2026-07-09T10:15:00+00:00"
+            ).timestamp() * 1000),
         )
         fixed = "2026-07-09T10:15:00+00:00"
-        with mock.patch.object(ibt, "_request", gw), \
-                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+        with mock.patch.object(ibt, "_request", gw):
             out = ibt.resolve_exact_call("NVDA", self.EXPIRY, 105)
         self.assertIsNotNone(out)
         self.assertEqual(out["symbol"], "NVDA")
@@ -972,6 +987,9 @@ class ResolveExactCall(unittest.TestCase):
         self.assertAlmostEqual(out["underlying_bid"], 99.8)
         self.assertAlmostEqual(out["underlying_ask"], 100.2)
         self.assertEqual(out["quote_timestamp"], fixed)
+        self.assertEqual(out["market_data_availability"], "RpB")
+        self.assertEqual(out["market_data_timeline"], "real_time")
+        self.assertEqual(out["underlying_quote_timestamp"], fixed)
         self.assertAlmostEqual(out["tick"], 0.05)
         self.assertIn("incrementRules", out["rules"])
 
@@ -992,6 +1010,23 @@ class ResolveExactCall(unittest.TestCase):
         with mock.patch.object(ibt, "_request", side_effect=_no_info):
             self.assertIsNone(ibt.resolve_exact_call("NVDA", self.EXPIRY, 999))
 
+    def test_preserves_frozen_market_status_and_broker_update_time(self):
+        fixed = "2026-07-10T20:00:00+00:00"
+        gw = _FakeGateway(
+            quotes={_FakeGateway.opt_conid(105, "C"): {
+                "31": "2.50", "84": "2.40", "86": "2.60",
+            }},
+            updated=int(dt.datetime.fromisoformat(fixed).timestamp() * 1000),
+            availability="ZpB",
+        )
+        with mock.patch.object(ibt, "_request", gw):
+            out = ibt.resolve_exact_call("NVDA", self.EXPIRY, 105)
+        self.assertEqual(out["quote_timestamp"], fixed)
+        self.assertEqual(out["market_data_timeline"], "frozen")
+        self.assertFalse(ibt.market_data_is_realtime(
+            out["market_data_availability"]
+        ))
+
 
 class OptionChainMetadata(unittest.TestCase):
     AS_OF = dt.date(2026, 7, 9)
@@ -1000,16 +1035,19 @@ class OptionChainMetadata(unittest.TestCase):
         ibt._conid_cache.clear()
 
     def test_chain_includes_underlying_quote_metadata(self):
-        gw = _FakeGateway(spot={"31": "100.0", "84": "99.5", "86": "100.5"})
         fixed = "2026-07-09T10:15:00+00:00"
-        with mock.patch.object(ibt, "_request", gw), \
-                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+        gw = _FakeGateway(
+            spot={"31": "100.0", "84": "99.5", "86": "100.5"},
+            updated=int(dt.datetime.fromisoformat(fixed).timestamp() * 1000),
+        )
+        with mock.patch.object(ibt, "_request", gw):
             chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
         self.assertEqual(chain["underlying_price"], 100.0)
         self.assertAlmostEqual(chain["underlying_bid"], 99.5)
         self.assertAlmostEqual(chain["underlying_ask"], 100.5)
         self.assertAlmostEqual(chain["underlying_last"], 100.0)
         self.assertEqual(chain["quote_timestamp"], fixed)
+        self.assertEqual(chain["market_data_timeline"], "real_time")
 
 
 if __name__ == "__main__":

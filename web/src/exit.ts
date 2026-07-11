@@ -12,7 +12,7 @@ import {
 } from "./core";
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
-  ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
+  ExitCoveredCallRung, ExitCoveredCallRoute, ExitRouteKind, ExitRoutes,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
 import { pushNav, setActiveView } from "./shell";
@@ -54,6 +54,20 @@ function quotePrice(v: number | null | undefined, ccy?: string | null): string {
   if (v == null || !Number.isFinite(v)) return dash;
   const cur = ccy ? ` ${esc(ccy)}` : "";
   return `${fmtNum(v)}${cur}`;
+}
+
+function marketTimelineLabel(
+  timeline: ExitCoveredCallRung["market_data_timeline"],
+): string {
+  return ({
+    real_time: "real-time",
+    delayed: "delayed",
+    frozen: "frozen close",
+    frozen_delayed: "frozen delayed",
+    not_subscribed: "not subscribed",
+    acknowledgement_required: "market-data agreement required",
+    unknown: "status unknown",
+  } as Record<string, string>)[timeline || ""] || "status unavailable";
 }
 
 const END_STATE_LABEL: Record<string, string> = {
@@ -226,12 +240,13 @@ function underlyingQuoteBar(o: NonNullable<ExitPosition["options"]>, ccy: string
   const q = o.underlying_quote;
   const last = q?.last != null ? `<strong class="exit-underlying-last">${fmtNum(q.last)} ${esc(ccy)}</strong>` : dash;
   const src = q?.source ? esc(q.source) : "source unknown";
+  const timeline = marketTimelineLabel(q?.market_data_timeline);
   const age = q?.quote_timestamp
     ? `<span class="muted">${esc(relAge(q.quote_timestamp))}</span>`
     : "";
   bar.innerHTML =
     `<span class="exit-underlying-label">Underlying last</span> ${last}` +
-    `<span class="muted"> · ${src}${age ? ` · ${age}` : ""}</span>`;
+    `<span class="muted"> · ${src} · ${esc(timeline)}${age ? ` · ${age}` : ""}</span>`;
   return bar;
 }
 
@@ -333,7 +348,7 @@ function sellSharesReco(p: ExitPosition, elig: { eligible: boolean; reasons: str
 
 function coveredCallReco(
   p: ExitPosition,
-  elig: { eligible: boolean; reasons: string[]; capacity_contracts?: number },
+  elig: ExitCoveredCallRoute,
   ccy: string,
 ): HTMLElement {
   const inner = el("div", "exit-reco-route");
@@ -353,10 +368,31 @@ function coveredCallReco(
   }
 
   const cap = el("div", "exit-reco-sub");
+  const assigned = elig.assigned_shares ?? contracts * 100;
   cap.textContent = contracts > 0
-    ? `Up to ${contracts} contract${contracts === 1 ? "" : "s"} (${fmtNum(contracts * 100)} sh if assigned).`
+    ? `Plan up to ${contracts} contract${contracts === 1 ? "" : "s"} (${fmtNum(assigned)} sh if assigned).`
     : "No whole contracts available to write.";
   inner.appendChild(cap);
+  if (elig.post_assignment_pct != null) {
+    inner.appendChild(el(
+      "div", elig.reaches_target_band ? "hint" : "hint warn",
+      `If assigned, projected position is ${pct(elig.post_assignment_pct, 2)} ` +
+      `(target band ${pct(elig.target_low_pct, 2)}–${pct(elig.target_high_pct, 2)}).`,
+    ));
+  }
+  if ((elig.unresolved_exit_shares ?? 0) > 0) {
+    inner.appendChild(el(
+      "div", "hint warn",
+      `${fmtNum(elig.unresolved_exit_shares)} planned exit shares remain deterministic work; ` +
+      "sell them separately if reaching the ceiling cannot wait for assignment.",
+    ));
+  } else if ((elig.overtrim_shares ?? 0) > 0) {
+    inner.appendChild(el(
+      "div", "hint",
+      `Assignment trims ${fmtNum(elig.overtrim_shares)} shares beyond the exact ceiling, ` +
+      "but remains inside the target band.",
+    ));
+  }
   inner.appendChild(el(
     "div", "hint",
     "Live positions, working orders, and quote freshness are rechecked when you stage and place.",
@@ -544,8 +580,10 @@ function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
     && localAge >= -10_000 && localAge <= EXECUTION_QUOTE_MAX_AGE_MS;
   const quoteOk = typeof r.bid === "number" && typeof r.ask === "number"
     && r.bid > 0 && r.ask > 0 && r.bid <= r.ask;
-  if (r.executable === true && r.conid && r.quote_fresh === true && locallyFresh && quoteOk) return [];
+  const realtime = r.market_data_timeline === "real_time";
+  if (r.executable === true && r.conid && r.quote_fresh === true && locallyFresh && quoteOk && realtime) return [];
   const reasons: string[] = [];
+  if (!realtime) reasons.push(`IBKR data is ${marketTimelineLabel(r.market_data_timeline)}`);
   if (r.executable === false) reasons.push("Not executable");
   if (r.estimate) reasons.push("Modeled premium — no live IBKR quote");
   if (r.bid == null || r.ask == null) reasons.push("Missing bid/ask");
@@ -639,6 +677,7 @@ function coveredCallLadderTable(
     row.innerHTML =
       `<td>${quotePrice(r.strike, ccy)}${r.recommended ? ` <span class="exit-ladder-star" title="Recommended rung">★</span>` : ""}</td>` +
       `<td>${esc(r.expiry)}<div class="muted">${sourceBadge(r.source, r.estimate)} ` +
+        `${esc(marketTimelineLabel(r.market_data_timeline))} · ` +
         `${r.quote_timestamp ? esc(relAge(r.quote_timestamp)) : "age unavailable"}</div></td>` +
       `<td>${quotePrice(r.bid, ccy)}</td>` +
       `<td>${quotePrice(r.ask, ccy)}</td>` +
