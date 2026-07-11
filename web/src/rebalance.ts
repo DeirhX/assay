@@ -53,7 +53,7 @@ export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[
     (short > 0
       ? `<div class="hint bad">Still ${sensitive(`${fmtCZK(short)} CZK`, "funding shortfall")} short — funding_order and the untargeted bucket are out of headroom.</div>`
       : "") +
-    `<div class="hint">Amounts were filled into the plan inputs above (band floors respected — trims stop at each name's floor). Edit to taste, then Simulate basket.</div></div>`;
+    `<div class="hint">Amounts were filled into the trade-size inputs above (band floors respected — trims stop at each name's floor). Edit to taste, then simulate the trades.</div></div>`;
 }
 
 // ---- position track --------------------------------------------------------
@@ -446,7 +446,7 @@ function renderRebalance(plan: RebPlan) {
     h.innerHTML =
       `<div class="reb-c reb-name">${esc(title)}</div>` +
       `<div class="reb-c reb-pos">Current · band · status</div>` +
-      `<div class="reb-c reb-plan">Plan (% of book)</div>` +
+      `<div class="reb-c reb-plan">Trade size (% of book)</div>` +
       `<div class="reb-c reb-proj">Projected</div>`;
     return h;
   };
@@ -670,7 +670,7 @@ function renderRebalance(plan: RebPlan) {
   const mech = el("details", "view-help");
   mech.innerHTML = `<summary>How amounts, cash, and funding work</summary>` +
     `<div class="hint">Suggested amounts move each name to the nearest band edge (the minimal action). ` +
-    `Edit any Plan amount to simulate; “Reset to suggested” restores them. ` +
+    `Edit any Trade size to simulate; “Reset to suggested” restores them. ` +
     `Cash totals include the sleeves' suggested buys/sells (fixed — you allocate those across members). ` +
     `Net cash &gt; 0 means trims fund the buys; &lt; 0 means you'd need fresh cash — ` +
     `“Fund this plan” fills suggested trims (funding order first, then untargeted names) to cover it.</div>`;
@@ -679,8 +679,13 @@ function renderRebalance(plan: RebPlan) {
   // Unfilled orders already working at IBKR are part of the current state a
   // suggestion must be judged against - badge the rows that have one. Silent
   // no-op when trading is disabled or the gateway is down.
-  void api<{ orders?: Array<{ ticker?: string; symbol?: string; side?: string; orderDesc?: string; remainingQuantity?: number | string; status?: string }> }>("/api/trade/orders")
+  type WorkingOrder = { ticker?: string; symbol?: string; side?: string; orderDesc?: string; remainingQuantity?: number | string; status?: string };
+  void api<{ trading_enabled?: boolean; authenticated?: boolean }>("/api/trade/status")
+    .then((status) => status.trading_enabled && status.authenticated
+      ? api<{ orders?: WorkingOrder[] }>("/api/trade/orders")
+      : null)
     .then((res) => {
+      if (!res) return;
       (res.orders || []).forEach((o) => {
         const osym = cleanSymbol(o.ticker || o.symbol);
         const cell = nameCells[osym];
@@ -702,6 +707,9 @@ function renderRebalance(plan: RebPlan) {
     { key: "action", label: "Action", opts: [["buy", "buy"], ["trim", "trim"], ["review", "review"], ["wait", "wait"], ["none", "no action"]] },
     { key: "conv", label: "Confidence", opts: [["high", "high"], ["medium", "medium"], ["low", "low"], ["none", "none"]] },
   ];
+  // The planner's job is to review decisions, not make the user scroll through
+  // every inert target. Start on actionable rows; "Show all" clears the pills.
+  const DEFAULT_ACTIONS = new Set(["buy", "trim", "review"]);
   const filterBar = el("div", "reb-filter");
   // The search box + live count stay one line; the three facet-pill rows tuck
   // behind a "Filters" expander so the default view is a single quiet strip.
@@ -713,14 +721,14 @@ function renderRebalance(plan: RebPlan) {
         `<input type="search" id="reb-filter-q" placeholder="Filter by ticker…" autocomplete="off" spellcheck="false">` +
       `</div>` +
       `<span class="reb-filter-count" id="reb-filter-count"></span>` +
-      `<button type="button" class="ghost reb-filter-clear" id="reb-filter-clear">Clear</button>` +
+      `<button type="button" class="ghost reb-filter-clear" id="reb-filter-clear">Show all</button>` +
     `</div>` +
     `<details class="reb-filter-facets" id="reb-filter-facets">` +
     `<summary>Filters <small class="muted">status · action · confidence</small></summary>` +
     FILTER_FACETS.map((f) =>
       `<div class="reb-filter-row"><span class="reb-filter-label">${f.label}</span>` +
       `<div class="reb-filter-pills" data-facet="${f.key}">` +
-      f.opts.map(([v, l]) => `<button type="button" class="reb-fpill" data-val="${esc(v)}">${esc(l)}</button>`).join("") +
+      f.opts.map(([v, l]) => `<button type="button" class="reb-fpill${f.key === "action" && DEFAULT_ACTIONS.has(v) ? " on" : ""}" data-val="${esc(v)}">${esc(l)}</button>`).join("") +
       `</div></div>`).join("") +
     `</details>`;
   out.prepend(filterBar);
@@ -975,14 +983,9 @@ function renderRebalance(plan: RebPlan) {
         entries.push({ symbol: mc.symbol, delta: parseDelta(mc.input.value) })));
       untargetedCells.forEach((uc) => entries.push({ symbol: uc.symbol, delta: parseDelta(uc.input.value) }));
       const trades: WhatifTrade[] = tradesFrom(entries, base);
-      // Share the staged basket with the Trade desk so it can preview/place the
-      // exact same trades you just simulated here. Persisted server-side too, so
-      // it survives a reload / navigation instead of living only in this tab.
-      state.stagedBasket = trades.slice();
-      void api("/api/trade/basket", "POST", { trades }).catch(() => { /* best-effort */ });
       const box = $$("#reb-whatif");
       if (!trades.length) {
-        box.innerHTML = `<div class="hint">Nothing staged — edit a Plan amount on a targeted name or a sleeve member, then simulate.</div>`;
+        box.innerHTML = `<div class="hint">Nothing to simulate — edit a Trade size on a targeted name or sleeve member first.</div>`;
         return;
       }
       box.innerHTML = `<div class="status">Simulating…</div>`;
@@ -1097,6 +1100,41 @@ function renderWhatif(wf: Whatif) {
   (wf.caveats || []).forEach((c) => card.appendChild(el("div", "hint", esc(c))));
 
   const actions = el("div", "thesis-actions");
+  const stageStatus = el("span", "status");
+  const trades = (wf.trades || []).slice();
+  const stageBtn = el("button", "primary",
+    `Stage ${trades.length} order${trades.length === 1 ? "" : "s"} \u2192`);
+  stageBtn.type = "button";
+  stageBtn.title = "Save these exact simulated trades to the order queue; nothing is sent to IBKR yet";
+  stageBtn.addEventListener("click", async () => {
+    stageBtn.disabled = true;
+    stageBtn.textContent = "Staging orders…";
+    stageStatus.classList.remove("err");
+    stageStatus.textContent = "";
+    try {
+      // Staging is intentionally separate from simulation: a read-only preview
+      // must not mutate the order queue as a hidden side effect.
+      await api("/api/trade/basket", "POST", { trades });
+      state.stagedBasket = trades.slice();
+      stageBtn.className = "ghost";
+      stageBtn.textContent = "Orders staged ✓";
+      const reviewBtn = el("button", "primary", "Review target state →");
+      reviewBtn.type = "button";
+      reviewBtn.title = "Check the projected portfolio before opening the Trade desk";
+      reviewBtn.addEventListener("click", () => {
+        pushNav({ view: "target-state" });
+        setActiveView("target-state");
+        window.scrollTo(0, 0);
+      });
+      actions.insertBefore(reviewBtn, stageStatus);
+      stageStatus.textContent = "Nothing has been sent to IBKR.";
+    } catch (e) {
+      stageStatus.classList.add("err");
+      stageStatus.textContent = "Could not stage orders: " + (e as Error).message;
+      stageBtn.disabled = false;
+      stageBtn.textContent = `Stage ${trades.length} order${trades.length === 1 ? "" : "s"} →`;
+    }
+  });
   const logBtn = el("button", "ghost", "Log to journal");
   logBtn.type = "button";
   logBtn.addEventListener("click", () => {
@@ -1108,11 +1146,13 @@ function renderWhatif(wf: Whatif) {
       symbol: trade.symbol || "",
       action: (trade.delta_czk ?? 0) < 0 ? "trim" : "buy",
       size_czk: trade.delta_czk != null ? Math.abs(trade.delta_czk) : "",
-      thesis: `Rebalance basket: ${summary}. Realized taxable gain ` +
+      thesis: `Rebalance simulation: ${summary}. Realized taxable gain ` +
         `${fmtCZK(s.realized_taxable_gain_czk)} ${ccy}; net cash ${fmtCZK(s.net_cash_czk)} ${ccy}.`,
     });
   });
+  actions.appendChild(stageBtn);
   actions.appendChild(logBtn);
+  actions.appendChild(stageStatus);
   card.appendChild(actions);
 
   box.appendChild(card);

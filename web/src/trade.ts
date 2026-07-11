@@ -2,7 +2,8 @@ import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } fr
 import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
-import { navFromUrl, replaceViewState } from "./shell";
+import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
+import type { TradeQueueState } from "./api-types";
 import {
   basketMoneyFacts, gatewayOrigin, orderBandScopeLabel, placeResultHtml, previewStats, reconciliationTitle,
   riskPanelHtml, sideTag,
@@ -141,6 +142,7 @@ interface PegState {
 
 let _status: TradeStatus | null = null;   // last /api/trade/status
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
+let _queueState: TradeQueueState = { trades: [], revision: "", reviewed: false };
 // The basket as it was placed — snapshotted before the staged store is cleared,
 // so the "Log to journal" next step can still describe the executed trades.
 let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
@@ -170,7 +172,7 @@ function ensureTradeWorkspace(): HTMLElement | null {
   const tabs = el("div", "trade-workspace-tabs");
   tabs.setAttribute("role", "tablist");
   const labels: Record<TradeDeskTab, string> = {
-    basket: "Staged basket", review: "Order review", orders: "Working orders",
+    basket: "Order queue", review: "Order review", orders: "Working orders",
   };
   (Object.keys(labels) as TradeDeskTab[]).forEach((key) => {
     const btn = el("button", "trade-workspace-tab", labels[key]);
@@ -236,7 +238,7 @@ function enableTradeReview(label = "Order review"): void {
   btn.textContent = label;
 }
 
-function showTradeReviewLoading(message = "Checking the staged basket and IBKR account\u2026"): void {
+function showTradeReviewLoading(message = "Checking the order queue and IBKR account\u2026"): void {
   enableTradeReview("Order review");
   setTradeDeskTab("review");
   const panel = tradePanel("review");
@@ -267,11 +269,15 @@ function updateTradeReviewAvailability(): void {
   if (!btn || _preview) return;
   const hasBasket = !!(state.stagedBasket || []).length;
   const connected = !!(_status && _status.trading_enabled && _status.authenticated);
-  btn.disabled = !(hasBasket && connected);
+  btn.disabled = !(hasBasket && connected && _queueState.reviewed);
   btn.textContent = "Order review";
-  btn.title = btn.disabled
-    ? "Stage a basket and connect the IBKR gateway first"
-    : "Preview the staged basket through IBKR";
+  btn.title = !hasBasket
+    ? "Stage orders first"
+    : !_queueState.reviewed
+      ? "Approve the current projection in Target state first"
+      : !connected
+        ? "Connect the IBKR gateway first"
+        : "Preview the staged orders through IBKR";
 }
 
 async function loadTrade() {
@@ -286,6 +292,9 @@ async function loadTrade() {
     : null;
   _tradeDeskTab = requestedTab === "orders" || requestedTab === "review" ? requestedTab : "basket";
   _preview = null;
+  // Fail closed until the durable queue descriptor proves this exact revision
+  // was reviewed; stale in-memory approval must never survive a failed reload.
+  _queueState = { trades: (state.stagedBasket || []).slice(), revision: "", reviewed: false };
   ensureTradeWorkspace();
   if (_tradeDeskTab === "review") {
     showTradeReviewLoading();
@@ -303,9 +312,17 @@ async function loadTrade() {
   // Its own fetch is fast (~40ms), so we render it NOW rather than gating it
   // behind the slow status call, which is what made the basket appear late.
   try {
-    const res = await api<{ trades?: Array<{ symbol: string; delta_czk: number }> }>("/api/trade/basket");
+    const res = await api<TradeQueueState>("/api/trade/basket");
     if (isStaleToken("trade", token)) return;
-    if (Array.isArray(res.trades)) state.stagedBasket = res.trades;
+    if (Array.isArray(res.trades)) {
+      state.stagedBasket = res.trades;
+      _queueState = {
+        trades: res.trades,
+        revision: res.revision || "",
+        reviewed: !!res.reviewed,
+        reviewed_at: res.reviewed_at || null,
+      };
+    }
   } catch (_e) {
     if (isStaleToken("trade", token)) return;  // else: keep whatever's in memory
   }
@@ -314,7 +331,11 @@ async function loadTrade() {
   if (_tradeDeskTab === "review" && !_preview) {
     const review = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]');
     if (review && !review.disabled) await doPreview(review);
-    else showTradeReviewError("Stage a basket and connect the IBKR gateway before previewing orders.");
+    else showTradeReviewError(
+      state.stagedBasket.length && !_queueState.reviewed
+        ? "Review and approve the current projected portfolio in Target state before previewing orders."
+        : "Stage orders and connect the IBKR gateway before previewing them.",
+    );
   } else {
     setTradeDeskTab(_tradeDeskTab);
   }
@@ -435,6 +456,42 @@ function basketBar(delta: number, maxAbs: number): string {
     `<span class="basket-bar-fill ${buy ? "buy" : "sell"}" style="${style}"></span></span>`;
 }
 
+function openWorkflowView(view: "rebalance" | "target-state"): void {
+  pushNav({ view });
+  setActiveView(view);
+  window.scrollTo(0, 0);
+}
+
+async function persistQueue(
+  trades: Array<{ symbol: string; delta_czk: number }>,
+  trigger: HTMLButtonElement,
+): Promise<void> {
+  const previous = trigger.textContent || "";
+  trigger.disabled = true;
+  trigger.textContent = "Updating…";
+  try {
+    const saved = await api<TradeQueueState>("/api/trade/basket", "POST", { trades });
+    state.stagedBasket = Array.isArray(saved.trades) ? saved.trades : [];
+    _queueState = {
+      trades: state.stagedBasket.slice(),
+      revision: saved.revision || "",
+      reviewed: !!saved.reviewed,
+      reviewed_at: saved.reviewed_at || null,
+    };
+    _preview = null;
+    stopPreviewCountdown();
+    renderBasket();
+  } catch (e) {
+    trigger.disabled = false;
+    trigger.textContent = previous;
+    const status = $("#trade-preview-status");
+    if (status) {
+      status.classList.add("err");
+      status.textContent = "Could not update order queue: " + (e as Error).message;
+    }
+  }
+}
+
 function renderBasket() {
   const wrap = tradePanel("basket");
   if (!wrap) return;
@@ -443,14 +500,37 @@ function renderBasket() {
 
   const card = el("div", "trade-card");
   const head = el("div", "trade-card-head");
-  head.innerHTML = `<span class="trade-card-title">Staged basket</span>` +
-    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from the Rebalance planner</span>`;
+  head.innerHTML = `<span class="trade-card-title">Order queue</span>` +
+    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from the Rebalance planner</span>` +
+    (_queueState.reviewed ? `<span class="chip good">projection approved</span>` : "");
+  if (basket.length) {
+    const controls = el("div", "trade-queue-controls");
+    if (!_queueState.reviewed) {
+      const review = el("button", "primary", "Review target state →");
+      review.type = "button";
+      review.addEventListener("click", () => openWorkflowView("target-state"));
+      controls.appendChild(review);
+    }
+    const edit = el("button", "ghost", "Edit in Rebalance");
+    edit.type = "button";
+    edit.addEventListener("click", () => openWorkflowView("rebalance"));
+    controls.appendChild(edit);
+    const clear = el("button", "ghost", "Clear queue");
+    clear.type = "button";
+    clear.addEventListener("click", () => {
+      if (window.confirm("Clear every staged order? Your rebalance plan is untouched.")) {
+        void persistQueue([], clear);
+      }
+    });
+    controls.appendChild(clear);
+    head.appendChild(controls);
+  }
   card.appendChild(head);
 
   if (!basket.length) {
     card.appendChild(el("div", "hint",
-      "No basket staged. Go to the Rebalance tab, edit the planned amounts, press " +
-      "\u201cSimulate basket\u201d, then come back here to preview and place it."));
+      "No orders staged. Go to Rebalance, edit the trade sizes, press “Simulate trades”, " +
+      "review the projection, then choose “Stage orders” before opening the Trade desk."));
     wrap.appendChild(card);
     updateTradeReviewAvailability();
     return;
@@ -471,6 +551,7 @@ function renderBasket() {
       `<th>Side</th>` +
       `<th class="num">Planned (CZK)</th>` +
       `<th class="tb-weight">Relative size</th>` +
+      `<th><span class="sr-only">Actions</span></th>` +
     `</tr></thead>` +
     `<tbody>${basket.map((t) => {
       const buy = t.delta_czk >= 0;
@@ -481,6 +562,7 @@ function renderBasket() {
         `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
         `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
         `<td class="tb-weight">${sensitive(basketBar(t.delta_czk, maxAbs), "relative trade size")}</td>` +
+        `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove="${esc(t.symbol)}" title="Remove ${esc(t.symbol)} from the order queue">Remove</button></td>` +
       `</tr>`;
     }).join("")}</tbody>` +
     `<tfoot><tr>` +
@@ -491,15 +573,23 @@ function renderBasket() {
       `<td class="num" title="net cash impact — buys minus sells">` +
         `<span class="muted">net</span> ${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(net))}`, "net basket cash")}` +
       `</td>` +
-      `<td class="tb-weight muted" title="gross traded value — buys plus sells">gross ${sensitive(fmtCZK(gross), "gross basket value")}</td>` +
+      `<td class="tb-weight muted" title="gross traded value — buys plus sells">gross ${sensitive(fmtCZK(gross), "gross basket value")}</td><td></td>` +
     `</tr></tfoot>`;
+  table.querySelectorAll<HTMLButtonElement>("[data-queue-remove]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const symbol = button.dataset.queueRemove || "";
+      void persistQueue(basket.filter((trade) => trade.symbol !== symbol), button);
+    });
+  });
   card.appendChild(table);
   // Trend sparklines: cached-only batch fill after the table paints (degrades to
   // a blank cell for a name with no cached series).
   void hydrateSparks(table);
 
   card.appendChild(el("div", "hint trade-preview-hint",
-    "Open Order review above to reconcile this basket with IBKR working orders."));
+    _queueState.reviewed
+      ? "Projection approved. Open Order review above to reconcile this queue with IBKR working orders."
+      : "IBKR preview is locked until you review and approve this exact queue in Target state."));
   card.appendChild(el("div", "status", "")).id = "trade-preview-status";
 
   wrap.appendChild(card);
@@ -515,6 +605,7 @@ async function requestPreview(): Promise<void> {
   // is safe -- unlike Place, which we never time out client-side.
   _preview = await api<TradePreview>("/api/trade/preview", "POST", {
     trades: state.stagedBasket || [],
+    queue_revision: _queueState.revision,
     account: _status && _status.default_account,
   }, { timeoutMs: 60_000 });
   renderPreview();
@@ -957,7 +1048,10 @@ async function doPlace(btn: HTMLButtonElement) {
     // The server cleared the staged basket on success; mirror it and reset the
     // view so the desk stops offering the just-placed basket, then append the
     // outcome + loop-closing next steps.
-    if (res.staged_basket_cleared) state.stagedBasket = [];
+    if (res.staged_basket_cleared) {
+      state.stagedBasket = [];
+      _queueState = { trades: [], revision: "", reviewed: false };
+    }
     renderBasket();
     renderPlaceResult(res);
     void renderLiveOrders();
@@ -998,7 +1092,7 @@ function logPlacedToJournal(res: PlaceResult) {
     symbol: first.symbol || "",
     action: (first.delta_czk || 0) < 0 ? "trim" : "buy",
     size_czk: first.delta_czk != null ? Math.abs(first.delta_czk) : "",
-    thesis: `Placed basket on ${res.kind} account ${res.account}: ${summary || "(see IBKR)"}.`,
+    thesis: `Placed orders on ${res.kind} account ${res.account}: ${summary || "(see IBKR)"}.`,
   });
 }
 

@@ -256,16 +256,15 @@ function renderPanel(): void {
   if (!list) return;
   const all = jobsList();
   const active = all.filter((j) => ACTIVE_STATES.has(j.state));
-  const recent = all.filter((j) => !ACTIVE_STATES.has(j.state));
-  if (!all.length) {
-    list.innerHTML = `<div class="task-empty">No tasks yet. Long-running work (analysis, Deep Research, syncs) shows up here.</div>`;
-    return;
-  }
   const section = (heading: string, rows: JobListing[]) =>
     rows.length
       ? `<div class="task-group-head">${esc(heading)}</div>` + rows.map(rowHtml).join("")
       : "";
-  list.innerHTML = section("In progress", active) + section("Recent", recent);
+  const history = `<div class="task-history-link">Completed work is kept in the durable Activity log. ` +
+    `<button type="button" class="linklike" data-task-activity>View activity →</button></div>`;
+  list.innerHTML = active.length
+    ? section("In progress", active) + history
+    : `<div class="task-empty">No tasks running.</div>${history}`;
 }
 
 // Delegated handlers (wired once): open a task's result, or cancel it.
@@ -274,6 +273,12 @@ function wirePanelEvents(): void {
   if (!list) return;
   list.addEventListener("click", async (e) => {
     const target = e.target as HTMLElement;
+    if (target.closest("[data-task-activity]")) {
+      toggleTaskPanel(false);
+      pushNav({ view: "activity" });
+      restoreNav(navFromUrl());
+      return;
+    }
     const cancelId = target.closest<HTMLElement>("[data-cancel]")?.dataset.cancel;
     if (cancelId) {
       e.stopPropagation();

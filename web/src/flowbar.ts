@@ -1,14 +1,11 @@
 // The rebalance-group flow bar: one persistent strip that turns the sibling
 // sub-tabs into a legible pipeline —
 //
-//   ① Current book → ② Plan changes → ③ Orders → ④ Target state
+//   ① Current book → ② Plan changes → ③ Target state → ④ Orders
 //
-// Each stage shows live counts (positions + working orders, suggested actions +
-// drafted changes, staged + working orders, bands in reach) and clicks through
-// to the view that owns it, so "where am I and what's next" never needs
-// exploration. Fed by one cached /api/overview call plus a best-effort
-// /api/trade/orders count (absent when the gateway is off — the bar simply
-// omits the chip rather than nagging).
+// The projected outcome deliberately comes before the Trade desk: reviewing
+// where the book lands is a pre-trade safety gate, not an after-the-fact report.
+// Each stage shows live counts and clicks through to the view that owns it.
 import { $, api, esc } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
@@ -35,8 +32,14 @@ async function fetchFlowData(): Promise<FlowData> {
   let working: number | null = null;
   try { ov = await api<FlowOverview>("/api/overview"); } catch { /* sections degrade */ }
   try {
-    const res = await api<{ orders?: unknown[] }>("/api/trade/orders");
-    working = Array.isArray(res.orders) ? res.orders.length : 0;
+    // Do not hammer the protected orders endpoint when trading is disabled or
+    // the gateway is logged out. Besides wasting a request, that produced a 403
+    // in the browser console on every pipeline navigation.
+    const status = await api<{ trading_enabled?: boolean; authenticated?: boolean }>("/api/trade/status");
+    if (status.trading_enabled && status.authenticated) {
+      const res = await api<{ orders?: unknown[] }>("/api/trade/orders");
+      working = Array.isArray(res.orders) ? res.orders.length : 0;
+    }
   } catch { /* trading disabled / gateway down -> unknown */ }
   _cache = { ov, working };
   _cacheAt = Date.now();
@@ -52,8 +55,8 @@ export function invalidateFlowData(): void { _cacheAt = 0; }
 // put — and highlights the right step — when you click through to "Current book".
 export function stageForView(view: string): 1 | 2 | 3 | 4 {
   if (view === "holdings" || view === "setup") return 1;
-  if (view === "trade") return 3;
-  if (view === "target-state") return 4;
+  if (view === "target-state") return 3;
+  if (view === "trade") return 4;
   return 2;  // rebalance / optimizer / working-draft / exit: deciding the changes
 }
 
@@ -97,18 +100,18 @@ export function flowStages(d: FlowData): Stage[] {
   const bits3 = [];
   if (staged) bits3.push(`${staged} staged`);
   if (d.working) bits3.push(`${d.working} working`);
-  const s3: Stage = { n: 3, label: "Orders", view: "trade",
-    tone: staged ? "warn" : "muted",
-    sub: bits3.join(" · ") || "nothing staged",
-    title: "Preview the staged basket through IBKR and place it, order by confirmed order" };
-
   const rows = plan?.rows || 0;
   const inBand = rows - (plan?.out_of_band || 0);
   const cashOff = plan?.cash && plan.cash.status && plan.cash.status !== "IN";
-  const s4: Stage = { n: 4, label: "Target state", view: "target-state",
+  const s3: Stage = { n: 3, label: "Target state", view: "target-state",
     tone: rows && inBand === rows && !cashOff ? "ok" : "muted",
     sub: rows ? `${inBand}/${rows} bands in${cashOff ? " · cash off target" : ""}` : "—",
-    title: "Current vs projected book, side by side — where placing what's on the table lands you" };
+    title: "Review the current vs projected book before sending any orders" };
+
+  const s4: Stage = { n: 4, label: "Orders", view: "trade",
+    tone: staged ? "warn" : "muted",
+    sub: bits3.join(" · ") || "nothing staged",
+    title: "Preview staged orders through IBKR and place them one confirmed order at a time" };
 
   return [s1, s2, s3, s4];
 }

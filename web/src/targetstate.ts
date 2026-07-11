@@ -1,4 +1,4 @@
-// The Target state view: flow-bar stage 4's destination. One screen that
+// The Target state view: flow-bar stage 3's pre-trade review gate. One screen that
 // answers "if I execute what's on the table, where does the book land?" —
 // current vs projected weight for every targeted name and sleeve, drawn on the
 // same band tracks the planner uses, with the headline deltas (bands in, cash
@@ -8,9 +8,9 @@
 // actually be placed), else the plan's own suggested amounts (what the book
 // would look like if you simply took every suggestion). With nothing on the
 // table it degrades to "current book vs its bands" — every tick single.
-// Read-only: this view stages nothing and never trades.
-import { $, api, esc, fmtCZK, sensitive, statTile } from "./core";
-import type { PlanRow, RebalancePlan, Whatif, WhatifTrade } from "./api-types";
+// Approving records only the exact queue revision shown; this view never trades.
+import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
+import type { PlanRow, RebalancePlan, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
@@ -146,11 +146,20 @@ function summaryTiles(plan: RebalancePlan, wf: Whatif | null, rows: CompareRow[]
   return `<div class="reb-stats tstate-tiles">${bands}${cash}${net}${tax}</div>`;
 }
 
-function sourceBanner(source: "basket" | "suggestions" | "none", n: number): string {
+export function sourceBanner(
+  source: "basket" | "suggestions" | "none",
+  n: number,
+  queue: TradeQueueState | null,
+): string {
   if (source === "basket") {
-    return `<div class="tstate-src"><span class="chip warn">staged basket</span>` +
-      ` Projected from the <strong>${n} staged trade${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — this is what placing them produces.` +
-      ` <button class="ghost" type="button" data-ts-goto="trade">Trade desk →</button></div>`;
+    const reviewed = !!queue?.reviewed;
+    return `<div class="tstate-src"><span class="chip warn">order queue</span>` +
+      ` Projected from the <strong>${n} staged order${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — review this outcome before placing them.` +
+      (reviewed
+        ? ` <span class="chip good">projection approved</span>` +
+          ` <button class="primary" type="button" data-ts-goto="trade">Open Trade desk →</button>`
+        : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve this projection →</button>`) +
+      `</div>`;
   }
   if (source === "suggestions") {
     return `<div class="tstate-src"><span class="chip muted">plan suggestions</span>` +
@@ -158,10 +167,16 @@ function sourceBanner(source: "basket" | "suggestions" | "none", n: number): str
       ` <button class="ghost" type="button" data-ts-goto="rebalance">Adjust the plan →</button></div>`;
   }
   return `<div class="tstate-src"><span class="chip good">at rest</span>` +
-    ` No staged basket and no suggested trades — the projection equals the current book.</div>`;
+    ` No staged orders and no suggested trades — the projection equals the current book.</div>`;
 }
 
-function render(plan: RebalancePlan, wf: Whatif | null, source: "basket" | "suggestions" | "none", nTrades: number): void {
+function render(
+  plan: RebalancePlan,
+  wf: Whatif | null,
+  source: "basket" | "suggestions" | "none",
+  nTrades: number,
+  queue: TradeQueueState | null,
+): void {
   const body = $("#tstate-body");
   if (!body) return;
   const rows = compareRows(plan.rows || [], wf && wf.after ? wf.after.rows || null : null);
@@ -194,7 +209,7 @@ function render(plan: RebalancePlan, wf: Whatif | null, source: "basket" | "sugg
   const caveats = (wf && wf.caveats || []).map((c) => `<div class="hint">${esc(c)}</div>`).join("");
 
   body.innerHTML =
-    sourceBanner(source, nTrades) +
+    sourceBanner(source, nTrades, queue) +
     summaryTiles(plan, wf, rows) +
     changedBlock + sameBlock + tradesBlock + caveats;
 }
@@ -218,9 +233,10 @@ async function loadTargetState(): Promise<void> {
   // else the plan's suggested amounts; else nothing (projection = now).
   let trades: WhatifTrade[] = [];
   let source: "basket" | "suggestions" | "none" = "none";
+  let queue: TradeQueueState | null = null;
   try {
-    const res = await api<{ trades?: WhatifTrade[] }>("/api/trade/basket");
-    if (Array.isArray(res.trades) && res.trades.length) { trades = res.trades; source = "basket"; }
+    queue = await api<TradeQueueState>("/api/trade/basket");
+    if (Array.isArray(queue.trades) && queue.trades.length) { trades = queue.trades; source = "basket"; }
   } catch { /* fall through to suggestions */ }
   if (!trades.length) {
     trades = deriveSuggestionTrades(plan);
@@ -237,7 +253,7 @@ async function loadTargetState(): Promise<void> {
     }
   }
   if (status) status.textContent = "";
-  render(plan, wf, source, trades.length);
+  render(plan, wf, source, trades.length, queue);
 }
 
 let _wired = false;
@@ -247,6 +263,33 @@ function initTargetState(): void {
   const host = $("#view-target-state");
   if (!host) return;
   host.addEventListener("click", (e) => {
+    const review = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-review]");
+    if (review) {
+      const revision = review.dataset.tsReview || "";
+      const status = $("#tstate-status");
+      if (status) status.classList.remove("err");
+      review.disabled = true;
+      review.textContent = "Approving…";
+      void api<TradeQueueState>("/api/trade/basket/review", "POST", { revision })
+        .then(() => {
+          review.className = "ghost";
+          review.textContent = "Projection approved ✓";
+          const open = el("button", "primary", "Open Trade desk →");
+          open.type = "button";
+          open.dataset.tsGoto = "trade";
+          review.insertAdjacentElement("afterend", open);
+          if (status) status.textContent = "Approved for this exact order-queue revision.";
+        })
+        .catch((err) => {
+          review.disabled = false;
+          review.textContent = "Approve this projection →";
+          if (status) {
+            status.classList.add("err");
+            status.textContent = (err as Error).message;
+          }
+        });
+      return;
+    }
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ts-goto]");
     if (!b || !b.dataset.tsGoto) return;
     pushNav({ view: b.dataset.tsGoto });
