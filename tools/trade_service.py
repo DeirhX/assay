@@ -13,6 +13,7 @@ human never previewed.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import time
@@ -32,7 +33,7 @@ from apierror import (
     Forbidden as _Forbidden,
 )
 from config import DATA_DIR
-from portfolio import HOLDINGS_JSON, normalize_basket, provider_symbol_for
+from portfolio import HOLDINGS_JSON, clean_symbol, normalize_basket, parse_occ_symbol, provider_symbol_for
 from store import load as _load, write_json as _write_json
 
 # The planner-staged basket, persisted so the trade desk survives a reload or a
@@ -51,15 +52,103 @@ _preview_issued: dict[str, dict] = {}
 # A holdings snapshot older than this shouldn't silently size real orders —
 # the CZK->shares math uses its marks. Warning only; the human decides.
 STALE_SNAPSHOT_DAYS = 7
+OPTION_QUOTE_MAX_AGE_S = 120
+OPTION_MULTIPLIER = 100
 
 
 def _normalize_basket(trades: Any) -> list[dict]:
-    """Canonical, de-duplicated [{symbol, delta_czk}] used for both hashing and
-    sizing, sorted so the preview token is stable. Shares
-    ``portfolio.normalize_basket`` with the what-if path so the two can never
-    disagree on what a basket is. Raises ValueError on malformed input."""
-    netted = normalize_basket(trades)
-    return [{"symbol": s, "delta_czk": round(d, 2)} for s, d in sorted(netted.items())]
+    """Canonical stock + covered-call legs used for persistence and token hashing.
+
+    Legacy ``{symbol, delta_czk}`` rows remain valid stock legs. Stock rows net by
+    symbol; option rows never do. A covered-call ``leg_id`` is its idempotency key:
+    restaging the same exact contract replaces the prior row instead of doubling
+    the write. Unknown fields are deliberately discarded so the preview hash binds
+    only the server-understood order definition.
+    """
+    if not isinstance(trades, list):
+        raise ValueError("trades must be a list")
+    stock_rows: list[dict] = []
+    option_rows: dict[str, dict] = {}
+    for raw in trades:
+        if not isinstance(raw, dict):
+            raise ValueError("each trade must be an object")
+        leg_type = str(raw.get("type") or "stock").strip().lower()
+        if leg_type == "stock":
+            stock_rows.append(raw)
+            continue
+        if leg_type != "covered_call":
+            raise ValueError(f"unsupported trade leg type {leg_type!r}")
+        sym = clean_symbol(raw.get("symbol"))
+        if not sym:
+            raise ValueError("each covered-call leg needs a symbol")
+        try:
+            conid = int(raw.get("conid"))
+            strike = float(raw.get("strike"))
+            contracts = int(raw.get("contracts"))
+            multiplier = int(raw.get("multiplier") or OPTION_MULTIPLIER)
+        except (TypeError, ValueError):
+            raise ValueError(f"{sym}: covered call needs numeric conid, strike, and contracts") from None
+        expiry = str(raw.get("expiry") or "").strip()
+        if conid <= 0 or strike <= 0 or contracts <= 0 or multiplier != OPTION_MULTIPLIER or not expiry:
+            raise ValueError(f"{sym}: invalid covered-call contract definition")
+        try:
+            # Strict ISO parsing also rejects clever garbage before it enters the token.
+            import datetime as _dt
+            _dt.date.fromisoformat(expiry)
+        except ValueError:
+            raise ValueError(f"{sym}: covered-call expiry must be YYYY-MM-DD") from None
+        leg_id = str(raw.get("leg_id") or f"covered_call:{sym}:{conid}").strip()
+        if not leg_id:
+            raise ValueError(f"{sym}: covered-call leg_id is required")
+        limit_raw = raw.get("limit_price")
+        try:
+            limit_price = float(limit_raw) if limit_raw is not None else None
+        except (TypeError, ValueError):
+            raise ValueError(f"{sym}: covered-call limit_price must be numeric") from None
+        provenance = raw.get("provenance")
+        if provenance is None:
+            provenance = []
+        elif isinstance(provenance, dict):
+            provenance = [provenance]
+        elif not isinstance(provenance, list) or not all(isinstance(p, dict) for p in provenance):
+            raise ValueError(f"{sym}: provenance must be an object or list of objects")
+        option_rows[leg_id] = {
+            "type": "covered_call",
+            "leg_id": leg_id,
+            "symbol": sym,
+            "route": "covered_call",
+            "conid": conid,
+            "expiry": expiry,
+            "strike": round(strike, 6),
+            "right": "C",
+            "contracts": contracts,
+            "multiplier": OPTION_MULTIPLIER,
+            "limit_price": round(limit_price, 6) if limit_price and limit_price > 0 else None,
+            "quote_timestamp": str(raw.get("quote_timestamp") or "") or None,
+            "provenance": provenance,
+        }
+
+    netted = normalize_basket(stock_rows)
+    stock_provenance: dict[str, list[dict]] = {}
+    for row in stock_rows:
+        sym = clean_symbol(row.get("symbol"))
+        prov = row.get("provenance")
+        vals = [prov] if isinstance(prov, dict) else prov if isinstance(prov, list) else []
+        stock_provenance.setdefault(sym, []).extend(p for p in vals if isinstance(p, dict))
+    stocks = [{
+        "type": "stock",
+        "leg_id": f"stock:{sym}",
+        "symbol": sym,
+        "delta_czk": round(delta, 2),
+        **({"provenance": stock_provenance[sym]} if stock_provenance.get(sym) else {}),
+    } for sym, delta in sorted(netted.items()) if abs(delta) >= 0.01]
+    return stocks + [option_rows[k] for k in sorted(option_rows)]
+
+
+def _stock_legs(basket: list[dict]) -> list[dict]:
+    """Legacy what-if/build-order shape for the stock subset of a typed basket."""
+    return [{"symbol": t["symbol"], "delta_czk": t["delta_czk"]}
+            for t in basket if t.get("type") == "stock"]
 
 
 def load_basket() -> list[dict]:
@@ -148,6 +237,181 @@ def _position_quantity_map() -> dict[str, float]:
     return out
 
 
+def _option_root(symbol: Any) -> str:
+    raw = str(symbol or "").strip()
+    head = raw.split()[0] if raw.split() else ""
+    if head and len(head) <= 6:
+        return clean_symbol(head)
+    compact = raw.replace(" ", "")
+    if len(compact) >= 15:
+        return clean_symbol(compact[:-15])
+    return clean_symbol(head or raw)
+
+
+def _held_short_call_contracts() -> dict[str, int]:
+    """Existing short-call assignment obligations by underlying."""
+    holdings = _load(HOLDINGS_JSON) or {}
+    out: dict[str, int] = {}
+    for p in holdings.get("positions") or []:
+        if p.get("asset_class") != "OPT":
+            continue
+        parsed = parse_occ_symbol(p.get("symbol"))
+        qty = _number(p.get("quantity"))
+        if not parsed or parsed[0] != "C" or qty >= 0:
+            continue
+        root = _option_root(p.get("symbol"))
+        if root:
+            out[root] = out.get(root, 0) + int(abs(qty))
+    return out
+
+
+def _held_call_capacity() -> dict[str, dict[str, int]]:
+    """Whole-call capacity after contracts already short in the holdings book."""
+    shares = _position_quantity_map()
+    held_short = _held_short_call_contracts()
+    symbols = set(shares) | set(held_short)
+    return {
+        sym: {
+            "current_shares": int(max(0, shares.get(sym, 0))),
+            "held_short_calls": held_short.get(sym, 0),
+            "capacity_contracts": max(
+                0,
+                int(max(0, shares.get(sym, 0)) // OPTION_MULTIPLIER) - held_short.get(sym, 0),
+            ),
+        }
+        for sym in symbols
+    }
+
+
+def _live_positions(account_id: str) -> list[dict]:
+    rows: list[dict] = []
+    for page in range(8):
+        chunk = ibkr_trade.positions(account_id, page)
+        if not chunk:
+            break
+        rows.extend(chunk)
+        if len(chunk) < 30:
+            break
+    return rows
+
+
+def _live_position_call_capacity(
+    account_id: str, symbol: str, rows: list[dict] | None = None,
+) -> dict[str, int]:
+    """Coverage base from CPAPI positions, failing closed when the feed fails."""
+    sym = clean_symbol(symbol)
+    rows = _live_positions(account_id) if rows is None else rows
+    shares = 0
+    short_calls = 0
+    for row in rows:
+        asset = str(row.get("assetClass") or row.get("asset_class") or "").upper()
+        desc = str(
+            row.get("ticker") or row.get("symbol") or row.get("contractDesc") or ""
+        ).strip()
+        root = _option_root(desc) if asset == "OPT" else clean_symbol(desc.split()[0] if desc else "")
+        if root != sym:
+            continue
+        qty = _number(row.get("position") if row.get("position") is not None else row.get("quantity"))
+        if asset == "STK":
+            shares += int(qty)
+        elif asset == "OPT" and qty < 0:
+            right = str(row.get("putOrCall") or row.get("right") or "").upper()
+            desc_up = desc.upper()
+            # Unknown short option rights fail closed as calls; overstating an
+            # obligation is inconvenient, understating it can create a naked call.
+            if right in {"C", "CALL"} or " CALL" in desc_up or right not in {"P", "PUT"}:
+                short_calls += int(abs(qty))
+    return {
+        "current_shares": max(0, shares),
+        "held_short_calls": short_calls,
+        "capacity_contracts": max(0, max(0, shares) // OPTION_MULTIPLIER - short_calls),
+    }
+
+
+def covered_call_capacity(
+    symbol: str,
+    raw_working: list[dict] | None = None,
+    *,
+    live_account_id: str | None = None,
+) -> dict[str, int]:
+    """Shares still available to cover a new call after held and working shorts."""
+    sym = clean_symbol(symbol)
+    source = (
+        {sym: _live_position_call_capacity(live_account_id, sym)}
+        if live_account_id else _held_call_capacity()
+    )
+    base = (source.get(sym) or {
+        "current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0,
+    }).copy()
+    working_short = 0
+    for raw in raw_working or []:
+        if not isinstance(raw, dict) or _order_terminal(raw) or not _is_working_option(raw):
+            continue
+        if _working_option_right(raw) == "P":
+            continue
+        raw_sym = _option_root(raw.get("ticker") or raw.get("symbol"))
+        if raw_sym != sym or str(raw.get("side") or "").upper() != "SELL":
+            continue
+        remaining = raw.get("remainingQuantity")
+        qty = _number(remaining) if remaining is not None else max(
+            0, _number(raw.get("totalSize") or raw.get("quantity")) - _number(raw.get("filledQuantity")),
+        )
+        working_short += int(qty)
+    base["working_short_calls"] = working_short
+    base["capacity_contracts"] = max(0, int(base["capacity_contracts"]) - working_short)
+    base["available_shares"] = base["capacity_contracts"] * OPTION_MULTIPLIER
+    return base
+
+
+def _is_working_option(raw: dict) -> bool:
+    sec = str(raw.get("secType") or raw.get("assetClass") or raw.get("asset_class") or "").upper()
+    desc = str(raw.get("orderDesc") or "").upper()
+    ticker = raw.get("ticker") or raw.get("symbol")
+    return (
+        sec == "OPT"
+        or " CALL " in f" {desc} "
+        or " PUT " in f" {desc} "
+        or parse_occ_symbol(ticker) is not None
+    )
+
+
+def _working_option_right(raw: dict) -> str | None:
+    right = str(raw.get("putOrCall") or raw.get("right") or "").upper()
+    if right in {"C", "CALL"}:
+        return "C"
+    if right in {"P", "PUT"}:
+        return "P"
+    parsed = parse_occ_symbol(raw.get("ticker") or raw.get("symbol"))
+    if parsed:
+        return parsed[0]
+    desc = f" {str(raw.get('orderDesc') or '').upper()} "
+    if " CALL " in desc:
+        return "C"
+    if " PUT " in desc:
+        return "P"
+    return None
+
+
+def _working_short_calls(working: list[dict], symbol: str) -> int:
+    return int(sum(
+        _number(row.get("remaining_qty"))
+        for row in working
+        if row.get("instrument_type") == "covered_call"
+        and row.get("symbol") == symbol
+        and row.get("side") == "SELL"
+    ))
+
+
+def _working_stock_sell_shares(working: list[dict], symbol: str) -> int:
+    return int(sum(
+        _number(row.get("remaining_qty"))
+        for row in working
+        if row.get("instrument_type") == "stock"
+        and row.get("symbol") == symbol
+        and row.get("side") == "SELL"
+    ))
+
+
 def _fx_by_currency() -> dict[str, float]:
     """currency -> rate-to-base, harvested from held positions. Used to convert a
     live price for a not-yet-held name; absent currencies fall back to 1.0."""
@@ -226,19 +490,44 @@ def _drop_blocked_buys(orders: list[dict], blocked: set[str]) -> list[dict]:
 
 
 def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
-    """Translate a token-bound CZK basket into CPAPI order dicts, server-side.
-    Resolves conids, prices held names from the snapshot and unheld names from a
-    live CPAPI snapshot, then defers the shares math + skips to
-    ibkr_trade.build_orders. Returns (orders, warnings)."""
+    """Translate canonical stock/covered-call legs to server-resolved CPAPI orders."""
     price_map = _trade_price_map()
     position_qty = _position_quantity_map()
+    option_symbols = {t["symbol"] for t in basket if t.get("type") == "covered_call"}
+    stock_sell_symbols = {
+        t["symbol"] for t in basket
+        if t.get("type") in (None, "stock") and _number(t.get("delta_czk")) < 0
+    }
+    coverage_symbols = option_symbols | stock_sell_symbols
+    snapshot_capacity = _held_call_capacity() if stock_sell_symbols else {}
+    call_capacity: dict[str, dict[str, int]] = {
+        sym: (snapshot_capacity.get(sym) or {
+            "current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0,
+        })
+        for sym in stock_sell_symbols
+    }
+    if option_symbols:
+        try:
+            live_positions = _live_positions(account_id)
+        except ibkr_trade.CPAPIError as exc:
+            raise ValueError(
+                "live positions could not be verified for short-call coverage"
+            ) from exc
+        call_capacity = {
+            **call_capacity,
+            **{
+                sym: _live_position_call_capacity(account_id, sym, live_positions)
+                for sym in option_symbols
+            },
+        }
     fx_map = _fx_by_currency()
     # resolve_conid is a gateway secdef/search round-trip per symbol (cached in
     # process, but cold on the first preview after a restart). Serially, a big
     # basket over a sluggish gateway spent ~40s here alone -- the bulk of the
     # "Previewing…" hang -- so resolve them in parallel. Writes into the shared
     # conid cache are idempotent and GIL-safe.
-    symbols = [t["symbol"] for t in basket]
+    stock_basket = _stock_legs(basket)
+    symbols = [t["symbol"] for t in stock_basket]
     workers = min(_PREPARE_MAX_WORKERS, len(symbols) or 1)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         resolved = list(pool.map(lambda s: (s, ibkr_trade.resolve_conid(s)), symbols))
@@ -265,7 +554,7 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         return sizing_price[sym]
 
     orders, skip_warnings = ibkr_trade.build_orders(
-        basket,
+        stock_basket,
         price_lookup=price_lookup,
         conid_lookup=lambda s: conids.get(s),
         account_id=account_id,
@@ -282,12 +571,77 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         order["_estimate_fx_to_base"] = _number(px.get("fx_to_base")) or 1.0
         order["_current_position_qty"] = position_qty.get(
             str(order.get("symbol") or "").strip().upper(), 0.0)
+        cap = call_capacity.get(str(order.get("symbol") or "").strip().upper())
+        if order.get("side") == "SELL" and cap:
+            order["_coverage_current_shares"] = cap["current_shares"]
+            order["_coverage_held_short_calls"] = cap["held_short_calls"]
     # Convert direct buys of KID-blocked names (US-domiciled ETFs) to options-only:
     # drop the order so we don't emit a guaranteed-reject. The Preview surfaces the
     # excluded names separately (see _trade_preview.options_only). The same filter
     # runs on the place path since orders are re-derived here from the token-bound
     # basket, so a blocked buy can never slip through to placement.
     orders = _drop_blocked_buys(orders, kid_block.blocked_symbols())
+
+    # Covered calls are exact-contract SELL LIMIT orders. Everything executable is
+    # resolved again here; staged conid/price are audit context, never authority.
+    for leg in [t for t in basket if t.get("type") == "covered_call"]:
+        sym = leg["symbol"]
+        resolved = ibkr_trade.resolve_exact_call(sym, leg["expiry"], leg["strike"])
+        if not resolved:
+            raise ValueError(f"{sym}: exact covered-call contract no longer resolves")
+        if int(resolved["conid"]) != int(leg["conid"]):
+            raise ValueError(f"{sym}: covered-call contract changed — rebuild the Exit plan")
+        bid, ask = resolved.get("bid"), resolved.get("ask")
+        if not ibkr_trade.quotes_are_valid(bid, ask):
+            raise ValueError(f"{sym}: covered call needs a live, uncrossed IBKR bid/ask quote")
+        if not _option_quote_fresh(resolved.get("quote_timestamp")):
+            raise ValueError(f"{sym}: covered-call quote is stale — preview again")
+        limit = ibkr_trade.round_sell_limit_midpoint(bid, ask, resolved.get("rules"))
+        if limit is None:
+            raise ValueError(f"{sym}: could not derive a valid option limit price")
+        cap = call_capacity.get(sym, {"current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0})
+        if cap["capacity_contracts"] < 1:
+            raise ValueError(
+                f"{sym}: no covered-call capacity — {cap['current_shares']} shares, "
+                f"{cap['held_short_calls']} held short call(s)"
+            )
+        contracts = int(leg["contracts"])
+        order = {
+            "instrument_type": "covered_call",
+            "leg_id": leg["leg_id"],
+            "route": "covered_call",
+            "symbol": sym,
+            "conid": int(resolved["conid"]),
+            "orderType": "LMT",
+            "side": "SELL",
+            "quantity": contracts,
+            "tif": "GTC",
+            "price": limit,
+            "cOID": f"assay-{_basket_token(account_id, basket)}-{int(resolved['conid'])}-{contracts}",
+            "expiry": resolved["expiry"],
+            "strike": float(resolved["strike"]),
+            "right": "C",
+            "multiplier": OPTION_MULTIPLIER,
+            "contracts": contracts,
+            "bid": bid,
+            "ask": ask,
+            "last": resolved.get("last"),
+            "quote_timestamp": resolved.get("quote_timestamp"),
+            "underlying_last": resolved.get("underlying_last"),
+            "underlying_bid": resolved.get("underlying_bid"),
+            "underlying_ask": resolved.get("underlying_ask"),
+            "current_shares": cap["current_shares"],
+            "held_short_calls": cap["held_short_calls"],
+            "coverage_capacity_contracts": cap["capacity_contracts"],
+            "if_assigned_shares": max(0, cap["current_shares"] - contracts * OPTION_MULTIPLIER),
+            "premium_credit": round(limit * OPTION_MULTIPLIER * contracts, 2),
+            "currency": (price_map.get(sym) or {}).get("currency"),
+            "provenance": leg.get("provenance") or [],
+            "_estimate_price": limit,
+            "_estimate_fx_to_base": 1.0,
+            "_current_position_qty": cap["current_shares"],
+        }
+        orders.append(order)
     return orders, warnings + skip_warnings
 
 
@@ -392,16 +746,47 @@ def _number(raw: Any) -> float:
         return 0.0
 
 
-def _normalized_working_orders(raw_orders: list[dict], symbols: set[str]) -> list[dict]:
+def _option_quote_fresh(raw: Any) -> bool:
+    try:
+        stamp = dt.datetime.fromisoformat(str(raw or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    age = (dt.datetime.now(dt.timezone.utc) - stamp.astimezone(dt.timezone.utc)).total_seconds()
+    return 0 <= age <= OPTION_QUOTE_MAX_AGE_S
+
+
+def _normalized_working_orders(
+    raw_orders: list[dict],
+    symbols: set[str],
+    option_symbols: set[str] | None = None,
+    option_conids: set[int] | None = None,
+) -> list[dict]:
     """Stable, serializable subset of non-terminal IBKR orders relevant to a
     preview. Remaining quantity is the only quantity that still affects future
     exposure; original/filled quantities are retained for explanation."""
     out: list[dict] = []
+    option_symbols = option_symbols or set()
+    option_conids = option_conids or set()
     for raw in raw_orders:
         if not isinstance(raw, dict) or _order_terminal(raw):
             continue
-        sym = str(raw.get("ticker") or raw.get("symbol") or "").strip().upper()
-        if not sym or sym not in symbols:
+        raw_sym = str(raw.get("ticker") or raw.get("symbol") or "").strip().upper()
+        try:
+            conid = int(raw.get("conid")) if raw.get("conid") is not None else None
+        except (TypeError, ValueError):
+            conid = None
+        is_option = _is_working_option(raw) or (conid is not None and conid in option_conids)
+        if is_option and _working_option_right(raw) == "P":
+            continue
+        sym = _option_root(raw_sym) if is_option else clean_symbol(raw_sym)
+        if is_option:
+            if not sym and conid not in option_conids:
+                continue
+            if sym not in option_symbols and conid not in option_conids:
+                continue
+        elif not sym or sym not in symbols:
             continue
         total = _number(raw.get("totalSize") or raw.get("quantity"))
         filled = _number(raw.get("filledQuantity"))
@@ -412,6 +797,8 @@ def _normalized_working_orders(raw_orders: list[dict], symbols: set[str]) -> lis
         out.append({
             "order_id": str(raw.get("orderId") or raw.get("order_id") or ""),
             "symbol": sym,
+            "instrument_type": "covered_call" if is_option else "stock",
+            "conid": conid,
             "side": str(raw.get("side") or "").strip().upper(),
             "remaining_qty": remaining,
             "filled_qty": filled,
@@ -422,7 +809,8 @@ def _normalized_working_orders(raw_orders: list[dict], symbols: set[str]) -> lis
             "tif": str(raw.get("tif") or raw.get("timeInForce") or ""),
         })
     return sorted(out, key=lambda o: (
-        o["symbol"], o["side"], o["order_id"], o["remaining_qty"],
+        o["instrument_type"], o["symbol"], o.get("conid") or 0,
+        o["side"], o["order_id"], o["remaining_qty"],
     ))
 
 
@@ -430,6 +818,8 @@ def _working_fingerprint(working: list[dict]) -> str:
     """Hash only fields whose change alters reconciliation or user intent."""
     rows = [{
         "id": o.get("order_id"),
+        "instrument_type": o.get("instrument_type") or "stock",
+        "conid": o.get("conid"),
         "symbol": o.get("symbol"),
         "side": o.get("side"),
         "remaining": round(_number(o.get("remaining_qty")), 8),
@@ -453,11 +843,13 @@ def _reconcile_working_orders(
     """
     basket_by_symbol = {
         str(t.get("symbol") or "").upper(): _number(t.get("delta_czk"))
-        for t in basket
+        for t in basket if t.get("type") in (None, "stock")
     }
-    working_by_symbol: dict[str, list[dict]] = {}
+    basket_by_leg = {str(t.get("leg_id") or ""): t for t in basket}
+    working_by_symbol: dict[tuple[str, str], list[dict]] = {}
     for row in working:
-        working_by_symbol.setdefault(str(row["symbol"]), []).append(row)
+        key = (str(row.get("instrument_type") or "stock"), str(row["symbol"]))
+        working_by_symbol.setdefault(key, []).append(row)
 
     residual: list[dict] = []
     contexts: list[dict] = []
@@ -465,12 +857,17 @@ def _reconcile_working_orders(
     for order in proposed:
         sym = str(order.get("symbol") or "").strip().upper()
         side = str(order.get("side") or "").strip().upper()
+        instrument_type = str(order.get("instrument_type") or "stock")
+        is_option = instrument_type == "covered_call"
+        leg_id = str(order.get("leg_id") or f"stock:{sym}")
         proposed_qty = _number(order.get("quantity"))
-        rows = working_by_symbol.get(sym, [])
+        symbol_rows = working_by_symbol.get((instrument_type, sym), [])
+        rows = ([r for r in symbol_rows if r.get("conid") == order.get("conid")]
+                if is_option else symbol_rows)
         same = [r for r in rows if r.get("side") == side]
         opposite = [r for r in rows if r.get("side") and r.get("side") != side]
         same_qty = sum(_number(r.get("remaining_qty")) for r in same)
-        original_delta = basket_by_symbol.get(sym, 0.0)
+        original_delta = basket_by_symbol.get(sym, 0.0) if not is_option else 0.0
         unit_base = (
             _number(order.get("_estimate_price"))
             * (_number(order.get("_estimate_fx_to_base")) or 1.0)
@@ -499,10 +896,22 @@ def _reconcile_working_orders(
                 next_step = "No new order needed — monitor the existing working order."
             else:
                 classification = "same_side_partial"
+                unit = "contract" if is_option else "share"
                 next_step = (
-                    f"{same_qty:g} shares are already working; place "
-                    f"{residual_qty:g} more to complete the {proposed_qty:g}-share plan."
+                    f"{same_qty:g} {unit}(s) are already working; place "
+                    f"{residual_qty:g} more to complete the {proposed_qty:g}-{unit} plan."
                 )
+
+        coverage_working = _working_short_calls(symbol_rows, sym) if is_option else 0
+        coverage_capacity = int(order.get("coverage_capacity_contracts") or 0) if is_option else 0
+        coverage_ok = not is_option or coverage_working + residual_qty <= coverage_capacity
+        if is_option and not coverage_ok:
+            classification = "coverage_blocked"
+            residual_qty = 0.0
+            next_step = (
+                f"Covered-call capacity is {coverage_capacity:g} contract(s) after held short calls, "
+                f"but {coverage_working:g} contract(s) are already working."
+            )
 
         if residual_qty > 0:
             adjusted = dict(order)
@@ -513,13 +922,19 @@ def _reconcile_working_orders(
             residual.append(adjusted)
 
         residual_signed_qty = residual_qty * (1 if side == "BUY" else -1)
-        effective_delta = (working_signed_qty + residual_signed_qty) * unit_base
+        effective_delta = 0.0 if is_option else (working_signed_qty + residual_signed_qty) * unit_base
         current_position_qty = _number(order.get("_current_position_qty"))
-        projected_position_qty = current_position_qty + working_signed_qty + residual_signed_qty
-        if abs(effective_delta) >= 1:
+        projected_position_qty = (
+            current_position_qty if is_option
+            else current_position_qty + working_signed_qty + residual_signed_qty
+        )
+        if not is_option and abs(effective_delta) >= 1:
             effective.append({"symbol": sym, "delta_czk": round(effective_delta, 2)})
-        contexts.append({
+        context = {
             "symbol": sym,
+            "instrument_type": instrument_type,
+            "leg_id": leg_id,
+            "conid": order.get("conid"),
             "side": side,
             "classification": classification,
             "proposed_qty": proposed_qty,
@@ -535,7 +950,117 @@ def _reconcile_working_orders(
             "working": rows,
             "next_step": next_step,
             "placeable": residual_qty > 0,
-        })
+        }
+        if is_option:
+            total_assignment_contracts = (
+                int(order.get("held_short_calls") or 0) + coverage_working + int(residual_qty)
+            )
+            context.update({
+                "expiry": order.get("expiry"),
+                "strike": order.get("strike"),
+                "right": "C",
+                "multiplier": OPTION_MULTIPLIER,
+                "contracts": proposed_qty,
+                "current_shares": int(order.get("current_shares") or 0),
+                "coverage_capacity_contracts": coverage_capacity,
+                "coverage_working_contracts": coverage_working,
+                "coverage_ok": coverage_ok,
+                "coverage_shares": int(residual_qty * OPTION_MULTIPLIER),
+                "if_assigned_shares": max(
+                    0,
+                    int(order.get("current_shares") or 0)
+                    - total_assignment_contracts * OPTION_MULTIPLIER,
+                ),
+                "premium_credit": round(
+                    residual_qty * _number(order.get("price")) * OPTION_MULTIPLIER, 2
+                ),
+                "currency": order.get("currency"),
+                "bid": order.get("bid"),
+                "ask": order.get("ask"),
+                "last": order.get("last"),
+                "quote_timestamp": order.get("quote_timestamp"),
+                "provenance": (basket_by_leg.get(leg_id) or {}).get("provenance") or [],
+            })
+        contexts.append(context)
+
+    # Coverage is per underlying and applies symmetrically: new calls cannot reuse
+    # shares, and stock exits cannot sell shares already pledged to held/working
+    # calls. If a mixed symbol-level plan is unsafe, block all of its residual legs
+    # rather than quietly placing only the share sale.
+    coverage_source_by_symbol: dict[str, dict] = {}
+    for order in proposed:
+        sym = str(order.get("symbol") or "")
+        if order.get("instrument_type") == "covered_call":
+            coverage_source_by_symbol.setdefault(sym, order)
+        elif order.get("side") == "SELL" and order.get("_coverage_current_shares") is not None:
+            coverage_source_by_symbol.setdefault(sym, order)
+    blocked_symbols: set[str] = set()
+    for sym, source in coverage_source_by_symbol.items():
+        option_orders = [
+            o for o in residual
+            if o.get("instrument_type") == "covered_call" and o.get("symbol") == sym
+        ]
+        option_working_rows = working_by_symbol.get(("covered_call", sym), [])
+        stock_working_rows = working_by_symbol.get(("stock", sym), [])
+        working_calls = _working_short_calls(option_working_rows, sym)
+        future_stock_sells = _working_stock_sell_shares(stock_working_rows, sym) + sum(
+            int(_number(o.get("quantity")))
+            for o in residual
+            if o.get("instrument_type") != "covered_call"
+            and o.get("symbol") == sym
+            and o.get("side") == "SELL"
+        )
+        current_shares = int(
+            (source.get("current_shares") or 0)
+            if source.get("instrument_type") == "covered_call"
+            else source.get("_coverage_current_shares") or 0
+        )
+        held_short_calls = int(
+            (source.get("held_short_calls") or 0)
+            if source.get("instrument_type") == "covered_call"
+            else source.get("_coverage_held_short_calls") or 0
+        )
+        cap = max(
+            0,
+            int(max(0, current_shares - future_stock_sells) // OPTION_MULTIPLIER)
+            - held_short_calls,
+        )
+        requested = sum(int(_number(o.get("quantity"))) for o in option_orders)
+        if_assigned = max(
+            0,
+            current_shares - future_stock_sells
+            - (held_short_calls + working_calls + requested) * OPTION_MULTIPLIER,
+        )
+        for context in contexts:
+            if context.get("instrument_type") == "covered_call" and context.get("symbol") == sym:
+                context["coverage_capacity_contracts"] = cap
+                context["future_stock_sell_shares"] = future_stock_sells
+                context["if_assigned_shares"] = if_assigned
+        required_contracts = held_short_calls + working_calls + requested
+        if max(0, current_shares - future_stock_sells) < required_contracts * OPTION_MULTIPLIER:
+            blocked_symbols.add(sym)
+            for context in contexts:
+                if context.get("symbol") != sym:
+                    continue
+                is_option_context = context.get("instrument_type") == "covered_call"
+                context.update({
+                    "classification": "coverage_blocked",
+                    "residual_qty": 0.0,
+                    "residual_delta_czk": 0.0,
+                    "coverage_ok": False,
+                    "placeable": False,
+                    "next_step": (
+                        f"{required_contracts} short call contract(s) "
+                        f"need {required_contracts * OPTION_MULTIPLIER} "
+                        f"shares after planned stock sales, but only "
+                        f"{max(0, current_shares - future_stock_sells)} would remain."
+                    ),
+                })
+                if is_option_context:
+                    context["premium_credit"] = 0.0
+    if blocked_symbols:
+        residual = [o for o in residual if o.get("symbol") not in blocked_symbols]
+        effective = [t for t in effective if t.get("symbol") not in blocked_symbols]
     return residual, contexts, effective
 
 
@@ -598,15 +1123,33 @@ def _trade_preview(body: dict) -> dict:
     account_id = _resolve_trade_account(body.get("account"))
     proposed_orders, warnings = _prepare_trade_orders(account_id, basket)
 
-    relevant_symbols = {
+    relevant_stock_symbols = {
         str(o.get("symbol") or "").strip().upper() for o in proposed_orders
-        if o.get("symbol")
+        if o.get("symbol") and o.get("instrument_type") != "covered_call"
+    }
+    relevant_option_symbols = {
+        str(o.get("symbol") or "").strip().upper() for o in proposed_orders
+        if o.get("symbol") and o.get("instrument_type") == "covered_call"
+    }
+    coverage_symbols = relevant_option_symbols | {
+        str(o.get("symbol") or "").strip().upper() for o in proposed_orders
+        if o.get("symbol") and o.get("instrument_type") != "covered_call"
+        and o.get("side") == "SELL"
+    }
+    relevant_option_conids = {
+        int(o["conid"]) for o in proposed_orders
+        if o.get("instrument_type") == "covered_call" and o.get("conid") is not None
     }
     working_available = True
     working_error: str | None = None
     try:
         raw_working = ibkr_trade.live_orders()
-        working_orders = _normalized_working_orders(raw_working, relevant_symbols)
+        working_orders = _normalized_working_orders(
+            raw_working,
+            relevant_stock_symbols | coverage_symbols,
+            coverage_symbols,
+            relevant_option_conids,
+        )
     except ibkr_trade.CPAPIError as exc:
         # A preview can still show sizing/risk, but must not arm placement when
         # we could not rule out a double trade.
@@ -637,6 +1180,7 @@ def _trade_preview(body: dict) -> dict:
     # options-only route rather than silently omitting them.
     blocked = kid_block.blocked_symbols()
     options_only = sorted({str(t["symbol"]).upper() for t in basket
+                           if t.get("type") == "stock"
                            if float(t.get("delta_czk") or 0) > 0
                            and str(t.get("symbol") or "").upper() in blocked})
 
@@ -671,7 +1215,9 @@ def _trade_preview(body: dict) -> dict:
         "issued_at": now,
         "orders": orders,
         "working_fingerprint": _working_fingerprint(working_orders),
-        "working_symbols": sorted(relevant_symbols),
+        "working_symbols": sorted(relevant_stock_symbols | coverage_symbols),
+        "working_option_symbols": sorted(coverage_symbols),
+        "working_option_conids": sorted(relevant_option_conids),
         "working_available": working_available,
     }
     for t in [t for t, rec in _preview_issued.items()
@@ -702,6 +1248,89 @@ def _trade_preview(body: dict) -> dict:
         "snapshot_stale": snapshot_stale,
         "stale_after_days": STALE_SNAPSHOT_DAYS,
     }
+
+
+def _revalidate_covered_call_orders(
+    account_id: str, orders: list[dict], working: list[dict],
+) -> None:
+    """Final place-time contract, quote, and coverage gate for short calls."""
+    by_symbol: dict[str, list[dict]] = {}
+    for order in orders:
+        if order.get("instrument_type") != "covered_call":
+            continue
+        by_symbol.setdefault(str(order.get("symbol") or "").upper(), []).append(order)
+    coverage_symbols = set(by_symbol) | {
+        str(order.get("symbol") or "").upper()
+        for order in orders
+        if order.get("instrument_type") != "covered_call" and order.get("side") == "SELL"
+    }
+    if not coverage_symbols:
+        return
+    try:
+        live_positions = _live_positions(account_id)
+    except ibkr_trade.CPAPIError as exc:
+        raise _Conflict(
+            "live positions could not be rechecked — no covered-call order was placed"
+        ) from exc
+    capacity = {
+        sym: _live_position_call_capacity(account_id, sym, live_positions)
+        for sym in coverage_symbols
+    }
+    for sym in coverage_symbols:
+        option_orders = by_symbol.get(sym, [])
+        for order in option_orders:
+            resolved = ibkr_trade.resolve_exact_call(sym, order.get("expiry"), order.get("strike"))
+            if not resolved or int(resolved.get("conid") or 0) != int(order.get("conid") or 0):
+                raise _Conflict(f"{sym}: covered-call contract could not be revalidated — preview again")
+            if not ibkr_trade.quotes_are_valid(resolved.get("bid"), resolved.get("ask")):
+                raise _Conflict(f"{sym}: covered-call quote is missing or crossed — no order was placed")
+            if not _option_quote_fresh(resolved.get("quote_timestamp")):
+                raise _Conflict(f"{sym}: covered-call quote is stale — no order was placed")
+            fresh_limit = ibkr_trade.round_sell_limit_midpoint(
+                resolved.get("bid"), resolved.get("ask"), resolved.get("rules"),
+            )
+            if fresh_limit is None:
+                raise _Conflict(f"{sym}: covered-call limit could not be refreshed — no order was placed")
+            old_limit = _number(order.get("price"))
+            rules = resolved.get("rules") if isinstance(resolved.get("rules"), dict) else {}
+            tick = _number(rules.get("increment") or rules.get("minTick") or 0.01)
+            spread = _number(resolved.get("ask")) - _number(resolved.get("bid"))
+            if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
+                raise _Conflict(
+                    f"{sym}: covered-call limit moved from {old_limit:g} to {fresh_limit:g} "
+                    "— preview again"
+                )
+            order.update({
+                "price": fresh_limit,
+                "bid": resolved.get("bid"),
+                "ask": resolved.get("ask"),
+                "last": resolved.get("last"),
+                "quote_timestamp": resolved.get("quote_timestamp"),
+                "premium_credit": round(
+                    fresh_limit * OPTION_MULTIPLIER * int(_number(order.get("quantity"))), 2,
+                ),
+            })
+        base = capacity.get(sym) or {}
+        future_stock_sells = _working_stock_sell_shares(working, sym) + sum(
+            int(_number(order.get("quantity")))
+            for order in orders
+            if order.get("instrument_type") != "covered_call"
+            and str(order.get("symbol") or "").upper() == sym
+            and order.get("side") == "SELL"
+        )
+        working_calls = _working_short_calls(working, sym)
+        requested = sum(int(_number(order.get("quantity"))) for order in option_orders)
+        required_contracts = int(base.get("held_short_calls") or 0) + working_calls + requested
+        if max(0, int(base.get("current_shares") or 0) - future_stock_sells) < (
+            required_contracts * OPTION_MULTIPLIER
+        ):
+            raise _Conflict(
+                f"{sym}: short-call coverage changed — "
+                f"{required_contracts} "
+                f"contract(s) need shares, but only "
+                f"{max(0, int(base.get('current_shares') or 0) - future_stock_sells)} "
+                "shares would remain after stock sells; preview again"
+            )
 
 
 def _trade_place(body: dict) -> dict:
@@ -737,8 +1366,12 @@ def _trade_place(body: dict) -> dict:
             "gateway and preview again before placing"
         )
     symbols = set(issued.get("working_symbols") or [])
+    option_symbols = set(issued.get("working_option_symbols") or [])
+    option_conids = {int(c) for c in issued.get("working_option_conids") or []}
     try:
-        fresh_working = _normalized_working_orders(ibkr_trade.live_orders(), symbols)
+        fresh_working = _normalized_working_orders(
+            ibkr_trade.live_orders(), symbols, option_symbols, option_conids,
+        )
     except ibkr_trade.CPAPIError as exc:
         raise _Conflict(
             "working orders could not be rechecked — no orders were placed; "
@@ -755,8 +1388,16 @@ def _trade_place(body: dict) -> dict:
     warnings: list[str] = []
     if not orders:
         raise ValueError("no residual orders remain to place — preview the updated basket")
+    _revalidate_covered_call_orders(account_id, orders, fresh_working)
+    # Calls go first so a partial gateway failure cannot sell the covering
+    # shares and then fail before submitting their short call. If a later stock
+    # sale fails, an accepted call remains covered by more shares than planned.
+    placement_orders = sorted(
+        orders,
+        key=lambda order: 0 if order.get("instrument_type") == "covered_call" else 1,
+    )
     try:
-        placed = ibkr_trade.place_orders(account_id, orders)
+        placed = ibkr_trade.place_orders(account_id, placement_orders)
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
     # Close the loop: the staged basket was just submitted, so stop offering it

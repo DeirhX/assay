@@ -697,17 +697,21 @@ class _FakeGateway:
     """A minimal in-memory CPAPI, standing in for ``ibkr_trade._request`` so the
     option-chain builder is exercised entirely offline. Answers secdef/search
     (STK + optional OPT months), secdef/strikes, secdef/info (deterministic option
-    conids), and marketdata/snapshot. An option conid absent from ``quotes``
-    returns an empty snapshot row -- exactly the no-subscription case."""
+    conids), contract info-and-rules, and marketdata/snapshot. An option conid
+    absent from ``quotes`` returns an empty snapshot row -- exactly the
+    no-subscription case."""
 
     def __init__(self, *, months="AUG26", strikes=None, spot="100.0",
-                 quotes=None, has_opt=True, underlying=500):
+                 quotes=None, has_opt=True, underlying=500, maturity="20260821",
+                 rules=None):
         self.months = months
         self.strikes = strikes or {"call": [95, 100, 105, 110], "put": [90, 95, 100, 105]}
         self.spot = spot
         self.quotes = quotes or {}
         self.has_opt = has_opt
         self.underlying = underlying
+        self.maturity = maturity
+        self.rules = rules or {"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]}
         self.calls: list[tuple[str, str]] = []
 
     @staticmethod
@@ -728,12 +732,17 @@ class _FakeGateway:
             return {"call": list(self.strikes["call"]), "put": list(self.strikes["put"])}
         if path == "/iserver/secdef/info":
             ocid = self.opt_conid(float(q["strike"]), q["right"])
-            return [{"conid": ocid, "maturityDate": "20260821"}]
+            return [{"conid": ocid, "maturityDate": self.maturity}]
+        if path.startswith("/iserver/contract/") and path.endswith("/info-and-rules"):
+            return {"rules": self.rules}
         if path == "/iserver/marketdata/snapshot":
             rows = []
             for c in (int(x) for x in q["conids"].split(",")):
                 if c == self.underlying:
-                    rows.append({"conid": c, "31": self.spot})
+                    if isinstance(self.spot, dict):
+                        rows.append({"conid": c, **self.spot})
+                    else:
+                        rows.append({"conid": c, "31": self.spot})
                 elif c in self.quotes:
                     rows.append({"conid": c, **self.quotes[c]})
                 else:
@@ -852,6 +861,105 @@ class OptionChain(unittest.TestCase):
         self.assertIn(110.0, strikes)
         self.assertNotIn(40.0, strikes)
         self.assertNotIn(200.0, strikes)
+
+
+class QuotesAreValid(unittest.TestCase):
+    def test_accepts_two_sided_positive_non_crossed(self):
+        self.assertTrue(ibt.quotes_are_valid(2.40, 2.60))
+        self.assertTrue(ibt.quotes_are_valid(2.40, 2.40))  # locked
+
+    def test_rejects_crossed_missing_or_non_positive(self):
+        self.assertFalse(ibt.quotes_are_valid(2.60, 2.40))
+        self.assertFalse(ibt.quotes_are_valid(0, 2.60))
+        self.assertFalse(ibt.quotes_are_valid(2.40, -1))
+        self.assertFalse(ibt.quotes_are_valid(None, 2.60))
+        self.assertFalse(ibt.quotes_are_valid(2.40, None))
+
+
+class RoundSellLimitMidpoint(unittest.TestCase):
+    RULES = {"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]}
+
+    def test_floors_midpoint_to_tick_without_crossing(self):
+        # mid = 2.50 -> floor to 2.50 on 0.05 grid
+        self.assertAlmostEqual(ibt.round_sell_limit_midpoint(2.40, 2.60, self.RULES), 2.50)
+        # mid = 2.47 -> floor to 2.45
+        self.assertAlmostEqual(ibt.round_sell_limit_midpoint(2.44, 2.50, self.RULES), 2.45)
+
+    def test_returns_none_on_invalid_quotes(self):
+        self.assertIsNone(ibt.round_sell_limit_midpoint(2.60, 2.40, self.RULES))
+
+
+class ResolveExactCall(unittest.TestCase):
+    EXPIRY = "2026-08-21"
+
+    def setUp(self):
+        ibt._conid_cache.clear()
+
+    def test_resolves_exact_call_with_quotes_rules_and_metadata(self):
+        gw = _FakeGateway(
+            spot={"31": "100.0", "84": "99.8", "86": "100.2"},
+            quotes={_FakeGateway.opt_conid(105, "C"): {
+                "31": "2.50", "84": "2.40", "86": "2.60",
+            }},
+            rules={"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]},
+        )
+        fixed = "2026-07-09T10:15:00+00:00"
+        with mock.patch.object(ibt, "_request", gw), \
+                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+            out = ibt.resolve_exact_call("NVDA", self.EXPIRY, 105)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["symbol"], "NVDA")
+        self.assertEqual(out["conid"], gw.opt_conid(105, "C"))
+        self.assertEqual(out["underlying_conid"], gw.underlying)
+        self.assertEqual(out["expiry"], self.EXPIRY)
+        self.assertEqual(out["strike"], 105.0)
+        self.assertEqual(out["right"], "C")
+        self.assertEqual(out["multiplier"], 100)
+        self.assertAlmostEqual(out["bid"], 2.40)
+        self.assertAlmostEqual(out["ask"], 2.60)
+        self.assertAlmostEqual(out["last"], 2.50)
+        self.assertAlmostEqual(out["underlying_last"], 100.0)
+        self.assertAlmostEqual(out["underlying_bid"], 99.8)
+        self.assertAlmostEqual(out["underlying_ask"], 100.2)
+        self.assertEqual(out["quote_timestamp"], fixed)
+        self.assertAlmostEqual(out["tick"], 0.05)
+        self.assertIn("incrementRules", out["rules"])
+
+    def test_rejects_expiry_mismatch(self):
+        gw = _FakeGateway(maturity="20260918")
+        with mock.patch.object(ibt, "_request", gw):
+            self.assertIsNone(ibt.resolve_exact_call("NVDA", self.EXPIRY, 105))
+
+    def test_rejects_unlisted_strike(self):
+        def _no_info(method, endpoint, body=None):
+            path, _, _ = endpoint.partition("?")
+            if path == "/iserver/secdef/search":
+                return [{"conid": 500, "symbol": "NVDA",
+                         "sections": [{"secType": "STK"}, {"secType": "OPT", "months": "AUG26"}]}]
+            if path == "/iserver/secdef/info":
+                return []
+            return {}
+        with mock.patch.object(ibt, "_request", side_effect=_no_info):
+            self.assertIsNone(ibt.resolve_exact_call("NVDA", self.EXPIRY, 999))
+
+
+class OptionChainMetadata(unittest.TestCase):
+    AS_OF = dt.date(2026, 7, 9)
+
+    def setUp(self):
+        ibt._conid_cache.clear()
+
+    def test_chain_includes_underlying_quote_metadata(self):
+        gw = _FakeGateway(spot={"31": "100.0", "84": "99.5", "86": "100.5"})
+        fixed = "2026-07-09T10:15:00+00:00"
+        with mock.patch.object(ibt, "_request", gw), \
+                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+            chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
+        self.assertEqual(chain["underlying_price"], 100.0)
+        self.assertAlmostEqual(chain["underlying_bid"], 99.5)
+        self.assertAlmostEqual(chain["underlying_ask"], 100.5)
+        self.assertAlmostEqual(chain["underlying_last"], 100.0)
+        self.assertEqual(chain["quote_timestamp"], fixed)
 
 
 if __name__ == "__main__":

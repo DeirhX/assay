@@ -27,6 +27,8 @@ the instrument's own trading currency (what the desk actually sends).
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import math
 import sys
 import threading
@@ -77,11 +79,68 @@ RATE_CACHE_TTL_SECONDS = 6 * 3600
 # exceeded. The abandoned IBKR fetch keeps running as a daemon (best-effort: it
 # may still populate its own cache for a later load) but never blocks the plan.
 IBKR_CHAIN_BUDGET_SECONDS = 5.0
+EXECUTION_QUOTE_MAX_AGE_SECONDS = 120
 # auth_status() is itself a ~2s gateway round-trip; memoize it briefly so a cold
 # multi-name plan doesn't pay it once per candidate.
 _SESSION_READY_TTL_SECONDS = 20.0
 _session_ready_cache: tuple[float, bool] | None = None
 _session_ready_lock = threading.Lock()
+
+
+def _quote_age_seconds(raw: Any, *, now: dt.datetime | None = None) -> float | None:
+    current = now
+    if current is not None and current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    return timeutil.age_seconds(raw, now=current)
+
+
+def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) -> dict[str, Any]:
+    """Server-computed route availability; staging repeats every safety check."""
+    import trade_service
+
+    schedule = entry.get("schedule") or {}
+    sell_ok = bool(schedule.get("tranches"))
+    sell_reasons = [] if sell_ok else ["No sell-now tranche; the planned exit is tax-deferred."]
+    options = entry.get("options") or {}
+    ladder = options.get("covered_call_ladder") or []
+    capacity = trade_service.covered_call_capacity(entry["symbol"])
+    intended = max(0, int(float(entry.get("exit_shares") or 0) // 100))
+    capacity_contracts = min(int(capacity.get("capacity_contracts") or 0), intended)
+    executable: list[dict] = []
+    for rung in ladder:
+        age = _quote_age_seconds(rung.get("quote_timestamp"), now=now)
+        rung["quote_age_seconds"] = round(age, 1) if age is not None else None
+        rung["quote_fresh"] = age is not None and age <= EXECUTION_QUOTE_MAX_AGE_SECONDS
+        bid, ask = rung.get("bid"), rung.get("ask")
+        if rung.get("executable") and rung["quote_fresh"] and bid and ask:
+            # Display estimate only. stage_covered_call obtains the exact tick and
+            # recomputes this from a fresh quote.
+            rung["limit_price"] = math.floor((((float(bid) + float(ask)) / 2.0) + EPS) * 100) / 100
+            executable.append(rung)
+        else:
+            rung["limit_price"] = None
+
+    reasons: list[str] = []
+    if capacity_contracts < 1:
+        reasons.append(
+            f"No uncovered capacity for this exit ({capacity.get('current_shares', 0)} shares; "
+            f"{capacity.get('held_short_calls', 0)} held short call(s))."
+        )
+    if not executable:
+        if any(r.get("executable") and not r.get("quote_fresh") for r in ladder):
+            reasons.append("IBKR option quote is stale; rebuild the Exit plan.")
+        else:
+            reasons.append("No exact IBKR call contract with a live two-sided quote.")
+    covered_ok = capacity_contracts > 0 and bool(executable)
+    return {
+        "sell_shares": {"eligible": sell_ok, "reasons": sell_reasons},
+        "covered_call": {
+            "eligible": covered_ok,
+            "reasons": reasons,
+            "capacity_contracts": capacity_contracts,
+        },
+        "recommended": "covered_call" if not sell_ok and covered_ok else "sell_shares",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -466,6 +525,7 @@ def build_exit_plan(
         }
         if with_options:
             entry["options"] = _options_overlay(sym, pos, layers, series, cfg, as_of, rate=opt_rate)
+            entry["routes"] = _execution_routes(entry, now=as_of)
         positions.append(entry)
 
     positions.sort(key=lambda e: -e["exit_czk"])
@@ -673,6 +733,22 @@ def _options_overlay(sym, pos, layers, series, cfg, as_of, *, rate=None) -> dict
         return None
 
 
+def _staged_exit_share_sales(existing: list[dict], symbol: str) -> int:
+    shares = 0
+    for row in existing:
+        if row.get("type") not in (None, "stock") or row.get("symbol") != symbol:
+            continue
+        provenance_rows = row.get("provenance") or []
+        if isinstance(provenance_rows, dict):
+            provenance_rows = [provenance_rows]
+        shares += sum(
+            max(0, int(float(p.get("intended_shares") or 0)))
+            for p in provenance_rows
+            if isinstance(p, dict) and p.get("route") == "sell_shares"
+        )
+    return shares
+
+
 def stage_tranche(plan: dict[str, Any], symbol: str, index: int) -> dict[str, Any]:
     """Merge tranche ``index`` of ``symbol`` into the staged trade-desk basket.
 
@@ -690,10 +766,182 @@ def stage_tranche(plan: dict[str, Any], symbol: str, index: int) -> dict[str, An
     if tranche is None:
         raise ValueError(f"{symbol} has no tranche #{index}")
 
+    fingerprint = _plan_fingerprint(plan, pos)
+    provenance = {
+        "source": "exit_plan",
+        "route": "sell_shares",
+        "plan_as_of": plan.get("as_of"),
+        "plan_snapshot": plan.get("snapshot"),
+        "plan_fingerprint": fingerprint,
+        "tranche_index": index,
+        "intended_shares": tranche.get("shares"),
+    }
     existing = trade_service.load_basket()
-    merged = existing + [{"symbol": sym, "delta_czk": -abs(float(tranche["czk"]))}]
+    staged_calls = sum(
+        int(row.get("contracts") or 0)
+        for row in existing
+        if row.get("type") == "covered_call" and row.get("symbol") == sym
+    )
+    capacity = trade_service.covered_call_capacity(sym)
+    held_and_staged = int(capacity.get("held_short_calls") or 0) + staged_calls
+    if held_and_staged:
+        staged_stock_sells = (
+            _staged_exit_share_sales(existing, sym)
+            + max(0, int(float(tranche.get("shares") or 0)))
+        )
+        post_sell_shares = max(
+            0, int(capacity.get("current_shares") or 0) - staged_stock_sells,
+        )
+        if post_sell_shares < held_and_staged * 100:
+            raise ValueError(
+                f"{sym}: this share tranche would leave {post_sell_shares} shares "
+                f"covering {held_and_staged} held/staged short call contract(s)"
+            )
+    merged = existing + [{
+        "type": "stock",
+        "symbol": sym,
+        "delta_czk": -abs(float(tranche["czk"])),
+        "provenance": provenance,
+    }]
     basket = trade_service.save_basket(merged)
-    return {"staged": True, "basket": basket, "tranche": tranche, "symbol": sym}
+    return {"staged": True, "route": "sell_shares", "basket": basket, "tranche": tranche, "symbol": sym}
+
+
+def _plan_fingerprint(plan: dict[str, Any], position: dict[str, Any]) -> str:
+    payload = {
+        "as_of": plan.get("as_of"),
+        "snapshot": plan.get("snapshot"),
+        "symbol": position.get("symbol"),
+        "exit_czk": position.get("exit_czk"),
+        "exit_shares": position.get("exit_shares"),
+        "target_pct": position.get("target_pct"),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def stage_covered_call(
+    plan: dict[str, Any],
+    symbol: str,
+    *,
+    conid: int,
+    expiry: str,
+    strike: float,
+    contracts: int,
+) -> dict[str, Any]:
+    """Validate and idempotently stage one exact covered-call exit leg."""
+    import ibkr_trade
+    import trade_service
+
+    sym = portfolio.clean_symbol(symbol)
+    pos = next((p for p in plan.get("positions", []) if p["symbol"] == sym), None)
+    if pos is None:
+        raise ValueError(f"{symbol} is not in the exit plan")
+    routes = pos.get("routes") or {}
+    route = routes.get("covered_call") or {}
+    if not route.get("eligible"):
+        raise ValueError("; ".join(route.get("reasons") or ["covered-call route is not eligible"]))
+    if not isinstance(contracts, int) or isinstance(contracts, bool) or contracts <= 0:
+        raise ValueError("contracts must be a positive integer")
+    if contracts > int(route.get("capacity_contracts") or 0):
+        raise ValueError(f"{sym}: requested contracts exceed uncovered exit capacity")
+
+    rungs = ((pos.get("options") or {}).get("covered_call_ladder") or [])
+    rung = next((
+        r for r in rungs
+        if int(r.get("conid") or 0) == int(conid)
+        and str(r.get("expiry") or "") == str(expiry)
+        and abs(float(r.get("strike") or 0) - float(strike)) < EPS
+    ), None)
+    if not rung:
+        raise ValueError(f"{sym}: selected call is not in the current server-built Exit ladder")
+    age = _quote_age_seconds(rung.get("quote_timestamp"))
+    if not rung.get("executable") or age is None or age > EXECUTION_QUOTE_MAX_AGE_SECONDS:
+        raise ValueError(f"{sym}: selected call does not have a fresh executable IBKR quote")
+
+    try:
+        raw_working = ibkr_trade.live_orders()
+    except ibkr_trade.CPAPIError as exc:
+        raise ValueError(f"{sym}: working option orders could not be verified") from exc
+    try:
+        account_id = trade_service._resolve_trade_account(None)
+        capacity = trade_service.covered_call_capacity(
+            sym, raw_working, live_account_id=account_id,
+        )
+    except (ValueError, ibkr_trade.CPAPIError) as exc:
+        raise ValueError(f"{sym}: live positions could not be verified") from exc
+    leg_id = f"covered_call:{sym}:{int(conid)}"
+    existing = trade_service.load_basket()
+    staged_stock_sells = _staged_exit_share_sales(existing, sym)
+    intended = max(0, int(float(pos.get("exit_shares") or 0) // 100))
+    post_sell_capacity = max(
+        0,
+        max(0, int(capacity.get("current_shares") or 0) - staged_stock_sells) // 100
+        - int(capacity.get("held_short_calls") or 0)
+        - int(capacity.get("working_short_calls") or 0),
+    )
+    available = min(post_sell_capacity, intended)
+    staged_other = sum(
+        int(row.get("contracts") or 0)
+        for row in existing
+        if row.get("type") == "covered_call"
+        and row.get("symbol") == sym
+        and row.get("leg_id") != leg_id
+    )
+    if staged_other + contracts > available:
+        raise ValueError(
+            f"{sym}: only {available} covered-call contract(s) remain after held/working calls, "
+            f"{staged_stock_sells} staged share sales, and {staged_other} other staged contract(s)"
+        )
+
+    exact = ibkr_trade.resolve_exact_call(sym, expiry, strike)
+    if not exact or int(exact.get("conid") or 0) != int(conid):
+        raise ValueError(f"{sym}: exact call contract no longer resolves")
+    if not ibkr_trade.quotes_are_valid(exact.get("bid"), exact.get("ask")):
+        raise ValueError(f"{sym}: option bid/ask is missing or crossed")
+    limit = ibkr_trade.round_sell_limit_midpoint(
+        float(exact["bid"]), float(exact["ask"]), exact.get("rules"),
+    )
+    if limit is None:
+        raise ValueError(f"{sym}: no valid tick-rounded sell limit")
+
+    fingerprint = _plan_fingerprint(plan, pos)
+    provenance = {
+        "source": "exit_plan",
+        "route": "covered_call",
+        "plan_as_of": plan.get("as_of"),
+        "plan_snapshot": plan.get("snapshot"),
+        "plan_fingerprint": fingerprint,
+        "rung": {
+            "conid": int(conid), "expiry": expiry, "strike": float(strike),
+        },
+        "intended_assigned_shares": contracts * 100,
+    }
+    leg = {
+        "type": "covered_call",
+        "leg_id": leg_id,
+        "symbol": sym,
+        "route": "covered_call",
+        "conid": int(conid),
+        "expiry": str(expiry),
+        "strike": float(strike),
+        "right": "C",
+        "contracts": contracts,
+        "multiplier": 100,
+        "limit_price": limit,
+        "quote_timestamp": exact.get("quote_timestamp"),
+        "provenance": [provenance],
+    }
+    basket = trade_service.save_basket(existing + [leg])
+    stored = next((row for row in basket if row.get("leg_id") == leg["leg_id"]), leg)
+    return {
+        "staged": True,
+        "route": "covered_call",
+        "basket": basket,
+        "leg": stored,
+        "symbol": sym,
+        "coverage": capacity,
+    }
 
 
 def _main() -> int:

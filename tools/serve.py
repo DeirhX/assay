@@ -1372,18 +1372,40 @@ class Handler(BaseHTTPRequestHandler):
         symbol = str(body.get("symbol") or "").strip()
         if not symbol:
             return self._send_error_json(400, "symbol is required")
-        try:
-            index = int(body.get("index"))
-        except (TypeError, ValueError):
-            return self._send_error_json(400, "index must be an integer tranche number")
+        route = str(body.get("route") or "sell_shares").strip().lower()
+        if route not in {"sell_shares", "covered_call"}:
+            return self._send_error_json(400, "route must be sell_shares or covered_call")
         include = body.get("include") if isinstance(body.get("include"), list) else []
         full = body.get("full_exit") if isinstance(body.get("full_exit"), list) else []
         cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else None
         with _PULL_LOCK:
             plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
         try:
-            return self._send_json(exit_plan.stage_tranche(plan, symbol, index))
-        except ValueError as exc:
+            if route == "sell_shares":
+                try:
+                    index = int(body.get("index"))
+                except (TypeError, ValueError):
+                    return self._send_error_json(400, "index must be an integer tranche number")
+                result = exit_plan.stage_tranche(plan, symbol, index)
+            else:
+                try:
+                    conid = int(body.get("conid"))
+                    strike = float(body.get("strike"))
+                    contracts = int(body.get("contracts"))
+                except (TypeError, ValueError):
+                    return self._send_error_json(
+                        400, "covered call needs numeric conid, strike, and contracts",
+                    )
+                result = exit_plan.stage_covered_call(
+                    plan,
+                    symbol,
+                    conid=conid,
+                    expiry=str(body.get("expiry") or ""),
+                    strike=strike,
+                    contracts=contracts,
+                )
+            return self._send_json(result)
+        except (ValueError, TypeError) as exc:
             return self._send_error_json(400, str(exc))
 
     def _post_whatif(self, path):

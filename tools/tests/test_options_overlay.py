@@ -244,3 +244,134 @@ def test_ibkr_chain_without_quotes_estimates_premium():
     assert cc["source"] == "black_scholes"
     assert cc["estimate"] is True
     assert out["source"] == "ibkr"
+    assert cc["executable"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Executable metadata propagation (IBKR chain quotes -> headline + ladder)
+# --------------------------------------------------------------------------- #
+def _ibkr_executable_chain():
+    return {
+        "source": "ibkr",
+        "symbol": "TEST",
+        "fetched_at": "2026-07-01T12:00:00+00:00",
+        "underlying_price": 100.0,
+        "underlying_quote": {
+            "conid": 222,
+            "bid": 99.8,
+            "ask": 100.2,
+            "last": 100.0,
+            "quote_timestamp": "2026-07-01T12:00:00+00:00",
+        },
+        "expiries": [
+            {"expiry": "2026-08-07",
+             "calls": [
+                 {"conid": 100105, "strike": 105.0, "bid": 2.0, "ask": 2.4, "last": 2.2,
+                  "quote_timestamp": "2026-07-01T12:00:01+00:00", "implied_vol": 0.3},
+                 {"conid": 100110, "strike": 110.0, "bid": 1.0, "ask": 1.2, "last": 1.1,
+                  "quote_timestamp": "2026-07-01T12:00:01+00:00", "implied_vol": 0.31},
+             ],
+             "puts": []},
+        ],
+    }
+
+
+def test_ibkr_executable_metadata_propagates_to_headline_and_ladder():
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF,
+                                  chain=_ibkr_executable_chain(), rate=0.04)
+    cc = out["covered_call"]
+    assert cc["executable"] is True
+    assert cc["conid"] == 100105
+    assert cc["bid"] == 2.0
+    assert cc["ask"] == 2.4
+    assert cc["last"] == 2.2
+    assert cc["multiplier"] == 100
+    assert cc["quote_timestamp"] == "2026-07-01T12:00:01+00:00"
+    assert cc["fetched_at"] == "2026-07-01T12:00:00+00:00"
+    assert cc["underlying_quote"]["conid"] == 222
+    assert cc["underlying_quote"]["last"] == 100.0
+    assert cc["estimate"] is False
+
+    rung = _rung(out["covered_call_ladder"], 105.0)
+    assert rung["executable"] is True
+    assert rung["conid"] == 100105
+    assert rung["bid"] == 2.0
+    assert rung["ask"] == 2.4
+    assert rung["last"] == 2.2
+    assert rung["multiplier"] == 100
+    assert rung["quote_timestamp"] == "2026-07-01T12:00:01+00:00"
+    assert rung["fetched_at"] == "2026-07-01T12:00:00+00:00"
+    assert rung["underlying_quote"]["bid"] == 99.8
+
+
+def test_ibkr_missing_conid_not_executable():
+    c = _ibkr_executable_chain()
+    del c["expiries"][0]["calls"][0]["conid"]
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["conid"] is None
+    assert cc["executable"] is False
+    assert cc["estimate"] is False
+    assert cc["bid"] == 2.0
+
+
+def test_ibkr_crossed_quote_not_executable():
+    c = _ibkr_executable_chain()
+    c["expiries"][0]["calls"][0]["bid"] = 2.5
+    c["expiries"][0]["calls"][0]["ask"] = 2.4
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["bid"] == 2.5
+    assert cc["ask"] == 2.4
+    assert cc["executable"] is False
+    assert cc["estimate"] is False
+
+
+def test_ibkr_missing_bid_ask_not_executable():
+    c = _ibkr_executable_chain()
+    c["expiries"][0]["calls"][0]["bid"] = None
+    c["expiries"][0]["calls"][0]["ask"] = None
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["executable"] is False
+    assert cc["estimate"] is False          # last still prices the premium
+    assert cc["source"] == "ibkr"
+    assert cc["premium"] == 2.2
+    assert cc["conid"] == 100105
+
+
+def test_ibkr_no_two_sided_quote_falls_back_to_black_scholes():
+    c = _ibkr_executable_chain()
+    for key in ("bid", "ask", "last"):
+        c["expiries"][0]["calls"][0][key] = None
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["executable"] is False
+    assert cc["estimate"] is True
+    assert cc["source"] == "black_scholes"
+    assert cc["conid"] == 100105
+
+
+def test_yahoo_chain_quotes_not_executable():
+    c = _ibkr_executable_chain()
+    c["source"] = "yahoo"
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["conid"] == 100105
+    assert cc["bid"] == 2.0
+    assert cc["executable"] is False
+    assert cc["estimate"] is False
+
+
+def test_black_scholes_ladder_not_executable():
+    closes = [100.0 * (1.01 if i % 2 else 0.99) for i in range(60)]
+    series = [{"date": f"d{i}", "close": c} for i, c in enumerate(closes)]
+    out = ov.suggest_for_position("TEST", _pos(), _no_defer(), series=series,
+                                  as_of=AS_OF, chain=None, rate=0.04)
+    cc = out["covered_call"]
+    assert cc["executable"] is False
+    assert cc["conid"] is None
+    assert cc["multiplier"] == 100
+    for rung in out["covered_call_ladder"]:
+        assert rung["executable"] is False
+        assert rung["multiplier"] == 100

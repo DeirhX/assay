@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import exit_plan  # noqa: E402
@@ -346,3 +348,299 @@ def test_cached_option_chain_persists_and_serves(tmp_path, monkeypatch):
     assert first["source"] == "ibkr"
     assert second["source"] == "ibkr"
     assert calls["n"] == 1  # second call served from the fresh cache entry
+
+
+# --------------------------------------------------------------------------- #
+# stage_covered_call — server validation, idempotence, provenance
+# --------------------------------------------------------------------------- #
+def _fresh_quote_ts():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _exit_plan_with_cc(*, eligible=True, exit_shares=400, capacity_contracts=4,
+                       rung_overrides=None, route_overrides=None):
+    rung = {
+        "conid": 555,
+        "expiry": "2026-08-21",
+        "strike": 105.0,
+        "bid": 2.40,
+        "ask": 2.60,
+        "executable": True,
+        "quote_timestamp": _fresh_quote_ts(),
+    }
+    if rung_overrides:
+        rung.update(rung_overrides)
+    route = {
+        "eligible": eligible,
+        "reasons": [] if eligible else ["covered-call route is not eligible"],
+        "capacity_contracts": capacity_contracts if eligible else 0,
+    }
+    if route_overrides:
+        route.update(route_overrides)
+    return {
+        "as_of": "2026-07-01",
+        "snapshot": "test-snapshot",
+        "positions": [{
+            "symbol": "EXITME",
+            "exit_shares": exit_shares,
+            "exit_czk": 400_000,
+            "schedule": {"tranches": [{"index": 0, "shares": 100.0, "czk": 50_000}]},
+            "options": {"covered_call_ladder": [rung]},
+            "routes": {"covered_call": route},
+        }],
+    }, rung
+
+
+def _stage_mocks(
+    monkeypatch, tmp_path, *, holdings_shares=500, held_short_calls=0,
+    working=None, exact=None,
+):
+    import store
+    import trade_service
+    from config import HOLDINGS_JSON
+
+    staged_path = tmp_path / "staged-basket.json"
+    monkeypatch.setattr(trade_service, "STAGED_BASKET_JSON", staged_path)
+    holdings = {
+        "positions": [{
+            "symbol": "EXITME", "asset_class": "STK", "quantity": holdings_shares,
+            "mark_price": 100.0, "market_value": holdings_shares * 100.0,
+            "base_market_value": holdings_shares * 100.0, "currency": "CZK",
+        }],
+        "lots": [],
+    }
+    if held_short_calls:
+        holdings["positions"].append({
+            "symbol": "EXITME  260821C00105000",
+            "asset_class": "OPT",
+            "quantity": -held_short_calls,
+            "mark_price": 2.5,
+            "market_value": -250 * held_short_calls,
+            "base_market_value": -250 * held_short_calls,
+            "currency": "USD",
+        })
+
+    def _load(path):
+        if path == HOLDINGS_JSON:
+            return holdings
+        return store.load(path)
+
+    monkeypatch.setattr(trade_service, "_load", _load)
+    monkeypatch.setattr(ibkr_trade, "accounts", lambda: [{"accountId": "DU1"}])
+    monkeypatch.setattr(
+        ibkr_trade,
+        "positions",
+        lambda account, page=0: ([{
+            "assetClass": "STK",
+            "contractDesc": "EXITME",
+            "position": holdings_shares,
+        }] if page == 0 else []),
+    )
+    monkeypatch.setattr(ibkr_trade, "live_orders", lambda: working or [])
+    monkeypatch.setattr(
+        ibkr_trade, "resolve_exact_call",
+        lambda sym, expiry, strike: exact or {
+            "conid": 555,
+            "expiry": expiry,
+            "strike": strike,
+            "bid": 2.40,
+            "ask": 2.60,
+            "quote_timestamp": _fresh_quote_ts(),
+            "rules": {"increment": 0.05},
+        },
+    )
+
+
+def test_stage_covered_call_validates_and_stages_with_provenance(tmp_path, monkeypatch):
+    import trade_service
+
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path)
+    out = exit_plan.stage_covered_call(
+        plan, "EXITME", conid=555, expiry=rung["expiry"],
+        strike=rung["strike"], contracts=2,
+    )
+    assert out["staged"] is True
+    assert out["route"] == "covered_call"
+    leg = out["leg"]
+    assert leg["leg_id"] == "covered_call:EXITME:555"
+    assert leg["contracts"] == 2
+    assert leg["limit_price"] == 2.50
+    prov = leg["provenance"][0]
+    assert prov["source"] == "exit_plan"
+    assert prov["route"] == "covered_call"
+    assert prov["plan_fingerprint"]
+    assert prov["rung"] == {"conid": 555, "expiry": "2026-08-21", "strike": 105.0}
+    assert prov["intended_assigned_shares"] == 200
+    assert trade_service.load_basket() == out["basket"]
+
+
+def test_stage_covered_call_idempotent_by_leg_id(tmp_path, monkeypatch):
+    import trade_service
+
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path)
+    exit_plan.stage_covered_call(
+        plan, "EXITME", conid=555, expiry=rung["expiry"],
+        strike=rung["strike"], contracts=1,
+    )
+    out = exit_plan.stage_covered_call(
+        plan, "EXITME", conid=555, expiry=rung["expiry"],
+        strike=rung["strike"], contracts=3,
+    )
+    basket = trade_service.load_basket()
+    assert len(basket) == 1
+    assert basket[0]["contracts"] == 3
+    assert out["leg"]["contracts"] == 3
+
+
+def test_stage_covered_call_rejects_ineligible_route(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(eligible=False)
+    _stage_mocks(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="not eligible"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_rung_not_in_ladder(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="not in the current server-built Exit ladder"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=999, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_stale_quote(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(rung_overrides={
+        "quote_timestamp": "2020-01-01T00:00:00+00:00",
+    })
+    _stage_mocks(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="fresh executable IBKR quote"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_contracts_above_route_capacity(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(capacity_contracts=1, exit_shares=400)
+    _stage_mocks(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="exceed uncovered exit capacity"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=2,
+        )
+
+
+def test_stage_covered_call_rejects_when_working_orders_shrink_capacity(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(exit_shares=400, capacity_contracts=4)
+    working = [{
+        "orderId": "w1",
+        "ticker": "EXITME  260821C00105000",
+        "secType": "OPT",
+        "side": "SELL",
+        "remainingQuantity": 3,
+        "status": "Submitted",
+    }]
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=500, working=working)
+    with pytest.raises(ValueError, match="remain after held/working calls"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=4,
+        )
+
+
+def test_stage_covered_call_rejects_unresolvable_exact_contract(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path, exact=None)
+    monkeypatch.setattr(ibkr_trade, "resolve_exact_call", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="exact call contract no longer resolves"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_crossed_live_quote(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path, exact={
+        "conid": 555, "expiry": "2026-08-21", "strike": 105.0,
+        "bid": 2.80, "ask": 2.60,
+        "quote_timestamp": _fresh_quote_ts(),
+        "rules": {"increment": 0.05},
+    })
+    with pytest.raises(ValueError, match="bid/ask is missing or crossed"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_when_working_orders_unavailable(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        ibkr_trade, "live_orders",
+        mock.Mock(side_effect=ibkr_trade.CPAPIError("orders bridge down")),
+    )
+    with pytest.raises(ValueError, match="working option orders could not be verified"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_capacity_includes_staged_share_sales(tmp_path, monkeypatch):
+    import trade_service
+
+    plan, rung = _exit_plan_with_cc(exit_shares=500, capacity_contracts=5)
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=500)
+    trade_service.save_basket([{
+        "type": "stock",
+        "symbol": "EXITME",
+        "delta_czk": -25_000,
+        "provenance": {
+            "source": "exit_plan",
+            "route": "sell_shares",
+            "intended_shares": 250,
+        },
+    }])
+    with pytest.raises(ValueError) as exc:
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=3,
+        )
+    assert "250 staged share sales" in str(exc.value)
+
+
+def test_stage_share_tranche_cannot_uncover_staged_calls(tmp_path, monkeypatch):
+    import trade_service
+
+    plan, _rung = _exit_plan_with_cc(exit_shares=500, capacity_contracts=5)
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=500)
+    trade_service.save_basket([{
+        "type": "covered_call",
+        "symbol": "EXITME",
+        "route": "covered_call",
+        "conid": 555,
+        "expiry": "2026-08-21",
+        "strike": 105.0,
+        "contracts": 5,
+    }])
+    with pytest.raises(ValueError) as exc:
+        exit_plan.stage_tranche(plan, "EXITME", 0)
+    assert "covering 5 held/staged short call" in str(exc.value)
+
+
+def test_stage_share_tranche_cannot_uncover_held_calls(tmp_path, monkeypatch):
+    plan, _rung = _exit_plan_with_cc(exit_shares=250, capacity_contracts=0)
+    _stage_mocks(
+        monkeypatch, tmp_path, holdings_shares=250, held_short_calls=2,
+    )
+    with pytest.raises(ValueError) as exc:
+        exit_plan.stage_tranche(plan, "EXITME", 0)
+    assert "covering 2 held/staged short call" in str(exc.value)

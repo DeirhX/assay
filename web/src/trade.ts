@@ -4,11 +4,13 @@ import { openJournalWith } from "./journal";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
 import { navFromUrl, replaceViewState } from "./shell";
 import {
-  basketMoneyFacts, gatewayOrigin, orderBandScopeLabel, placeResultHtml, previewStats, reconciliationTitle,
-  riskPanelHtml, sideTag,
+  assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
+  gatewayOrigin, orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
+  reconciliationTitle, riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
-import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
+import type { LegProvenance, OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
+import type { TradeLeg } from "./api-types";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -46,6 +48,8 @@ interface TradeTickle {
 
 // One sized order inside a /api/trade/preview response.
 interface TradeOrder {
+  instrument_type?: "stock" | "covered_call";
+  leg_id?: string;
   symbol?: string;
   conid?: string | number;
   side?: string;
@@ -53,6 +57,17 @@ interface TradeOrder {
   orderType?: string;
   price?: number | null;
   tif?: string;
+  expiry?: string;
+  strike?: number;
+  right?: string;
+  multiplier?: number;
+  contracts?: number;
+  current_shares?: number;
+  coverage_shares?: number;
+  if_assigned_shares?: number;
+  premium_credit?: number;
+  currency?: string | null;
+  provenance?: LegProvenance[];
 }
 
 interface TradePreview {
@@ -74,7 +89,7 @@ interface TradePreview {
   ibkr_preview?: any;
   // The normalized basket the token binds to: [{symbol, delta_czk}]. Echoed to
   // /api/trade/place and used here for the last-mile money facts on the modal.
-  trades?: Array<{ symbol: string; delta_czk: number }>;
+  trades?: TradeLeg[];
   effective_trades?: Array<{ symbol: string; delta_czk: number }>;
   residual_trades?: Array<{ symbol: string; delta_czk: number }>;
   token?: string;
@@ -143,7 +158,7 @@ let _status: TradeStatus | null = null;   // last /api/trade/status
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
 // The basket as it was placed — snapshotted before the staged store is cleared,
 // so the "Log to journal" next step can still describe the executed trades.
-let _placedBasket: Array<{ symbol: string; delta_czk: number }> = [];
+let _placedBasket: TradeLeg[] = [];
 // Mirrors the server's preview TTL: a 1s interval both counts the remaining time
 // down on the Place button and locks it when the window lapses (the server
 // enforces the same window on its side). Interval, not timeout, so the button
@@ -303,7 +318,7 @@ async function loadTrade() {
   // Its own fetch is fast (~40ms), so we render it NOW rather than gating it
   // behind the slow status call, which is what made the basket appear late.
   try {
-    const res = await api<{ trades?: Array<{ symbol: string; delta_czk: number }> }>("/api/trade/basket");
+    const res = await api<{ trades?: TradeLeg[] }>("/api/trade/basket");
     if (isStaleToken("trade", token)) return;
     if (Array.isArray(res.trades)) state.stagedBasket = res.trades;
   } catch (_e) {
@@ -444,13 +459,13 @@ function renderBasket() {
   const card = el("div", "trade-card");
   const head = el("div", "trade-card-head");
   head.innerHTML = `<span class="trade-card-title">Staged basket</span>` +
-    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from the Rebalance planner</span>`;
+    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from Rebalance or Exit</span>`;
   card.appendChild(head);
 
   if (!basket.length) {
     card.appendChild(el("div", "hint",
       "No basket staged. Go to the Rebalance tab, edit the planned amounts, press " +
-      "\u201cSimulate basket\u201d, then come back here to preview and place it."));
+      "\u201cSimulate basket\u201d, or stage a share/call route from Exit, then come back here to preview and place it."));
     wrap.appendChild(card);
     updateTradeReviewAvailability();
     return;
@@ -458,8 +473,10 @@ function renderBasket() {
 
   const facts = basketMoneyFacts(basket);
   const maxAbs = facts.largest ? Math.abs(facts.largest.czk) : 0;
-  const buys = basket.filter((t) => t.delta_czk >= 0).length;
-  const sells = basket.length - buys;
+  const stocks = basket.filter((t) => t.type !== "covered_call");
+  const calls = basket.filter((t) => t.type === "covered_call");
+  const buys = stocks.filter((t) => Number(t.delta_czk) >= 0).length;
+  const sells = stocks.length - buys;
   const net = facts.buy - facts.sell;      // >0 net cash out (buying), <0 net in
   const gross = facts.buy + facts.sell;
 
@@ -469,24 +486,36 @@ function renderBasket() {
       `<th>Symbol</th>` +
       `<th class="tb-trend">3M trend</th>` +
       `<th>Side</th>` +
-      `<th class="num">Planned (CZK)</th>` +
+      `<th class="num">Planned</th>` +
       `<th class="tb-weight">Relative size</th>` +
     `</tr></thead>` +
     `<tbody>${basket.map((t) => {
-      const buy = t.delta_czk >= 0;
-      const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`;
+      if (t.type === "covered_call") {
+        return `<tr class="trade-basket-option">` +
+          `<td>${tickerLink(t.symbol)}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} call</div></td>` +
+          `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
+          `<td>${sideTag("SELL")} <span class="muted">to open</span></td>` +
+          `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
+          `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}</td>` +
+          `<td class="tb-weight muted">conditional assignment</td>` +
+        `</tr>`;
+      }
+      const delta = Number(t.delta_czk) || 0;
+      const buy = delta >= 0;
+      const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(delta))} CZK`;
       return `<tr>` +
         `<td>${tickerLink(t.symbol)}</td>` +
         `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
         `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
         `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
-        `<td class="tb-weight">${sensitive(basketBar(t.delta_czk, maxAbs), "relative trade size")}</td>` +
+        `<td class="tb-weight">${sensitive(basketBar(delta, maxAbs), "relative trade size")}</td>` +
       `</tr>`;
     }).join("")}</tbody>` +
     `<tfoot><tr>` +
       `<td colspan="3" class="tb-foot-count">` +
         `<span class="trade-side buy">${buys} buy${buys === 1 ? "" : "s"}</span> · ` +
-        `<span class="trade-side sell">${sells} sell${sells === 1 ? "" : "s"}</span>` +
+        `<span class="trade-side sell">${sells} stock sell${sells === 1 ? "" : "s"}</span>` +
+        (calls.length ? ` · <span class="trade-side sell">${calls.length} covered call${calls.length === 1 ? "" : "s"}</span>` : "") +
       `</td>` +
       `<td class="num" title="net cash impact — buys minus sells">` +
         `<span class="muted">net</span> ${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(net))}`, "net basket cash")}` +
@@ -559,6 +588,11 @@ function renderPreview() {
   const contexts: OrderReconciliation[] = p.order_context || (p.orders || []).map((o) => ({
     symbol: String(o.symbol || ""), side: String(o.side || ""), classification: "none",
     proposed_qty: Number(o.quantity) || 0, residual_qty: Number(o.quantity) || 0,
+    instrument_type: o.instrument_type, leg_id: o.leg_id, conid: o.conid,
+    expiry: o.expiry, strike: o.strike, right: o.right, multiplier: o.multiplier,
+    contracts: o.contracts, current_shares: o.current_shares,
+    coverage_shares: o.coverage_shares, if_assigned_shares: o.if_assigned_shares,
+    premium_credit: o.premium_credit, provenance: o.provenance,
     placeable: true, next_step: "Review and confirm this new order.",
   }));
   const residualOrders = p.orders || [];
@@ -587,6 +621,9 @@ function renderPreview() {
   contexts.filter((c) => c.classification === "opposite_side").forEach((c) =>
     actionPanel.appendChild(el("div", "trade-action-item blocker",
       `<strong>${tickerLink(c.symbol)}: opposite working order.</strong> ${esc(c.next_step || "")}`)));
+  contexts.filter((c) => c.classification === "coverage_blocked").forEach((c) =>
+    actionPanel.appendChild(el("div", "trade-action-item blocker",
+      `<strong>${tickerLink(c.symbol)}: insufficient covered-call capacity.</strong> ${esc(c.next_step || "")}`)));
   const warnings = p.warnings || [];
   if (warnings.length) {
     const details = el("details", "trade-action-details");
@@ -654,16 +691,21 @@ function renderPreview() {
   const orderGrid = el("div", "trade-order-grid");
   const bands = p.order_bands || {};
   const bandScale = weightScaleMax(
-    contexts.map((c) => bands[c.symbol]).filter(Boolean) as OrderBand[]);
+    contexts.filter((c) => c.instrument_type !== "covered_call")
+      .map((c) => bands[c.symbol]).filter(Boolean) as OrderBand[]);
   contexts.forEach((c) => {
     const sym = String(c.symbol || "").trim().toUpperCase();
+    const isOption = c.instrument_type === "covered_call";
     const orderIndex = residualOrders.findIndex((o) =>
-      String(o.symbol || "").trim().toUpperCase() === sym && o.side === c.side);
+      (c.leg_id && o.leg_id === c.leg_id)
+      || (isOption && Number(o.conid) === Number(c.conid) && o.side === c.side)
+      || (!isOption && String(o.symbol || "").trim().toUpperCase() === sym && o.side === c.side));
     const o = orderIndex >= 0 ? residualOrders[orderIndex] : undefined;
-    const tone = c.classification === "opposite_side" ? "blocked"
+    const tone = c.classification === "opposite_side" || c.classification === "coverage_blocked" ? "blocked"
       : c.classification === "fully_covered" ? "covered"
       : c.classification === "same_side_partial" ? "adjusted" : "plain";
     const item = el("article", `trade-order-item ${tone}`);
+    if (isOption) item.classList.add("option");
     const top = el("div", "trade-order-top");
     const identity = el("div", "trade-order-identity");
     identity.innerHTML = `<div>${tickerLink(sym)} ${sideTag(c.side)}</div>` +
@@ -696,15 +738,37 @@ function renderPreview() {
       Number(n ?? 0).toLocaleString(undefined, { maximumFractionDigits: 4 });
     const workingQty = Number(c.working_qty ?? c.working_same_qty ?? 0);
     const primary = el("div", "trade-order-primary");
-    primary.innerHTML = o
-      ? `<strong>Place ${esc(c.side)} ${esc(qty(c.residual_qty))} shares</strong>`
-      : `<strong>No new order</strong>`;
-    if (c.current_position_qty != null && c.projected_position_qty != null) {
+    if (isOption) {
+      primary.innerHTML = o
+        ? `<strong>${coveredCallActionLabel()} ${esc(contractsLabel(c.residual_qty))}</strong>` +
+          `<span class="trade-option-contract">${tickerLink(sym)} · ${esc(c.expiry || "")} · ` +
+          `${esc(qty(c.strike))} call</span>`
+        : `<strong>No new option order</strong>`;
+      if (c.current_shares != null && c.if_assigned_shares != null) {
+        primary.innerHTML += `<span class="trade-position-effect">Conditional assignment: ` +
+          `<strong>${esc(assignmentProjectionLabel(c.current_shares, c.if_assigned_shares))}</strong></span>`;
+      }
+    } else {
+      primary.innerHTML = o
+        ? `<strong>Place ${esc(c.side)} ${esc(qty(c.residual_qty))} shares</strong>`
+        : `<strong>No new order</strong>`;
+    }
+    if (!isOption && c.current_position_qty != null && c.projected_position_qty != null) {
       primary.innerHTML += `<span class="trade-position-effect">Position if all planned orders fill: ` +
         `<strong>${esc(qty(c.current_position_qty))} shares</strong> \u2192 <strong>${esc(qty(c.projected_position_qty))} shares</strong></span>`;
     }
     item.appendChild(primary);
-    if (c.classification !== "none") {
+    if (isOption) {
+      const coverage = c.coverage_ok === false
+        ? `Coverage blocked · ${esc(c.coverage_capacity_contracts)} contract(s) available`
+        : `Coverage verified · ${esc(c.coverage_shares ?? 0)} shares reserved for this order`;
+      const prov = provenanceLabel(c.provenance);
+      item.appendChild(el("div", "trade-order-breakdown",
+        `<span><strong>${esc(coverage)}</strong></span>` +
+        `<span>${esc(premiumCreditLabel(c.premium_credit, c.currency || "option currency"))}</span>` +
+        (prov ? `<span>From Exit · ${esc(prov)}</span>` : "") +
+        `<span>Assignment is conditional; the shares may not be sold.</span>`));
+    } else if (c.classification !== "none") {
       const intent = c.side === "SELL" ? "Planned sale" : "Planned purchase";
       item.appendChild(el("div", "trade-order-breakdown",
         `<span>${esc(intent)} <strong>${esc(qty(c.proposed_qty))}</strong> total</span>` +
@@ -726,7 +790,7 @@ function renderPreview() {
         `${o.orderType === "LMT" && o.price != null ? `<span class="trade-lmt">LMT @ ${esc(o.price)}</span>` : esc(o.orderType)} · ${esc(o.tif)}`));
     }
     const band = bands[sym];
-    if (band && (band.before_pct != null || band.after_pct != null)) {
+    if (!isOption && band && (band.before_pct != null || band.after_pct != null)) {
       const bandTone = String(band.status_after || "").toUpperCase() === "IN" ? "" : " out";
       const scopeLabel = orderBandScopeLabel(sym, band);
       orderDetails.insertAdjacentHTML("beforeend",
@@ -882,6 +946,16 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
     const largest = facts.largest
       ? `${esc(facts.largest.symbol)} ${facts.largest.czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(facts.largest.czk))} CZK`
       : "\u2014";
+    const optionOrders = (p.orders || []).filter((o) => o.instrument_type === "covered_call");
+    const optionFacts = optionOrders.length
+      ? `<div class="trade-cf-options"><strong>Covered calls · sell to open</strong>` +
+        optionOrders.map((o) =>
+          `<div>${tickerLink(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
+          `${esc(o.expiry || "")} ${esc(o.strike)}C · limit ${esc(o.price)} ${esc(o.currency || "")}` +
+          `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span></div>`
+        ).join("") +
+        `<em>Assignment is conditional and may not reduce the position.</em></div>`
+      : "";
     const ageLine = p.snapshot_age_days != null
       ? `<div class="trade-cf-row"><span>Snapshot age</span><span class="${p.snapshot_stale ? "bad" : ""}">` +
         `${esc(p.snapshot_age_days)} day(s)${p.snapshot_stale ? " \u2014 STALE" : ""}</span></div>`
@@ -895,7 +969,7 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
       `<div class="trade-cf-row"><span>Gross sells</span><span>${sensitive(fmtCZK(facts.sell) + " CZK", "gross sells")}</span></div>` +
       `<div class="trade-cf-row"><span>Largest single</span><span>${sensitive(largest, "largest order")}</span></div>` +
       ageLine +
-      `</div>`;
+      `</div>` + optionFacts;
 
     const confirm = el("button", "danger", isLive ? "Place LIVE orders" : "Place orders");
     confirm.type = "button";
@@ -990,14 +1064,16 @@ async function resyncAfterPlace(btn: HTMLButtonElement, status: HTMLElement | nu
 
 function logPlacedToJournal(res: PlaceResult) {
   const trades = _placedBasket;
-  const first = trades[0] || ({} as { symbol?: string; delta_czk?: number });
+  const first = trades[0];
   const summary = trades
-    .map((t) => `${t.symbol} ${t.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(t.delta_czk))}`)
+    .map((t) => t.type === "covered_call"
+      ? `${t.symbol} sell to open ${t.contracts}× ${t.strike}C ${t.expiry}`
+      : `${t.symbol} ${t.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(t.delta_czk))}`)
     .join(", ");
   openJournalWith({
-    symbol: first.symbol || "",
-    action: (first.delta_czk || 0) < 0 ? "trim" : "buy",
-    size_czk: first.delta_czk != null ? Math.abs(first.delta_czk) : "",
+    symbol: first?.symbol || "",
+    action: first?.type === "covered_call" || Number(first?.delta_czk) < 0 ? "trim" : "buy",
+    size_czk: first && first.type !== "covered_call" ? Math.abs(first.delta_czk) : "",
     thesis: `Placed basket on ${res.kind} account ${res.account}: ${summary || "(see IBKR)"}.`,
   });
 }
