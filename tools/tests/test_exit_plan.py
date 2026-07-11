@@ -781,6 +781,27 @@ def test_stage_covered_call_rejects_frozen_close(tmp_path, monkeypatch):
         )
 
 
+def test_stage_covered_call_rejects_stale_exact_resolve(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    stale = (
+        dt.datetime.now(dt.timezone.utc)
+        - dt.timedelta(seconds=exit_plan.EXECUTION_QUOTE_MAX_AGE_SECONDS + 1)
+    ).isoformat()
+    _stage_mocks(monkeypatch, tmp_path, exact={
+        "conid": 555, "expiry": "2026-08-21", "strike": 105.0,
+        "bid": 2.40, "ask": 2.60,
+        "quote_timestamp": stale,
+        "market_data_availability": "RpB",
+        "market_data_timeline": "real_time",
+        "rules": {"increment": 0.05},
+    })
+    with pytest.raises(ValueError, match="exact option quote is stale or missing"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
 def test_stage_covered_call_rejects_when_working_orders_unavailable(tmp_path, monkeypatch):
     plan, rung = _exit_plan_with_cc()
     _stage_mocks(monkeypatch, tmp_path)

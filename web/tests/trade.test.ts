@@ -773,6 +773,8 @@ function optionOrder(over: Record<string, unknown> = {}) {
     symbol: "NVDA", side: "SELL", quantity: 2, orderType: "LMT", price: 4.5, tif: "DAY",
     conid: 98765432, leg_id: "cc-nvda-1", instrument_type: "covered_call",
     expiry: "20260815", strike: 180, contracts: 2, right: "C", multiplier: 100,
+    bid: 4.4, ask: 4.6, last: 4.5, quote_timestamp: new Date().toISOString(),
+    market_data_availability: "RpB", market_data_timeline: "real_time",
     ...over,
   };
 }
@@ -784,6 +786,8 @@ function ccContext(over: Record<string, unknown> = {}) {
     proposed_qty: 2, residual_qty: 2, expiry: "20260815", strike: 180, right: "C",
     current_shares: 200, if_assigned_shares: 0, coverage_ok: true, coverage_shares: 200,
     premium_credit: 9000, currency: "CZK",
+    bid: 4.4, ask: 4.6, last: 4.5, quote_timestamp: new Date().toISOString(),
+    market_data_availability: "RpB", market_data_timeline: "real_time",
     provenance: { route: "covered_call", tranche: 1, rung: 2, intended_assigned_shares: 200 },
     placeable: true, next_step: "Review and confirm this new order.",
     ...over,
@@ -905,6 +909,8 @@ describe("trade desk mixed stock + covered call", () => {
     expect(option.textContent).toContain("0 if assigned");
     expect(option.textContent).toContain("Coverage verified");
     expect(option.textContent).toContain("200 shares reserved");
+    expect(option.textContent).toContain("IBKR pricing · real-time");
+    expect(option.textContent).toContain("bid 4.4 / ask 4.6");
     expect(option.textContent).toMatch(/Premium credit: 9[.,\s\u00a0]?000 CZK/);
     expect(option.textContent).toContain("From Exit");
     expect(option.textContent).toContain("covered call");
@@ -962,6 +968,8 @@ describe("trade desk mixed stock + covered call", () => {
     expect(modal.textContent).toContain("2 contracts");
     expect(modal.textContent).toContain("20260815 180C");
     expect(modal.textContent).toContain("limit 4.5 USD");
+    expect(modal.textContent).toContain("Pricing: real-time");
+    expect(modal.textContent).toContain("bid 4.4 / ask 4.6");
     expect(modal.textContent).toContain("300 → 100 shares");
     expect(modal.textContent).toContain("Assignment is conditional");
     modalBtn("Cancel")!.click();

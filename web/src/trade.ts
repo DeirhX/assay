@@ -1,4 +1,4 @@
-import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } from "./core";
+import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, relAge, sensitive, state } from "./core";
 import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
@@ -68,7 +68,25 @@ interface TradeOrder {
   if_assigned_shares?: number;
   premium_credit?: number;
   currency?: string | null;
+  bid?: number | null;
+  ask?: number | null;
+  last?: number | null;
+  quote_timestamp?: string | null;
+  market_data_availability?: string | null;
+  market_data_timeline?: string | null;
   provenance?: LegProvenance[];
+}
+
+function quoteTimelineLabel(timeline: string | null | undefined): string {
+  return ({
+    real_time: "real-time",
+    delayed: "delayed",
+    frozen: "frozen close",
+    frozen_delayed: "frozen delayed",
+    not_subscribed: "not subscribed",
+    acknowledgement_required: "market-data agreement required",
+    unknown: "status unknown",
+  } as Record<string, string>)[timeline || ""] || "status unavailable";
 }
 
 interface TradePreview {
@@ -857,8 +875,13 @@ function renderPreview() {
         ? `Coverage blocked · ${esc(c.coverage_capacity_contracts)} contract(s) available`
         : `Coverage verified · ${esc(c.coverage_shares ?? 0)} shares reserved for this order`;
       const prov = provenanceLabel(c.provenance);
+      const quoteAge = c.quote_timestamp ? relAge(c.quote_timestamp) : "";
+      const quoteProof = `IBKR pricing · ${quoteTimelineLabel(c.market_data_timeline)}` +
+        `${quoteAge ? ` · ${quoteAge}` : " · age unavailable"}` +
+        `${c.bid != null && c.ask != null ? ` · bid ${c.bid} / ask ${c.ask}` : ""}`;
       item.appendChild(el("div", "trade-order-breakdown",
         `<span><strong>${esc(coverage)}</strong></span>` +
+        `<span><strong>${esc(quoteProof)}</strong></span>` +
         `<span>${esc(premiumCreditLabel(c.premium_credit, c.currency || "option currency"))}</span>` +
         (prov ? `<span>From Exit · ${esc(prov)}</span>` : "") +
         `<span>Assignment is conditional; the shares may not be sold.</span>`));
@@ -1046,6 +1069,9 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
         optionOrders.map((o) =>
           `<div>${tickerLink(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
           `${esc(o.expiry || "")} ${esc(o.strike)}C · limit ${esc(o.price)} ${esc(o.currency || "")}` +
+          `<span>Pricing: ${esc(quoteTimelineLabel(o.market_data_timeline))}` +
+          `${o.quote_timestamp ? ` · ${esc(relAge(o.quote_timestamp))}` : " · age unavailable"}` +
+          `${o.bid != null && o.ask != null ? ` · bid ${esc(o.bid)} / ask ${esc(o.ask)}` : ""}</span>` +
           `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span></div>`
         ).join("") +
         `<em>Assignment is conditional and may not reduce the position.</em></div>`

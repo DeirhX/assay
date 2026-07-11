@@ -212,7 +212,10 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
         },
         "recommended": (
             "covered_call"
-            if covered_ok and (not sell_ok or covered_preferred)
+            if covered_ok and (
+                covered_preferred
+                or (not sell_ok and bool(contract_plan["reaches_target_band"]))
+            )
             else "sell_shares"
         ),
     }
@@ -999,6 +1002,9 @@ def stage_covered_call(
         raise ValueError(
             f"{sym}: option market data is {timeline}, not real-time"
         )
+    exact_age = _quote_age_seconds(exact.get("quote_timestamp"))
+    if exact_age is None or exact_age > EXECUTION_QUOTE_MAX_AGE_SECONDS:
+        raise ValueError(f"{sym}: exact option quote is stale or missing")
     if not ibkr_trade.quotes_are_valid(exact.get("bid"), exact.get("ask")):
         raise ValueError(f"{sym}: option bid/ask is missing or crossed")
     limit = ibkr_trade.round_sell_limit_midpoint(

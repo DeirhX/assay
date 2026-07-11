@@ -842,6 +842,17 @@ class SnapCount(unittest.TestCase):
         self.assertIsNone(ibt._snap_count(None))
 
 
+class MarketDataTimeline(unittest.TestCase):
+    def test_decodes_realtime_delayed_and_frozen_statuses(self):
+        self.assertEqual(ibt.market_data_timeline("RpB"), "real_time")
+        self.assertEqual(ibt.market_data_timeline("DpB"), "delayed")
+        self.assertEqual(ibt.market_data_timeline("ZpB"), "frozen")
+        self.assertEqual(ibt.market_data_timeline("YpB"), "frozen_delayed")
+        self.assertTrue(ibt.market_data_is_realtime("RpB"))
+        self.assertFalse(ibt.market_data_is_realtime("DpB"))
+        self.assertFalse(ibt.market_data_is_realtime("ZpB"))
+
+
 class OptionMonths(unittest.TestCase):
     def test_orders_from_current_month_and_drops_past(self):
         got = ibt._months_by_date(["JUL26", "AUG26", "JAN26", "DEC26"], as_of=dt.date(2026, 7, 9))

@@ -322,6 +322,17 @@ def test_ibkr_frozen_close_is_visible_but_not_executable():
     assert cc["executable"] is False
 
 
+def test_ibkr_fetch_time_never_substitutes_for_missing_broker_timestamp():
+    c = _ibkr_executable_chain()
+    del c["expiries"][0]["calls"][0]["quote_timestamp"]
+    out = ov.suggest_for_position(
+        "TEST", _pos(), _no_defer(), as_of=AS_OF, chain=c, rate=0.04,
+    )
+    cc = out["covered_call"]
+    assert cc["executable"] is False
+    assert "quote_timestamp" not in cc  # route freshness must fail closed
+
+
 def test_ibkr_missing_conid_not_executable():
     c = _ibkr_executable_chain()
     del c["expiries"][0]["calls"][0]["conid"]

@@ -46,6 +46,12 @@ export interface OptionLegFields {
   if_assigned_shares?: number;
   premium_credit?: number;
   currency?: string | null;
+  bid?: number | null;
+  ask?: number | null;
+  last?: number | null;
+  quote_timestamp?: string | null;
+  market_data_availability?: string | null;
+  market_data_timeline?: string | null;
   provenance?: LegProvenance | LegProvenance[];
   coverage_ok?: boolean;
   coverage_capacity_contracts?: number;

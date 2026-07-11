@@ -133,10 +133,14 @@ def _two_sided_quote_ok(bid: Any, ask: Any) -> bool:
 
 
 def _quote_timestamp(contract: dict[str, Any] | None, chain: dict[str, Any] | None) -> str | None:
-    for obj in (contract, chain or {}):
-        if not isinstance(obj, dict):
-            continue
-        ts = obj.get("quote_timestamp") or obj.get("fetched_at")
+    if isinstance(contract, dict):
+        ts = contract.get("quote_timestamp")
+        if isinstance(ts, str) and ts:
+            return ts
+    # Provider fetch times are acceptable provenance for advisory feeds. They
+    # must never substitute for IBKR's broker-reported `_updated` timestamp.
+    if isinstance(chain, dict) and chain.get("source") != "ibkr":
+        ts = chain.get("quote_timestamp") or chain.get("fetched_at")
         if isinstance(ts, str) and ts:
             return ts
     return None
@@ -186,6 +190,8 @@ def _executable(*, chain_source: str, contract: dict[str, Any] | None, estimate:
     timeline = contract.get("market_data_timeline")
     availability = str(contract.get("market_data_availability") or "")
     if timeline != "real_time" and not availability.upper().startswith("R"):
+        return False
+    if not isinstance(contract.get("quote_timestamp"), str):
         return False
     return _two_sided_quote_ok(contract.get("bid"), contract.get("ask"))
 

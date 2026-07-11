@@ -1117,6 +1117,8 @@ def _reconcile_working_orders(
                 "ask": order.get("ask"),
                 "last": order.get("last"),
                 "quote_timestamp": order.get("quote_timestamp"),
+                "market_data_availability": order.get("market_data_availability"),
+                "market_data_timeline": order.get("market_data_timeline"),
                 "provenance": (basket_by_leg.get(leg_id) or {}).get("provenance") or [],
             })
         contexts.append(context)
