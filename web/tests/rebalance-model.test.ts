@@ -5,7 +5,8 @@
 // staged-trades builder drops noise and zero-CZK entries.
 import { describe, expect, it } from "vitest";
 import {
-  computePlan, connectorGeom, inBandAfter, parseDelta, rebScaleMax, scalePct, tradesFrom,
+  computePlan, connectorGeom, deltaForProjectedWeight, inBandAfter, parseDelta,
+  rebScaleMax, scalePct, tradesFrom,
 } from "../src/rebalance-model";
 
 describe("parseDelta", () => {
@@ -26,6 +27,33 @@ describe("inBandAfter", () => {
     expect(inBandAfter(6.005, 3, 6)).toBe(true);   // 0.005 over the ceiling
     expect(inBandAfter(2.98, 3, 6)).toBe(false);
     expect(inBandAfter(6.02, 3, 6)).toBe(false);
+  });
+});
+
+describe("deltaForProjectedWeight", () => {
+  it("accounts for the buy changing the invested-book denominator", () => {
+    const delta = deltaForProjectedWeight(7.5, 2, 0);
+    const comp = computePlan(
+      [{ current: 2, low: 0, high: 10, delta }],
+      [],
+      [],
+      1_000_000,
+    );
+    expect(comp.rows[0].proj).toBeCloseTo(7.5);
+  });
+
+  it("keeps every other planned trade fixed", () => {
+    const delta = deltaForProjectedWeight(7.5, 2, 2);
+    const comp = computePlan(
+      [
+        { current: 2, low: 0, high: 10, delta },
+        { current: 4, low: 0, high: 10, delta: 2 },
+      ],
+      [],
+      [],
+      1_000_000,
+    );
+    expect(comp.rows[0].proj).toBeCloseTo(7.5);
   });
 });
 

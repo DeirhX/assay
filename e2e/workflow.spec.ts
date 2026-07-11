@@ -68,6 +68,76 @@ test.describe("rebalance review safety", () => {
     await expect(page.getByRole("button", { name: "Preview impact" })).toBeVisible();
   });
 
+  test("dragging the projected marker updates the trade percentage", async ({ page }) => {
+    await installApi(page, {
+      "/api/rebalance": plan,
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+    });
+    await page.goto("/?view=rebalance");
+
+    const targetRow = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    const marker = targetRow.getByRole("slider", { name: "Projected portfolio weight" });
+    const track = targetRow.locator(".reb-track");
+    const input = targetRow.locator(".reb-plan-input");
+    await expect(marker).toHaveAttribute("aria-valuenow", "3");
+    await marker.scrollIntoViewIfNeeded();
+
+    const markerBox = await marker.boundingBox();
+    const trackBox = await track.boundingBox();
+    expect(markerBox).not.toBeNull();
+    expect(trackBox).not.toBeNull();
+    const scaleMax = Number(await marker.getAttribute("aria-valuemax"));
+    const desiredProjected = Math.round(scaleMax * 0.75 * 10) / 10;
+
+    await page.mouse.move(markerBox!.x + markerBox!.width / 2, markerBox!.y + markerBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(trackBox!.x + trackBox!.width * 0.75, trackBox!.y + trackBox!.height / 2);
+    await page.mouse.up();
+
+    const expectedDelta = (desiredProjected - row.current_pct) / (1 - desiredProjected / 100);
+    expect(Number(await input.inputValue())).toBeCloseTo(expectedDelta, 1);
+    expect(Number(await marker.getAttribute("aria-valuenow"))).toBeCloseTo(desiredProjected, 1);
+  });
+
+  test("Current book opens in a drawer without discarding edited amounts", async ({ page }) => {
+    await installApi(page, {
+      "/api/rebalance": plan,
+      "/api/overview": {
+        snapshot: { exists: true, positions: 1, age_days: 0, stale: false },
+        plan: { rows: 1, out_of_band: 1, actionable: 1 },
+        staged_basket: { count: 0 },
+      },
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/holdings": {
+        net_asset_value: 1_000_000,
+        invested_value: 1_000_000,
+        generated_at: "2026-07-11T00:00:00Z",
+        sizing_legend: {},
+        positions: [{
+          symbol: "AAPL", provider_symbol: "AAPL", researchable: true,
+          description: "Apple", asset_class: "STK", quantity: 100,
+          percent_of_nav: 2, broker_percent_of_nav: 2, base_market_value: 20_000,
+          currency: "USD", unrealized_pnl: 0, issuer_country_code: "US", option: null,
+        }],
+      },
+    });
+    await page.goto("/?view=rebalance");
+
+    const input = page.locator(".reb-data-row").filter({ hasText: "AAPL" }).locator(".reb-plan-input");
+    await input.fill("2.2");
+    await page.getByRole("button", { name: "View positions ↗" }).click();
+
+    const drawer = page.getByRole("dialog", { name: "Current book" });
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("AAPL");
+    await expect(page.locator("#view-rebalance")).toHaveClass(/active/);
+    await expect(input).toHaveValue("2.2");
+
+    await page.getByRole("button", { name: "Close current book" }).click();
+    await expect(drawer).toHaveCount(0);
+    await expect(input).toHaveValue("2.2");
+  });
+
   test("Trade preview stays locked for an unreviewed queue", async ({ page }) => {
     await installApi(page, {
       "/api/trade/status": {

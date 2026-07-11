@@ -24,7 +24,7 @@ test.describe("trade desk safety states", () => {
     await page.goto("/?view=trade");
 
     await expect(page.locator("#trade-banner")).toContainText("Paper account DU1");
-    // No orders staged from the rebalance planner -> the desk refuses gracefully.
-    await expect(page.locator("#trade-result")).toContainText("No orders staged");
+    // No queued orders from the rebalance planner -> the desk refuses gracefully.
+    await expect(page.locator("#trade-result")).toContainText("The order queue is empty");
   });
 });

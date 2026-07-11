@@ -39,6 +39,20 @@ export const rebDefaultDelta = (r: Pick<PlanRow, "action" | "suggest_delta_pct">
 export const inBandAfter = (proj: number, low: number, high: number) =>
   proj >= low - BAND_EPS && proj <= high + BAND_EPS;
 
+// Invert projectWeight() for one edited row while every other planned delta
+// stays fixed. A buy changes both the position numerator and the invested-book
+// denominator, so target-current is only an approximation.
+export function deltaForProjectedWeight(
+  projected: number,
+  current: number,
+  otherDeltas: number,
+): number {
+  const target = Math.max(0, projected);
+  const divisor = 1 - target / 100;
+  if (divisor <= DELTA_EPS) return 0;
+  return (target * (1 + otherDeltas / 100) - current) / divisor;
+}
+
 // One axis for the whole plan: the largest band edge / weight / projection,
 // rounded up to a friendly multiple of 5 with a 10% floor (see weight-axis).
 export function rebScaleMax(rows: Pick<PlanRow, "high" | "current_pct" | "suggest_delta_pct">[]): number {
