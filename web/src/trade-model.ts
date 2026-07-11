@@ -65,13 +65,16 @@ export type WorkingOrderPreview = OptionPreviewFields & {
 export type OrderReconciliation = OptionPreviewFields & {
   symbol: string;
   side: string;
-  classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side" | "coverage_blocked";
+  classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side" | "coverage_blocked" | "oversell_blocked" | "quote_blocked";
   proposed_qty: number;
   working_same_qty?: number;
   working_qty?: number;
   residual_qty: number;
   current_position_qty?: number;
   projected_position_qty?: number;
+  requested_projected_position_qty?: number;
+  oversell_excess_qty?: number;
+  block_reason?: "quote_invalid" | "quote_stale" | "limit_invalid" | string;
   proposed_delta_czk?: number;
   working_delta_czk?: number;
   residual_delta_czk?: number;
@@ -207,6 +210,8 @@ export function residualStockValueCzk(ctx: OrderReconciliation): number {
 
 export function reconciliationTitle(c: OrderReconciliation): string {
   if (c.classification === "coverage_blocked") return "Coverage blocked";
+  if (c.classification === "oversell_blocked") return "Sell exceeds position";
+  if (c.classification === "quote_blocked") return "Waiting for IBKR quote";
   if (isCoveredCallLeg(c)) {
     if (c.classification === "opposite_side") return "Resolve opposite option order";
     if (c.classification === "fully_covered") return "Option order already working";

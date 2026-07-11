@@ -483,7 +483,13 @@ class TradeServiceGuards(unittest.TestCase):
         raw = {"trades": [{"symbol": "AMD", "delta_czk": 1000}]}
         with mock.patch.object(trade_service, "_load", return_value=raw) as load:
             state = trade_service.basket_state()
-        load.assert_called_once_with(trade_service.STAGED_BASKET_JSON)
+        self.assertEqual(
+            sum(
+                call.args == (trade_service.STAGED_BASKET_JSON,)
+                for call in load.call_args_list
+            ),
+            1,
+        )
         self.assertEqual(state["trades"][0]["symbol"], "AMD")
 
     def test_preview_gate_rejects_unreviewed_or_changed_queue(self):
@@ -642,6 +648,50 @@ class TradeServiceGuards(unittest.TestCase):
         self.assertFalse(res["working_orders_available"])
         self.assertIn("bridge unavailable", res["working_orders_error"])
         self.assertFalse(trade_service._preview_issued[res["token"]]["working_available"])
+
+    def test_preview_keeps_unquoted_call_visible_and_blocks_placement(self):
+        basket = trade_service._normalize_basket([{
+            "type": "covered_call",
+            "symbol": "PYPL",
+            "conid": 555,
+            "expiry": "2026-08-21",
+            "strike": 75,
+            "contracts": 1,
+        }])
+        blocked = {
+            "instrument_type": "covered_call",
+            "leg_id": basket[0]["leg_id"],
+            "symbol": "PYPL",
+            "conid": 555,
+            "side": "SELL",
+            "classification": "quote_blocked",
+            "proposed_qty": 1,
+            "residual_qty": 0,
+            "placeable": False,
+        }
+
+        def prepare(_account, _basket, *, blocked_calls):
+            blocked_calls.append(blocked)
+            return [], ["PYPL: covered call needs a live bid/ask"]
+
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(
+                    trade_service, "_reviewed_preview_basket", return_value=basket,
+                ), \
+                mock.patch.object(
+                    trade_service, "_prepare_trade_orders", side_effect=prepare,
+                ), \
+                mock.patch.object(ibt, "live_orders", return_value=[]), \
+                mock.patch.object(ibt, "preview_orders") as ibkr_preview, \
+                mock.patch.object(trade_service, "_load", return_value={}):
+            res = trade_service._trade_preview({
+                "trades": basket, "account": "DU1",
+            })
+        self.assertTrue(res["placement_blocked"])
+        self.assertEqual(res["order_context"][0]["classification"], "quote_blocked")
+        self.assertEqual(res["orders"], [])
+        ibkr_preview.assert_not_called()
 
     def test_preview_sends_only_residual_to_ibkr_and_effective_book_to_local_whatif(self):
         proposed = {"symbol": "AMD", "conid": 222, "side": "BUY", "quantity": 10,

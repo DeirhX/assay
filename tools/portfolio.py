@@ -109,6 +109,52 @@ def normalize_basket(trades: Any) -> dict[str, float]:
     return netted
 
 
+def stock_base_values(holdings: dict[str, Any]) -> dict[str, float]:
+    """Aggregate long-stock market value by canonical symbol.
+
+    Option rows and malformed values are excluded.  Multiple account/lot rows
+    for the same stock are summed so every safety check sees one held amount.
+    """
+    values: dict[str, float] = {}
+    for position in holdings.get("positions", []) or []:
+        if not isinstance(position, dict):
+            continue
+        if str(position.get("asset_class") or "STK").upper() == "OPT":
+            continue
+        sym = clean_symbol(position.get("symbol"))
+        value = position.get("base_market_value")
+        if sym and isinstance(value, (int, float)):
+            values[sym] = values.get(sym, 0.0) + float(value)
+    return values
+
+
+def stock_sell_violations(
+    holdings: dict[str, Any],
+    deltas: dict[str, float],
+    *,
+    eps: float = 0.01,
+) -> list[dict[str, Any]]:
+    """Return net stock sells that would create or deepen a short position."""
+    held = stock_base_values(holdings)
+    violations: list[dict[str, Any]] = []
+    for sym, raw_delta in sorted(deltas.items()):
+        delta = float(raw_delta)
+        if delta >= -eps:
+            continue
+        held_czk = held.get(clean_symbol(sym), 0.0)
+        after_czk = held_czk + delta
+        if after_czk >= -eps:
+            continue
+        violations.append({
+            "symbol": clean_symbol(sym),
+            "held_czk": round(held_czk, 2),
+            "requested_sell_czk": round(abs(delta), 2),
+            "excess_czk": round(abs(after_czk), 2),
+            "after_czk": round(after_czk, 2),
+        })
+    return violations
+
+
 def symbol_aliases() -> dict[str, str]:
     """Broker/display symbol -> provider/research symbol.
 

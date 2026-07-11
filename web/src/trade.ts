@@ -62,6 +62,7 @@ interface TradePreview {
   order_context?: OrderReconciliation[];
   working_orders_available?: boolean;
   working_orders_error?: string | null;
+  placement_blocked?: boolean;
   // The raw IBKR margin/commission blob; shape varies per account/order type.
   ibkr_preview?: any;
   // The normalized basket the token binds to: [{symbol, delta_czk}]. Echoed to
@@ -264,10 +265,12 @@ function updateTradeReviewAvailability(): void {
   if (!btn || _preview) return;
   const hasBasket = !!(state.stagedBasket || []).length;
   const connected = !!(_status && _status.trading_enabled && _status.authenticated);
-  btn.disabled = !(hasBasket && connected && _queueState.reviewed);
+  btn.disabled = !(hasBasket && connected && _queueState.reviewed && _queueState.valid !== false);
   btn.textContent = "Order review";
   btn.title = !hasBasket
     ? "Add orders to the queue first"
+    : _queueState.valid === false
+      ? "Fix staged stock sells that exceed holdings in Target state"
     : !_queueState.reviewed
       ? "Approve the current portfolio projection in Review impact first"
       : !connected
@@ -329,7 +332,9 @@ async function loadTrade() {
     const review = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]');
     if (review && !review.disabled) await doPreview(review);
     else showTradeReviewError(
-      state.stagedBasket.length && !_queueState.reviewed
+      _queueState.valid === false
+        ? "The staged queue contains a stock sell larger than the held position. Fix it in Target state before previewing orders."
+        : state.stagedBasket.length && !_queueState.reviewed
         ? "Review and approve the projected portfolio before previewing orders."
         : "Add orders to the queue and connect the IBKR gateway before previewing them.",
     );
@@ -664,11 +669,13 @@ function renderPreview() {
   }));
   const residualOrders = p.orders || [];
   const stats = previewStats(residualOrders, contexts);
+  const quoteBlocked = contexts.some((c) => c.classification === "quote_blocked");
 
   const head = el("div", "trade-preview-head");
   head.innerHTML = `<div><div class="trade-card-title">Order preview</div>` +
     `<div class="muted">${isLive ? "LIVE" : "paper"} account ${sensitive(esc(p.account), "account id")} · reconciled with IBKR now</div></div>` +
-    `<span class="trade-preview-posture ${liveBlocked ? "blocked" : "ready"}">${liveBlocked ? "placement locked" : "ready to review"}</span>`;
+    `<span class="trade-preview-posture ${liveBlocked || p.placement_blocked ? "blocked" : "ready"}">` +
+    `${liveBlocked ? "placement locked" : quoteBlocked ? "quote required" : p.placement_blocked ? "invalid order" : "ready to review"}</span>`;
   card.appendChild(head);
   const summary = el("div", "trade-preview-summary");
   const stat = (label: string, value: string, tone = "") =>
@@ -691,6 +698,32 @@ function renderPreview() {
   contexts.filter((c) => c.classification === "coverage_blocked").forEach((c) =>
     actionPanel.appendChild(el("div", "trade-action-item blocker",
       `<strong>${tickerLink(c.symbol)}: insufficient covered-call capacity.</strong> ${esc(c.next_step || "")}`)));
+  contexts.filter((c) => c.classification === "oversell_blocked").forEach((c) =>
+    actionPanel.appendChild(el("div", "trade-action-item blocker",
+      `<strong>${tickerLink(c.symbol)}: sell exceeds the held position.</strong> ${esc(c.next_step || "")}`)));
+  contexts.filter((c) => c.classification === "quote_blocked").forEach((c) => {
+    const item = el(
+      "div",
+      "trade-action-item blocker trade-quote-blocker",
+      `<div><strong>${tickerLink(c.symbol)}: no executable covered-call quote.</strong> ` +
+      `The contract remains staged, but preview and placement require a fresh, uncrossed IBKR bid/ask.</div>`,
+    );
+    const refresh = el("button", "ghost", `Refresh all ${c.symbol} quotes & retry`) as HTMLButtonElement;
+    refresh.type = "button";
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true;
+      refresh.textContent = `Refreshing ${c.symbol}…`;
+      try {
+        await api("/api/exit-plan/refresh-options", "POST", { symbol: c.symbol });
+        showTradeReviewLoading(`Refreshing ${c.symbol} and rebuilding the order review…`);
+        await requestPreview();
+      } catch (error) {
+        showTradeReviewError((error as Error).message);
+      }
+    });
+    item.appendChild(refresh);
+    actionPanel.appendChild(item);
+  });
   const warnings = p.warnings || [];
   if (warnings.length) {
     const details = el("details", "trade-action-details");
@@ -731,6 +764,13 @@ function renderPreview() {
   const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.max(0, s % 60)).padStart(2, "0")}`;
 
   const paintPlaceBtn = () => {
+    if (p.placement_blocked) {
+      placeBtn.disabled = true;
+      placeBtn.textContent = quoteBlocked
+        ? "Refresh blocked option quotes — preview again"
+        : "Fix blocked orders — preview again";
+      return;
+    }
     if (p.working_orders_available === false || !residualOrders.length) {
       placeBtn.disabled = true;
       placeBtn.textContent = p.working_orders_available === false
@@ -770,7 +810,10 @@ function renderPreview() {
       || (isOption && Number(o.conid) === Number(c.conid) && o.side === c.side)
       || (!isOption && String(o.symbol || "").trim().toUpperCase() === sym && o.side === c.side));
     const o = orderIndex >= 0 ? residualOrders[orderIndex] : undefined;
-    const tone = c.classification === "opposite_side" || c.classification === "coverage_blocked" ? "blocked"
+    const tone = c.classification === "opposite_side"
+      || c.classification === "coverage_blocked"
+      || c.classification === "oversell_blocked"
+      || c.classification === "quote_blocked" ? "blocked"
       : c.classification === "fully_covered" ? "covered"
       : c.classification === "same_side_partial" ? "adjusted" : "plain";
     const item = el("article", `trade-order-item ${tone}`);
@@ -808,7 +851,11 @@ function renderPreview() {
     const workingQty = Number(c.working_qty ?? c.working_same_qty ?? 0);
     const primary = el("div", "trade-order-primary");
     if (isOption) {
-      primary.innerHTML = o
+      primary.innerHTML = c.classification === "quote_blocked"
+        ? `<strong>Covered call is staged, waiting for a quote</strong>` +
+          `<span class="trade-option-contract">${tickerLink(sym)} · ${esc(c.expiry || "")} · ` +
+          `${esc(qty(c.strike))} call</span>`
+        : o
         ? `<strong>${coveredCallActionLabel()} ${esc(contractsLabel(c.residual_qty))}</strong>` +
           `<span class="trade-option-contract">${tickerLink(sym)} · ${esc(c.expiry || "")} · ` +
           `${esc(qty(c.strike))} ${isPut ? "put" : "call"}</span>`
@@ -822,7 +869,12 @@ function renderPreview() {
         ? `<strong>Place ${esc(c.side)} ${esc(qty(c.residual_qty))} shares</strong>`
         : `<strong>No new order</strong>`;
     }
-    if (!isOption && c.current_position_qty != null && c.projected_position_qty != null) {
+    if (!isOption && c.classification === "oversell_blocked") {
+      primary.innerHTML += `<span class="trade-position-effect bad">Blocked projection: ` +
+        `<strong>${esc(qty(c.current_position_qty))} shares held</strong>; requested orders would reach ` +
+        `<strong>${esc(qty(c.requested_projected_position_qty))} shares</strong> ` +
+        `(${esc(qty(c.oversell_excess_qty))} excess).</span>`;
+    } else if (!isOption && c.current_position_qty != null && c.projected_position_qty != null) {
       primary.innerHTML += `<span class="trade-position-effect">Position if all planned orders fill: ` +
         `<strong>${esc(qty(c.current_position_qty))} shares</strong> \u2192 <strong>${esc(qty(c.projected_position_qty))} shares</strong></span>`;
     }

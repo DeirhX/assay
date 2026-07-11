@@ -32,6 +32,15 @@ const RULE_WORDS: Record<string, string> = {
 };
 export const ruleWord = (r?: string): string => (r ? RULE_WORDS[r] || r.replace(/_/g, " ") : "");
 
+export type RuleTone = "good" | "bad" | "warn" | "hold";
+const RULE_TONES: Record<string, RuleTone> = {
+  accumulate: "good", buy: "good",
+  reduce: "bad", trim_only: "bad", avoid: "bad",
+  wait: "warn",
+  hold: "hold", do_not_add: "hold",
+};
+export const ruleTone = (r?: string | null): RuleTone => RULE_TONES[r || ""] || "hold";
+
 export function bandText(b: Band): string {
   if (!b) return "—";
   const lo = typeof b.low === "number" ? b.low : "?";

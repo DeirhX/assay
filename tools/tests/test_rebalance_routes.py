@@ -55,7 +55,8 @@ def test_contract_sizing_matches_exit_bounded_round_up():
     assert rebalance_routes.contracts_for_shares(290, capacity=2) == 2
 
 
-def test_increase_offers_exact_cash_secured_put_route():
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_increase_offers_exact_cash_secured_put_route(_basket):
     with mock.patch.object(
         trade_service, "cash_secured_put_capacity",
         return_value={"available_cash_czk": 1_000_000},
@@ -73,7 +74,8 @@ def test_increase_offers_exact_cash_secured_put_route():
     assert route["ladder"][0]["cash_secured_czk"] == 213_900
 
 
-def test_reduction_offers_covered_call_bounded_by_held_shares():
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_reduction_offers_covered_call_bounded_by_held_shares(_basket):
     with mock.patch.object(
         trade_service, "covered_call_capacity",
         return_value={"capacity_contracts": 3, "current_shares": 300},
@@ -87,7 +89,8 @@ def test_reduction_offers_covered_call_bounded_by_held_shares():
     assert route["ladder"][0]["conid"] == 555
 
 
-def test_fallback_ladder_is_visible_but_not_stageable():
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_fallback_ladder_is_visible_but_not_stageable(_basket):
     chain = _chain()
     chain["source"] = "yahoo"
     chain["expiries"][0]["puts"][0].pop("conid")
@@ -126,7 +129,8 @@ def test_route_capacity_reserves_working_puts_and_unrelated_staged_buys():
     assert route["option"]["available_cash_czk"] == 686_100
 
 
-def test_stage_put_replaces_stock_leg_and_records_conditional_provenance():
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_stage_put_replaces_stock_leg_and_records_conditional_provenance(_basket):
     route = rebalance_routes.build_route(
         _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
     )
@@ -159,7 +163,8 @@ def test_stage_put_replaces_stock_leg_and_records_conditional_provenance():
     assert leg["provenance"][0]["intended_assigned_shares"] == 100
 
 
-def test_stage_rejects_aggregate_put_collateral_above_cash():
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_stage_rejects_aggregate_put_collateral_above_cash(_basket):
     route = rebalance_routes.build_route(
         _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
     )

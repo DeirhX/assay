@@ -361,7 +361,20 @@ function routeControls(
   wrap.appendChild(mk("covered_call", "Covered-call exit", routes.covered_call));
   if (!routes.covered_call.eligible && routes.covered_call.reasons.length) {
     const why = el("span", "exit-route-why muted");
-    why.textContent = `Covered call unavailable: ${routes.covered_call.reasons.join(" · ")}`;
+    const fullReason = routes.covered_call.reasons.join(" · ");
+    const sizeReason = fullReason.match(
+      /planned (\d+)-share exit is too far from one (\d+)-share option contract/i,
+    );
+    if (sizeReason) {
+      why.textContent = `Needs about ${sizeReason[2]} shares; this exit is ${sizeReason[1]}.`;
+    } else if (/no uncovered capacity/i.test(fullReason)) {
+      why.textContent = "No uncovered 100-share lot is available.";
+    } else if (/indicative covered-call levels/i.test(fullReason)) {
+      why.textContent = "Exact IBKR contract required to stage.";
+    } else {
+      why.textContent = routes.covered_call.reasons[0];
+    }
+    why.title = fullReason;
     wrap.appendChild(why);
   }
   if (routes.recommended === route) {
@@ -501,8 +514,83 @@ function coveredCallReco(
     return inner;
   }
 
+  if (instrumentQuotesAreStale(p)) {
+    const refresh = el("div", "exit-cc-refresh");
+    const copy = el("div");
+    copy.innerHTML =
+      `<strong>${esc(p.symbol)} quotes are stale</strong>` +
+      `<span>Refresh the underlying and every option contract in this ladder together.</span>`;
+    const btn = el("button", "ghost exit-cc-refresh-btn");
+    btn.type = "button";
+    btn.textContent = `Refresh all ${p.symbol} quotes`;
+    btn.addEventListener("click", () => refreshExitInstrument(p.symbol, btn));
+    refresh.append(copy, btn);
+    inner.appendChild(refresh);
+  }
+
   inner.appendChild(coveredCallLadderTable(p.symbol, ladder, ccy, contracts));
   return inner;
+}
+
+function quoteTimestampIsStale(timestamp: string | null | undefined): boolean {
+  const quoteTime = timestamp ? new Date(timestamp).getTime() : NaN;
+  const localAge = Date.now() - quoteTime;
+  return !Number.isFinite(quoteTime)
+    || localAge < -10_000
+    || localAge > EXECUTION_QUOTE_MAX_AGE_MS;
+}
+
+function rungQuoteIsStale(r: ExitCoveredCallRung): boolean {
+  return r.quote_fresh === false || quoteTimestampIsStale(r.quote_timestamp);
+}
+
+function instrumentQuotesAreStale(p: ExitPosition): boolean {
+  const o = p.options;
+  if (!o || o.source !== "ibkr") return false;
+  const underlyingStale = o.underlying_quote?.source === "ibkr"
+    && quoteTimestampIsStale(o.underlying_quote.quote_timestamp);
+  const optionStale = (o.covered_call_ladder ?? []).some(
+    (r) => r.source === "ibkr" && r.conid != null && rungQuoteIsStale(r),
+  );
+  return underlyingStale || optionStale;
+}
+
+async function refreshExitInstrument(symbol: string, btn: HTMLButtonElement): Promise<void> {
+  const token = nextToken("exit");
+  const status = $("#exit-status");
+  btn.disabled = true;
+  btn.textContent = "Refreshing instrument…";
+  if (status) {
+    status.classList.remove("err");
+    status.textContent = `Refreshing all ${symbol} quotes from IBKR…`;
+  }
+  try {
+    const plan = await api<ExitPlanResponse>(
+      "/api/exit-plan/refresh-options",
+      "POST",
+      { symbol, cfg },
+      { timeoutMs: 60_000 },
+    );
+    if (isStaleToken("exit", token)) return;
+    _lastExitPlan = plan;
+    renderExit(plan);
+    renderExitGatewayNotice(plan);
+    const refreshed = plan.positions.find((p) => p.symbol === symbol);
+    if (status) {
+      status.textContent = refreshed && instrumentQuotesAreStale(refreshed)
+        ? `IBKR did not return fresh ${symbol} quotes. The stale values remain visible.`
+        : `${symbol} underlying and option quotes refreshed.`;
+      status.classList.toggle("err", !!refreshed && instrumentQuotesAreStale(refreshed));
+    }
+  } catch (e) {
+    if (isStaleToken("exit", token)) return;
+    btn.disabled = false;
+    btn.textContent = `Refresh all ${symbol} quotes`;
+    if (status) {
+      status.textContent = `Could not refresh ${symbol} quotes: ${(e as Error).message}`;
+      status.classList.add("err");
+    }
+  }
 }
 
 function assignmentCell(r: ExitCoveredCallRung): string {
@@ -674,17 +762,14 @@ async function stageCoveredCall(
 }
 
 function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
-  const quoteTime = r.quote_timestamp ? new Date(r.quote_timestamp).getTime() : NaN;
-  const localAge = Date.now() - quoteTime;
-  const locallyFresh = Number.isFinite(quoteTime)
-    && localAge >= -10_000 && localAge <= EXECUTION_QUOTE_MAX_AGE_MS;
+  const locallyFresh = !quoteTimestampIsStale(r.quote_timestamp);
   const quoteOk = typeof r.bid === "number" && typeof r.ask === "number"
     && r.bid > 0 && r.ask > 0 && r.bid <= r.ask;
   if (r.executable === true && r.conid && r.quote_fresh === true && locallyFresh && quoteOk) return [];
   const missingQuote = r.bid == null || r.ask == null || r.bid <= 0 || r.ask <= 0;
   const crossedQuote = typeof r.bid === "number" && typeof r.ask === "number"
     && r.bid > 0 && r.ask > 0 && r.bid > r.ask;
-  const staleQuote = r.quote_fresh === false || !locallyFresh;
+  const staleQuote = rungQuoteIsStale(r);
   if (r.stageable === true && r.conid && !crossedQuote && (missingQuote || staleQuote)) return [];
   const reasons: string[] = [];
   if (r.executable === false) reasons.push("Not executable");
@@ -705,13 +790,7 @@ function rungStageWarning(r: ExitCoveredCallRung): string | null {
     return r.staging_warning
       || "⚠ No live bid/ask. You may add this contract to the queue, but preview and placement remain blocked until IBKR returns a fresh quote.";
   }
-  const quoteTime = r.quote_timestamp ? new Date(r.quote_timestamp).getTime() : NaN;
-  const localAge = Date.now() - quoteTime;
-  const staleQuote = r.quote_fresh === false
-    || !Number.isFinite(quoteTime)
-    || localAge < -10_000
-    || localAge > EXECUTION_QUOTE_MAX_AGE_MS;
-  if (staleQuote) {
+  if (rungQuoteIsStale(r)) {
     return r.staging_warning
       || "⚠ Displayed quote is stale. Staging will refresh it from IBKR before calculating the limit.";
   }
@@ -836,7 +915,7 @@ function coveredCallLadderTable(
       btn.innerHTML = `${esc(column.label)} <span aria-hidden="true">${active ? (direction === "asc" ? "▲" : "▼") : "↕"}</span>`;
       btn.addEventListener("click", () => {
         if (sortKey === column.key) direction = direction === "asc" ? "desc" : "asc";
-        else { sortKey = column.key; direction = "asc"; }
+        else { sortKey = column.key; direction = "desc"; }
         renderHead();
         renderRows();
       });

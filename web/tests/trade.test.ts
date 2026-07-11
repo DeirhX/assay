@@ -1050,6 +1050,59 @@ describe("trade desk mixed stock + covered call", () => {
     expect(place.disabled).toBe(true);
     expect(place.textContent).toContain("No new orders to place");
   });
+
+  it("keeps an unquoted covered call in review and offers whole-symbol refresh", async () => {
+    await previewMixed(PAPER_STATUS, [MIXED_BASKET[1]], {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [],
+      ibkr_preview: null, orders: [], placement_blocked: true,
+      order_context: [
+        ccContext({
+          classification: "quote_blocked", proposed_qty: 2, residual_qty: 0,
+          placeable: false, block_reason: "quote_invalid",
+          next_step: "Refresh this instrument's IBKR quotes, then preview again.",
+        }),
+      ],
+    });
+
+    expect(document.querySelector(".trade-review-error")).toBeFalsy();
+    const card = document.querySelector(".trade-order-item.blocked")!;
+    expect(card.textContent).toContain("Waiting for IBKR quote");
+    expect(card.textContent).toContain("staged, waiting for a quote");
+    const refresh = byText((t) => t.includes("Refresh all NVDA quotes & retry"))!;
+    refresh.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/exit-plan/refresh-options",
+      "POST",
+      { symbol: "NVDA" },
+    );
+    const place = byText((t) => t.includes("Refresh blocked option quotes"))!;
+    expect(place.disabled).toBe(true);
+  });
+
+  it("shows and blocks a stock sell that exceeds the held position", async () => {
+    await previewMixed(PAPER_STATUS, [MIXED_BASKET[0]], {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [],
+      ibkr_preview: null, orders: [], placement_blocked: true,
+      order_context: [{
+        symbol: "NVDA", side: "SELL", instrument_type: "stock",
+        classification: "oversell_blocked", proposed_qty: 120, residual_qty: 0,
+        current_position_qty: 100, projected_position_qty: 100,
+        requested_projected_position_qty: -20, oversell_excess_qty: 20,
+        placeable: false,
+        next_step: "Reduce the sell by at least 20 shares.",
+      }],
+    });
+
+    const blocked = document.querySelector(".trade-order-item.blocked")!;
+    expect(blocked.textContent).toContain("Sell exceeds position");
+    expect(blocked.textContent).toContain("100 shares held");
+    expect(blocked.textContent).toContain("20 excess");
+    expect(document.querySelector(".trade-action-item.blocker")!.textContent)
+      .toContain("sell exceeds the held position");
+    const place = byText((t) => t.includes("Fix blocked orders"))!;
+    expect(place.disabled).toBe(true);
+  });
 });
 
 describe("trade desk connection banner", () => {

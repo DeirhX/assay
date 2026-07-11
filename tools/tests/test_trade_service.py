@@ -330,6 +330,24 @@ class WorkingOrderReconciliation(unittest.TestCase):
         self.assertEqual(ctx[0]["current_position_qty"], 300)
         self.assertEqual(ctx[0]["projected_position_qty"], 94)
 
+    def test_stock_oversell_is_visible_but_not_placeable(self):
+        proposed = [{
+            "symbol": "ARM", "side": "SELL", "quantity": 120,
+            "_current_position_qty": 100, "_estimate_price": 100,
+            "_estimate_fx_to_base": 1,
+        }]
+        residual, ctx, effective = trade_service._reconcile_working_orders(
+            proposed,
+            [{"symbol": "ARM", "delta_czk": -12_000}],
+            [],
+        )
+        self.assertEqual(residual, [])
+        self.assertEqual(effective, [])
+        self.assertEqual(ctx[0]["classification"], "oversell_blocked")
+        self.assertEqual(ctx[0]["requested_projected_position_qty"], -20)
+        self.assertEqual(ctx[0]["oversell_excess_qty"], 20)
+        self.assertFalse(ctx[0]["placeable"])
+
     def test_fingerprint_changes_with_remaining_quantity(self):
         a = [{"order_id": "1", "symbol": "AMD", "side": "BUY",
               "remaining_qty": 3, "status": "Submitted"}]
@@ -483,6 +501,28 @@ class NormalizeBasket(unittest.TestCase):
                 with self.assertRaises(apierror.Conflict):
                     trade_service.remove_basket_leg("covered_call:NVDA:555")
 
+    def test_review_rejects_oversold_stock_but_keeps_the_queue(self):
+        violation = {
+            "symbol": "AMD", "held_czk": 1000.0,
+            "requested_sell_czk": 1200.0, "excess_czk": 200.0,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged), \
+                    mock.patch.object(
+                        trade_service,
+                        "_basket_sell_violations",
+                        return_value=[violation],
+                    ):
+                trade_service.save_basket([{"symbol": "AMD", "delta_czk": -1200}])
+                state = trade_service.basket_state()
+                self.assertFalse(state["reviewed"])
+                self.assertFalse(state["valid"])
+                with self.assertRaises(apierror.Conflict) as ctx:
+                    trade_service.review_basket(state["revision"])
+                self.assertEqual(len(trade_service.load_basket()), 1)
+        self.assertIn("200 CZK excess", str(ctx.exception))
+
     def test_basket_token_sensitive_to_every_canonical_field(self):
         base = trade_service._normalize_basket([_cc_leg(), {"symbol": "AMD", "delta_czk": 100}])
         account = "DU1"
@@ -600,6 +640,30 @@ class PrepareCoveredCallOrders(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 trade_service._prepare_trade_orders("DU1", basket)
         self.assertIn("quote is stale", str(ctx.exception))
+
+    def test_review_collects_unquoted_call_as_non_placeable_context(self):
+        basket = trade_service._normalize_basket([_cc_leg()])
+        blocked: list[dict] = []
+        with mock.patch.object(trade_service, "_load", return_value=_nvda_holdings()), \
+             mock.patch.object(ibkr_trade, "build_orders", return_value=([], [])), \
+             mock.patch.object(ibkr_trade, "market_snapshot", return_value={}), \
+             mock.patch.object(
+                 ibkr_trade,
+                 "resolve_exact_call",
+                 return_value=_resolved_call(bid=None, ask=None),
+             ), \
+             mock.patch.object(kid_block, "blocked_symbols", return_value=set()):
+            orders, warnings = trade_service._prepare_trade_orders(
+                "DU1",
+                basket,
+                blocked_calls=blocked,
+            )
+        self.assertEqual(orders, [])
+        self.assertIn("needs a live", warnings[0])
+        self.assertEqual(blocked[0]["classification"], "quote_blocked")
+        self.assertEqual(blocked[0]["conid"], 555)
+        self.assertFalse(blocked[0]["placeable"])
+        self.assertIn("Refresh this instrument", blocked[0]["next_step"])
 
     def test_prepare_rejects_when_no_covered_capacity(self):
         basket = trade_service._normalize_basket([_cc_leg()])
@@ -1065,6 +1129,15 @@ class PlaceTimeCoveredCallRevalidation(unittest.TestCase):
                 trade_service._revalidate_covered_call_orders("DU1", orders, [])
         self.assertIn("2 contract(s) need shares", str(ctx.exception))
         self.assertIn("100 shares would remain", str(ctx.exception))
+
+    def test_place_blocks_stock_sell_larger_than_live_position(self):
+        orders = [{"symbol": "NVDA", "side": "SELL", "quantity": 251}]
+        with mock.patch.object(trade_service, "_live_positions", return_value=[{
+            "assetClass": "STK", "contractDesc": "NVDA", "position": 250,
+        }]):
+            with self.assertRaises(apierror.Conflict) as ctx:
+                trade_service._revalidate_covered_call_orders("DU1", orders, [])
+        self.assertIn("exceed the live position by 1 share", str(ctx.exception))
 
     def test_place_rejects_contract_revalidation_failure(self):
         basket = trade_service._normalize_basket([_cc_leg()])

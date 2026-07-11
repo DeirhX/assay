@@ -181,14 +181,16 @@ class Plan(unittest.TestCase):
         amd = next(r for r in p["rows"] if r["key"] == "AMD")
         # current_czk must equal the actual market value (147), not 14.7% of NAV.
         self.assertEqual(amd["current_czk"], 147)
-        # trim 14.7 -> 12.0 = -2.7% of invested 1000 = -27
-        self.assertEqual(amd["suggest_delta_czk"], -27)
+        # Coupled buys expand the final invested denominator, so less than the
+        # naive -27 CZK trim is needed to land just inside the 12% ceiling.
+        self.assertGreater(amd["suggest_delta_czk"], -27)
+        self.assertLess(amd["suggest_delta_czk"], 0)
 
     def test_below_band_accumulate_suggests_buy(self):
         nvda = next(r for r in self._plan()["rows"] if r["key"] == "NVDA")
         self.assertEqual(nvda["status"], "BELOW")
         self.assertEqual(nvda["action"], "buy")
-        self.assertAlmostEqual(nvda["suggest_delta_pct"], 2.2, places=2)  # 0.8 -> 3.0
+        self.assertGreater(nvda["suggest_delta_pct"], 2.2)
 
     def test_sleeve_is_combined_and_not_interactive(self):
         p = self._plan()
@@ -203,12 +205,37 @@ class Plan(unittest.TestCase):
         self.assertEqual(set(mems), {"TXN", "ADI"})
         for m in mems.values():
             self.assertAlmostEqual(m["target_pct"], 2.75, places=2)     # even split of mid 5.5
-            self.assertAlmostEqual(m["suggest_delta_pct"], 2.5, places=2)  # buy toward the share
+            self.assertGreater(m["suggest_delta_pct"], 2.5)
             self.assertEqual(m["member_action"], "buy")
             self.assertIn("order", m)
         # per-member buys sum back to the sleeve's aggregate buy (low 5 - cur 0)
         self.assertAlmostEqual(sum(m["suggest_delta_pct"] for m in mems.values()),
                                sl["suggest_delta_pct"], places=1)
+
+    def test_coupled_suggestions_land_every_actionable_group_in_band(self):
+        plan = self._plan()
+        deltas: dict[str, float] = {}
+        for row in plan["rows"]:
+            if row["kind"] == "target" and row["action"] in {"buy", "trim"}:
+                deltas[row["name"]] = float(row["suggest_delta_czk"])
+            elif row["kind"] == "sleeve":
+                for member in row["members"]:
+                    if member["member_action"]:
+                        deltas[member["symbol"]] = float(member["suggest_delta_czk"])
+        final_invested = plan["invested"] + sum(deltas.values())
+        for row in plan["rows"]:
+            if row["action"] not in {"buy", "trim"}:
+                continue
+            if row["kind"] == "target":
+                after_value = float(row["current_czk"]) + deltas.get(row["name"], 0.0)
+            else:
+                after_value = float(row["current_czk"]) + sum(
+                    deltas.get(member["symbol"], 0.0)
+                    for member in row["members"]
+                )
+            after_pct = after_value / final_invested * 100.0
+            self.assertGreaterEqual(after_pct, row["low"] - rb.EPS)
+            self.assertLessEqual(after_pct, row["high"] + rb.EPS)
 
     def test_sleeve_member_order_leads_with_biggest_move(self):
         members = ["TXN", "ADI"]
@@ -250,6 +277,28 @@ class Plan(unittest.TestCase):
         self.assertEqual(sofi["status"], "IN")
         self.assertIsNone(sofi["action"])
         self.assertEqual(sofi["suggest_delta_pct"], 0.0)
+
+    def test_overlapping_target_and_sleeve_member_are_review_only(self):
+        model = {
+            "targets": {
+                "AAA": {"low": 3, "high": 5, "rule": "accumulate"},
+            },
+            "sleeves": {
+                "growth": {
+                    "low": 4, "high": 6, "rule": "accumulate",
+                    "members": ["AAA"],
+                },
+            },
+        }
+        plan = rb.plan(model, {
+            "positions": [
+                {"symbol": "AAA", "base_market_value": 10.0},
+                {"symbol": "REST", "base_market_value": 990.0},
+            ],
+        })
+        actionable = [row for row in plan["rows"] if row["name"] in {"AAA", "growth"}]
+        self.assertTrue(all(row["action"] == "review" for row in actionable))
+        self.assertTrue(all(row["suggest_delta_czk"] == 0 for row in actionable))
 
 
 class FundingCandidates(unittest.TestCase):

@@ -302,6 +302,16 @@ export interface TradeQueueState {
   revision: string;
   reviewed: boolean;
   reviewed_at?: string | null;
+  valid?: boolean;
+  stock_sell_violations?: StockSellViolation[];
+}
+
+export interface StockSellViolation {
+  symbol: string;
+  held_czk: number;
+  requested_sell_czk: number;
+  excess_czk: number;
+  after_czk: number;
 }
 
 export interface WhatifSummary {
@@ -313,9 +323,12 @@ export interface WhatifSummary {
 }
 
 export interface Whatif {
+  valid?: boolean;
+  stock_sell_violations?: StockSellViolation[];
   summary?: WhatifSummary;
   currency?: string;
   trades?: WhatifTrade[];
+  applied_trades?: WhatifTrade[];
   cash?: {
     after?: number | null;
     target?: {

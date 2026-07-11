@@ -10,7 +10,9 @@
 // table it degrades to "current book vs its bands" — every tick single.
 // Approving records only the exact queue revision shown; this view never trades.
 import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
-import type { PlanRow, RebalancePlan, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
+import type {
+  PlanRow, RebalancePlan, StockSellViolation, TradeQueueState, Whatif, WhatifTrade,
+} from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
@@ -56,7 +58,7 @@ export function compareRows(before: PlanRow[], after: PlanRow[] | null): Compare
   (after || []).forEach((r) => { afterBy[`${r.kind}:${r.name}`] = r; });
   return (before || []).map((r) => {
     const a = after ? afterBy[`${r.kind}:${r.name}`] : null;
-    const proj = a ? a.current_pct : r.current_pct;
+    const proj = Math.max(0, a ? a.current_pct : r.current_pct);
     return {
       name: r.name, kind: r.kind, rule: r.rule,
       low: r.low, high: r.high,
@@ -177,6 +179,7 @@ export function sourceBanner(
   source: "basket" | "suggestions" | "none",
   n: number,
   queue: TradeQueueState | null,
+  projectionValid = true,
 ): string {
   if (source === "basket") {
     const reviewed = !!queue?.reviewed;
@@ -197,7 +200,9 @@ export function sourceBanner(
           `${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.` +
           ` <span class="muted">If assigned: ${esc(assignment)}.</span>`
         : "") +
-      (reviewed
+      (!projectionValid
+        ? ` <button class="primary" type="button" disabled>Fix blocked sells first</button>`
+        : reviewed
         ? ` <span class="chip good">projection approved</span>` +
           ` <button class="primary" type="button" data-ts-goto="trade">Preview &amp; place →</button>`
         : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve order queue →</button>`) +
@@ -211,6 +216,20 @@ export function sourceBanner(
   return `<div class="tstate-src"><span class="chip muted">order queue empty</span>` +
     ` Build and queue orders first. Plan suggestions are not treated as executable orders on this safety screen.` +
     ` <button class="primary" type="button" data-ts-goto="rebalance">Build orders →</button></div>`;
+}
+
+export function violationsHtml(violations: StockSellViolation[]): string {
+  if (!violations.length) return "";
+  return `<div class="tstate-invalid"><strong>Projection blocked — staged sells exceed holdings</strong>` +
+    violations.map((violation) =>
+      `<div class="tstate-invalid-row"><span><b>${esc(violation.symbol)}</b>: selling ` +
+      `${sensitive(`${fmtCZK(violation.requested_sell_czk)} CZK`, "requested sell")} against ` +
+      `${sensitive(`${fmtCZK(violation.held_czk)} CZK`, "held value")} held; reduce by at least ` +
+      `${sensitive(`${fmtCZK(violation.excess_czk)} CZK`, "oversell excess")}.</span>` +
+      `<button class="ghost" type="button" data-ts-remove-leg="stock:${esc(violation.symbol)}">` +
+      `Remove ${esc(violation.symbol)} sell</button></div>`,
+    ).join("") +
+    `</div>`;
 }
 
 function render(
@@ -251,6 +270,9 @@ function render(
       `</div></details>`
     : "";
 
+  const violations = (wf && wf.stock_sell_violations) || queue?.stock_sell_violations || [];
+  const projectionValid = wf ? wf.valid !== false : queue?.valid !== false;
+  const violationsBlock = violationsHtml(violations);
   const caveats = (wf && wf.caveats || []).map((c) => {
     const severe = /negative|blocked|exceed|cannot/i.test(c);
     return `<div class="tstate-caveat${severe ? " bad" : ""}">` +
@@ -258,7 +280,8 @@ function render(
   }).join("");
 
   body.innerHTML =
-    sourceBanner(source, nTrades, queue) +
+    sourceBanner(source, nTrades, queue, projectionValid) +
+    violationsBlock +
     summaryTiles(plan, wf, rows) +
     changedBlock + sameBlock + tradesBlock +
     (caveats ? `<div class="tstate-caveats">${caveats}</div>` : "");
@@ -324,6 +347,24 @@ function initTargetState(): void {
   const host = $("#view-target-state");
   if (!host) return;
   host.addEventListener("click", (e) => {
+    const remove = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-remove-leg]");
+    if (remove) {
+      const legId = remove.dataset.tsRemoveLeg || "";
+      const status = $("#tstate-status");
+      remove.disabled = true;
+      remove.textContent = "Removing…";
+      void api<TradeQueueState>("/api/trade/basket", "POST", { remove_leg_id: legId })
+        .then(() => loadTargetState())
+        .catch((err) => {
+          remove.disabled = false;
+          remove.textContent = "Remove blocked sell";
+          if (status) {
+            status.classList.add("err");
+            status.textContent = (err as Error).message;
+          }
+        });
+      return;
+    }
     const review = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-review]");
     if (review) {
       const revision = review.dataset.tsReview || "";

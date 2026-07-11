@@ -104,6 +104,14 @@ describe("working-order preview model", () => {
       symbol: "A", side: "BUY", classification: "opposite_side",
       proposed_qty: 3, residual_qty: 0,
     })).toBe("Resolve opposite order");
+    expect(reconciliationTitle({
+      symbol: "A", side: "SELL", classification: "oversell_blocked",
+      proposed_qty: 12, residual_qty: 0,
+    })).toBe("Sell exceeds position");
+    expect(reconciliationTitle({
+      symbol: "A", side: "SELL", instrument_type: "covered_call",
+      classification: "quote_blocked", proposed_qty: 1, residual_qty: 0,
+    })).toBe("Waiting for IBKR quote");
   });
 
   it("excludes covered-call contexts from residual stock value totals", () => {

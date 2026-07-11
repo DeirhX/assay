@@ -105,10 +105,15 @@ export function computePlan(
   let raised = 0, spent = 0, closed = 0;
 
   const tally = (d: number) => { if (d < 0) raised += -d; else spent += d; };
+  rows.forEach((row) => tally(row.delta));
+  sleeves.forEach((sleeve) => sleeve.members.forEach((member) => tally(member.delta)));
+  untargetedDeltas.forEach(tally);
+  const denominator = 1 + (spent - raised) / 100;
+  const projectWeight = (current: number, delta: number) =>
+    denominator > DELTA_EPS ? Math.max(0, current + delta) / denominator : 0;
 
   const rowResults = rows.map((r): RowResult => {
-    tally(r.delta);
-    const proj = r.current + r.delta;
+    const proj = projectWeight(r.current, r.delta);
     const within = inBandAfter(proj, r.low, r.high);
     if (within) closed += 1;
     return { delta: r.delta, proj, inBand: within, czk: pctToCzk(r.delta, base) };
@@ -117,9 +122,8 @@ export function computePlan(
   const sleeveResults = sleeves.map((s): SleeveResult => {
     let sum = 0;
     const members = s.members.map((m): MemberResult => {
-      tally(m.delta);
       sum += m.delta;
-      const proj = m.cur + m.delta;
+      const proj = projectWeight(m.cur, m.delta);
       const overCap = m.cap != null && proj > m.cap + BAND_EPS;
       return {
         delta: m.delta,
@@ -129,12 +133,13 @@ export function computePlan(
         czk: pctToCzk(m.delta, base),
       };
     });
-    const proj = s.current + sum;
-    return { sum, proj, inBand: inBandAfter(proj, s.low, s.high), members };
+    const proj = projectWeight(s.current, sum);
+    const within = inBandAfter(proj, s.low, s.high);
+    if (within) closed += 1;
+    return { sum, proj, inBand: within, members };
   });
 
   const untargeted = untargetedDeltas.map((d) => {
-    tally(d);
     return { delta: d, czk: pctToCzk(d, base) };
   });
 
@@ -145,7 +150,7 @@ export function computePlan(
     untargeted,
     totals: {
       raised, spent, net,
-      closed, total: rows.length,
+      closed, total: rows.length + sleeves.length,
       raisedCzk: pctToCzk(raised, base),
       spentCzk: pctToCzk(spent, base),
       netCzk: pctToCzk(net, base),

@@ -43,6 +43,7 @@ from portfolio import (
     parse_occ_symbol,
     position_fx_to_base,
     provider_symbol_for,
+    stock_sell_violations,
 )
 from store import load as _load, write_json as _write_json
 
@@ -201,6 +202,46 @@ def _basket_revision(basket: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _basket_sell_violations(
+    basket: list[dict],
+    holdings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    stock_rows = [
+        leg for leg in basket if leg.get("type") in (None, "stock")
+    ]
+    deltas = normalize_basket(stock_rows)
+    snapshot = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
+    return stock_sell_violations(snapshot, deltas)
+
+
+def _oversell_message(violation: dict[str, Any]) -> str:
+    return (
+        f"{violation['symbol']}: staged sell is "
+        f"{violation['requested_sell_czk']:,.0f} CZK against "
+        f"{violation['held_czk']:,.0f} CZK held "
+        f"({violation['excess_czk']:,.0f} CZK excess)"
+    )
+
+
+def validate_stock_sell_capacity(
+    basket: list[dict],
+    holdings: dict[str, Any] | None = None,
+) -> None:
+    """Reject a candidate basket that would sell more stock than is held.
+
+    Additive staging flows must call this before persistence so independently
+    staged routes cannot silently net into a short position.
+    """
+    normalized = _normalize_basket(basket)
+    violations = _basket_sell_violations(normalized, holdings)
+    if violations:
+        raise ValueError(
+            "staged stock sells exceed holdings — " + "; ".join(
+                _oversell_message(violation) for violation in violations
+            )
+        )
+
+
 def basket_state() -> dict:
     """Current queue plus whether that exact revision was projection-reviewed."""
     with _basket_lock:
@@ -208,11 +249,15 @@ def basket_state() -> dict:
         basket = _basket_from_raw(raw)
         revision = _basket_revision(basket)
         reviewed_revision = str(raw.get("reviewed_revision") or "") if isinstance(raw, dict) else ""
+        violations = _basket_sell_violations(basket)
+        reviewed = bool(revision and reviewed_revision == revision and not violations)
         return {
             "trades": basket,
             "revision": revision,
-            "reviewed": bool(revision and reviewed_revision == revision),
-            "reviewed_at": raw.get("reviewed_at") if isinstance(raw, dict) and reviewed_revision == revision else None,
+            "reviewed": reviewed,
+            "reviewed_at": raw.get("reviewed_at") if isinstance(raw, dict) and reviewed else None,
+            "valid": not violations,
+            "stock_sell_violations": violations,
         }
 
 
@@ -293,6 +338,13 @@ def review_basket(revision: Any) -> dict:
             raise ValueError("nothing staged to review")
         if not requested or requested != state["revision"]:
             raise _Conflict("order queue changed since projection — reload Target state and review it again")
+        violations = _basket_sell_violations(state["trades"])
+        if violations:
+            raise _Conflict(
+                "projection cannot be approved — " + "; ".join(
+                    _oversell_message(violation) for violation in violations
+                )
+            )
         reviewed_at = datetime.now(UTC).isoformat()
         _write_json(STAGED_BASKET_JSON, {
             "trades": state["trades"],
@@ -661,8 +713,18 @@ def _drop_blocked_buys(orders: list[dict], blocked: set[str]) -> list[dict]:
             if not (o.get("side") == "BUY" and str(o.get("symbol") or "").upper() in blocked)]
 
 
-def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
-    """Translate canonical stock/short-option legs to server-resolved CPAPI orders."""
+def _prepare_trade_orders(
+    account_id: str,
+    basket: list[dict],
+    *,
+    blocked_calls: list[dict] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Translate canonical stock/short-option legs to server-resolved CPAPI orders.
+
+    Normal callers fail strictly on an unquoted call.  The review path may pass
+    ``blocked_calls`` to keep that staged leg visible as non-placeable context
+    while still previewing the rest of the basket.
+    """
     price_map = _trade_price_map()
     position_qty = _position_quantity_map()
     call_symbols = {t["symbol"] for t in basket if t.get("type") == "covered_call"}
@@ -757,6 +819,11 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     # resolved again here; staged conid/price are audit context, never authority.
     for leg in [t for t in basket if t.get("type") == "covered_call"]:
         sym = leg["symbol"]
+        cap = call_capacity.get(
+            sym,
+            {"current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0},
+        )
+        contracts = int(leg["contracts"])
         try:
             resolved_call = ibkr_trade.resolve_executable_call(
                 sym,
@@ -773,16 +840,52 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
                 "quote_stale": f"{sym}: covered-call quote is stale — preview again",
                 "limit_invalid": f"{sym}: could not derive a valid option limit price",
             }
+            if blocked_calls is not None and exc.reason in {
+                "quote_invalid", "quote_stale", "limit_invalid",
+            }:
+                coverage_ok = cap["capacity_contracts"] >= contracts
+                blocked_calls.append({
+                    "instrument_type": "covered_call",
+                    "leg_id": leg["leg_id"],
+                    "route": "covered_call",
+                    "symbol": sym,
+                    "conid": int(leg["conid"]),
+                    "side": "SELL",
+                    "classification": "quote_blocked" if coverage_ok else "coverage_blocked",
+                    "proposed_qty": contracts,
+                    "residual_qty": 0,
+                    "contracts": contracts,
+                    "expiry": leg["expiry"],
+                    "strike": float(leg["strike"]),
+                    "right": "C",
+                    "multiplier": OPTION_MULTIPLIER,
+                    "current_shares": cap["current_shares"],
+                    "coverage_shares": cap["capacity_contracts"] * OPTION_MULTIPLIER,
+                    "coverage_capacity_contracts": cap["capacity_contracts"],
+                    "coverage_ok": coverage_ok,
+                    "if_assigned_shares": max(
+                        0,
+                        cap["current_shares"] - contracts * OPTION_MULTIPLIER,
+                    ),
+                    "provenance": leg.get("provenance") or [],
+                    "placeable": False,
+                    "block_reason": exc.reason,
+                    "next_step": (
+                        "Refresh this instrument's IBKR quotes, then preview again."
+                        if coverage_ok
+                        else f"Only {cap['capacity_contracts']} covered contract(s) are available."
+                    ),
+                })
+                warnings.append(messages[exc.reason])
+                continue
             raise ValueError(messages[exc.reason]) from exc
         bid, ask = resolved_call["bid"], resolved_call["ask"]
         limit = resolved_call["limit_price"]
-        cap = call_capacity.get(sym, {"current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0})
         if cap["capacity_contracts"] < 1:
             raise ValueError(
                 f"{sym}: no covered-call capacity — {cap['current_shares']} shares, "
                 f"{cap['held_short_calls']} held short call(s)"
             )
-        contracts = int(leg["contracts"])
         order = {
             "instrument_type": "covered_call",
             "leg_id": leg["leg_id"],
@@ -1191,6 +1294,28 @@ def _reconcile_working_orders(
                 f"but {coverage_working:g} contract(s) are already working."
             )
 
+        current_position_qty = _number(order.get("_current_position_qty"))
+        residual_signed_qty = residual_qty * (1 if side == "BUY" else -1)
+        requested_projected_qty = (
+            current_position_qty if is_option
+            else current_position_qty + working_signed_qty + residual_signed_qty
+        )
+        oversell_excess_qty = 0.0
+        if (
+            not is_option
+            and side == "SELL"
+            and requested_projected_qty < -1e-9
+        ):
+            oversell_excess_qty = abs(requested_projected_qty)
+            classification = "oversell_blocked"
+            residual_qty = 0.0
+            residual_signed_qty = 0.0
+            next_step = (
+                f"Reduce the sell by at least {oversell_excess_qty:g} share(s); "
+                f"{current_position_qty:g} are held and "
+                f"{abs(working_signed_qty):g} are already committed by working orders."
+            )
+
         if residual_qty > 0:
             adjusted = dict(order)
             adjusted["quantity"] = int(residual_qty) if residual_qty.is_integer() else residual_qty
@@ -1199,9 +1324,7 @@ def _reconcile_working_orders(
                 adjusted["cOID"] = f"{coid.rsplit('-', 1)[0]}-{adjusted['quantity']}"
             residual.append(adjusted)
 
-        residual_signed_qty = residual_qty * (1 if side == "BUY" else -1)
         effective_delta = 0.0 if is_option else (working_signed_qty + residual_signed_qty) * unit_base
-        current_position_qty = _number(order.get("_current_position_qty"))
         projected_position_qty = (
             current_position_qty if is_option
             else current_position_qty + working_signed_qty + residual_signed_qty
@@ -1221,6 +1344,8 @@ def _reconcile_working_orders(
             "residual_qty": residual_qty,
             "current_position_qty": current_position_qty,
             "projected_position_qty": projected_position_qty,
+            "requested_projected_position_qty": requested_projected_qty,
+            "oversell_excess_qty": oversell_excess_qty,
             "proposed_delta_czk": original_delta,
             "working_delta_czk": round(working_signed_qty * unit_base, 2),
             "residual_delta_czk": round(residual_signed_qty * unit_base, 2),
@@ -1404,8 +1529,20 @@ def _trade_preview(body: dict) -> dict:
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to use the trade desk")
     basket = _reviewed_preview_basket(body)
+    preview_violations = _basket_sell_violations(basket)
+    if preview_violations:
+        raise _Conflict(
+            "holdings changed since projection approval — " + "; ".join(
+                _oversell_message(violation) for violation in preview_violations
+            )
+        )
     account_id = _resolve_trade_account(body.get("account"))
-    proposed_orders, warnings = _prepare_trade_orders(account_id, basket)
+    blocked_calls: list[dict] = []
+    proposed_orders, warnings = _prepare_trade_orders(
+        account_id,
+        basket,
+        blocked_calls=blocked_calls,
+    )
 
     relevant_stock_symbols = {
         str(o.get("symbol") or "").strip().upper() for o in proposed_orders
@@ -1413,9 +1550,14 @@ def _trade_preview(body: dict) -> dict:
         and o.get("instrument_type") not in {"covered_call", "cash_secured_put"}
     }
     relevant_option_symbols = {
-        str(o.get("symbol") or "").strip().upper() for o in proposed_orders
-        if o.get("symbol")
-        and o.get("instrument_type") in {"covered_call", "cash_secured_put"}
+        str(leg.get("symbol") or "").strip().upper()
+        for leg in basket
+        if leg.get("symbol") and leg.get("type") == "covered_call"
+    } | {
+        str(order.get("symbol") or "").strip().upper()
+        for order in proposed_orders
+        if order.get("symbol")
+        and order.get("instrument_type") == "cash_secured_put"
     }
     coverage_symbols = relevant_option_symbols | {
         str(o.get("symbol") or "").strip().upper() for o in proposed_orders
@@ -1424,9 +1566,14 @@ def _trade_preview(body: dict) -> dict:
         and o.get("side") == "SELL"
     }
     relevant_option_conids = {
-        int(o["conid"]) for o in proposed_orders
-        if o.get("instrument_type") in {"covered_call", "cash_secured_put"}
-        and o.get("conid") is not None
+        int(leg["conid"])
+        for leg in basket
+        if leg.get("type") == "covered_call" and leg.get("conid") is not None
+    } | {
+        int(order["conid"])
+        for order in proposed_orders
+        if order.get("instrument_type") == "cash_secured_put"
+        and order.get("conid") is not None
     }
     working_available = True
     working_error: str | None = None
@@ -1457,6 +1604,13 @@ def _trade_preview(body: dict) -> dict:
             )
     orders, order_context, effective_basket = _reconcile_working_orders(
         proposed_orders, basket, working_orders,
+    )
+    order_context.extend(blocked_calls)
+    placement_blocked = any(
+        context.get("classification") in {
+            "oversell_blocked", "coverage_blocked", "quote_blocked",
+        }
+        for context in order_context
     )
     residual_basket = [
         {"symbol": c["symbol"], "delta_czk": c["residual_delta_czk"]}
@@ -1518,6 +1672,7 @@ def _trade_preview(body: dict) -> dict:
         "working_option_symbols": sorted(coverage_symbols),
         "working_option_conids": sorted(relevant_option_conids),
         "working_available": working_available,
+        "placement_blocked": placement_blocked,
     }
     for t in [t for t, rec in _preview_issued.items()
               if now - _number(rec.get("issued_at")) > PREVIEW_TTL_S]:
@@ -1538,6 +1693,7 @@ def _trade_preview(body: dict) -> dict:
         "order_context": order_context,
         "working_orders_available": working_available,
         "working_orders_error": working_error,
+        "placement_blocked": placement_blocked,
         "warnings": warnings,
         "options_only": options_only,
         "ibkr_preview": ibkr_preview,
@@ -1552,7 +1708,7 @@ def _trade_preview(body: dict) -> dict:
 def _revalidate_covered_call_orders(
     account_id: str, orders: list[dict], working: list[dict],
 ) -> None:
-    """Final place-time contract, quote, and coverage gate for short calls."""
+    """Final live-position gate for stock sells and covered-call execution."""
     by_symbol: dict[str, list[dict]] = {}
     for order in orders:
         if order.get("instrument_type") != "covered_call":
@@ -1631,17 +1787,24 @@ def _revalidate_covered_call_orders(
             and str(order.get("symbol") or "").upper() == sym
             and order.get("side") == "SELL"
         )
+        current_shares = max(0, int(base.get("current_shares") or 0))
+        if future_stock_sells > current_shares:
+            raise _Conflict(
+                f"{sym}: stock sell would exceed the live position by "
+                f"{future_stock_sells - current_shares} share(s) — "
+                "no orders were placed; preview again"
+            )
         working_calls = _working_short_calls(working, sym)
         requested = sum(int(_number(order.get("quantity"))) for order in option_orders)
         required_contracts = int(base.get("held_short_calls") or 0) + working_calls + requested
-        if max(0, int(base.get("current_shares") or 0) - future_stock_sells) < (
+        if max(0, current_shares - future_stock_sells) < (
             required_contracts * OPTION_MULTIPLIER
         ):
             raise _Conflict(
                 f"{sym}: short-call coverage changed — "
                 f"{required_contracts} "
                 f"contract(s) need shares, but only "
-                f"{max(0, int(base.get('current_shares') or 0) - future_stock_sells)} "
+                f"{max(0, current_shares - future_stock_sells)} "
                 "shares would remain after stock sells; preview again"
             )
 
@@ -1753,6 +1916,11 @@ def _trade_place(body: dict) -> dict:
         raise _Conflict(
             "working orders could not be verified during preview — reconnect the "
             "gateway and preview again before placing"
+        )
+    if issued.get("placement_blocked"):
+        raise _Conflict(
+            "preview contains a stock oversell — resize or remove the blocked "
+            "sell, review Target state, and preview again"
         )
     symbols = set(issued.get("working_symbols") or [])
     option_symbols = set(issued.get("working_option_symbols") or [])

@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareRowHtml, compareRows, deriveSuggestionTrades, scaleMaxOf, sourceBanner,
+  violationsHtml,
 } from "../src/targetstate";
 import type { PlanRow, RebalancePlan } from "../src/api-types";
 
@@ -74,6 +75,27 @@ describe("projection review gate", () => {
     expect(html).toContain("does not change share weights unless assigned");
   });
 
+  it("blocks approval while the projection contains an oversell", () => {
+    const html = sourceBanner("basket", 1, {
+      trades: [], revision: "bad-rev", reviewed: false,
+    }, false);
+    expect(html).toContain("Fix blocked sells first");
+    expect(html).toContain("disabled");
+    expect(html).not.toContain("data-ts-review");
+  });
+
+  it("offers removal of the blocked stock leg", () => {
+    const html = violationsHtml([{
+      symbol: "EEFT",
+      held_czk: 1_600_000,
+      requested_sell_czk: 2_500_000,
+      excess_czk: 900_000,
+      after_czk: -900_000,
+    }]);
+    expect(html).toContain('data-ts-remove-leg="stock:EEFT"');
+    expect(html).toContain("Remove EEFT sell");
+  });
+
   it("shows the if-assigned increase for a staged cash-secured put", () => {
     const html = sourceBanner("basket", 1, {
       trades: [{
@@ -124,6 +146,14 @@ describe("compareRows", () => {
   it("with no after book the projection equals now", () => {
     const rows = compareRows(before, null);
     expect(rows.every((r) => !r.changed && r.proj === r.cur)).toBe(true);
+  });
+
+  it("defensively floors an impossible negative after-weight at zero", () => {
+    const rows = compareRows(
+      [row({ name: "OVERSELL", current_pct: 5 })],
+      [row({ name: "OVERSELL", current_pct: -2.5, status: "BELOW" })],
+    );
+    expect(rows[0].proj).toBe(0);
   });
 });
 

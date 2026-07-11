@@ -801,3 +801,30 @@ def test_stage_share_tranche_cannot_uncover_held_calls(tmp_path, monkeypatch):
     with pytest.raises(ValueError) as exc:
         exit_plan.stage_tranche(plan, "EXITME", 0)
     assert "covering 2 held/staged short call" in str(exc.value)
+
+
+def test_stage_share_tranche_rejects_aggregate_sell_above_holdings(tmp_path, monkeypatch):
+    import trade_service
+
+    plan, _rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=500)
+    trade_service.save_basket([{
+        "type": "stock",
+        "symbol": "EXITME",
+        "delta_czk": -25_000,
+    }])
+    with pytest.raises(ValueError, match="staged stock sells exceed holdings"):
+        exit_plan.stage_tranche(plan, "EXITME", 0)
+    assert trade_service.load_basket()[0]["delta_czk"] == -25_000
+
+
+def test_stage_share_tranche_is_idempotent_for_same_plan_tranche(tmp_path, monkeypatch):
+    import trade_service
+
+    plan, _rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=500)
+    first = exit_plan.stage_tranche(plan, "EXITME", 0)
+    second = exit_plan.stage_tranche(plan, "EXITME", 0)
+    assert first["basket"][0]["delta_czk"] == -50_000
+    assert second["already_staged"] is True
+    assert trade_service.load_basket()[0]["delta_czk"] == -50_000
