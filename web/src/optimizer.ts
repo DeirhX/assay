@@ -364,7 +364,7 @@ async function stageProposal(): Promise<void> {
   const status = $("#opt-status");
   const btn = $<HTMLButtonElement>("#opt-stage");
   if (btn) btn.disabled = true;
-  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> staging to your working draft…`; }
+  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> adding to pending model changes…`; }
   try {
     await api("/api/optimizer/stage", "POST", { changes: _lastProposal.changes });
     if (status) status.textContent = "";

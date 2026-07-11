@@ -314,13 +314,13 @@ def next_step(payload: dict) -> dict:
     if draft.get("pending"):
         n = draft["pending"]
         return {"id": "commit-draft", "view": "working-draft",
-                "label": "Review the working draft",
-                "reason": f"{n} uncommitted change{'s' if n != 1 else ''} — the planner is previewing the draft, not your live plan."}
+                "label": "Review pending model changes",
+                "reason": f"{n} target-model change{'s' if n != 1 else ''} awaiting a decision — applying them will not trade."}
     if basket.get("count"):
         n = basket["count"]
-        return {"id": "place-basket", "view": "trade",
-                "label": "Finish the staged basket",
-                "reason": f"{n} simulated trade{'s' if n != 1 else ''} waiting in the Trade desk — place or clear them."}
+        return {"id": "place-basket", "view": "target-state",
+                "label": "Review projected portfolio",
+                "reason": f"{n} queued order{'s' if n != 1 else ''} awaiting impact review before IBKR preview."}
     if plan and plan.get("gates_open"):
         n = plan["gates_open"]
         return {"id": "gates-open", "view": "rebalance",

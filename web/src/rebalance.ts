@@ -286,16 +286,15 @@ function provBadge(prov: Provenance | null | undefined) {
   return badge;
 }
 
-// "N uncommitted changes are staged" banner linking to the working draft. The
-// planner now previews the draft itself, so the copy says so — the drift and
-// suggested trades below reflect the staged (not yet committed) targets.
+// Pending target-model banner. The planner previews the proposal, so policy
+// changes remain visibly distinct from the execution order queue.
 function stagedBannerHtml(plan: RebPlan) {
   const s = plan.staged;
   if (!s || !s.has_draft) return "";
   const n = s.pending || 0;
   return `<div class="reb-staged-banner" id="reb-staged-banner">` +
-    `<span><strong>${n}</strong> pending change(s) — this planner is previewing your <em>working draft</em>, not the committed model. Commit the draft to make it live.</span>` +
-    `<button class="ghost" id="reb-open-draft" type="button">Review working draft →</button>` +
+    `<span><strong>${n}</strong> pending target-model change(s) — order suggestions currently use that proposal, not the live model.</span>` +
+    `<button class="ghost" id="reb-open-draft" type="button">Review model changes →</button>` +
     `</div>`;
 }
 
@@ -307,6 +306,7 @@ function renderRebalance(plan: RebPlan) {
   // Weights are % of invested book, so money is sized off invested value.
   const base = typeof plan.invested === "number" ? plan.invested : nav;
   out.innerHTML = "";
+  setImpactPreviewOpen(false);
 
   summary.innerHTML =
     stagedBannerHtml(plan) +
@@ -893,7 +893,11 @@ function renderRebalance(plan: RebPlan) {
     });
 
     const { raised, spent, net, closed, total, raisedCzk, spentCzk, netCzk, fundMax } = comp.totals;
-    $$("#reb-stat-raised").innerHTML =
+    // A queued-order callback can finish just as navigation tears this view
+    // down. Input cleanup is still valid, but detached summary chrome is not.
+    const raisedEl = $("#reb-stat-raised");
+    if (!raisedEl) return;
+    raisedEl.innerHTML =
       `${sensitive(`${fmtCZK(raisedCzk)} CZK`, "cash freed")} <small>${raised.toFixed(2)}%</small>`;
     $$("#reb-stat-spent").innerHTML =
       `${sensitive(`${fmtCZK(spentCzk)} CZK`, "cash needed")} <small>${spent.toFixed(2)}%</small>`;
@@ -952,8 +956,17 @@ function renderRebalance(plan: RebPlan) {
       sleeveUnits.forEach(({ members }) => members.forEach((mc) => { mc.input.value = String(r1(mc.def)); }));
       untargetedCells.forEach((uc) => { uc.input.value = "0"; });
       recompute();
+      setImpactPreviewOpen(false);
     };
   }
+  const clear = $$<HTMLButtonElement>("#reb-clear");
+  clear.onclick = () => {
+    cells.forEach(({ input }) => { input.value = "0"; });
+    sleeveUnits.forEach(({ members }) => members.forEach((mc) => { mc.input.value = "0"; }));
+    untargetedCells.forEach((uc) => { uc.input.value = "0"; });
+    recompute();
+    setImpactPreviewOpen(false);
+  };
 
   // "Fund this plan": ask the server which names to trim (funding_order first,
   // then untargeted, floors respected, tax-annotated), fill the amounts into
@@ -999,6 +1012,10 @@ function renderRebalance(plan: RebPlan) {
   const simBtn = $$<HTMLButtonElement>("#reb-simulate");
   if (simBtn) {
     simBtn.onclick = async () => {
+      if (simBtn.dataset.previewOpen === "1") {
+        setImpactPreviewOpen(false);
+        return;
+      }
       // Every edited amount, from all three sections, in planner order. Sleeve
       // members stage as real ticker trades — the simulator recomputes the
       // sleeve aggregate from them — and untargeted funding trims are trades
@@ -1012,15 +1029,18 @@ function renderRebalance(plan: RebPlan) {
       const box = $$("#reb-whatif");
       if (!trades.length) {
         box.innerHTML = `<div class="hint">Nothing to simulate — edit a Trade size on a targeted name or sleeve member first.</div>`;
+        setImpactPreviewOpen(false, false);
         return;
       }
       box.innerHTML = `<div class="status">Simulating…</div>`;
+      simBtn.textContent = "Previewing…";
       simBtn.disabled = true;
       try {
         const wf = await api("/api/whatif", "POST", { trades });
         renderWhatif(wf);
       } catch (e) {
         box.innerHTML = `<div class="status err">Simulation failed: ${esc((e as Error).message)}</div>`;
+        setImpactPreviewOpen(false, false);
       } finally {
         simBtn.disabled = false;
       }
@@ -1035,6 +1055,20 @@ function renderRebalance(plan: RebPlan) {
 
 // ---- what-if "after" panel -------------------------------------------------
 const whatifStat = (label: string, valueHtml: string, cls?: string) => statTile(label, valueHtml, { cls, html: true });
+
+function setImpactPreviewOpen(open: boolean, clear = true): void {
+  const button = $<HTMLButtonElement>("#reb-simulate");
+  const box = $("#reb-whatif");
+  if (button) {
+    button.dataset.previewOpen = open ? "1" : "0";
+    button.setAttribute("aria-expanded", String(open));
+    button.textContent = open ? "Close impact preview" : "Preview impact";
+    button.title = open
+      ? "Close the projected portfolio and route choices"
+      : "Preview the resulting portfolio, cash, and realized Czech tax without changing the order queue";
+  }
+  if (!open && clear && box) box.innerHTML = "";
+}
 
 export function executionRouteChoices(
   trades: WhatifTrade[],
@@ -1072,6 +1106,16 @@ export function executionRouteChoices(
     option.type = "button";
     controls.appendChild(direct);
     controls.appendChild(option);
+    if (trade.delta_czk < 0) {
+      const exit = el("button", "ghost", "Tax-aware exit plan");
+      exit.type = "button";
+      exit.title = "Compare lot timing, scale-out tranches, and covered calls";
+      exit.addEventListener("click", () => {
+        pushNav({ view: "exit" });
+        setActiveView("exit");
+      });
+      controls.appendChild(exit);
+    }
     row.appendChild(controls);
     const detail = el("div", "reb-route-detail");
     row.appendChild(detail);
@@ -1197,10 +1241,17 @@ export function executionRouteChoices(
 export function renderWhatif(wf: Whatif) {
   const box = $$("#reb-whatif");
   box.innerHTML = "";
+  setImpactPreviewOpen(true);
   const s = wf.summary || {};
   const ccy = wf.currency;
   const card = el("div", "whatif-card");
-  card.appendChild(el("div", "whatif-title", `Projected portfolio after ${(wf.trades || []).length} trade(s)`));
+  const heading = el("div", "whatif-head");
+  heading.appendChild(el("div", "whatif-title", `Projected portfolio after ${(wf.trades || []).length} trade(s)`));
+  const close = el("button", "ghost compact", "Close");
+  close.type = "button";
+  close.addEventListener("click", () => setImpactPreviewOpen(false));
+  heading.appendChild(close);
+  card.appendChild(heading);
 
   const stats = el("div", "reb-stats");
   stats.appendChild(whatifStat("Bands in-band",
@@ -1288,13 +1339,37 @@ export function renderWhatif(wf: Whatif) {
 
   const actions = el("div", "thesis-actions");
   const stageStatus = el("span", "status");
+  let queueMode: "append" | "replace" = "append";
+  const modePicker = el("div", "reb-queue-mode");
+  modePicker.innerHTML =
+    `<label><input type="radio" name="reb-queue-mode" value="append" checked>` +
+    `<span><strong>Add to queue</strong><small>Keep existing orders and add these amounts</small></span></label>` +
+    `<label><input type="radio" name="reb-queue-mode" value="replace">` +
+    `<span><strong>Replace rebalance orders</strong><small>Keep separately planned Exit routes</small></span></label>`;
   const stageBtn = el("button", "primary",
-    `Stage ${trades.length} order${trades.length === 1 ? "" : "s"} \u2192`);
+    `Add ${trades.length} order${trades.length === 1 ? "" : "s"} to queue \u2192`);
   stageBtn.type = "button";
-  stageBtn.title = "Save these exact simulated trades to the order queue; nothing is sent to IBKR yet";
+  const updateQueueAction = () => {
+    const noun = `${trades.length} order${trades.length === 1 ? "" : "s"}`;
+    stageBtn.textContent = queueMode === "append"
+      ? `Add ${noun} to queue →`
+      : `Replace rebalance orders with ${noun} →`;
+    stageBtn.title = queueMode === "append"
+      ? "Keep the current queue and add these exact amounts; repeated stock symbols increase their queued amount"
+      : "Remove earlier Build orders entries, then save these exact orders; separately planned Exit routes remain";
+  };
+  modePicker.querySelectorAll<HTMLInputElement>('input[name="reb-queue-mode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (!input.checked) return;
+      queueMode = input.value === "replace" ? "replace" : "append";
+      updateQueueAction();
+    });
+  });
+  updateQueueAction();
   stageBtn.addEventListener("click", async () => {
     stageBtn.disabled = true;
-    stageBtn.textContent = "Staging orders…";
+    modePicker.querySelectorAll<HTMLInputElement>("input").forEach((input) => { input.disabled = true; });
+    stageBtn.textContent = queueMode === "append" ? "Adding orders…" : "Replacing orders…";
     stageStatus.classList.remove("err");
     stageStatus.textContent = "";
     try {
@@ -1303,26 +1378,36 @@ export function renderWhatif(wf: Whatif) {
       const saved = await api<TradeQueueState>(
         "/api/rebalance/stage",
         "POST",
-        { trades, selections: [...routeSelections.values()] },
+        { trades, selections: [...routeSelections.values()], mode: queueMode },
       );
       state.stagedBasket = saved.trades.slice();
+      window.dispatchEvent(new Event("assay:queue-changed"));
       stageBtn.className = "ghost";
-      stageBtn.textContent = "Orders staged ✓";
-      const reviewBtn = el("button", "primary", "Review target state →");
+      stageBtn.textContent = queueMode === "append" ? "Orders added ✓" : "Rebalance orders replaced ✓";
+      const anotherBtn = el("button", "ghost", "Add another trade");
+      anotherBtn.type = "button";
+      anotherBtn.title = "Close this preview and clear every amount for a fresh trade";
+      anotherBtn.addEventListener("click", () => {
+        $<HTMLButtonElement>("#reb-clear")?.click();
+        window.scrollTo(0, 0);
+      });
+      const reviewBtn = el("button", "primary", "Review projected portfolio →");
       reviewBtn.type = "button";
-      reviewBtn.title = "Check the projected portfolio before opening the Trade desk";
+      reviewBtn.title = "Approve the projected portfolio before IBKR preview";
       reviewBtn.addEventListener("click", () => {
         pushNav({ view: "target-state" });
         setActiveView("target-state");
         window.scrollTo(0, 0);
       });
+      actions.insertBefore(anotherBtn, stageStatus);
       actions.insertBefore(reviewBtn, stageStatus);
       stageStatus.textContent = "Nothing has been sent to IBKR.";
     } catch (e) {
       stageStatus.classList.add("err");
-      stageStatus.textContent = "Could not stage orders: " + (e as Error).message;
+      stageStatus.textContent = "Could not update the order queue: " + (e as Error).message;
       stageBtn.disabled = false;
-      stageBtn.textContent = `Stage ${trades.length} order${trades.length === 1 ? "" : "s"} →`;
+      modePicker.querySelectorAll<HTMLInputElement>("input").forEach((input) => { input.disabled = false; });
+      updateQueueAction();
     }
   });
   const logBtn = el("button", "ghost", "Log to journal");
@@ -1340,6 +1425,7 @@ export function renderWhatif(wf: Whatif) {
         `${fmtCZK(s.realized_taxable_gain_czk)} ${ccy}; net cash ${fmtCZK(s.net_cash_czk)} ${ccy}.`,
     });
   });
+  actions.appendChild(modePicker);
   actions.appendChild(stageBtn);
   actions.appendChild(logBtn);
   actions.appendChild(stageStatus);

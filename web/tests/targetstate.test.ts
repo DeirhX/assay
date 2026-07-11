@@ -92,6 +92,13 @@ describe("projection review gate", () => {
     expect(html).toContain("does not change share weights unless assigned");
     expect(html).toContain("NVDA +200 shares");
   });
+
+  it("does not present unstaged plan suggestions as an execution projection", () => {
+    const html = sourceBanner("none", 0, null);
+    expect(html).toContain("order queue empty");
+    expect(html).toContain("Build orders");
+    expect(html).toContain("suggestions are not treated as executable orders");
+  });
 });
 
 describe("compareRows", () => {
