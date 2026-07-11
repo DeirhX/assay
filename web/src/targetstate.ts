@@ -191,7 +191,7 @@ export function sourceBanner(
       )
       .join(" · ");
     return `<div class="tstate-src"><span class="chip warn">order queue</span>` +
-      ` Projected from the <strong>${n} staged order${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — review this outcome before placing them.` +
+      ` Projected from the <strong>${n} queued order${n === 1 ? "" : "s"}</strong> — review this exact outcome before IBKR preview.` +
       (optionCount
         ? ` ${optionCount} written option${optionCount === 1 ? " is" : "s are"} conditional and ` +
           `${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.` +
@@ -199,8 +199,8 @@ export function sourceBanner(
         : "") +
       (reviewed
         ? ` <span class="chip good">projection approved</span>` +
-          ` <button class="primary" type="button" data-ts-goto="trade">Open Trade desk →</button>`
-        : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve this projection →</button>`) +
+          ` <button class="primary" type="button" data-ts-goto="trade">Preview &amp; place →</button>`
+        : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve order queue →</button>`) +
       `</div>`;
   }
   if (source === "suggestions") {
@@ -208,8 +208,9 @@ export function sourceBanner(
       ` Nothing is staged yet, so this projects the <strong>${n} suggested amount${n === 1 ? "" : "s"}</strong> from the Rebalance planner — the book if you simply took every suggestion.` +
       ` <button class="ghost" type="button" data-ts-goto="rebalance">Adjust the plan →</button></div>`;
   }
-  return `<div class="tstate-src"><span class="chip good">at rest</span>` +
-    ` No staged orders and no suggested trades — the projection equals the current book.</div>`;
+  return `<div class="tstate-src"><span class="chip muted">order queue empty</span>` +
+    ` Build and queue orders first. Plan suggestions are not treated as executable orders on this safety screen.` +
+    ` <button class="primary" type="button" data-ts-goto="rebalance">Build orders →</button></div>`;
 }
 
 function render(
@@ -278,12 +279,12 @@ async function loadTargetState(): Promise<void> {
     return;
   }
 
-  // Projection source: the staged basket wins (it's what will be placed);
-  // else the plan's suggested amounts; else nothing (projection = now).
+  // This is an execution gate, so only the exact order queue is projected.
+  // Suggestions remain visible in Build orders but never masquerade as orders.
   let trades: WhatifTrade[] = [];
   let stagedCount = 0;
   let source: "basket" | "suggestions" | "none" = "none";
-  let queue: TradeQueueState | null = null;
+  let queue: TradeQueueState;
   try {
     queue = await api<TradeQueueState>("/api/trade/basket");
     if (Array.isArray(queue.trades) && queue.trades.length) {
@@ -295,10 +296,12 @@ async function loadTargetState(): Promise<void> {
         .map((trade) => ({ symbol: trade.symbol, delta_czk: trade.delta_czk }));
       source = "basket";
     }
-  } catch { /* fall through to suggestions */ }
-  if (source !== "basket") {
-    trades = deriveSuggestionTrades(plan);
-    source = trades.length ? "suggestions" : "none";
+  } catch (e) {
+    if (status) {
+      status.textContent = "Could not load the order queue: " + (e as Error).message;
+      status.classList.add("err");
+    }
+    return;
   }
 
   let wf: Whatif | null = null;
@@ -332,7 +335,7 @@ function initTargetState(): void {
         .then(() => {
           review.className = "ghost";
           review.textContent = "Projection approved ✓";
-          const open = el("button", "primary", "Open Trade desk →");
+          const open = el("button", "primary", "Preview & place →");
           open.type = "button";
           open.dataset.tsGoto = "trade";
           review.insertAdjacentElement("afterend", open);
@@ -340,7 +343,7 @@ function initTargetState(): void {
         })
         .catch((err) => {
           review.disabled = false;
-          review.textContent = "Approve this projection →";
+          review.textContent = "Approve order queue →";
           if (status) {
             status.classList.add("err");
             status.textContent = (err as Error).message;

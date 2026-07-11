@@ -20,7 +20,7 @@ const STANCES = ["accumulate", "hold", "wait", "trim_only", "avoid"];
 const PIN_HELP =
   "A conviction pin records your standing intent for this name (whether and how " +
   "much to own). Future plans respect it and never silently drop it \u2014 they can " +
-  "still challenge it, surfaced in the working draft. Separate from the price ladder.";
+  "still challenge it under Pending model changes. Separate from the price ladder.";
 
 export function pinBlock(rec: PinRec2, existingPin: PinRec | null | undefined): HTMLElement {
   const sym = rec.symbol || "";

@@ -521,7 +521,7 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
   card.innerHTML =
     `<h3>Gate 2 · Approve target-model changes</h3>` +
     `<p class="hint">Synthesized bands for ${changes.length} name(s). Budget ${esc(meta.segment_budget_pct ?? "?")}% of book, ` +
-    `sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%. Review each band before approving — this STAGES the changes into the working draft (it does not write your live portfolio; you commit the draft later).</p>` +
+    `sized total ${esc(meta.sized_midpoint_total_pct ?? "?")}%. Review each band before adding the proposal to Pending model changes. This does not trade or alter holdings.</p>` +
     (blocked.length ? `<div class="strat-warn">Blocked (ERROR-level data, skipped): ${blocked.map(esc).join(", ")}</div>` : "");
 
   card.appendChild(changesTable(changes));
@@ -540,7 +540,7 @@ function renderProposalGate(m: Manifest, panel: HTMLElement) {
     allowBlockedHtml = `<label class="strat-check"><input type="checkbox" id="strat-allow-blocked"> apply blocked names anyway</label>`;
   }
   actions.innerHTML =
-    `<button class="primary" id="strat-approve-prop" type="button">Add to working draft →</button>` +
+    `<button class="primary" id="strat-approve-prop" type="button">Add model proposal →</button>` +
     allowBlockedHtml +
     `<span class="status" id="strat-prop-status"></span>`;
   card.appendChild(actions);
@@ -645,13 +645,13 @@ function renderStaged(m: Manifest, panel: HTMLElement) {
   // screen. Reconcile against the live draft and render accordingly.
   const renderActive = (pendingTotal: number | string) => {
     card.innerHTML =
-      `<h3>✓ Staged into the working draft</h3>` +
+      `<h3>✓ Added to pending model changes</h3>` +
       `<p class="hint">${esc(m.message || "")}</p>` +
-      `<p>Added ${appliedN} change(s) from this run. The working draft now holds ` +
+      `<p>Added ${appliedN} change(s) from this run. Pending model changes now hold ` +
       `<strong>${esc(pendingTotal)}</strong> pending change(s) across all runs and edits.</p>` +
       skippedHtml;
     const actions = el("div", "thesis-actions");
-    const goDraft = el("button", "primary", "Review working draft →");
+    const goDraft = el("button", "primary", "Review model changes →");
     goDraft.type = "button";
     goDraft.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
     actions.appendChild(goDraft);
@@ -661,9 +661,9 @@ function renderStaged(m: Manifest, panel: HTMLElement) {
 
   const renderResolved = () => {
     card.innerHTML =
-      `<h3>Staged changes already resolved</h3>` +
-      `<p>This run staged ${appliedN} change(s) into a working draft, but that draft no longer ` +
-      `exists — it was <strong>committed to your live plan</strong> or discarded since. ` +
+      `<h3>Model proposal already resolved</h3>` +
+      `<p>This run added ${appliedN} change(s), but those pending changes no longer ` +
+      `exist — they were <strong>applied to the live target model</strong> or discarded. ` +
       `Nothing from this run is pending anymore.</p>` +
       skippedHtml;
     const actions = el("div", "thesis-actions");

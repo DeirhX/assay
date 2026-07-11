@@ -28,7 +28,7 @@ const projection = {
 };
 
 test.describe("rebalance review safety", () => {
-  test("simulation stays read-only until Stage orders is explicitly clicked", async ({ page }) => {
+  test("impact preview stays read-only until orders are explicitly queued", async ({ page }) => {
     await installApi(page, {
       "/api/rebalance": plan,
       "/api/whatif": projection,
@@ -40,19 +40,32 @@ test.describe("rebalance review safety", () => {
       },
     });
     let stagePosts = 0;
+    let stageMode = "";
     page.on("request", (request) => {
       if (new URL(request.url()).pathname === "/api/rebalance/stage" &&
-          request.method() === "POST") stagePosts += 1;
+          request.method() === "POST") {
+        stagePosts += 1;
+        stageMode = request.postDataJSON().mode;
+      }
     });
 
     await page.goto("/?view=rebalance");
-    await page.getByRole("button", { name: "Simulate trades" }).click();
-    await expect(page.getByRole("button", { name: "Stage 1 order →" })).toBeVisible();
+    await page.getByRole("button", { name: "Preview impact" }).click();
+    await expect(page.getByRole("button", { name: "Add 1 order to queue →" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Close impact preview" })).toBeVisible();
+    await page.getByRole("button", { name: "Close impact preview" }).click();
+    await expect(page.locator("#reb-whatif")).toBeEmpty();
+    await page.getByRole("button", { name: "Preview impact" }).click();
+    await expect(page.getByRole("button", { name: "Add 1 order to queue →" })).toBeVisible();
     expect(stagePosts).toBe(0);
 
-    await page.getByRole("button", { name: "Stage 1 order →" }).click();
-    await expect(page.getByRole("button", { name: "Orders staged ✓" })).toBeVisible();
+    await page.getByRole("button", { name: "Add 1 order to queue →" }).click();
+    await expect(page.getByRole("button", { name: "Orders added ✓" })).toBeVisible();
     expect(stagePosts).toBe(1);
+    expect(stageMode).toBe("append");
+    await page.getByRole("button", { name: "Add another trade" }).click();
+    await expect(page.locator("#reb-whatif")).toBeEmpty();
+    await expect(page.getByRole("button", { name: "Preview impact" })).toBeVisible();
   });
 
   test("Trade preview stays locked for an unreviewed queue", async ({ page }) => {
@@ -68,7 +81,7 @@ test.describe("rebalance review safety", () => {
     await page.goto("/?view=trade");
 
     await expect(page.getByRole("tab", { name: "Order review" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Review target state →" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Review projected portfolio →" })).toBeVisible();
   });
 
   test("simulate → choose CSP → stage → approve → unlock Trade preview", async ({ page }) => {
@@ -147,22 +160,22 @@ test.describe("rebalance review safety", () => {
     });
     await installApi(page, responses);
     await page.goto("/?view=rebalance");
-    await page.getByRole("button", { name: "Simulate trades" }).click();
+    await page.getByRole("button", { name: "Preview impact" }).click();
     await page.getByRole("button", { name: "Check cash-secured puts" }).click();
     await expect(page.getByText("Sell cash-secured put", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Use" }).click();
-    await page.getByRole("button", { name: "Stage 1 order →" }).click();
-    await page.getByRole("button", { name: "Review target state →" }).click();
+    await page.getByRole("button", { name: "Add 1 order to queue →" }).click();
+    await page.getByRole("button", { name: "Review projected portfolio →" }).click();
 
     await expect(page.locator("#view-target-state")).toHaveClass(/active/);
     await expect(page.locator("#tstate-body")).toContainText("AAPL +100 shares");
-    await page.getByRole("button", { name: "Approve this projection →" }).click();
-    await page.getByRole("button", { name: "Open Trade desk →" }).click();
+    await page.getByRole("button", { name: "Approve order queue →" }).click();
+    await page.getByRole("button", { name: "Preview & place →" }).click();
 
     await expect(page.locator("#view-trade")).toHaveClass(/active/);
     await expect(page.locator(".trade-basket-option")).toContainText("190 put");
     await expect(page.getByRole("tab", { name: "Order review" })).toBeEnabled();
     await expect(page.getByRole("tab", { name: "Order review" }))
-      .toHaveAttribute("title", "Preview the staged orders through IBKR");
+      .toHaveAttribute("title", "Preview the queued orders through IBKR");
   });
 });

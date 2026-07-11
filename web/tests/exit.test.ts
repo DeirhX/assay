@@ -210,7 +210,7 @@ describe("Exit planner rendering", () => {
     expect(recoText).toContain("Keeps 4% of the position");
     const cta = document.querySelector<HTMLButtonElement>("#exit-body .exit-reco-cta");
     expect(cta).toBeTruthy();
-    expect(cta!.textContent).toContain("Stage first slice");
+    expect(cta!.textContent).toContain("Add first slice");
 
     const details = document.querySelector<HTMLDetailsElement>("#exit-body details.exit-details");
     expect(details).toBeTruthy();
@@ -563,7 +563,7 @@ describe("Exit execution routes", () => {
 
     const firstRow = document.querySelector("#exit-body table.exit-ladder-exec tbody tr")!;
     expect(firstRow.textContent).toContain("displayed quote is stale");
-    expect(firstRow.textContent).toContain("Refresh & stage");
+    expect(firstRow.textContent).toContain("Refresh & add");
     expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeTruthy();
   });
 

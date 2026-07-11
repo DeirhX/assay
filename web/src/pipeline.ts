@@ -936,17 +936,17 @@ $$("#pipe-apply-proposal").addEventListener("click", async () => {
   // Parity with Strategy/Optimizer: this stages into the working draft rather
   // than writing the live model, so nothing is irreversible until the user
   // commits the draft. The confirm + follow-up reflect that safety model.
-  if (!window.confirm("Stage this proposal to your working draft? Nothing touches your live target model until you commit there.")) return;
+  if (!window.confirm("Add this proposal to Pending model changes? Nothing changes the live target model or holdings yet.")) return;
   status.classList.remove("err");
   status.textContent = "staging proposal…";
   try {
     const rec = await api("/api/target-proposal/apply", "POST", { segment, date, confirm: true });
     const n = rec.staged_count ?? (rec.applied ? rec.applied.length : 0);
     const skipped = (rec.skipped && rec.skipped.length) ? ` (${rec.skipped.length} skipped)` : "";
-    status.textContent = `Staged ${n} change${n === 1 ? "" : "s"} to the working draft${skipped}. `;
+    status.textContent = `Added ${n} change${n === 1 ? "" : "s"} to Pending model changes${skipped}. `;
     const go = el("button", "linklike") as HTMLButtonElement;
     go.type = "button";
-    go.textContent = "Review working draft →";
+    go.textContent = "Review model changes →";
     go.addEventListener("click", () => { pushNav({ view: "working-draft" }); setActiveView("working-draft"); });
     status.appendChild(go);
   } catch (e) {

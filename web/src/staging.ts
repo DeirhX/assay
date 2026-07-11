@@ -248,11 +248,11 @@ function render(s: Staging): void {
     const done = _committed;
     _committed = null; // consume: only show right after a commit, not on revisits
     const head = done
-      ? `<div class="stage-committed"><strong>&#10003; Committed to your live plan.</strong> `
+      ? `<div class="stage-committed"><strong>&#10003; Target model applied.</strong> `
         + `Your model is now <code>as_of ${esc(done.as_of || "today")}</code>`
         + (done.backup ? ` and a reversible backup was saved` : "")
-        + `.<br>The working draft is empty again &mdash; that's expected after a commit. `
-        + `<button type="button" class="linklike" id="stage-go-trade">Go to Trade &rarr;</button> to place the orders, or start a new strategy run to build the next plan.`
+        + `.<br>Current holdings have not changed. `
+        + `<button type="button" class="linklike" data-shell-view="rebalance">Build orders from the updated model &rarr;</button>`
         + (done.backup
             ? `<div class="stage-revert-affordance">`
               + `<button type="button" class="linklike" id="stage-revert-commit" data-backup="${esc(done.backup)}">&#8617; Revert this commit</button>`
@@ -260,11 +260,11 @@ function render(s: Staging): void {
             : "")
         + `</div>`
       : `<div class="stage-empty-hero">`
-        + `<strong>No working draft in progress.</strong>`
-        + `<p>This is where proposed plan changes collect so you can review the whole book and commit once. Build one from:</p>`
+        + `<strong>No pending model changes.</strong>`
+        + `<p>Guided planning and the Optimizer place target-band proposals here for one portfolio-level review.</p>`
         + `<div class="stage-empty-actions">`
-        + `<button type="button" class="ghost" id="stage-go-rebalance">Open Rebalance planner &rarr;</button>`
-        + `<button type="button" class="ghost" id="stage-go-strategy">Run a strategy &rarr;</button>`
+        + `<button type="button" class="ghost" data-shell-view="strategy">Start guided plan &rarr;</button>`
+        + `<button type="button" class="ghost" data-shell-view="optimizer">Open Optimizer &rarr;</button>`
         + `</div></div>`;
     // Even with no draft, the reconciliation snapshot ("where your book stands,
     // what's unallocated, funding order") is a genuinely useful destination —
@@ -281,8 +281,8 @@ function render(s: Staging): void {
   const nDrop = rows.filter((r) => r.change === "removed").length;
   const parts = [nNew ? `${nNew} new` : "", nMod ? `${nMod} adjusted` : "", nDrop ? `${nDrop} removed` : ""].filter(Boolean);
   const summary = rows.length
-    ? `This draft proposes <strong>${rows.length} change${rows.length === 1 ? "" : "s"}</strong> to your plan${parts.length ? ` (${parts.join(", ")})` : ""}. Nothing affects your portfolio until you press <em>Commit</em>.`
-    : `This draft currently matches your live plan.`;
+    ? `These proposals contain <strong>${rows.length} target-model change${rows.length === 1 ? "" : "s"}</strong>${parts.length ? ` (${parts.join(", ")})` : ""}. Applying them changes target bands, not current holdings or orders.`
+    : `The pending changes currently match your live target model.`;
   body.innerHTML = `
     <p class="stage-summary">${summary}</p>
     <div class="stage-section">
@@ -303,7 +303,7 @@ async function loadStaging(): Promise<void> {
   try {
     render(await api<Staging>("/api/staging"));
   } catch (e: any) {
-    if (status) { status.textContent = "Could not load the working draft: " + (e && e.message); status.classList.add("err"); }
+    if (status) { status.textContent = "Could not load pending model changes: " + (e && e.message); status.classList.add("err"); }
   }
 }
 
@@ -317,7 +317,7 @@ function initStaging(): void {
 
   if (commit) commit.addEventListener("click", async () => {
     if (commit.disabled) return;
-    if (!window.confirm("Commit the working draft to your live portfolio? A reversible backup is kept.")) return;
+    if (!window.confirm("Apply these changes to the live target model? This does not trade. A reversible backup is kept.")) return;
     commit.disabled = true;
     try {
       const res = await api<{ as_of?: string; backup?: string }>("/api/staging/commit", "POST", { confirm: true });
@@ -334,38 +334,20 @@ function initStaging(): void {
 
   if (discard) discard.addEventListener("click", async () => {
     if (discard.disabled) return;
-    if (!window.confirm("Discard the working draft? Your live portfolio is unchanged.")) return;
+    if (!window.confirm("Discard the pending model changes? The live target model is unchanged.")) return;
     try {
       await api("/api/staging/discard", "POST", {});
-      if (status) { status.classList.remove("err"); status.textContent = "Working draft discarded."; }
+      if (status) { status.classList.remove("err"); status.textContent = "Pending model changes discarded."; }
       await loadStaging();
     } catch (e: any) {
       if (status) { status.textContent = "Discard failed: " + (e && e.message); status.classList.add("err"); }
     }
   });
 
-  // Post-commit "Go to Trade →" hand-off + per-row Revert (both delegated so
-  // they survive re-renders). The hand-off completes the guided spine: a fresh
-  // live model is exactly when you'd go place the orders. Clicking the Trade
-  // sub-tab routes through the shell's nav; staging.ts stays import-cycle-free.
+  // Per-row Revert is delegated so it survives re-renders. Workflow hand-offs
+  // use data-shell-view and are handled centrally by the shell.
   const bodyHost = $("#view-working-draft");
   if (bodyHost) bodyHost.addEventListener("click", async (e) => {
-    const goTrade = (e.target as HTMLElement).closest<HTMLElement>("#stage-go-trade");
-    if (goTrade) {
-      const tab = document.querySelector<HTMLElement>('.subtab[data-view="trade"], .tab[data-view="trade"]');
-      if (tab) tab.click();
-      return;
-    }
-    // Empty-state launchers: route to the two places a draft is built. Click the
-    // real nav elements so the shell owns the routing (staging stays cycle-free).
-    if ((e.target as HTMLElement).closest<HTMLElement>("#stage-go-rebalance")) {
-      document.querySelector<HTMLElement>('.subtab[data-view="rebalance"], .tab[data-view="rebalance"]')?.click();
-      return;
-    }
-    if ((e.target as HTMLElement).closest<HTMLElement>("#stage-go-strategy")) {
-      document.querySelector<HTMLElement>('.group[data-group="strategy"]')?.click();
-      return;
-    }
     // Post-commit revert: open the diff preview, then confirm/cancel. The backup
     // path rides on the button/panel dataset so it survives re-renders.
     const revertOpen = (e.target as HTMLElement).closest<HTMLElement>("#stage-revert-commit");

@@ -197,10 +197,14 @@ class TestNextStep(unittest.TestCase):
             self._payload(snapshot={"exists": False}))["id"], "setup")
         self.assertEqual(overview.next_step(
             self._payload(snapshot={"exists": True, "stale": True, "age_days": 12}))["id"], "resync")
-        self.assertEqual(overview.next_step(
-            self._payload(draft={"has_draft": True, "pending": 3}))["id"], "commit-draft")
-        self.assertEqual(overview.next_step(
-            self._payload(staged_basket={"count": 2}))["id"], "place-basket")
+        draft_step = overview.next_step(
+            self._payload(draft={"has_draft": True, "pending": 3}))
+        self.assertEqual(draft_step["id"], "commit-draft")
+        self.assertEqual(draft_step["view"], "working-draft")
+        basket_step = overview.next_step(
+            self._payload(staged_basket={"count": 2}))
+        self.assertEqual(basket_step["id"], "place-basket")
+        self.assertEqual(basket_step["view"], "target-state")
         self.assertEqual(overview.next_step(
             self._payload(plan={"actionable": 2, "gates_open": 1}))["id"], "gates-open")
         self.assertEqual(overview.next_step(

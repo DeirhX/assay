@@ -266,10 +266,14 @@ def stage_routes(
     holdings: dict[str, Any],
     trades: Any,
     selections: Any,
+    mode: str = "replace",
 ) -> dict[str, Any]:
-    """Atomically replace rebalance routes with server-validated mixed legs."""
+    """Validate mixed routes, then append them or replace prior rebalance legs."""
     import trade_service
 
+    mode = str(mode or "replace").strip().lower()
+    if mode not in {"append", "replace"}:
+        raise ValueError("mode must be 'append' or 'replace'")
     netted = portfolio.normalize_basket(trades)
     if not netted:
         raise ValueError("nothing to stage")
@@ -387,20 +391,21 @@ def stage_routes(
             "assignment_shares": contracts * OPTION_MULTIPLIER,
         })
 
-    existing = [
-        leg for leg in trade_service.load_basket()
-        if leg.get("type") in {"covered_call", "cash_secured_put"}
-        and not _is_rebalance_leg(leg)
-    ]
+    current = trade_service.load_basket()
+    existing = (
+        current
+        if mode == "append"
+        else [leg for leg in current if not _is_rebalance_leg(leg)]
+    )
 
-    # Verify live call coverage, including unrelated staged calls and planned sells.
-    all_legs = existing + generated
+    # Verify the complete resulting queue, including existing legs in append mode.
+    all_legs = trade_service._normalize_basket(existing + generated)
     call_symbols = {
         str(leg.get("symbol") or "") for leg in all_legs
         if leg.get("type") == "covered_call"
     }
     raw_working: list[dict[str, Any]] = []
-    if any(leg.get("type") in {"covered_call", "cash_secured_put"} for leg in generated):
+    if any(leg.get("type") in {"covered_call", "cash_secured_put"} for leg in all_legs):
         try:
             raw_working = ibkr_trade.live_orders()
         except ibkr_trade.CPAPIError as exc:
@@ -418,7 +423,7 @@ def stage_routes(
             )
             stock_sells = sum(
                 abs(float(leg.get("delta_czk") or 0))
-                for leg in generated
+                for leg in all_legs
                 if leg.get("type") == "stock"
                 and leg.get("symbol") == sym
                 and float(leg.get("delta_czk") or 0) < 0
@@ -441,7 +446,7 @@ def stage_routes(
     available_cash = float(cash_capacity["available_cash_czk"])
     stock_buys = sum(
         max(0.0, float(leg.get("delta_czk") or 0))
-        for leg in generated if leg.get("type") == "stock"
+        for leg in all_legs if leg.get("type") == "stock"
     )
     staged_puts = sum(
         float(leg.get("strike") or 0) * OPTION_MULTIPLIER
@@ -459,6 +464,7 @@ def stage_routes(
     basket = trade_service.save_basket(all_legs)
     return {
         "staged": True,
+        "mode": mode,
         "basket": basket,
         "routes": selected_routes,
         "required_cash_czk": round(required_cash, 2),
