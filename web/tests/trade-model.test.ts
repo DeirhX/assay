@@ -6,8 +6,25 @@
 // and the placement-result HTML blurs the account id and closes the loop.
 import { describe, expect, it } from "vitest";
 import {
-  basketMoneyFacts, gatewayOrigin, orderBandScopeLabel, placeResultHtml, previewStats, reconciliationTitle, riskPanelHtml,
-  weightBandCaption, weightScaleMax,
+  assignmentProjectionLabel,
+  basketMoneyFacts,
+  contractsLabel,
+  coveredCallActionLabel,
+  coverageCheckLabel,
+  gatewayOrigin,
+  isCoveredCallLeg,
+  optionContractLabel,
+  orderBandScopeLabel,
+  placeResultHtml,
+  premiumCreditLabel,
+  previewStats,
+  provenanceLabel,
+  reconciliationTitle,
+  residualStockValueCzk,
+  riskPanelHtml,
+  tradeInstrumentType,
+  weightBandCaption,
+  weightScaleMax,
 } from "../src/trade-model";
 
 describe("basketMoneyFacts", () => {
@@ -33,22 +50,30 @@ describe("basketMoneyFacts", () => {
     expect(f.sell).toBe(0);
   });
 
-  it("excludes covered-call premium from immediate stock cash totals", () => {
+  it("ignores covered-call legs in CZK buy/sell totals", () => {
     const f = basketMoneyFacts([
-      { symbol: "AMD", delta_czk: -2500 },
+      { symbol: "AAPL", delta_czk: 1000 },
       {
-        leg_type: "covered_call", leg_id: "covered_call:AMD:2026-08-21:105:C",
-        symbol: "AMD", contracts: 1, conid: 999, expiry: "2026-08-21",
-        strike: 105, right: "C", limit_price: 2.5, multiplier: 100,
-        quote: { bid: 2.4, ask: 2.6, last: 2.5 },
-        underlying_quote: { last: 100 }, provenance: [],
+        symbol: "AAPL", instrument_type: "covered_call", leg_id: "cc-1",
+        contracts: 1, premium_credit: 4200, conid: 12345,
       },
+      { symbol: "MSFT", delta_czk: -2500 },
     ]);
-    expect(f).toEqual({
-      buy: 0,
-      sell: 2500,
-      largest: { symbol: "AMD", czk: -2500 },
-    });
+    expect(f.buy).toBe(1000);
+    expect(f.sell).toBe(2500);
+    expect(f.largest).toEqual({ symbol: "MSFT", czk: -2500 });
+  });
+
+  it("behaves identically for legacy stock legs without instrument_type", () => {
+    const legacy = basketMoneyFacts([
+      { symbol: "AAPL", delta_czk: 1000 },
+      { symbol: "MSFT", delta_czk: -2500 },
+    ]);
+    const explicit = basketMoneyFacts([
+      { symbol: "AAPL", delta_czk: 1000, instrument_type: "stock" },
+      { symbol: "MSFT", delta_czk: -2500, instrument_type: "stock" },
+    ]);
+    expect(explicit).toEqual(legacy);
   });
 });
 
@@ -75,6 +100,84 @@ describe("working-order preview model", () => {
       symbol: "A", side: "BUY", classification: "opposite_side",
       proposed_qty: 3, residual_qty: 0,
     })).toBe("Resolve opposite order");
+  });
+
+  it("excludes covered-call contexts from residual stock value totals", () => {
+    const stats = previewStats(
+      [{ side: "SELL", instrument_type: "covered_call" }],
+      [
+        {
+          symbol: "NVDA", side: "SELL", instrument_type: "covered_call",
+          classification: "none", proposed_qty: 1, residual_qty: 1,
+          contracts: 1, premium_credit: 4200,
+        },
+        {
+          symbol: "AMD", side: "BUY", instrument_type: "stock",
+          classification: "none", proposed_qty: 10, residual_qty: 10,
+          residual_delta_czk: 5000,
+        },
+      ],
+    );
+    expect(stats.residualValue).toBe(5000);
+  });
+
+  it("does not treat absent residual_delta_czk as zero stock value for options", () => {
+    expect(residualStockValueCzk({
+      symbol: "NVDA", side: "SELL", instrument_type: "covered_call",
+      classification: "none", proposed_qty: 1, residual_qty: 1,
+    })).toBe(0);
+    expect(residualStockValueCzk({
+      symbol: "AMD", side: "BUY", instrument_type: "stock",
+      classification: "none", proposed_qty: 10, residual_qty: 10,
+    })).toBe(0);
+    expect(residualStockValueCzk({
+      symbol: "AMD", side: "BUY", instrument_type: "stock",
+      classification: "none", proposed_qty: 10, residual_qty: 10,
+      residual_delta_czk: 1200,
+    })).toBe(1200);
+  });
+
+  it("uses option-specific reconciliation titles", () => {
+    expect(reconciliationTitle({
+      symbol: "NVDA", side: "SELL", instrument_type: "covered_call",
+      classification: "none", proposed_qty: 1, residual_qty: 1,
+    })).toBe("New covered call");
+    expect(reconciliationTitle({
+      symbol: "NVDA", side: "SELL", instrument_type: "covered_call",
+      classification: "fully_covered", proposed_qty: 1, residual_qty: 0,
+    })).toBe("Option order already working");
+  });
+});
+
+describe("option leg helpers", () => {
+  it("classifies instrument types with stock as the default", () => {
+    expect(tradeInstrumentType({})).toBe("stock");
+    expect(tradeInstrumentType({ instrument_type: "stock" })).toBe("stock");
+    expect(tradeInstrumentType({ instrument_type: "covered_call" })).toBe("covered_call");
+    expect(isCoveredCallLeg({ instrument_type: "covered_call" })).toBe(true);
+  });
+
+  it("formats contract, coverage, assignment, and provenance copy", () => {
+    expect(coveredCallActionLabel()).toBe("Sell to open");
+    expect(optionContractLabel({
+      symbol: "NVDA", expiry: "20260417", strike: 180, right: "C",
+    })).toBe("NVDA 20260417 180 Call");
+    expect(contractsLabel(1)).toBe("1 contract");
+    expect(contractsLabel(2)).toBe("2 contracts");
+    expect(assignmentProjectionLabel(100, 0)).toBe("100 shares \u2192 0 if assigned");
+    expect(coverageCheckLabel(100, 1)).toBe("Covered: 100 shares for 1 contract");
+    expect(coverageCheckLabel(50, 1)).toBe("Uncovered: 50 shares available, 100 required");
+    expect(premiumCreditLabel(4200)).toMatch(/Premium credit: 4.200 CZK/);
+    expect(provenanceLabel({
+      route: "covered_call", tranche: 2, rung: 1, intended_assigned_shares: 100,
+    })).toContain("covered call");
+    expect(provenanceLabel({
+      route: "covered_call", tranche: 2, rung: 1, intended_assigned_shares: 100,
+    })).toContain("100 shares if assigned");
+    expect(provenanceLabel({
+      route: "covered_call",
+      rung: { expiry: "2026-08-21", strike: 105, conid: 555 },
+    })).toContain("2026-08-21 · 105 call");
   });
 });
 

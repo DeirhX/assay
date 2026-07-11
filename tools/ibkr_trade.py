@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import re
 import ssl
 import urllib.error
@@ -277,7 +278,9 @@ _MD_LAST, _MD_BID, _MD_ASK, _MD_IV = "31", "84", "86", "7283"
 # subscription; absent without one, in which case the overlay models them.
 _MD_VOLUME, _MD_DELTA, _MD_OI = "87", "7308", "7638"
 _OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV, _MD_VOLUME, _MD_DELTA, _MD_OI)
+_STOCK_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK)
 _COUNT_MULT = {"K": 1e3, "M": 1e6, "B": 1e9}
+OPTION_MULTIPLIER = 100
 _MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
@@ -399,137 +402,6 @@ def option_strikes(conid: int, month: str, *, exchange: str = "SMART") -> dict[s
     return {"call": _nums("call"), "put": _nums("put")}
 
 
-class QuoteError(ValueError):
-    """Bid/ask unsuitable for a live covered-call limit (missing, crossed, nonpositive)."""
-
-
-def _iso_to_month(expiry: str) -> str | None:
-    """ISO ``YYYY-MM-DD`` -> CPAPI month token ``AUG26``; None when unparseable."""
-    try:
-        d = dt.datetime.strptime(str(expiry), "%Y-%m-%d").date()
-    except (TypeError, ValueError):
-        return None
-    if d.month < 1 or d.month > 12:
-        return None
-    return f"{_MONTH_TOKENS[d.month - 1]}{d.year % 100:02d}"
-
-
-def validate_execution_quote(bid: Any, ask: Any) -> tuple[float, float]:
-    """Require a positive, uncrossed two-sided quote for execution sizing.
-
-    Raises ``QuoteError`` when bid/ask are missing, nonpositive, or crossed."""
-    b = _snap_num(bid)
-    a = _snap_num(ask)
-    if b is None or a is None or b <= 0 or a <= 0:
-        raise QuoteError("option quote missing bid/ask")
-    if b > a:
-        raise QuoteError("option quote crossed (bid > ask)")
-    return b, a
-
-
-def round_sell_limit_midpoint(bid: float, ask: float, rules: Any, *,
-                              default_tick: float = 0.01) -> float:
-    """Tick-round the midpoint of a two-sided quote for a SELL limit.
-
-    Rounds to the nearest applicable increment (conservative for a resting sell:
-    ties round up so we don't undercut the book)."""
-    mid = (float(bid) + float(ask)) / 2.0
-    tick = tick_for_price(rules, mid, default=default_tick)
-    steps = round(mid / tick)
-    if abs(steps * tick - mid) < 1e-12:
-        return round(steps * tick, 8)
-    # Nearest tick; on a tie prefer the higher (less aggressive) sell price.
-    up = steps * tick if steps * tick >= mid else (steps + 1) * tick
-    down = up - tick
-    return round(up if abs(up - mid) <= abs(mid - down) else down, 8)
-
-
-def resolve_option_contract(symbol: str, expiry: str, strike: float, right: str = "C",
-                            *, for_execution: bool = False) -> dict[str, Any]:
-    """Resolve one exact listed option and attach fresh bid/ask/last quotes.
-
-    Requires an exact ``expiry`` (ISO date) and ``strike``; the month token is
-    derived from ``expiry`` and must list that contract via ``secdef/info``.
-    ``right`` is ``C`` or ``P``.
-
-    Returns ``{conid, expiry, strike, right, bid, ask, last, quote_at,
-    multiplier, underlying_conid, underlying_bid, underlying_ask,
-    underlying_last, underlying_quote_at, tick, rules}``. When
-    ``for_execution`` is True, missing/crossed/nonpositive bid/ask raise
-    ``QuoteError`` instead of returning partial quotes."""
-    sym = str(symbol or "").strip().upper()
-    exp = str(expiry or "").strip()
-    r = str(right or "C").upper()[:1]
-    if r not in ("C", "P"):
-        raise ValueError("right must be C or P")
-    try:
-        k = float(strike)
-    except (TypeError, ValueError):
-        raise ValueError("strike must be numeric") from None
-    if not sym or not exp:
-        raise ValueError("symbol and expiry are required")
-
-    uconid, months = option_months(sym)
-    if uconid is None:
-        raise CPAPIError(f"{sym}: no IBKR underlying contract found")
-    month = _iso_to_month(exp)
-    if not month:
-        raise ValueError(f"unparseable expiry {expiry!r}")
-    if month not in [m.upper() for m in months]:
-        raise CPAPIError(f"{sym}: expiry {exp} ({month}) not listed")
-
-    listed = option_strikes(uconid, month)
-    side_key = "call" if r == "C" else "put"
-    listed_strikes = listed.get(side_key) or []
-    if not any(abs(float(s) - k) < 1e-9 for s in listed_strikes):
-        raise CPAPIError(f"{sym}: strike {k} not listed for {exp}")
-
-    info = option_info(uconid, month, k, r)
-    if not info:
-        raise CPAPIError(f"{sym}: could not resolve {exp} {k}{r}")
-    resolved_exp = info.get("expiry")
-    if resolved_exp != exp:
-        raise CPAPIError(f"{sym}: resolved expiry {resolved_exp} != requested {exp}")
-
-    ocid = int(info["conid"])
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    snaps = market_snapshot([uconid, ocid], fields=_OPTION_MD_FIELDS)
-    urow = snaps.get(uconid) or {}
-    orow = snaps.get(ocid) or {}
-    bid = _snap_num(orow.get(_MD_BID))
-    ask = _snap_num(orow.get(_MD_ASK))
-    last = _snap_num(orow.get(_MD_LAST))
-    ubid = _snap_num(urow.get(_MD_BID))
-    uask = _snap_num(urow.get(_MD_ASK))
-    ulast = _snap_num(urow.get(_MD_LAST))
-
-    if for_execution:
-        bid, ask = validate_execution_quote(bid, ask)
-
-    rules = contract_rules(ocid, is_buy=False)
-    tick = tick_for_price(rules, (bid + ask) / 2.0 if bid and ask else (last or k))
-
-    return {
-        "symbol": sym,
-        "conid": ocid,
-        "expiry": exp,
-        "strike": float(k),
-        "right": r,
-        "bid": bid,
-        "ask": ask,
-        "last": last,
-        "quote_at": now,
-        "multiplier": 100,
-        "underlying_conid": int(uconid),
-        "underlying_bid": ubid,
-        "underlying_ask": uask,
-        "underlying_last": ulast,
-        "underlying_quote_at": now,
-        "tick": tick,
-        "rules": rules,
-    }
-
-
 def option_info(conid: int, month: str, strike: float, right: str,
                 *, exchange: str = "SMART") -> dict[str, Any] | None:
     """The specific option contract as ``{"conid", "expiry", "strike", "right"}``
@@ -580,12 +452,55 @@ def _resolve_side(conid: int, month: str, strikes: list[float],
     return contracts, expiry
 
 
-def _quote_contract(info: dict[str, Any], quotes: dict[int, dict], *,
-                    quote_at: str | None = None) -> dict[str, Any]:
+def _utc_now_iso() -> str:
+    """Second-resolution UTC ISO timestamp for quote metadata."""
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _exact_strike_match(a: float, b: float) -> bool:
+    return _fmt_strike(a) == _fmt_strike(b)
+
+
+def quotes_are_valid(bid: Any, ask: Any) -> bool:
+    """True when ``bid``/``ask`` are a two-sided, positive, non-crossed quote."""
+    if not isinstance(bid, (int, float)) or not isinstance(ask, (int, float)):
+        return False
+    if bid <= 0 or ask <= 0:
+        return False
+    return bid <= ask
+
+
+def _floor_to_tick(price: float, tick: float) -> float:
+    """Snap ``price`` down to a valid tick (conservative for a SELL limit)."""
+    if tick <= 0:
+        return price
+    steps = math.floor((float(price) + 1e-12) / tick)
+    return round(steps * tick, 6)
+
+
+def round_sell_limit_midpoint(bid: float, ask: float, rules: Any) -> float | None:
+    """A conservative SELL limit near the midpoint, on IBKR's tick grid.
+
+    Floors the midpoint to the applicable increment so the price never rounds up
+    past the touch (aggressive) or crosses the spread."""
+    if not quotes_are_valid(bid, ask):
+        return None
+    mid = (float(bid) + float(ask)) / 2.0
+    tick = tick_for_price(rules, mid)
+    limit = _floor_to_tick(mid, tick)
+    # Stay passive: a sell limit must not cross below the bid.
+    if limit < bid:
+        limit = _floor_to_tick(bid, tick)
+    if limit < bid:
+        return None
+    return limit
+
+
+def _quote_contract(info: dict[str, Any], quotes: dict[int, dict]) -> dict[str, Any]:
     """A chain contract row (Yahoo-shaped) for one resolved option, attaching its
     snapshot quote when present."""
     row = quotes.get(int(info["conid"])) or {}
-    out = {
+    return {
         "conid": info["conid"],
         "strike": info["strike"],
         "bid": _snap_num(row.get(_MD_BID)),
@@ -595,11 +510,7 @@ def _quote_contract(info: dict[str, Any], quotes: dict[int, dict], *,
         "delta": _snap_num(row.get(_MD_DELTA)),
         "volume": _snap_count(row.get(_MD_VOLUME)),
         "open_interest": _snap_count(row.get(_MD_OI)),
-        "multiplier": 100,
     }
-    if quote_at:
-        out["quote_at"] = quote_at
-    return out
 
 
 def _build_expiry(conid: int, month: str, spot: float | None,
@@ -618,9 +529,8 @@ def _build_expiry(conid: int, month: str, spot: float | None,
         return None
     all_conids = [c["conid"] for c in call_contracts + put_contracts]
     quotes = market_snapshot(all_conids, fields=_OPTION_MD_FIELDS) if all_conids else {}
-    quote_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    calls = [_quote_contract(c, quotes, quote_at=quote_at) for c in call_contracts]
-    puts = [_quote_contract(c, quotes, quote_at=quote_at) for c in put_contracts]
+    calls = [_quote_contract(c, quotes) for c in call_contracts]
+    puts = [_quote_contract(c, quotes) for c in put_contracts]
     return {
         "expiry": expiry,
         "calls": sorted(calls, key=lambda c: c["strike"]),
@@ -648,12 +558,14 @@ def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float
         return None
 
     # Spot centers the strike window. Underlying last, or bid/ask midpoint.
-    snap = market_snapshot([conid], fields=(_MD_LAST, _MD_BID, _MD_ASK))
+    snap = market_snapshot([conid], fields=_STOCK_MD_FIELDS)
     urow = snap.get(conid) or {}
-    spot = _snap_num(urow.get(_MD_LAST))
-    if spot is None:
-        bid, ask = _snap_num(urow.get(_MD_BID)), _snap_num(urow.get(_MD_ASK))
-        spot = (bid + ask) / 2.0 if bid and ask else None
+    u_last = _snap_num(urow.get(_MD_LAST))
+    u_bid = _snap_num(urow.get(_MD_BID))
+    u_ask = _snap_num(urow.get(_MD_ASK))
+    spot = u_last
+    if spot is None and u_bid is not None and u_ask is not None and quotes_are_valid(u_bid, u_ask):
+        spot = (u_bid + u_ask) / 2.0
 
     expiries: list[dict[str, Any]] = []
     for month in _months_by_date(months, as_of)[:max_expiries]:
@@ -663,20 +575,87 @@ def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float
     if not expiries:
         return None
     expiries.sort(key=lambda e: e["expiry"])
-    quote_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     return {
         "source": "ibkr",
         "symbol": sym,
         # secdef doesn't reliably carry currency here; the overlay uses the
         # position's own currency, so None is fine.
         "currency": None,
-        "underlying_price": round(spot, 4) if isinstance(spot, (int, float)) else None,
-        "underlying_last": _snap_num(urow.get(_MD_LAST)),
-        "underlying_bid": _snap_num(urow.get(_MD_BID)),
-        "underlying_ask": _snap_num(urow.get(_MD_ASK)),
         "underlying_conid": conid,
-        "quote_at": quote_at,
+        "underlying_price": round(spot, 4) if isinstance(spot, (int, float)) else None,
+        "underlying_bid": u_bid,
+        "underlying_ask": u_ask,
+        "underlying_last": u_last,
+        "quote_timestamp": _utc_now_iso(),
         "expiries": expiries,
+    }
+
+
+def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any] | None:
+    """Resolve one listed call contract by exact symbol + ISO expiry + strike.
+
+    Walks ``option_months`` / ``option_info`` until a contract's reference
+    data matches the requested expiry and strike exactly; mismatches and misses
+    return ``None``. When resolved, attaches live option + underlying quotes,
+    UTC quote timestamp, and sell-side tick/rules for limit pricing."""
+    sym = str(symbol or "").strip().upper()
+    exp = str(expiry or "").strip()
+    if not sym or not exp:
+        return None
+    try:
+        strike_f = float(strike)
+    except (TypeError, ValueError):
+        return None
+
+    u_conid, months = option_months(sym)
+    if u_conid is None or not months:
+        return None
+
+    info: dict[str, Any] | None = None
+    for month in months:
+        cand = option_info(u_conid, month, strike_f, "C")
+        if not cand:
+            continue
+        if cand.get("expiry") != exp:
+            continue
+        if not _exact_strike_match(float(cand.get("strike", 0)), strike_f):
+            continue
+        info = cand
+        break
+    if info is None:
+        return None
+
+    o_conid = int(info["conid"])
+    snap = market_snapshot([o_conid, u_conid], fields=_OPTION_MD_FIELDS + _STOCK_MD_FIELDS)
+    orow = snap.get(o_conid) or {}
+    urow = snap.get(u_conid) or {}
+    bid = _snap_num(orow.get(_MD_BID))
+    ask = _snap_num(orow.get(_MD_ASK))
+    last = _snap_num(orow.get(_MD_LAST))
+    u_last = _snap_num(urow.get(_MD_LAST))
+    u_bid = _snap_num(urow.get(_MD_BID))
+    u_ask = _snap_num(urow.get(_MD_ASK))
+    rules = contract_rules(o_conid, is_buy=False)
+    ref = bid or ask or last or strike_f
+    tick = tick_for_price(rules, ref)
+
+    return {
+        "symbol": sym,
+        "underlying_conid": u_conid,
+        "conid": o_conid,
+        "expiry": exp,
+        "strike": strike_f,
+        "right": "C",
+        "multiplier": OPTION_MULTIPLIER,
+        "bid": bid,
+        "ask": ask,
+        "last": last,
+        "underlying_last": u_last,
+        "underlying_bid": u_bid,
+        "underlying_ask": u_ask,
+        "quote_timestamp": _utc_now_iso(),
+        "tick": tick,
+        "rules": rules,
     }
 
 

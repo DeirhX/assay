@@ -153,11 +153,13 @@ export function sourceBanner(
 ): string {
   if (source === "basket") {
     const reviewed = !!queue?.reviewed;
-    const optionCount = (queue?.trades || []).filter((trade) => trade.leg_type === "covered_call").length;
+    const optionCount = (queue?.trades || []).filter(
+      (trade) => trade.type === "covered_call",
+    ).length;
     return `<div class="tstate-src"><span class="chip warn">order queue</span>` +
       ` Projected from the <strong>${n} staged order${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — review this outcome before placing them.` +
       (optionCount
-        ? ` ${optionCount} covered call${optionCount === 1 ? "" : "s"} ${optionCount === 1 ? "is" : "are"} conditional and therefore ${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.`
+        ? ` ${optionCount} covered call${optionCount === 1 ? "" : "s"} ${optionCount === 1 ? "is" : "are"} conditional and ${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.`
         : "") +
       (reviewed
         ? ` <span class="chip good">projection approved</span>` +
@@ -236,22 +238,20 @@ async function loadTargetState(): Promise<void> {
   // Projection source: the staged basket wins (it's what will be placed);
   // else the plan's suggested amounts; else nothing (projection = now).
   let trades: WhatifTrade[] = [];
+  let stagedCount = 0;
   let source: "basket" | "suggestions" | "none" = "none";
   let queue: TradeQueueState | null = null;
-  let queueSize = 0;
   try {
     queue = await api<TradeQueueState>("/api/trade/basket");
     if (Array.isArray(queue.trades) && queue.trades.length) {
-      queueSize = queue.trades.length;
+      stagedCount = queue.trades.length;
+      trades = queue.trades
+        .filter((trade) => trade.type !== "covered_call")
+        .map((trade) => ({ symbol: trade.symbol, delta_czk: trade.delta_czk }));
       source = "basket";
-      // A covered call changes premium/collateral now but only changes the share
-      // position if assigned, so the immediate book projection remains stock-only.
-      trades = queue.trades.flatMap((leg) => leg.leg_type === "covered_call"
-        ? []
-        : [{ symbol: leg.symbol, delta_czk: Number(leg.delta_czk) }]);
     }
   } catch { /* fall through to suggestions */ }
-  if (source !== "basket" && !trades.length) {
+  if (source !== "basket") {
     trades = deriveSuggestionTrades(plan);
     source = trades.length ? "suggestions" : "none";
   }
@@ -266,7 +266,7 @@ async function loadTargetState(): Promise<void> {
     }
   }
   if (status) status.textContent = "";
-  render(plan, wf, source, source === "basket" ? queueSize : trades.length, queue);
+  render(plan, wf, source, source === "basket" ? stagedCount : trades.length, queue);
 }
 
 let _wired = false;

@@ -7,7 +7,7 @@
 // ./api-types — and pulling in a couple of view-owned record shapes for the
 // shared store below — keeps core a runtime leaf while giving one source of
 // truth. (Type-only edges can't form an import cycle; they vanish at build.)
-import type { DeepRun, PriceLevel, TradeBasketLeg } from "./api-types";
+import type { DeepRun, PriceLevel, TradeLeg } from "./api-types";
 import type { AnalysisRun } from "./analyses";
 import type { SegmentRec } from "./segment";
 
@@ -42,7 +42,7 @@ interface AppState {
   analysesRuns: AnalysisRun[];
   currentAnalysis: string | null;
   tickerSet: Set<string>;
-  stagedBasket: TradeBasketLeg[];
+  stagedBasket: TradeLeg[];
   // Set lazily by views; absent in the initial literal.
   pipePreselect?: string | null;
   _autoBuilding?: boolean;

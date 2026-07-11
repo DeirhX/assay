@@ -111,6 +111,100 @@ def _as_int(value: Any) -> int | None:
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def _conid(contract: dict[str, Any] | None) -> int | None:
+    """Option contract id when the chain row resolved one."""
+    if not isinstance(contract, dict):
+        return None
+    raw = contract.get("conid")
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (float, str)):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _two_sided_quote_ok(bid: Any, ask: Any) -> bool:
+    """Positive, uncrossed bid/ask -- the minimum for a stageable IBKR quote."""
+    return (isinstance(bid, (int, float)) and isinstance(ask, (int, float))
+            and bid > 0 and ask > 0 and bid <= ask)
+
+
+def _quote_timestamp(contract: dict[str, Any] | None, chain: dict[str, Any] | None) -> str | None:
+    for obj in (contract, chain or {}):
+        if not isinstance(obj, dict):
+            continue
+        ts = obj.get("quote_timestamp") or obj.get("fetched_at")
+        if isinstance(ts, str) and ts:
+            return ts
+    return None
+
+
+def _underlying_quote(chain: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Underlying last/bid/ask metadata carried on the chain envelope."""
+    if not isinstance(chain, dict):
+        return None
+    nested = chain.get("underlying_quote")
+    if isinstance(nested, dict):
+        nested_out = {k: nested[k] for k in ("conid", "bid", "ask", "last", "quote_timestamp")
+                      if nested.get(k) is not None}
+        return nested_out or None
+    out: dict[str, Any] = {}
+    for key, src in (
+        ("conid", "underlying_conid"),
+        ("bid", "underlying_bid"),
+        ("ask", "underlying_ask"),
+        ("last", "underlying_last"),
+        ("quote_timestamp", "underlying_quote_timestamp"),
+    ):
+        val = chain.get(src)
+        if val is not None:
+            out[key] = val
+    if "last" not in out and isinstance(chain.get("underlying_price"), (int, float)):
+        out["last"] = chain["underlying_price"]
+    if "quote_timestamp" not in out and isinstance(chain.get("quote_timestamp"), str):
+        out["quote_timestamp"] = chain["quote_timestamp"]
+    return out or None
+
+
+def _executable(*, chain_source: str, contract: dict[str, Any] | None, estimate: bool) -> bool:
+    """True only for a live IBKR contract with a usable two-sided quote."""
+    if estimate or chain_source != "ibkr" or not isinstance(contract, dict):
+        return False
+    if _conid(contract) is None:
+        return False
+    return _two_sided_quote_ok(contract.get("bid"), contract.get("ask"))
+
+
+def _attach_executable_metadata(
+    out: dict[str, Any],
+    *,
+    contract: dict[str, Any] | None,
+    chain: dict[str, Any] | None,
+    chain_source: str,
+    estimate: bool,
+) -> None:
+    """Fold chain quote fields into a covered-call headline or ladder rung."""
+    contract = contract if isinstance(contract, dict) else {}
+    out["conid"] = _conid(contract)
+    for key in ("bid", "ask", "last"):
+        out[key] = contract.get(key)
+    out["multiplier"] = CONTRACT_SIZE
+    ts = _quote_timestamp(contract, chain)
+    if ts is not None:
+        out["quote_timestamp"] = ts
+    if isinstance(chain, dict):
+        fetched_at = chain.get("fetched_at")
+        if isinstance(fetched_at, str) and fetched_at:
+            out["fetched_at"] = fetched_at
+        underlying = _underlying_quote(chain)
+        if underlying:
+            out["underlying_quote"] = underlying
+    out["executable"] = _executable(chain_source=chain_source, contract=contract, estimate=estimate)
+
+
 def _liquidity(contract: dict[str, Any], premium_source: str) -> tuple[str, float | None]:
     """Classify a contract's tradeability as ``ok`` / ``thin`` / ``unknown`` plus
     the spread. A modeled (Black-Scholes) premium is ``unknown`` -- there is no
@@ -134,8 +228,8 @@ def _liquidity(contract: dict[str, Any], premium_source: str) -> tuple[str, floa
 
 def _call_candidate(
     call: dict[str, Any], spot: float, vol: float, rate: float, as_of: dt.date,
-    edate: dt.date, chain_source: str, *, contracts: int, fx: float,
-    underlying_quote: dict[str, Any] | None = None,
+    edate: dt.date, chain_source: str, chain: dict[str, Any] | None, *,
+    contracts: int, fx: float,
 ) -> dict[str, Any] | None:
     """One covered-call ladder rung for a listed (or synthetic) call strike:
     premium (chain mid, else Black-Scholes), annualized yield, assignment
@@ -158,7 +252,8 @@ def _call_candidate(
     dte = max(1, (edate - as_of).days)
     yield_annual = (premium / strike) * (365.0 / dte)
     liq, spread = _liquidity(call, source)
-    row: dict[str, Any] = {
+    estimate = source == "black_scholes"
+    out = {
         "strike": round(float(strike), 2),
         "premium": round(premium, 4),
         "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
@@ -171,30 +266,11 @@ def _call_candidate(
         "spread_pct": round(spread * 100.0, 1) if spread is not None else None,
         "liquidity": liq,
         "source": source,
-        "estimate": source == "black_scholes",
-        "executable": False,
+        "estimate": estimate,
     }
-    bid, ask, last = call.get("bid"), call.get("ask"), call.get("last")
-    if (
-        chain_source == "ibkr"
-        and source != "black_scholes"
-        and isinstance(call.get("conid"), int)
-        and isinstance(bid, (int, float)) and bid > 0
-        and isinstance(ask, (int, float)) and ask > 0
-        and bid <= ask
-    ):
-        row.update({
-            "executable": True,
-            "conid": call.get("conid"),
-            "bid": round(float(bid), 4),
-            "ask": round(float(ask), 4),
-            "last": round(float(last), 4) if isinstance(last, (int, float)) else None,
-            "quote_at": call.get("quote_at"),
-            "multiplier": int(call.get("multiplier") or CONTRACT_SIZE),
-        })
-        if isinstance(underlying_quote, dict) and underlying_quote:
-            row["underlying_quote"] = dict(underlying_quote)
-    return row
+    _attach_executable_metadata(out, contract=call, chain=chain,
+                                chain_source=chain_source, estimate=estimate)
+    return out
 
 
 def covered_call_ladder(
@@ -212,15 +288,6 @@ def covered_call_ladder(
     otm = GUARD_CALL_OTM_PCT if guard_after else CALL_OTM_PCT
     floor_strike = spot * (1.0 + otm)
     chain_source = _chain_source(chain)
-    underlying_quote: dict[str, Any] | None = None
-    if chain_source == "ibkr" and isinstance(chain, dict):
-        underlying_quote = {
-            "conid": chain.get("underlying_conid"),
-            "last": chain.get("underlying_last", chain.get("underlying_price")),
-            "bid": chain.get("underlying_bid"),
-            "ask": chain.get("underlying_ask"),
-            "quote_at": chain.get("quote_at"),
-        }
 
     edate: dt.date | None = None
     expiry_iso: str | None = None
@@ -246,9 +313,8 @@ def covered_call_ladder(
 
     rungs: list[dict[str, Any]] = []
     for call in calls[:LADDER_SIZE]:
-        cand = _call_candidate(call, spot, vol, rate, as_of, edate, chain_source,
-                               contracts=contracts, fx=fx,
-                               underlying_quote=underlying_quote)
+        cand = _call_candidate(call, spot, vol, rate, as_of, edate, chain_source, chain,
+                               contracts=contracts, fx=fx)
         if cand:
             cand["expiry"] = expiry_iso
             cand["dte"] = max(1, (edate - as_of).days)
@@ -315,6 +381,7 @@ def _covered_call(
     iv: float | None = None
     source = "black_scholes"
     chain_source = _chain_source(chain)
+    call_contract: dict[str, Any] | None = None
 
     if chain and chain.get("expiries"):
         exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
@@ -322,6 +389,7 @@ def _covered_call(
         if exp:
             call = _nearest_call(exp.get("calls") or [], floor_strike)
             if call:
+                call_contract = call
                 expiry_iso = exp["expiry"]
                 strike = call["strike"]
                 premium = _mid(call)
@@ -347,7 +415,8 @@ def _covered_call(
     dte = max(1, (edate - as_of).days)
     yield_annual = (premium / strike) * (365.0 / dte) if strike else None
     premium_czk = premium * CONTRACT_SIZE * contracts * fx
-    out: dict[str, Any] = {
+    estimate = source == "black_scholes"
+    out = {
         "type": "covered_call",
         "source": source,
         "contracts": contracts,
@@ -360,43 +429,10 @@ def _covered_call(
         "premium_yield_annual_pct": round(yield_annual * 100.0, 2) if yield_annual else None,
         "assignment_prob_pct": round(delta * 100.0, 1) if delta is not None else None,
         "vol_used": round(use_vol, 4),
-        "estimate": source == "black_scholes",
-        "executable": False,
+        "estimate": estimate,
     }
-    if chain and chain_source == "ibkr" and source != "black_scholes":
-        call_row = None
-        if chain.get("expiries"):
-            exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
-                               dte_max=COVERED_CALL_DTE[1], after=guard_after)
-            if exp:
-                for c in exp.get("calls") or []:
-                    if abs(float(c.get("strike") or 0) - float(strike)) < 1e-6:
-                        call_row = c
-                        break
-        bid = (call_row or {}).get("bid")
-        ask = (call_row or {}).get("ask")
-        last = (call_row or {}).get("last")
-        if (
-            isinstance((call_row or {}).get("conid"), int)
-            and isinstance(bid, (int, float)) and isinstance(ask, (int, float))
-            and bid > 0 and ask > 0 and bid <= ask
-        ):
-            out.update({
-                "executable": True,
-                "conid": (call_row or {}).get("conid"),
-                "bid": round(float(bid), 4),
-                "ask": round(float(ask), 4),
-                "last": round(float(last), 4) if isinstance(last, (int, float)) else None,
-                "quote_at": (call_row or {}).get("quote_at"),
-                "multiplier": CONTRACT_SIZE,
-                "underlying_quote": {
-                    "conid": chain.get("underlying_conid"),
-                    "last": chain.get("underlying_last", chain.get("underlying_price")),
-                    "bid": chain.get("underlying_bid"),
-                    "ask": chain.get("underlying_ask"),
-                    "quote_at": chain.get("quote_at"),
-                },
-            })
+    _attach_executable_metadata(out, contract=call_contract, chain=chain,
+                                chain_source=chain_source, estimate=estimate)
     return out
 
 
@@ -568,6 +604,7 @@ def suggest_for_position(
         "underlying": round(float(spot), 4),
         "currency": pos.get("currency"),
         "source": _chain_source(chain),
+        "underlying_quote": _underlying_quote(chain_dict),
         "covered_call": covered,
         "covered_call_ladder": ladder,
         "protective_put": protective,

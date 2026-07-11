@@ -7,7 +7,6 @@
 // way — if a new figure or fragment needs to appear on the desk, derive it here
 // first so it stays testable.
 import { esc, sensitive } from "./core";
-import type { TradeBasketLeg } from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 
 // r1 now lives in the shared weight-axis module; re-export for the desk's own
@@ -17,7 +16,43 @@ export { r1 };
 export const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
 
-export interface WorkingOrderPreview {
+export type TradeInstrumentType = "stock" | "covered_call";
+
+export interface LegProvenance {
+  source?: string;
+  route?: string;
+  plan_timestamp?: string;
+  plan_as_of?: string;
+  plan_snapshot?: string;
+  plan_fingerprint?: string;
+  tranche?: number;
+  tranche_index?: number;
+  rung?: number | { conid?: number; expiry?: string; strike?: number };
+  intended_shares?: number;
+  intended_assigned_shares?: number;
+}
+
+export interface OptionLegFields {
+  leg_id?: string;
+  instrument_type?: TradeInstrumentType;
+  conid?: number | string;
+  expiry?: string;
+  strike?: number;
+  right?: string;
+  multiplier?: number;
+  contracts?: number;
+  current_shares?: number;
+  coverage_shares?: number;
+  if_assigned_shares?: number;
+  premium_credit?: number;
+  currency?: string | null;
+  provenance?: LegProvenance | LegProvenance[];
+  coverage_ok?: boolean;
+  coverage_capacity_contracts?: number;
+  coverage_working_contracts?: number;
+}
+
+export interface WorkingOrderPreview extends OptionLegFields {
   order_id?: string;
   side?: string;
   remaining_qty?: number;
@@ -28,31 +63,16 @@ export interface WorkingOrderPreview {
   tif?: string;
 }
 
-export interface OrderReconciliation {
-  leg_type?: "stock" | "covered_call";
-  leg_id?: string;
+export interface OrderReconciliation extends OptionLegFields {
   symbol: string;
-  conid?: number;
   side: string;
-  classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side";
+  classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side" | "coverage_blocked";
   proposed_qty: number;
   working_same_qty?: number;
   working_qty?: number;
   residual_qty: number;
   current_position_qty?: number;
   projected_position_qty?: number;
-  contracts?: number;
-  expiry?: string;
-  strike?: number;
-  right?: string;
-  limit_price?: number;
-  current_shares?: number;
-  covered_shares_available?: number;
-  if_assigned_shares?: number;
-  shares_after_assignment?: number;
-  premium_per_share?: number;
-  premium_credit?: number;
-  provenance?: Array<Record<string, unknown>>;
   proposed_delta_czk?: number;
   working_delta_czk?: number;
   residual_delta_czk?: number;
@@ -62,7 +82,141 @@ export interface OrderReconciliation {
   placeable?: boolean;
 }
 
+export interface StockBasketLeg {
+  symbol: string;
+  delta_czk: number;
+  type?: "stock";
+  instrument_type?: "stock";
+  leg_id?: string;
+  provenance?: LegProvenance | LegProvenance[] | Array<Record<string, unknown>>;
+}
+
+export interface CoveredCallBasketLeg extends OptionLegFields {
+  symbol: string;
+  type?: "covered_call";
+  instrument_type?: "covered_call";
+  premium_credit?: number;
+  delta_czk?: number;
+}
+
+export type BasketTradeLeg = StockBasketLeg | CoveredCallBasketLeg;
+
+export function tradeInstrumentType(
+  leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
+): TradeInstrumentType {
+  return leg?.instrument_type === "covered_call" || leg?.type === "covered_call" ? "covered_call" : "stock";
+}
+
+export function isCoveredCallLeg(
+  leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
+): boolean {
+  return tradeInstrumentType(leg) === "covered_call";
+}
+
+export function isStockLeg(
+  leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
+): boolean {
+  return !isCoveredCallLeg(leg);
+}
+
+export function optionRightLabel(right?: string | null): string {
+  const r = String(right || "").toUpperCase();
+  if (r === "C" || r === "CALL") return "Call";
+  if (r === "P" || r === "PUT") return "Put";
+  return right ? String(right) : "Option";
+}
+
+export function optionContractLabel(leg: {
+  symbol?: string;
+  expiry?: string;
+  strike?: number;
+  right?: string;
+}): string {
+  const sym = String(leg.symbol || "").trim();
+  const strike = typeof leg.strike === "number" ? leg.strike : null;
+  const expiry = String(leg.expiry || "").trim();
+  const right = optionRightLabel(leg.right);
+  const parts = [sym, expiry, strike != null ? String(strike) : "", right].filter(Boolean);
+  return parts.join(" ");
+}
+
+export function coveredCallActionLabel(): string {
+  return "Sell to open";
+}
+
+export function contractsLabel(contracts?: number | null): string {
+  const n = Number(contracts);
+  if (!Number.isFinite(n) || n <= 0) return "contracts";
+  return `${n} contract${n === 1 ? "" : "s"}`;
+}
+
+export function assignmentProjectionLabel(
+  currentShares?: number | null,
+  ifAssignedShares?: number | null,
+): string {
+  const cur = Number(currentShares);
+  const after = Number(ifAssignedShares);
+  const curText = Number.isFinite(cur) ? `${cur} shares` : "current shares";
+  const afterText = Number.isFinite(after) ? `${after} if assigned` : "if assigned";
+  return `${curText} \u2192 ${afterText}`;
+}
+
+export function coverageCheckLabel(
+  coverageShares?: number | null,
+  contracts?: number | null,
+  multiplier = 100,
+): string {
+  const covered = Number(coverageShares);
+  const mult = Number(multiplier) || 100;
+  const need = (Number(contracts) || 0) * mult;
+  if (!Number.isFinite(covered) || need <= 0) return "Coverage check";
+  return covered >= need
+    ? `Covered: ${covered} shares for ${contractsLabel(contracts)}`
+    : `Uncovered: ${covered} shares available, ${need} required`;
+}
+
+export function premiumCreditLabel(czk?: number | null, currency = "CZK"): string {
+  const n = Number(czk);
+  if (!Number.isFinite(n) || n === 0) return `No premium credit (${currency})`;
+  return `Premium credit: ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`;
+}
+
+export function provenanceLabel(provenance?: LegProvenance | LegProvenance[] | null): string {
+  if (!provenance) return "";
+  const row = Array.isArray(provenance) ? provenance[provenance.length - 1] : provenance;
+  if (!row) return "";
+  const bits: string[] = [];
+  if (row.route) bits.push(String(row.route).replace(/_/g, " "));
+  const tranche = row.tranche ?? row.tranche_index;
+  if (tranche != null) bits.push(`tranche ${tranche}`);
+  if (typeof row.rung === "number") bits.push(`rung ${row.rung}`);
+  else if (row.rung && typeof row.rung === "object") {
+    const contract = [
+      row.rung.expiry,
+      row.rung.strike != null ? `${row.rung.strike} call` : "",
+    ].filter(Boolean).join(" · ");
+    if (contract) bits.push(contract);
+  }
+  if (row.intended_assigned_shares != null) {
+    bits.push(`${row.intended_assigned_shares} shares if assigned`);
+  }
+  return bits.join(" \u00b7 ");
+}
+
+export function residualStockValueCzk(ctx: OrderReconciliation): number {
+  if (isCoveredCallLeg(ctx)) return 0;
+  const d = ctx.residual_delta_czk;
+  return typeof d === "number" && Number.isFinite(d) ? Math.abs(d) : 0;
+}
+
 export function reconciliationTitle(c: OrderReconciliation): string {
+  if (c.classification === "coverage_blocked") return "Coverage blocked";
+  if (isCoveredCallLeg(c)) {
+    if (c.classification === "opposite_side") return "Resolve opposite option order";
+    if (c.classification === "fully_covered") return "Option order already working";
+    if (c.classification === "same_side_partial") return "Reduced by working option order";
+    return "New covered call";
+  }
   if (c.classification === "opposite_side") return "Resolve opposite order";
   if (c.classification === "fully_covered") return "Already covered";
   if (c.classification === "same_side_partial") return "Reduced by working order";
@@ -70,14 +224,14 @@ export function reconciliationTitle(c: OrderReconciliation): string {
 }
 
 export function previewStats(
-  orders: Array<{ side?: string }> = [],
+  orders: Array<{ side?: string; instrument_type?: TradeInstrumentType }> = [],
   contexts: OrderReconciliation[] = [],
 ): { buys: number; sells: number; adjusted: number; residualValue: number } {
   return {
     buys: orders.filter((o) => o.side === "BUY").length,
     sells: orders.filter((o) => o.side === "SELL").length,
     adjusted: contexts.filter((c) => c.classification !== "none").length,
-    residualValue: contexts.reduce((sum, c) => sum + Math.abs(Number(c.residual_delta_czk) || 0), 0),
+    residualValue: contexts.reduce((sum, c) => sum + residualStockValueCzk(c), 0),
   };
 }
 
@@ -218,14 +372,14 @@ export function gatewayOrigin(base: string | null | undefined) {
 // Buy/sell gross and the single largest trade, from the token-bound basket —
 // the CZK the human actually reasoned about (orders carry shares, not CZK). Used
 // for the last-mile confirmation modal.
-export function basketMoneyFacts(trades?: TradeBasketLeg[]): {
+export function basketMoneyFacts(trades?: BasketTradeLeg[]): {
   buy: number; sell: number; largest: { symbol: string; czk: number } | null;
 } {
   let buy = 0, sell = 0;
   let largest: { symbol: string; czk: number } | null = null;
   for (const t of trades || []) {
-    if (t.leg_type === "covered_call") continue;
-    const d = Number(t.delta_czk) || 0;
+    if (isCoveredCallLeg(t)) continue;
+    const d = Number((t as StockBasketLeg).delta_czk) || 0;
     if (d >= 0) buy += d; else sell += -d;
     if (!largest || Math.abs(d) > Math.abs(largest.czk)) largest = { symbol: t.symbol, czk: d };
   }

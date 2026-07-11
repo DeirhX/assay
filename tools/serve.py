@@ -129,8 +129,7 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
     _trade_tickle, basket_state as _basket_state, load_basket as _load_basket,
     remove_basket_leg as _remove_basket_leg,
     replace_stock_basket as _replace_stock_basket,
-    review_basket as _review_basket,
-    save_basket as _save_basket,
+    review_basket as _review_basket, save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -367,7 +366,6 @@ _POST_EXACT = {
     "/api/rebalance/funding": "_post_rebalance_funding",
     "/api/tax-plan": "_post_tax_plan",
     "/api/exit-plan/stage": "_post_exit_plan_stage",
-    "/api/exit-plan/stage-call": "_post_exit_plan_stage_call",
     "/api/whatif": "_post_whatif",
     "/api/trade/reconnect": "_post_trade_reconnect",
     "/api/trade/preview": "_post_trade_preview",
@@ -1378,43 +1376,40 @@ class Handler(BaseHTTPRequestHandler):
         symbol = str(body.get("symbol") or "").strip()
         if not symbol:
             return self._send_error_json(400, "symbol is required")
-        try:
-            index = int(body.get("index"))
-        except (TypeError, ValueError):
-            return self._send_error_json(400, "index must be an integer tranche number")
+        route = str(body.get("route") or "sell_shares").strip().lower()
+        if route not in {"sell_shares", "covered_call"}:
+            return self._send_error_json(400, "route must be sell_shares or covered_call")
         include = body.get("include") if isinstance(body.get("include"), list) else []
         full = body.get("full_exit") if isinstance(body.get("full_exit"), list) else []
         cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else None
         with _PULL_LOCK:
             plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
         try:
-            return self._send_json(exit_plan.stage_tranche(plan, symbol, index))
-        except ValueError as exc:
-            return self._send_error_json(400, str(exc))
-
-    def _post_exit_plan_stage_call(self, path):
-        # Rebuild the exit plan under lock, then stage one server-validated
-        # covered-call ladder rung (symbol + rung index only — never contract fields).
-        body = self._read_body()
-        model = target_staging.active_model()
-        holdings = _load(HOLDINGS_JSON)
-        if not model or not holdings:
-            return self._send_error_json(404, "need both a holdings snapshot and a target model")
-        symbol = str(body.get("symbol") or "").strip()
-        if not symbol:
-            return self._send_error_json(400, "symbol is required")
-        try:
-            rung_index = int(body.get("rung_index"))
-        except (TypeError, ValueError):
-            return self._send_error_json(400, "rung_index must be an integer ladder index")
-        include = body.get("include") if isinstance(body.get("include"), list) else []
-        full = body.get("full_exit") if isinstance(body.get("full_exit"), list) else []
-        cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else None
-        with _PULL_LOCK:
-            plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
-        try:
-            return self._send_json(exit_plan.stage_covered_call(plan, symbol, rung_index))
-        except ValueError as exc:
+            if route == "sell_shares":
+                try:
+                    index = int(body.get("index"))
+                except (TypeError, ValueError):
+                    return self._send_error_json(400, "index must be an integer tranche number")
+                result = exit_plan.stage_tranche(plan, symbol, index)
+            else:
+                try:
+                    conid = int(body.get("conid"))
+                    strike = float(body.get("strike"))
+                    contracts = int(body.get("contracts"))
+                except (TypeError, ValueError):
+                    return self._send_error_json(
+                        400, "covered call needs numeric conid, strike, and contracts",
+                    )
+                result = exit_plan.stage_covered_call(
+                    plan,
+                    symbol,
+                    conid=conid,
+                    expiry=str(body.get("expiry") or ""),
+                    strike=strike,
+                    contracts=contracts,
+                )
+            return self._send_json(result)
+        except (ValueError, TypeError) as exc:
             return self._send_error_json(400, str(exc))
 
     def _post_whatif(self, path):
@@ -1447,8 +1442,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_peg_stop(self._read_body()))
 
     def _post_trade_basket(self, path):
-        # Rebalance owns stock legs only. Preserve option legs staged through the
-        # server-validated Exit endpoint and reject client-invented option specs.
+        # Planner writes replace stock legs but cannot forge covered calls.
+        # Queue controls mutate server-known legs by id so stale clients fail
+        # closed instead of replacing a newer queue snapshot.
         body = self._read_body()
         if body.get("clear") is True:
             _save_basket([])

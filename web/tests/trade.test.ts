@@ -16,6 +16,7 @@ vi.mock("../src/core", async (importOriginal) => {
 
 import { state } from "../src/core";
 import { loadTrade } from "../src/trade";
+import type { TradeLeg } from "../src/api-types";
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -147,45 +148,6 @@ describe("trade desk placement gating", () => {
       "/api/trade/place", "POST",
       expect.objectContaining({ confirm: true, token: "tok-1", account: "DU1" }),
     );
-  });
-
-  it("renders a covered call as conditional SELL TO OPEN and keeps ready gating", async () => {
-    const call = order({
-      leg_type: "covered_call", leg_id: "covered_call:AAPL:2026-08-21:110:C",
-      symbol: "AAPL", side: "SELL", quantity: 2, orderType: "LMT", price: 2.5, conid: 9001,
-    });
-    await previewWith(PAPER_STATUS, {
-      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
-      orders: [call],
-      order_context: [{
-        leg_type: "covered_call", leg_id: "covered_call:AAPL:2026-08-21:110:C",
-        symbol: "AAPL", conid: 9001, side: "SELL", classification: "none",
-        proposed_qty: 2, residual_qty: 2, contracts: 2, expiry: "2026-08-21",
-        strike: 110, right: "C", limit_price: 2.5, current_shares: 300,
-        covered_shares_available: 300, if_assigned_shares: 200,
-        shares_after_assignment: 100, premium_credit: 500,
-        provenance: [{ route: "covered_call", plan_as_of: "2026-07-10", rung_index: 0,
-          intended_assigned_shares: 200 }],
-        placeable: true,
-      }],
-    });
-
-    const card = document.querySelector(".trade-order-item")!;
-    expect(card.textContent).toContain("SELL TO OPEN");
-    expect(card.textContent).toContain("2 covered-call contracts");
-    expect(card.textContent).toContain("300 shares → 100 shares if assigned");
-    expect(card.textContent).toContain("Assignment is not guaranteed");
-    const place = byText((t) => t.startsWith("Place"))!;
-    expect(place.disabled).toBe(true);
-    card.querySelector<HTMLButtonElement>(".trade-order-ready")!.click();
-    expect(place.disabled).toBe(false);
-
-    place.click();
-    await flush();
-    const modal = document.querySelector(".trade-confirm-modal")!;
-    expect(modal.textContent).toContain("Covered calls");
-    expect(modal.textContent).toContain("Conditional exit");
-    modalBtn("Cancel")!.click();
   });
 });
 
@@ -737,7 +699,7 @@ describe("trade desk staged basket", () => {
     await flush();
     expect(document.querySelector(".chip.good")?.textContent).toContain("projection approved");
 
-    document.querySelector<HTMLButtonElement>('[data-queue-remove="stock:NVDA"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-queue-remove-leg="stock:NVDA"]')!.click();
     await flush();
     expect(apiMock).toHaveBeenCalledWith(
       "/api/trade/basket", "POST", { remove_leg_id: "stock:NVDA" },
@@ -790,38 +752,277 @@ describe("trade desk staged basket", () => {
     // totals footer
     const foot = table.querySelector("tfoot")!;
     expect(foot.textContent).toContain("1 buy");
-    expect(foot.textContent).toContain("1 sell");
+    expect(foot.textContent).toContain("1 stock sell");
     expect(foot.textContent).toContain("net");
     expect(foot.textContent).toContain("gross");
   });
+});
 
-  it("renders mixed stock and covered-call legs without treating contracts as CZK", async () => {
-    const basket = [
-      { leg_type: "stock", leg_id: "stock:AMD", symbol: "AMD", delta_czk: -1000,
-        provenance: [] },
-      { leg_type: "covered_call", leg_id: "covered_call:AMD:2026-08-21:110:C",
-        symbol: "AMD", contracts: 2, conid: 9001, expiry: "2026-08-21",
-        strike: 110, right: "C", limit_price: 2.5, multiplier: 100,
-        quote: { bid: 2.4, ask: 2.6, last: 2.5 },
-        underlying_quote: { last: 101.25 }, provenance: [] },
-    ];
-    apiMock.mockImplementation((path: string) => {
+const MIXED_BASKET: TradeLeg[] = [
+  { type: "stock", symbol: "NVDA", delta_czk: -5000 },
+  {
+    type: "covered_call", route: "covered_call", symbol: "NVDA", leg_id: "cc-nvda-1",
+    conid: 98765432, expiry: "20260815", strike: 180, contracts: 2,
+    limit_price: 4.5,
+    provenance: [{ route: "covered_call", intended_assigned_shares: 200 }],
+  },
+];
+
+function optionOrder(over: Record<string, unknown> = {}) {
+  return {
+    symbol: "NVDA", side: "SELL", quantity: 2, orderType: "LMT", price: 4.5, tif: "DAY",
+    conid: 98765432, leg_id: "cc-nvda-1", instrument_type: "covered_call",
+    expiry: "20260815", strike: 180, contracts: 2, right: "C", multiplier: 100,
+    ...over,
+  };
+}
+
+function ccContext(over: Record<string, unknown> = {}) {
+  return {
+    symbol: "NVDA", side: "SELL", leg_id: "cc-nvda-1", conid: 98765432,
+    instrument_type: "covered_call", classification: "none",
+    proposed_qty: 2, residual_qty: 2, expiry: "20260815", strike: 180, right: "C",
+    current_shares: 200, if_assigned_shares: 0, coverage_ok: true, coverage_shares: 200,
+    premium_credit: 9000, currency: "CZK",
+    provenance: { route: "covered_call", tranche: 1, rung: 2, intended_assigned_shares: 200 },
+    placeable: true, next_step: "Review and confirm this new order.",
+    ...over,
+  };
+}
+
+async function loadBasket(status: object, basket: TradeLeg[]) {
+  apiMock.mockImplementation((path: string) => {
+    if (path === "/api/trade/status") return Promise.resolve(status);
+    if (path === "/api/trade/basket")
+      return Promise.resolve({ trades: basket, revision: "rev-mixed", reviewed: true });
+    if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
+    return Promise.resolve({ orders: [] });
+  });
+  state.stagedBasket = basket;
+  await loadTrade();
+  await flush();
+  document.querySelector<HTMLButtonElement>('[data-trade-tab="basket"]')!.click();
+  await flush();
+}
+
+async function previewMixed(status: object, basket: TradeLeg[], preview: object) {
+  apiMock.mockImplementation((path: string) => {
+    if (path === "/api/trade/status") return Promise.resolve(status);
+    if (path === "/api/trade/basket")
+      return Promise.resolve({ trades: basket, revision: "rev-mixed", reviewed: true });
+    if (path === "/api/trade/preview") return Promise.resolve(preview);
+    return Promise.resolve({ orders: [] });
+  });
+  state.stagedBasket = basket;
+  await loadTrade();
+  await flush();
+  document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.click();
+  await flush();
+}
+
+describe("trade desk mixed stock + covered call", () => {
+  it("renders basket copy for stock sells and covered calls (to open, contracts, conditional assignment)", async () => {
+    await loadBasket(PAPER_STATUS, MIXED_BASKET);
+    const table = document.querySelector(".trade-basket-table")!;
+    const rows = [...table.querySelectorAll("tbody tr")];
+    expect(rows).toHaveLength(2);
+
+    const stock = rows.find((r) => r.textContent?.includes("NVDA") && !r.classList.contains("trade-basket-option"))!;
+    expect(stock.querySelector(".trade-side.sell")).toBeTruthy();
+    expect(stock.textContent).toContain("\u2212"); // signed CZK sell
+
+    const call = rows.find((r) => r.classList.contains("trade-basket-option"))!;
+    expect(call.textContent).toContain("to open");
+    expect(call.textContent).toContain("2 contracts");
+    expect(call.textContent).toContain("20260815");
+    expect(call.textContent).toContain("180");
+    expect(call.textContent).toContain("call");
+    expect(call.textContent).toContain("conditional assignment");
+    expect(call.textContent).toContain("limit 4.5");
+
+    const foot = table.querySelector("tfoot")!;
+    expect(foot.textContent).toContain("1 stock sell");
+    expect(foot.textContent).toContain("1 covered call");
+  });
+
+  it("removes the exact server-known covered-call leg", async () => {
+    apiMock.mockImplementation((
+      path: string,
+      method?: string,
+      body?: { remove_leg_id?: string },
+    ) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
-      if (path === "/api/trade/basket") return Promise.resolve({ trades: basket });
+      if (path === "/api/trade/basket" && method === "POST") {
+        const trades = MIXED_BASKET.filter((trade) => trade.leg_id !== body?.remove_leg_id);
+        return Promise.resolve({ trades, revision: "rev-stock-only", reviewed: false });
+      }
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({ trades: MIXED_BASKET, revision: "rev-mixed", reviewed: true });
+      }
       if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
       return Promise.resolve({ orders: [] });
     });
     await loadTrade();
     await flush();
 
-    const option = document.querySelector(".trade-basket-table tr.tb-option")!;
-    expect(option.textContent).toContain("Sell to open 2 calls");
-    expect(option.textContent).toContain("2026-08-21 · 110C");
-    expect(option.textContent).toContain("max 200 assigned shares");
-    expect(option.textContent).toContain("underlying last 101.25");
-    const foot = document.querySelector(".trade-basket-table tfoot")!;
-    expect(foot.textContent).toContain("2 sells");
-    expect(foot.textContent).toContain("stock gross");
+    document.querySelector<HTMLButtonElement>(
+      '[data-queue-remove-leg="cc-nvda-1"]',
+    )!.click();
+    await flush();
+
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket", "POST", { remove_leg_id: "cc-nvda-1" },
+    );
+    expect(state.stagedBasket.every((trade) => trade.type !== "covered_call")).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.disabled).toBe(true);
+  });
+
+  it("renders option order card with contract, expiry, strike, coverage, premium, and provenance", async () => {
+    await previewMixed(PAPER_STATUS, MIXED_BASKET, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [order({ symbol: "NVDA", side: "SELL", quantity: 10, conid: 111, leg_id: "stock:NVDA" }),
+        optionOrder()],
+      order_context: [
+        {
+          symbol: "NVDA", side: "SELL", leg_id: "stock:NVDA", instrument_type: "stock",
+          classification: "none", proposed_qty: 10, residual_qty: 10,
+          current_position_qty: 50, projected_position_qty: 40,
+          placeable: true, next_step: "Review and confirm this new order.",
+        },
+        ccContext(),
+      ],
+    });
+
+    const cards = [...document.querySelectorAll(".trade-order-item")];
+    const option = cards.find((c) => c.textContent?.includes("Sell to open"))!;
+    expect(option).toBeTruthy();
+    expect(option.textContent).toContain("2 contracts");
+    expect(option.querySelector(".trade-option-contract")!.textContent).toContain("20260815");
+    expect(option.querySelector(".trade-option-contract")!.textContent).toContain("180");
+    expect(option.querySelector(".trade-option-contract")!.textContent).toContain("call");
+    expect(option.textContent).toContain("Conditional assignment");
+    expect(option.textContent).toContain("200 shares");
+    expect(option.textContent).toContain("0 if assigned");
+    expect(option.textContent).toContain("Coverage verified");
+    expect(option.textContent).toContain("200 shares reserved");
+    expect(option.textContent).toMatch(/Premium credit: 9[.,\s\u00a0]?000 CZK/);
+    expect(option.textContent).toContain("From Exit");
+    expect(option.textContent).toContain("covered call");
+    expect(option.textContent).toContain("tranche 1");
+    expect(option.textContent).toContain("Assignment is conditional");
+  });
+
+  it("keeps Place disabled until every stock and option order is marked ready", async () => {
+    await previewMixed(PAPER_STATUS, MIXED_BASKET, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [order({ symbol: "NVDA", side: "SELL", quantity: 10, conid: 111, leg_id: "stock:NVDA" }),
+        optionOrder()],
+      order_context: [
+        {
+          symbol: "NVDA", side: "SELL", leg_id: "stock:NVDA", instrument_type: "stock",
+          classification: "none", proposed_qty: 10, residual_qty: 10, placeable: true,
+        },
+        ccContext(),
+      ],
+    });
+
+    const place = byText((t) => t.startsWith("Place"))!;
+    const ready = [...document.querySelectorAll<HTMLButtonElement>("#trade-result .trade-order-ready")];
+    expect(ready).toHaveLength(2);
+    expect(place.disabled).toBe(true);
+
+    ready[0].click();
+    expect(place.disabled).toBe(true);
+
+    byText((t) => t === "Mark all ready")!.click();
+    expect(place.disabled).toBe(false);
+  });
+
+  it("restates covered-call economics in the final placement modal", async () => {
+    await previewMixed(PAPER_STATUS, MIXED_BASKET, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [
+        order({ symbol: "NVDA", side: "SELL", quantity: 10, conid: 111, leg_id: "stock:NVDA" }),
+        optionOrder({ current_shares: 300, if_assigned_shares: 100, currency: "USD" }),
+      ],
+      order_context: [
+        {
+          symbol: "NVDA", side: "SELL", leg_id: "stock:NVDA", instrument_type: "stock",
+          classification: "none", proposed_qty: 10, residual_qty: 10, placeable: true,
+        },
+        ccContext(),
+      ],
+    });
+    byText((t) => t === "Mark all ready")!.click();
+    byText((t) => t.startsWith("Place"))!.click();
+    await flush();
+
+    const modal = document.querySelector(".trade-confirm-modal")!;
+    expect(modal.textContent).toContain("Covered calls · sell to open");
+    expect(modal.textContent).toContain("2 contracts");
+    expect(modal.textContent).toContain("20260815 180C");
+    expect(modal.textContent).toContain("limit 4.5 USD");
+    expect(modal.textContent).toContain("300 → 100 shares");
+    expect(modal.textContent).toContain("Assignment is conditional");
+    modalBtn("Cancel")!.click();
+  });
+
+  it("matches option orders to contexts by leg_id/conid, not underlying symbol alone", async () => {
+    const twoCalls = [
+      optionOrder({ leg_id: "cc-a", conid: 111, quantity: 1, contracts: 1, expiry: "20260620", strike: 170 }),
+      optionOrder({ leg_id: "cc-b", conid: 222, quantity: 2, contracts: 2, expiry: "20260815", strike: 180 }),
+    ];
+    await previewMixed(PAPER_STATUS, MIXED_BASKET, {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: twoCalls,
+      order_context: [
+        ccContext({
+          leg_id: "cc-a", conid: 111, proposed_qty: 1, residual_qty: 1,
+          expiry: "20260620", strike: 170, contracts: 1,
+        }),
+        ccContext({
+          leg_id: "cc-b", conid: 222, proposed_qty: 2, residual_qty: 2,
+          expiry: "20260815", strike: 180, contracts: 2,
+        }),
+      ],
+    });
+
+    const cards = [...document.querySelectorAll(".trade-order-item")];
+    expect(cards).toHaveLength(2);
+    const june = cards.find((c) => c.querySelector(".trade-option-contract")?.textContent?.includes("20260620"))!;
+    const aug = cards.find((c) => c.querySelector(".trade-option-contract")?.textContent?.includes("20260815"))!;
+    expect(june.textContent).toContain("Sell to open 1 contract");
+    expect(june.textContent).toContain("170");
+    expect(aug.textContent).toContain("Sell to open 2 contracts");
+    expect(aug.textContent).toContain("180");
+    // Each placeable card gets its own Mark ready control.
+    expect(june.querySelector(".trade-order-ready")).toBeTruthy();
+    expect(aug.querySelector(".trade-order-ready")).toBeTruthy();
+  });
+
+  it("blocks placement when covered-call capacity is insufficient", async () => {
+    await previewMixed(PAPER_STATUS, [MIXED_BASKET[1]], {
+      is_paper: true, live_allowed: true, account: "DU1", warnings: [], ibkr_preview: null,
+      orders: [],
+      order_context: [
+        ccContext({
+          classification: "coverage_blocked", proposed_qty: 3, residual_qty: 0,
+          coverage_ok: false, coverage_capacity_contracts: 1, placeable: false,
+          next_step: "Covered-call capacity is 1 contract(s) after held short calls, but 2 contract(s) are already working.",
+        }),
+      ],
+    });
+
+    const blocked = document.querySelector(".trade-order-item.blocked")!;
+    expect(blocked.textContent).toContain("Coverage blocked");
+    expect(blocked.textContent).toContain("Coverage blocked · 1 contract(s) available");
+    expect(blocked.querySelector(".trade-order-ready")).toBeFalsy();
+    expect(document.querySelector(".trade-action-item.blocker")!.textContent)
+      .toContain("insufficient covered-call capacity");
+
+    const place = byText((t) => t.includes("No new orders to place") || t.startsWith("Place"))!;
+    expect(place.disabled).toBe(true);
+    expect(place.textContent).toContain("No new orders to place");
   });
 });
 
