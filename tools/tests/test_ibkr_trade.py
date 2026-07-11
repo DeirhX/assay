@@ -871,6 +871,8 @@ class OptionChain(unittest.TestCase):
         self.assertAlmostEqual(call105["ask"], 2.60)
         self.assertAlmostEqual(call105["last"], 2.50)
         self.assertAlmostEqual(call105["implied_vol"], 0.25)
+        self.assertEqual(call105["market_data_timeline"], "real_time")
+        self.assertIsNotNone(call105["quote_timestamp"])
 
     def test_enriched_fields_delta_volume_open_interest(self):
         # 87 = volume ("1.2K" -> 1200), 7308 = delta, 7638 = open interest.

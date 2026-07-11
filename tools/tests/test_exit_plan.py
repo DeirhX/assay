@@ -427,6 +427,25 @@ def test_cached_option_chain_persists_and_serves(tmp_path, monkeypatch):
     assert calls["n"] == 1  # second call served from the fresh cache entry
 
 
+def test_cached_ibkr_chain_refreshes_before_execution_quote_ttl(tmp_path, monkeypatch):
+    monkeypatch.setattr(exit_plan, "_OPT_CACHE_DIR", tmp_path)
+    old = (
+        dt.datetime.now(dt.timezone.utc)
+        - dt.timedelta(seconds=exit_plan.IBKR_CHAIN_CACHE_TTL_SECONDS + 1)
+    ).isoformat()
+    exit_plan.store.write_json(tmp_path / "NVDA.json", {
+        "symbol": "NVDA",
+        "fetched_at": old,
+        "chain": _ibkr_chain(),
+    })
+    fetch = mock.Mock(return_value=_ibkr_chain())
+    monkeypatch.setattr(exit_plan, "_fetch_option_chain", fetch)
+
+    out = exit_plan._cached_option_chain("NVDA")
+    assert out["source"] == "ibkr"
+    fetch.assert_called_once_with("NVDA")
+
+
 # --------------------------------------------------------------------------- #
 # covered-call route sizing — whole contracts should target the actual band
 # --------------------------------------------------------------------------- #

@@ -68,6 +68,10 @@ EPS = 1e-6
 # name. Same shape as risk.py's price-series cache.
 _OPT_CACHE_DIR = REPO_ROOT / "data" / "cache" / "options"
 OPT_CACHE_TTL_SECONDS = 3 * 3600
+# Broker chains carry execution quotes, not merely advisory strikes. Keep their
+# cache shorter than the 120s execution TTL so "rebuild" can actually obtain a
+# newer quote instead of replaying a stale three-hour cache entry.
+IBKR_CHAIN_CACHE_TTL_SECONDS = 30
 _RATE_CACHE = _OPT_CACHE_DIR / "risk-free-rate.json"
 RATE_CACHE_TTL_SECONDS = 6 * 3600
 
@@ -788,8 +792,15 @@ def _cached_option_chain(symbol: str) -> dict[str, Any] | None:
     cached = store.load(path)
     # A fresh entry short-circuits even when it recorded "no chain" (None), so a
     # foreign name with no listed options doesn't 404 on every single load.
-    if isinstance(cached, dict) and "chain" in cached and timeutil.cache_fresh(cached.get("fetched_at"), OPT_CACHE_TTL_SECONDS):
-        return cached.get("chain")
+    if isinstance(cached, dict) and "chain" in cached:
+        cached_chain = cached.get("chain")
+        ttl = (
+            IBKR_CHAIN_CACHE_TTL_SECONDS
+            if isinstance(cached_chain, dict) and cached_chain.get("source") == "ibkr"
+            else OPT_CACHE_TTL_SECONDS
+        )
+        if timeutil.cache_fresh(cached.get("fetched_at"), ttl):
+            return cached_chain
     chain = _fetch_option_chain(symbol)
     store.write_json(path, {
         "symbol": symbol.upper(),
