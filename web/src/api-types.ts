@@ -279,6 +279,13 @@ export interface WhatifTrade {
   delta_czk: number;
 }
 
+export interface TradeQueueState {
+  trades: TradeLeg[];
+  revision: string;
+  reviewed: boolean;
+  reviewed_at?: string | null;
+}
+
 export interface WhatifSummary {
   bands_in_before?: number;
   bands_in_after?: number;

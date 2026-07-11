@@ -361,7 +361,7 @@ export function riskPanelHtml(risk: RiskDelta | undefined): string {
   const warns = (risk.warnings || [])
     .map((w) => `<div class="trade-warn">\u26a0 ${esc(w)}</div>`).join("");
   return `<div class="trade-risk">` +
-    `<div class="trade-risk-head">Risk impact of this basket</div>` +
+    `<div class="trade-risk-head">Risk impact of this order queue</div>` +
     `<div class="trade-risk-grid">${cells}</div>${warns}</div>`;
 }
 
@@ -402,7 +402,7 @@ export function placeResultHtml(res: PlaceResult): string {
   const banner = `<div class="trade-bnr ${ok ? "paper" : "warn"}">` +
     `${ok} order(s) acknowledged by IBKR on ${esc(res.kind)} account ${sensitive(esc(res.account), "account id")}.</div>`;
   const cleared = res.staged_basket_cleared
-    ? `<span class="muted">The staged basket was cleared so it can't be placed twice.</span>` : "";
+    ? `<span class="muted">The order queue was cleared so it can't be placed twice.</span>` : "";
   const next = `<div class="trade-next">
     <div class="subhead">Close the loop</div>
     <ol class="trade-next-list">

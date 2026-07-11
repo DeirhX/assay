@@ -10,7 +10,12 @@ vi.mock("../src/core", async (importOriginal) => ({
   api: vi.fn(() => Promise.resolve({})),
 }));
 
-import { flowBarHtml, flowStages, stageForView, updateFlowBar, type FlowData } from "../src/flowbar";
+import { api } from "../src/core";
+import {
+  flowBarHtml, flowStages, invalidateFlowData, stageForView, updateFlowBar, type FlowData,
+} from "../src/flowbar";
+
+const apiMock = vi.mocked(api);
 
 const data = (over: Partial<FlowData> = {}): FlowData => ({
   ov: {
@@ -24,9 +29,9 @@ const data = (over: Partial<FlowData> = {}): FlowData => ({
 });
 
 describe("stageForView", () => {
-  it("maps trade to Orders, target-state to stage 4, the rest to Plan changes", () => {
-    expect(stageForView("trade")).toBe(3);
-    expect(stageForView("target-state")).toBe(4);
+  it("maps target-state before the Trade desk and the rest to Plan changes", () => {
+    expect(stageForView("target-state")).toBe(3);
+    expect(stageForView("trade")).toBe(4);
     for (const v of ["rebalance", "optimizer", "working-draft", "exit"]) {
       expect(stageForView(v)).toBe(2);
     }
@@ -48,6 +53,39 @@ describe("updateFlowBar visibility", () => {
     expect(host.hidden).toBe(false);           // Current book, though a portfolio view
     updateFlowBar("history", "portfolio");
     expect(host.hidden).toBe(true);            // not a pipeline step
+  });
+});
+
+describe("working-order polling gate", () => {
+  it("does not request protected orders while trading is disabled", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/overview") return Promise.resolve({});
+      if (path === "/api/trade/status") {
+        return Promise.resolve({ trading_enabled: false, authenticated: false });
+      }
+      return Promise.reject(new Error("orders should not be requested"));
+    });
+    document.body.innerHTML = '<nav id="flowbar" hidden></nav>';
+    invalidateFlowData();
+    updateFlowBar("rebalance", "rebalance");
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith("/api/trade/status"));
+    expect(apiMock).not.toHaveBeenCalledWith("/api/trade/orders");
+  });
+
+  it("loads working orders only for an authenticated enabled session", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/overview") return Promise.resolve({});
+      if (path === "/api/trade/status") {
+        return Promise.resolve({ trading_enabled: true, authenticated: true });
+      }
+      if (path === "/api/trade/orders") return Promise.resolve({ orders: [{ id: 1 }] });
+      return Promise.resolve({});
+    });
+    document.body.innerHTML = '<nav id="flowbar" hidden></nav>';
+    invalidateFlowData();
+    updateFlowBar("trade", "rebalance");
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith("/api/trade/orders"));
+    expect(document.getElementById("flowbar")?.textContent).toContain("1 working");
   });
 });
 
@@ -73,24 +111,24 @@ describe("flowStages", () => {
     expect(s2.tone).toBe("warn");
   });
 
-  it("stage 4 reads bands-in and flags off-target cash; all-in reads ok", () => {
-    const s4 = flowStages(data())[3];
-    expect(s4.sub).toBe("13/16 bands in");
+  it("stage 3 reads bands-in and flags off-target cash; all-in reads ok", () => {
+    const s3 = flowStages(data())[2];
+    expect(s3.sub).toBe("13/16 bands in");
     const done = flowStages(data({
       ov: { snapshot: { exists: true, positions: 1, age_days: 0 },
             plan: { rows: 5, out_of_band: 0, actionable: 0, cash: { status: "IN" } },
             draft: { pending: 0 }, staged_basket: { count: 0 } },
       working: 0,
-    }))[3];
+    }))[2];
     expect(done.tone).toBe("ok");
     const cashOff = flowStages(data({
       ov: { ...data().ov, plan: { rows: 5, out_of_band: 0, actionable: 0, cash: { status: "BELOW" } } },
-    }))[3];
+    }))[2];
     expect(cashOff.sub).toContain("cash off target");
   });
 
-  it("routes stage 4 to the Target state comparison view", () => {
-    expect(flowStages(data())[3].view).toBe("target-state");
+  it("routes stage 3 to the Target state comparison view", () => {
+    expect(flowStages(data())[2].view).toBe("target-state");
   });
 
   it("degrades to setup guidance without a snapshot", () => {

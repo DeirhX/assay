@@ -840,7 +840,6 @@ class PlaceTimeCoveredCallRevalidation(unittest.TestCase):
         basket = trade_service._normalize_basket([_cc_leg()])
         token = trade_service._basket_token("DU1", basket)
         order = self._cc_order()
-        self._arm_cc_preview(token, order)
         with tempfile.TemporaryDirectory() as tmp:
             staged = Path(tmp) / "staged-basket.json"
             with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged), \
@@ -858,6 +857,7 @@ class PlaceTimeCoveredCallRevalidation(unittest.TestCase):
                     mock.patch.object(ibkr_trade, "place_orders",
                                       return_value=[{"order_id": "9"}]) as place:
                 trade_service.save_basket(basket)
+                self._arm_cc_preview(token, order)
                 res = trade_service._trade_place({
                     "trades": basket, "account": "DU1", "confirm": True, "token": token,
                 })

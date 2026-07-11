@@ -3,7 +3,9 @@
 // pairing before/after rows into a comparison, and the row HTML's now->after
 // rendering with change highlighting.
 import { describe, expect, it } from "vitest";
-import { compareRowHtml, compareRows, deriveSuggestionTrades, scaleMaxOf } from "../src/targetstate";
+import {
+  compareRowHtml, compareRows, deriveSuggestionTrades, scaleMaxOf, sourceBanner,
+} from "../src/targetstate";
 import type { PlanRow, RebalancePlan } from "../src/api-types";
 
 const row = (over: Partial<PlanRow>): PlanRow => ({
@@ -36,6 +38,22 @@ describe("deriveSuggestionTrades", () => {
       { symbol: "TRIM1", delta_czk: -8_000 },
       { symbol: "MEM1", delta_czk: 4_000 },
     ]);
+  });
+});
+
+describe("projection review gate", () => {
+  it("offers approval for an unreviewed queue and Trade only after approval", () => {
+    const unreviewed = sourceBanner("basket", 2, {
+      trades: [], revision: "rev-1", reviewed: false,
+    });
+    expect(unreviewed).toContain('data-ts-review="rev-1"');
+    expect(unreviewed).not.toContain('data-ts-goto="trade"');
+
+    const reviewed = sourceBanner("basket", 2, {
+      trades: [], revision: "rev-1", reviewed: true,
+    });
+    expect(reviewed).toContain("projection approved");
+    expect(reviewed).toContain('data-ts-goto="trade"');
   });
 });
 
