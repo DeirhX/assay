@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, decisionPill } from "../src/core";
+import { api, decisionPill, setErrorSink } from "../src/core";
 
 describe("decisionPill", () => {
   it("spaces every underscore, not just the first", () => {
@@ -31,7 +31,10 @@ describe("decisionPill", () => {
 });
 
 describe("api timeout", () => {
-  afterEach(() => { vi.unstubAllGlobals(); });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setErrorSink(() => undefined);
+  });
 
   it("aborts a stalled request and reports a timeout instead of hanging", async () => {
     // A fetch that never answers until the AbortController fires -- exactly a
@@ -65,5 +68,20 @@ describe("api timeout", () => {
     });
     await api("/api/holdings");
     expect(sawSignal).toBe(false);
+  });
+
+  it("can suppress expected background-poll errors", async () => {
+    const sink = vi.fn();
+    setErrorSink(sink);
+    vi.stubGlobal("fetch", () => Promise.resolve({
+      ok: false,
+      status: 502,
+      json: () => Promise.resolve({ error: "bad response" }),
+    } as Response));
+
+    await expect(api(
+      "/api/jobs", "GET", null, { reportError: false },
+    )).rejects.toThrow("bad response");
+    expect(sink).not.toHaveBeenCalled();
   });
 });

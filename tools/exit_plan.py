@@ -103,16 +103,27 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
             f"No uncovered capacity for this exit ({capacity.get('current_shares', 0)} shares; "
             f"{capacity.get('held_short_calls', 0)} held short call(s))."
         )
-    if not executable:
+    if not ladder:
+        reasons.append("No covered-call strike ladder is available for this exit.")
+    elif not executable:
         if any(r.get("executable") and not r.get("quote_fresh") for r in ladder):
-            reasons.append("IBKR option quote is stale; rebuild the Exit plan.")
+            reasons.append(
+                "Covered-call levels are available, but the IBKR quote is stale; "
+                "rebuild before staging."
+            )
         else:
-            reasons.append("No exact IBKR call contract with a live two-sided quote.")
-    covered_ok = capacity_contracts > 0 and bool(executable)
+            source = str(options.get("source") or "market data").replace("_", " ").title()
+            reasons.append(
+                f"Indicative covered-call levels from {source} are available; staging needs an "
+                "exact IBKR contract with a live two-sided quote."
+            )
+    covered_ok = capacity_contracts > 0 and bool(ladder)
+    stageable = capacity_contracts > 0 and bool(executable)
     return {
         "sell_shares": {"eligible": sell_ok, "reasons": sell_reasons},
         "covered_call": {
             "eligible": covered_ok,
+            "stageable": stageable,
             "reasons": reasons,
             "capacity_contracts": capacity_contracts,
         },
@@ -338,8 +349,8 @@ def _schedule(
     is known, otherwise even ``default_tranches`` slices. Returns the tranche
     rows plus the derived cap so the UI can explain the sizing."""
     start = start or dt.date.today()
-    total_shares = max(0.0, float(total_shares))
-    if total_shares <= EPS:
+    total_shares = int(math.floor(max(0.0, float(total_shares)) + 0.5))
+    if total_shares < 1:
         return {"tranches": [], "n": 0, "adv": adv, "max_shares_per_day": None}
 
     max_per_day = (slice_pct * adv) if adv and adv > 0 else None
@@ -347,18 +358,19 @@ def _schedule(
         n = max(1, min(horizon_days, math.ceil(total_shares / max_per_day)))
     else:
         n = max(1, min(horizon_days, default_tranches))
+    n = min(n, total_shares)
 
-    per_shares = total_shares / n
+    per_shares, extra_shares = divmod(total_shares, n)
     limits = _ladder_prices(level, price_local, n)
     tranches: list[dict[str, Any]] = []
     for i in range(n):
         # Spread evenly across the horizon (tranche 0 today, last on ~horizon).
         offset = 0 if n == 1 else round(i * (horizon_days - 1) / (n - 1))
-        shares = per_shares
+        shares = per_shares + (1 if i < extra_shares else 0)
         tranches.append({
             "index": i + 1,
             "date": (start + dt.timedelta(days=offset)).isoformat(),
-            "shares": round(shares, 4),
+            "shares": shares,
             "czk": round(shares * price_base, 2),
             "limit_price": limits[i],
             "limit_currency": currency,
@@ -463,16 +475,33 @@ def build_exit_plan(
         row = {"rule": cand["rule"], "high": cand["high"]}
         state_label, target_pct = _end_state(row, force_zero=(sym in full_set))
         target_czk = (target_pct / 100.0 * invested) if invested else 0.0
-        exit_czk = max(0.0, pos["mv_base"] - target_czk)
-        if exit_czk <= EPS:
+        desired_exit_czk = max(0.0, pos["mv_base"] - target_czk)
+        raw_exit_shares = (
+            pos["qty"] * (desired_exit_czk / pos["mv_base"])
+            if pos["mv_base"] else 0.0
+        )
+        # Stock orders are whole-share only. Use the nearest executable quantity
+        # and never exceed the whole shares actually held.
+        exit_shares = min(
+            int(math.floor(max(0.0, pos["qty"]) + EPS)),
+            int(math.floor(max(0.0, raw_exit_shares) + 0.5)),
+        )
+        if exit_shares < 1:
             continue
-        exit_shares = pos["qty"] * (exit_czk / pos["mv_base"]) if pos["mv_base"] else 0.0
+        exit_czk = min(pos["mv_base"], exit_shares * pos["price_base"])
 
         lots = tax_lots.classify_lots(holdings, sym, as_of=as_of)
         layers = _tax_layers(lots, exit_czk, near_exempt_days=near_exempt_days, tax_rate=tax_rate)
 
         # Schedule only the sell-now portion; the deferred bit waits on the clock.
-        sell_now_shares = pos["qty"] * (layers["sell_now_czk"] / pos["mv_base"]) if pos["mv_base"] else 0.0
+        raw_sell_now_shares = (
+            pos["qty"] * (layers["sell_now_czk"] / pos["mv_base"])
+            if pos["mv_base"] else 0.0
+        )
+        sell_now_shares = min(
+            exit_shares,
+            int(math.floor(max(0.0, raw_sell_now_shares) + 0.5)),
+        )
         provider_sym = portfolio.provider_symbol_for(sym)
         series = risk.load_price_series(provider_sym, fetch=fetch) if fetch is not False else None
         adv = average_daily_volume(series)
@@ -494,8 +523,8 @@ def build_exit_plan(
             "end_state": state_label,
             "target_pct": round(target_pct, 2),
             "exit_czk": round(exit_czk, 2),
-            "exit_shares": round(exit_shares, 4),
-            "sell_now_shares": round(sell_now_shares, 4),
+            "exit_shares": exit_shares,
+            "sell_now_shares": sell_now_shares,
             "tax": layers,
             "schedule": sched,
         }

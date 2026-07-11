@@ -7,12 +7,12 @@
 // — "Stage tranche" just adds one slice to the shared order queue. The projected
 // book is reviewed next; placement remains a separate explicit Trade-desk step.
 import {
-  $, api, el, esc, fmtCZK, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
+  $, api, el, esc, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
   relAge,
 } from "./core";
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
-  ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
+  ExitCoveredCallRoute, ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
 import { pushNav, setActiveView } from "./shell";
@@ -24,7 +24,28 @@ const cfg = { horizon_days: 10, adv_slice_pct: 0.12, near_exempt_days: 120, tax_
 // Per-symbol route tab state survives re-renders until the user switches away.
 const routePick = new Map<string, ExitRouteKind>();
 
-const czk = (v: number | null | undefined) => (v == null ? "n/a" : sensitive(fmtCZK(v)));
+const fmtSignificant = (v: number, digits = 2) =>
+  Number(v).toLocaleString(undefined, { maximumSignificantDigits: digits });
+function fmtCompactMoney(v: number): string {
+  const units = ["", "K", "M", "B", "T"];
+  const sign = v < 0 ? -1 : 1;
+  let scaled = Math.abs(Number(v));
+  let unit = 0;
+  while (scaled >= 1_000 && unit < units.length - 1) {
+    scaled /= 1_000;
+    unit += 1;
+  }
+  scaled = Number(scaled.toPrecision(2));
+  if (scaled >= 1_000 && unit < units.length - 1) {
+    scaled /= 1_000;
+    unit += 1;
+  }
+  return `${fmtSignificant(sign * scaled)}${units[unit]}`;
+}
+const fmtShares = (v: number | null | undefined) =>
+  v == null ? "n/a" : Math.round(Number(v)).toLocaleString();
+const czk = (v: number | null | undefined) =>
+  v == null ? "n/a" : sensitive(`${fmtCompactMoney(v)} CZK`);
 const pct = (v: number | null | undefined, digits = 1) => (v == null ? "n/a" : `${Number(v).toFixed(digits)}%`);
 const dash = "–";
 const EXECUTION_QUOTE_MAX_AGE_MS = 120_000;
@@ -71,10 +92,35 @@ export async function loadExit(): Promise<void> {
   if (summary) summary.innerHTML = "";
   if (body) body.innerHTML = "";
   try {
-    const data = await api<ExitPlanResponse>(`/api/exit-plan?${cfgQuery()}`);
+    const query = cfgQuery();
+    const base = await api<ExitPlanResponse>(
+      `/api/exit-plan?${query}&with_options=0`,
+    );
     if (isStaleToken("exit", token)) return;
-    renderExit(data);
-    if (status) status.textContent = "";
+    renderExit(base);
+    if (!base.positions.length) {
+      if (status) status.textContent = "";
+      return;
+    }
+    setLoading(status, "Exit plans ready — loading live option routes…", true);
+    try {
+      const enriched = await api<ExitPlanResponse>(
+        `/api/exit-plan?${query}&with_options=1`,
+        "GET",
+        null,
+        { timeoutMs: 60_000 },
+      );
+      if (isStaleToken("exit", token)) return;
+      renderExit(enriched);
+      if (status) status.textContent = "";
+    } catch (e) {
+      if (isStaleToken("exit", token)) return;
+      if (status) {
+        status.textContent =
+          `Exit plans are ready, but live option routes could not load: ${(e as Error).message}`;
+        status.classList.add("err");
+      }
+    }
   } catch (e) {
     if (isStaleToken("exit", token)) return;
     if (summary) summary.innerHTML = "";
@@ -311,7 +357,7 @@ function sellSharesReco(p: ExitPosition, elig: { eligible: boolean; reasons: str
     ? ` <span class="warn">Thin name — slices may move the price.</span>` : "";
 
   const lead = el("div", "exit-reco-lead");
-  lead.innerHTML = `<span class="exit-reco-verb">${verb}:</span> sell <strong>${fmtNum(p.exit_shares)} sh</strong> (${czk(p.exit_czk)}).${keepStr}`;
+  lead.innerHTML = `<span class="exit-reco-verb">${verb}:</span> sell <strong>${fmtShares(p.exit_shares)} sh</strong> (${czk(p.exit_czk)}).${keepStr}`;
   inner.appendChild(lead);
   const sub = el("div", "exit-reco-sub");
   sub.innerHTML = `${timing}${taxStr}.${liq}${thin}`;
@@ -322,8 +368,8 @@ function sellSharesReco(p: ExitPosition, elig: { eligible: boolean; reasons: str
     const cta = el("button", "primary exit-reco-cta");
     cta.type = "button";
     cta.textContent = s.tranches.length > 1
-      ? `Stage first slice (${fmtNum(first.shares)} sh) →`
-      : `Stage the sell (${fmtNum(first.shares)} sh) →`;
+      ? `Stage first slice (${fmtShares(first.shares)} sh) →`
+      : `Stage the sell (${fmtShares(first.shares)} sh) →`;
     cta.title = "Add this slice to the order queue, then review the projected portfolio";
     cta.addEventListener("click", () => stageTranche(p.symbol, first.index, cta));
     inner.appendChild(cta);
@@ -333,7 +379,7 @@ function sellSharesReco(p: ExitPosition, elig: { eligible: boolean; reasons: str
 
 function coveredCallReco(
   p: ExitPosition,
-  elig: { eligible: boolean; reasons: string[]; capacity_contracts?: number },
+  elig: ExitCoveredCallRoute,
   ccy: string,
 ): HTMLElement {
   const inner = el("div", "exit-reco-route");
@@ -351,10 +397,13 @@ function coveredCallReco(
     routeBlocked(inner, elig.reasons);
     return inner;
   }
+  if (elig.stageable === false && elig.reasons.length) {
+    routeBlocked(inner, elig.reasons);
+  }
 
   const cap = el("div", "exit-reco-sub");
   cap.textContent = contracts > 0
-    ? `Up to ${contracts} contract${contracts === 1 ? "" : "s"} (${fmtNum(contracts * 100)} sh if assigned).`
+    ? `Up to ${contracts} contract${contracts === 1 ? "" : "s"} (${fmtShares(contracts * 100)} sh if assigned).`
     : "No whole contracts available to write.";
   inner.appendChild(cap);
   inner.appendChild(el(
@@ -434,7 +483,7 @@ function taxBlock(p: ExitPosition): HTMLElement {
       const li = el("li");
       const days = l.days_to_exempt == null ? "" : ` (${l.days_to_exempt}d)`;
       li.innerHTML =
-        `${fmtNum(l.shares)} sh · gain ${czk(l.gain)} · tax if sold now ${czk(l.tax_if_sold_now)} · ` +
+        `${fmtShares(l.shares)} sh · gain ${czk(l.gain)} · tax if sold now ${czk(l.tax_if_sold_now)} · ` +
         `<strong>${esc(l.note)}${days}</strong>`;
       ul.appendChild(li);
     });
@@ -449,7 +498,7 @@ function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
   const box = el("div", "exit-section");
   const s = p.schedule;
   const advNote = s.adv
-    ? `sized to ~${Math.round(cfg.adv_slice_pct * 100)}% of ${fmtNum(s.adv)} ADV (≤${fmtNum(s.max_shares_per_day)} sh/day)`
+    ? `sized to ~${Math.round(cfg.adv_slice_pct * 100)}% of ${fmtSignificant(s.adv)} ADV (≤${fmtShares(s.max_shares_per_day)} sh/day)`
     : "even time-slices (no volume data)";
   box.innerHTML = `<h3 class="exit-h3">Scale-out schedule <span class="muted exit-h3-sub">${esc(advNote)}</span></h3>`;
 
@@ -469,7 +518,7 @@ function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
       : `${fmtNum(tr.limit_price)} ${esc(tr.limit_currency || "")}`;
     row.innerHTML =
       `<td>${tr.index}</td><td>${esc(tr.date)}</td>` +
-      `<td>${fmtNum(tr.shares)}</td><td>${czk(tr.czk)}</td>` +
+      `<td>${fmtShares(tr.shares)}</td><td>${czk(tr.czk)}</td>` +
       `<td>${limit}${tr.over_adv_cap ? ` <span class="warn" title="Above the liquidity cap — thin name, slice may move the market">⚠</span>` : ""}</td>` +
       `<td></td>`;
     const btnCell = row.lastElementChild as HTMLElement;
@@ -601,7 +650,8 @@ function liqBadge(liq: ExitCoveredCallRung["liquidity"]): string {
   return `<span class="exit-liq exit-liq-unknown" title="No live quote — premium is modeled">n/a</span>`;
 }
 
-// Executable covered-call ladder for the route UI (live bid/ask/last, stage per rung).
+// Executable covered-call ladder for the route UI. Bid/ask drive the order;
+// annualized premium yield is more decision-useful than the historical last.
 function coveredCallLadderTable(
   symbol: string,
   rungs: ExitCoveredCallRung[],
@@ -612,8 +662,10 @@ function coveredCallLadderTable(
   const tbl = el("table", "exit-ladder exit-ladder-exec");
   tbl.innerHTML =
     `<thead><tr>` +
-      `<th>Strike</th><th>Expiry</th><th>Bid (sell)</th><th>Ask (buy)</th><th>Last</th>` +
-      `<th>Limit credit</th><th>Yield p.a.</th><th>Assignment</th><th>Action</th>` +
+      `<th>Strike</th><th>Expiry</th><th>Bid (sell)</th><th>Ask (buy)</th>` +
+      `<th title="Option premium annualized over days to expiry, as a percentage of strike">Yield p.a.</th>` +
+      `<th title="Minimum premium per share accepted by the sell-to-open limit order; multiply by 100 per contract">Min credit</th>` +
+      `<th>Assignment</th><th>Action</th>` +
     `</tr></thead>`;
   const tbody = el("tbody");
   rungs.forEach((r) => {
@@ -642,9 +694,8 @@ function coveredCallLadderTable(
         `${r.quote_timestamp ? esc(relAge(r.quote_timestamp)) : "age unavailable"}</div></td>` +
       `<td>${quotePrice(r.bid, ccy)}</td>` +
       `<td>${quotePrice(r.ask, ccy)}</td>` +
-      `<td>${quotePrice(r.last, ccy)}</td>` +
+      `<td>${pct(r.premium_yield_annual_pct, 1)}</td>` +
       `<td>${r.limit_price == null ? dash : quotePrice(r.limit_price, ccy)}</td>` +
-      `<td>${r.premium_yield_annual_pct == null ? dash : pct(r.premium_yield_annual_pct, 1)}</td>` +
       `<td>${assignmentCell(r)}</td>`;
     row.appendChild(actionCell);
     tbody.appendChild(row);

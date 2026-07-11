@@ -230,7 +230,9 @@ type AppError = Error & { _recorded?: unknown; status?: number };
 // answer). Do NOT set it on a request whose server side has side effects you
 // can't take back (e.g. placing an order): aborting the fetch does not cancel
 // the server's work, so a timeout there would lie about the outcome.
-interface ApiOpts { timeoutMs?: number; }
+// `reportError: false` is reserved for best-effort background reads whose caller
+// deliberately retains stale state (for example /api/jobs during a dev reload).
+interface ApiOpts { timeoutMs?: number; reportError?: boolean; }
 
 async function api<T = any>(path: string, method: string = "GET", body: unknown = null,
                             opts: ApiOpts = {}): Promise<T> {
@@ -258,7 +260,9 @@ async function api<T = any>(path: string, method: string = "GET", body: unknown 
       const e = new Error(aborted
         ? `timed out after ${Math.round(timeoutMs / 1000)}s (${method} ${path}) — is the gateway responding?`
         : `can't reach the server (${method} ${path})`) as AppError;
-      e._recorded = _errorSink && _errorSink("network", e.message, { detail: String((netErr as any) && (netErr as any).message || netErr) });
+      if (opts.reportError !== false) {
+        e._recorded = _errorSink && _errorSink("network", e.message, { detail: String((netErr as any) && (netErr as any).message || netErr) });
+      }
       throw e;
     }
     const data = await res.json().catch(() => ({ error: "bad response" }));
@@ -269,7 +273,7 @@ async function api<T = any>(path: string, method: string = "GET", body: unknown 
       // control flow (missing cache, validation) that callers handle inline, so we
       // leave those to local status; if a 4xx goes uncaught it still surfaces via
       // the global unhandledrejection handler below.
-      if (res.status >= 500) {
+      if (res.status >= 500 && opts.reportError !== false) {
         e._recorded = _errorSink && _errorSink("api", `${method} ${path}: ${e.message}`, { detail: `HTTP ${res.status}` });
       }
       throw e;

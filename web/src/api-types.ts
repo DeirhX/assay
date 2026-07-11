@@ -646,6 +646,7 @@ export interface ExitRouteEligibility {
 
 export interface ExitCoveredCallRoute extends ExitRouteEligibility {
   capacity_contracts?: number;
+  stageable?: boolean;
 }
 
 export interface ExitRoutes {

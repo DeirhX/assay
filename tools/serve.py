@@ -636,7 +636,8 @@ class Handler(BaseHTTPRequestHandler):
         # one exists, exactly like the rebalance planner). Optional query params:
         # include=SYM,SYM (also exit these untargeted names), full=SYM,SYM (force
         # to zero), and the config knobs horizon_days/adv_slice_pct/near_exempt_days/
-        # tax_rate.
+        # tax_rate. with_options=0 serves the fast tax/sale plan first; the UI
+        # follows with the enriched option-route request.
         model = target_staging.active_model()
         holdings = _load(HOLDINGS_JSON)
         if not model:
@@ -646,8 +647,15 @@ class Handler(BaseHTTPRequestHandler):
         include = [s for s in (query.get("include") or [""])[0].split(",") if s.strip()]
         full = [s for s in (query.get("full") or [""])[0].split(",") if s.strip()]
         cfg = _exit_cfg_from_query(query)
+        with_options = (
+            str((query.get("with_options") or ["1"])[0]).strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
         with _PULL_LOCK:
-            plan = exit_plan.build_exit_plan(model, holdings, include=include, full_exit=full, cfg=cfg)
+            plan = exit_plan.build_exit_plan(
+                model, holdings, include=include, full_exit=full, cfg=cfg,
+                with_options=with_options,
+            )
         return self._send_json(plan)
 
     def _get_risk(self, path, query):
