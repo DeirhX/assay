@@ -471,7 +471,7 @@ def _snapshot_quote_timestamp(row: dict[str, Any]) -> str | None:
     """
     raw = row.get("_updated")
     try:
-        epoch = float(raw)
+        epoch = float(str(raw))
     except (TypeError, ValueError):
         return None
     if epoch <= 0:
