@@ -3,7 +3,15 @@
 // when a locked price trigger blocks the side) seeds the plan input at 0, so a
 // gated buy/trim isn't staged unless the human types an override.
 import { describe, expect, it } from "vitest";
-import { fundingCardHtml, fundingNeededCzk, optionsLine, projectedCash, rebActionClass, rebDefaultDelta } from "../src/rebalance";
+import {
+  fundingCardHtml,
+  fundingNeededCzk,
+  optionsLine,
+  projectedCash,
+  projectedWeightFromPointer,
+  rebActionClass,
+  rebDefaultDelta,
+} from "../src/rebalance";
 import type { FundingCandidate, PendingOptionExposure } from "../src/api-types";
 
 describe("rebDefaultDelta", () => {
@@ -21,6 +29,18 @@ describe("rebDefaultDelta", () => {
   it("zeroes review/none rows too (judgement calls)", () => {
     expect(rebDefaultDelta({ action: "review", suggest_delta_pct: 3 })).toBe(0);
     expect(rebDefaultDelta({ action: null, suggest_delta_pct: 0 })).toBe(0);
+  });
+});
+
+describe("projectedWeightFromPointer", () => {
+  it("maps the pointer to the shared weight scale", () => {
+    expect(projectedWeightFromPointer(150, 100, 200, 8)).toBe(2);
+    expect(projectedWeightFromPointer(250, 100, 200, 8)).toBe(6);
+  });
+
+  it("clamps drags to the visible scale", () => {
+    expect(projectedWeightFromPointer(50, 100, 200, 8)).toBe(0);
+    expect(projectedWeightFromPointer(350, 100, 200, 8)).toBe(8);
   });
 });
 

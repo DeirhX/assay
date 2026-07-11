@@ -136,18 +136,30 @@ describe("flowStages", () => {
     expect(flowStages(data())[1].view).toBe("target-state");
   });
 
-  it("shows Current book as an input and routes missing holdings to setup", () => {
+  it("shows Current book as an input and routes only missing holdings to setup", () => {
     const html = flowBarHtml({ ov: { snapshot: { exists: false } }, working: null }, 1);
     expect(html).toContain('data-flow-view="setup"');
     expect(html).toContain("Current book");
     expect(html).toContain("connect holdings");
   });
 
-  it("shows snapshot freshness separately from the numbered stages", () => {
+  it("opens fresh positions in-place instead of navigating away", () => {
     const html = flowBarHtml(data(), 1);
-    expect(html).toContain('data-flow-view="holdings"');
+    expect(html).toContain("data-flow-book");
+    expect(html).toContain("View positions ↗");
+    expect(html).not.toContain('data-flow-view="holdings"');
     expect(html).toContain("42 positions");
     expect(html).toContain("synced 2d ago");
+  });
+
+  it("offers an in-place refresh when the current book is stale", () => {
+    const stale = data({
+      ov: { ...data().ov, snapshot: { exists: true, positions: 42, age_days: 8, stale: true } },
+    });
+    const html = flowBarHtml(stale, 1);
+    expect(html).toContain("data-flow-refresh");
+    expect(html).toContain("Refresh holdings");
+    expect(html).not.toContain("data-flow-book");
   });
 });
 

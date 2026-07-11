@@ -12,8 +12,9 @@ import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
 import {
-  clampPct, computePlan, connectorGeom, DELTA_EPS, fundingNeededCzk, inBandAfter,
-  parseDelta, projectedCash, r1, rebDefaultDelta, rebScaleMax, scalePct, tradesFrom,
+  clampPct, computePlan, connectorGeom, deltaForProjectedWeight, DELTA_EPS,
+  fundingNeededCzk, inBandAfter, parseDelta, projectedCash, r1, rebDefaultDelta,
+  rebScaleMax, scalePct, tradesFrom,
 } from "./rebalance-model";
 import type { MemberInput, RowInput, SleeveInput } from "./rebalance-model";
 
@@ -57,7 +58,77 @@ export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[
 // than reading three numeric columns.
 
 // Refs into a row's track that recompute() nudges live as the plan changes.
-interface PosRefs { proj: HTMLElement; conn: HTMLElement; curP: number; }
+interface PosRefs { track: HTMLElement; proj: HTMLElement; conn: HTMLElement; curP: number; }
+
+export function projectedWeightFromPointer(
+  clientX: number,
+  trackLeft: number,
+  trackWidth: number,
+  scaleMax: number,
+): number {
+  if (!Number.isFinite(trackWidth) || trackWidth <= 0 || scaleMax <= 0) return 0;
+  const ratio = Math.min(1, Math.max(0, (clientX - trackLeft) / trackWidth));
+  return r1(ratio * scaleMax);
+}
+
+function wireProjectedMarker(
+  refs: PosRefs,
+  input: HTMLInputElement,
+  scaleMax: number,
+  deltaForTarget: (projected: number) => number,
+): void {
+  const { proj, track } = refs;
+  let dragging = false;
+  track.classList.add("draggable");
+  proj.classList.add("draggable");
+  proj.setAttribute("role", "slider");
+  proj.setAttribute("tabindex", "0");
+  proj.setAttribute("aria-label", "Projected portfolio weight");
+  proj.setAttribute("aria-valuemin", "0");
+  proj.setAttribute("aria-valuemax", String(scaleMax));
+
+  const setProjected = (projected: number) => {
+    const clamped = r1(Math.min(scaleMax, Math.max(0, projected)));
+    input.value = String(r1(deltaForTarget(clamped)));
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const setFromPointer = (event: PointerEvent) => {
+    const rect = track.getBoundingClientRect();
+    setProjected(projectedWeightFromPointer(event.clientX, rect.left, rect.width, scaleMax));
+  };
+
+  track.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    dragging = true;
+    proj.classList.add("dragging");
+    track.setPointerCapture?.(event.pointerId);
+    setFromPointer(event);
+    event.preventDefault();
+  });
+  track.addEventListener("pointermove", (event) => {
+    if (dragging) setFromPointer(event);
+  });
+  const stop = (event: PointerEvent) => {
+    if (!dragging) return;
+    dragging = false;
+    proj.classList.remove("dragging");
+    if (track.hasPointerCapture?.(event.pointerId)) track.releasePointerCapture(event.pointerId);
+  };
+  track.addEventListener("pointerup", stop);
+  track.addEventListener("pointercancel", stop);
+  proj.addEventListener("keydown", (event) => {
+    const now = Number(proj.getAttribute("aria-valuenow")) || 0;
+    const step = event.shiftKey ? 0.5 : 0.1;
+    let next: number | null = null;
+    if (event.key === "ArrowLeft" || event.key === "ArrowDown") next = now - step;
+    if (event.key === "ArrowRight" || event.key === "ArrowUp") next = now + step;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = scaleMax;
+    if (next == null) return;
+    event.preventDefault();
+    setProjected(next);
+  });
+}
 
 // Build the Position cell. Returns the cell plus the live-updatable bits (for
 // interactive rows); sleeve rows render a static projected tick at the
@@ -83,7 +154,7 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
   const aria = `${esc(r.name)}: current ${r.current_pct.toFixed(1)}%, target band ${low.toFixed(1)} to ${high.toFixed(1)}%`;
   cell.innerHTML =
     `<div class="reb-pos-meta">${meta}</div>` +
-    `<div class="reb-track" role="img" aria-label="${aria}">` +
+    `<div class="reb-track" role="${r.interactive ? "group" : "img"}" aria-label="${aria}">` +
       `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
       `<span class="reb-conn" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>` +
       `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="current ${r.current_pct.toFixed(2)}%"></span>` +
@@ -91,9 +162,10 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
     `</div>` +
     `<div class="reb-axis"><span>0%</span><span>${scaleMax}%</span></div>`;
 
+  const track = cell.querySelector(".reb-track") as HTMLElement;
   const proj = cell.querySelector(".reb-proj-mark") as HTMLElement;
   const conn = cell.querySelector(".reb-conn") as HTMLElement;
-  return { cell, refs: { proj, conn, curP } };
+  return { cell, refs: { track, proj, conn, curP } };
 }
 
 // Server-classified thesis lean -> chip color. The add/trim vocabulary lives in
@@ -520,7 +592,16 @@ function renderRebalance(plan: RebPlan) {
       row.appendChild(projCell);
 
       cells.push({ r, input, czk, projPct, projBand, row, pos: posRefs });
-      input.addEventListener("input", recompute);
+      input.addEventListener("input", () => {
+        recompute();
+        setImpactPreviewOpen(false);
+      });
+      wireProjectedMarker(posRefs, input, scaleMax, (projected) =>
+        deltaForProjectedWeight(
+          projected,
+          r.current_pct,
+          totalEditedDelta() - parseDelta(input.value),
+        ));
     } else {
       // Sleeve: combined band sized across members. The per-member breakdown +
       // editable amounts live in the expandable drawer below this row.
@@ -620,6 +701,18 @@ function renderRebalance(plan: RebPlan) {
   const untargetedItems: { row: HTMLElement; name: string }[] = [];
   interface UntargetedCell { symbol: string; input: HTMLInputElement; czk: HTMLElement; }
   const untargetedCells: UntargetedCell[] = [];
+  function totalEditedDelta(): number {
+    const rowDeltas = cells.reduce((sum, cell) => sum + parseDelta(cell.input.value), 0);
+    const memberDeltas = sleeveUnits.reduce(
+      (sum, unit) => sum + unit.members.reduce((sub, member) => sub + parseDelta(member.input.value), 0),
+      0,
+    );
+    const untargetedDeltas = untargetedCells.reduce(
+      (sum, cell) => sum + parseDelta(cell.input.value),
+      0,
+    );
+    return rowDeltas + memberDeltas + untargetedDeltas;
+  }
   let untargetedDet: HTMLDetailsElement | null = null;
   if (plan.untargeted && plan.untargeted.length) {
     const det = el("details", "reb-untargeted") as HTMLDetailsElement;
@@ -820,7 +913,11 @@ function renderRebalance(plan: RebPlan) {
     const projP = scalePct(proj, scaleMax);
     const geom = connectorGeom(pos.curP, projP);
     pos.proj.style.left = `${r1(projP)}%`;
-    pos.proj.title = `projected ${proj.toFixed(2)}%`;
+    pos.proj.title = pos.proj.classList.contains("draggable")
+      ? `projected ${proj.toFixed(2)}% — drag to change`
+      : `projected ${proj.toFixed(2)}%`;
+    pos.proj.setAttribute("aria-valuenow", String(r1(proj)));
+    pos.proj.setAttribute("aria-valuetext", `${proj.toFixed(2)}% projected weight`);
     pos.proj.classList.toggle("in", inBand);
     pos.proj.classList.toggle("out", !inBand);
     pos.conn.style.left = `${r1(geom.left)}%`;
@@ -909,7 +1006,7 @@ function renderRebalance(plan: RebPlan) {
 
     // Cash after plan: slide with every edit so a basket that breaches the
     // cash floor announces itself before it's ever simulated or staged.
-    const cashEl = $$("#reb-stat-cash");
+    const cashEl = $("#reb-stat-cash");
     const proj = projectedCash(plan.cash, netCzk);
     if (cashEl && proj && plan.cash) {
       cashEl.innerHTML =
