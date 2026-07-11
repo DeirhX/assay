@@ -203,6 +203,18 @@ def test_schedule_caps_slices_to_adv():
     assert all(not t["over_adv_cap"] for t in sched["tranches"])
 
 
+def test_schedule_rounds_to_whole_shares_and_preserves_total():
+    sched = exit_plan._schedule(
+        695.54, 946.32, 42.0, "USD", None, None,
+        horizon_days=10, slice_pct=0.12, default_tranches=4,
+        start=dt.date(2026, 7, 1),
+    )
+    shares = [row["shares"] for row in sched["tranches"]]
+    assert sum(shares) == 696
+    assert all(isinstance(value, int) for value in shares)
+    assert max(shares) - min(shares) <= 1
+
+
 def test_schedule_clamps_to_horizon_when_illiquid():
     # Tiny ADV would want many days; clamp to the horizon and flag over-cap.
     sched = exit_plan._schedule(
@@ -242,8 +254,10 @@ def test_build_exit_plan_ceiling_end_state():
     assert pos["target_pct"] == 3.0
     # 800k held, trim to 3% of 1M invested = 30k -> exit 770k.
     assert pos["exit_czk"] == 770_000
+    assert pos["exit_shares"] == 7_700
     assert pos["tax"]["defer_czk"] == 370_000
     assert pos["schedule"]["tranches"], "expected a scale-out schedule"
+    assert all(isinstance(row["shares"], int) for row in pos["schedule"]["tranches"])
 
 
 def test_build_exit_plan_full_exit_to_zero():
@@ -273,6 +287,37 @@ def test_build_exit_plan_skips_in_band_names():
 # --------------------------------------------------------------------------- #
 # stage_covered_call — server validation, idempotence, provenance
 # --------------------------------------------------------------------------- #
+def test_indicative_ladder_keeps_covered_call_route_selectable(monkeypatch):
+    import trade_service
+
+    monkeypatch.setattr(
+        trade_service,
+        "covered_call_capacity",
+        lambda _symbol: {
+            "capacity_contracts": 4,
+            "current_shares": 400,
+            "held_short_calls": 0,
+        },
+    )
+    routes = exit_plan._execution_routes({
+        "symbol": "EXITME",
+        "exit_shares": 400,
+        "schedule": {"tranches": []},
+        "options": {
+            "covered_call_ladder": [{
+                "strike": 105,
+                "executable": False,
+                "source": "yahoo",
+            }],
+        },
+    }, now=AS_OF)
+
+    assert routes["covered_call"]["eligible"] is True
+    assert routes["covered_call"]["stageable"] is False
+    assert "Indicative covered-call levels from" in routes["covered_call"]["reasons"][0]
+    assert routes["recommended"] == "covered_call"
+
+
 def _fresh_quote_ts():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 

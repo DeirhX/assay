@@ -129,13 +129,15 @@ function foldChildJobs(jobs: JobListing[]): JobListing[] {
 
 async function pollOnce(): Promise<void> {
   try {
-    const res = await api<JobsResponse>("/api/jobs");
+    const res = await api<JobsResponse>(
+      "/api/jobs", "GET", null, { reportError: false },
+    );
     const next = new Map<string, JobListing>();
     foldChildJobs(res.jobs || []).forEach((j) => next.set(j.id, j));
     jobsById = next;
   } catch (_e) {
-    // The server is down/unreachable; api() already records it centrally. Keep
-    // the last known list so the panel doesn't flicker empty on a transient blip.
+    // Keep the last known list so the panel doesn't flicker empty during a
+    // transient server reload. Other foreground requests surface a real outage.
   }
   renderPill();
   if (panelOpen) renderPanel();

@@ -51,7 +51,9 @@ interface BackendConfig {
 
 async function runningAnalysisJob(symbol: string): Promise<Job | null> {
   try {
-    const res = await api("/api/jobs");
+    const res = await api(
+      "/api/jobs", "GET", null, { reportError: false },
+    );
     return (res.jobs || []).find(
       (j: Job) => j.kind === "ticker_analysis" && j.symbol === symbol &&
              (j.state === "running" || j.state === "queued")) || null;
@@ -334,7 +336,9 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
           logged_in?: boolean;
           deep_research_available?: boolean | null;
         } | null => null),
-        api<{ jobs?: Job[] }>("/api/jobs").then((d) => d.jobs || []).catch((): Job[] => []),
+        api<{ jobs?: Job[] }>(
+          "/api/jobs", "GET", null, { reportError: false },
+        ).then((d) => d.jobs || []).catch((): Job[] => []),
       ]);
       runs = runsRes
         .filter((r: DeepRun) => r.kind === "ticker" && norm(r.symbol) === want)

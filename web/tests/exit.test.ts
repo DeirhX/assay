@@ -121,6 +121,36 @@ describe("Exit planner rendering", () => {
     expect(body).toContain("wait until 2026-09-29");
   });
 
+  it("renders the base plan before live option enrichment finishes", async () => {
+    let resolveOptions!: (value: ExitPlanResponse) => void;
+    const options = new Promise<ExitPlanResponse>((resolve) => {
+      resolveOptions = resolve;
+    });
+    let exitCalls = 0;
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith("/api/exit-plan?")) {
+        exitCalls += 1;
+        return exitCalls === 1 ? Promise.resolve(planFixture()) : options;
+      }
+      return Promise.resolve({});
+    });
+
+    const loading = loadExit();
+    await flush();
+
+    expect(apiMock.mock.calls[0][0]).toContain("with_options=0");
+    expect(apiMock.mock.calls[1][0]).toContain("with_options=1");
+    expect(document.querySelector("#exit-body")!.textContent).toContain("Reduce to 3.00%");
+    expect(document.querySelector("#exit-status")!.textContent).toContain("loading live option routes");
+
+    resolveOptions(routeFixture());
+    await loading;
+    await flush();
+
+    expect(document.querySelector("#exit-body")!.textContent).toContain("Covered-call exit");
+    expect(document.querySelector("#exit-status")!.textContent).toBe("");
+  });
+
   it("leads with a plain recommendation and hides the math in a collapsed expander", async () => {
     apiMock.mockResolvedValue(planFixture());
     await loadExit();
@@ -140,6 +170,20 @@ describe("Exit planner rendering", () => {
     expect(details!.open).toBe(false);
     expect(details!.querySelector("table.exit-sched")).toBeTruthy();
     expect(details!.querySelector(".exit-posbar")).toBeTruthy();
+  });
+
+  it("shows whole shares and compact two-significant-digit currency estimates", async () => {
+    const data = planFixture();
+    data.positions[0].exit_shares = 695.54;
+    data.positions[0].exit_czk = 658_160;
+    data.totals.exit_czk = 1_200_000;
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const text = document.querySelector("#exit-body .exit-reco-lead")!.textContent || "";
+    expect(text.replace(/\s/g, "")).toContain("sell696sh(660KCZK)");
+    expect(document.querySelector("#exit-summary")!.textContent).toMatch(/1[.,]2M CZK/);
   });
 
   it("the headline CTA stages the first tranche with route sell_shares", async () => {
@@ -244,7 +288,7 @@ describe("Exit execution routes", () => {
     expect(document.querySelector("#exit-body .exit-route-btn.active")!.textContent).toContain("Sell shares");
   });
 
-  it("switches to covered-call ladder with bid/ask/last columns", async () => {
+  it("switches to a covered-call ladder with bid/ask, annual yield, and minimum credit", async () => {
     apiMock.mockResolvedValue(routeFixture());
     await loadExit();
     await flush();
@@ -261,16 +305,46 @@ describe("Exit execution routes", () => {
     const headers = document.querySelector("#exit-body table.exit-ladder-exec thead")!.textContent || "";
     expect(headers).toContain("Bid (sell)");
     expect(headers).toContain("Ask (buy)");
-    expect(headers).toContain("Last");
-    expect(headers).toContain("Limit credit");
     expect(headers).toContain("Yield p.a.");
+    expect(headers).toContain("Min credit");
+    expect(headers).not.toContain("Last");
     expect(headers).toContain("Assignment");
     expect(headers).toContain("Action");
+    expect(document.querySelector<HTMLTableCellElement>(
+      "#exit-body table.exit-ladder-exec thead th[title*='Minimum premium']",
+    )).toBeTruthy();
 
     const rows = document.querySelectorAll("#exit-body table.exit-ladder-exec tbody tr");
     expect(rows).toHaveLength(3);
     expect(rows[0].textContent).toMatch(/2[,.]4/);
     expect(rows[0].textContent).toMatch(/2[,.]6/);
+    expect(rows[0].textContent).toContain("18.2%");
+  });
+
+  it("keeps an indicative covered-call route selectable while staging is unavailable", async () => {
+    const data = routeFixture();
+    data.positions[0].routes!.covered_call.stageable = false;
+    data.positions[0].routes!.covered_call.reasons = [
+      "Indicative covered-call levels are available; staging needs a live IBKR quote.",
+    ];
+    data.positions[0].options!.covered_call_ladder.forEach((rung) => {
+      rung.executable = false;
+      rung.quote_fresh = false;
+    });
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    expect(ccBtn.disabled).toBe(false);
+    ccBtn.click();
+    await flush();
+
+    const body = document.querySelector("#exit-body")!.textContent || "";
+    expect(body).toContain("Indicative covered-call levels are available");
+    expect(document.querySelectorAll(".exit-stage-cc-btn")).toHaveLength(0);
+    expect(document.querySelector("table.exit-ladder-exec")).toBeTruthy();
   });
 
   it("stages an executable covered-call rung with the full payload", async () => {
