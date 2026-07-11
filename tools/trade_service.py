@@ -13,7 +13,6 @@ human never previewed.
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
 import threading
@@ -35,7 +34,15 @@ from apierror import (
     Forbidden as _Forbidden,
 )
 from config import DATA_DIR
-from portfolio import HOLDINGS_JSON, clean_symbol, normalize_basket, parse_occ_symbol, provider_symbol_for
+from portfolio import (
+    HOLDINGS_JSON,
+    clean_symbol,
+    normalize_basket,
+    option_root,
+    parse_occ_symbol,
+    position_fx_to_base,
+    provider_symbol_for,
+)
 from store import load as _load, write_json as _write_json
 
 # The planner-staged basket, persisted so the trade desk survives a reload or a
@@ -55,8 +62,8 @@ _basket_lock = threading.RLock()
 # A holdings snapshot older than this shouldn't silently size real orders —
 # the CZK->shares math uses its marks. Warning only; the human decides.
 STALE_SNAPSHOT_DAYS = 7
-OPTION_QUOTE_MAX_AGE_S = 120
-OPTION_MULTIPLIER = 100
+OPTION_QUOTE_MAX_AGE_S = ibkr_trade.OPTION_QUOTE_MAX_AGE_SECONDS
+OPTION_MULTIPLIER = ibkr_trade.OPTION_MULTIPLIER
 
 
 def _normalize_basket(trades: Any) -> list[dict]:
@@ -159,18 +166,21 @@ def _stock_legs(basket: list[dict]) -> list[dict]:
             for t in basket if t.get("type") == "stock"]
 
 
+def _basket_from_raw(raw: Any) -> list[dict]:
+    trades = raw.get("trades") if isinstance(raw, dict) else None
+    if not isinstance(trades, list):
+        return []
+    try:
+        return _normalize_basket(trades)
+    except ValueError:
+        return []
+
+
 def load_basket() -> list[dict]:
     """The last basket staged from the planner, or [] when nothing is staged. A
     corrupt/foreign file reads as empty rather than raising."""
     with _basket_lock:
-        raw = _load(STAGED_BASKET_JSON)
-        trades = raw.get("trades") if isinstance(raw, dict) else None
-        if not isinstance(trades, list):
-            return []
-        try:
-            return _normalize_basket(trades)
-        except ValueError:
-            return []
+        return _basket_from_raw(_load(STAGED_BASKET_JSON))
 
 
 def _basket_revision(basket: list[dict]) -> str:
@@ -185,7 +195,7 @@ def basket_state() -> dict:
     """Current queue plus whether that exact revision was projection-reviewed."""
     with _basket_lock:
         raw = _load(STAGED_BASKET_JSON)
-        basket = load_basket()
+        basket = _basket_from_raw(raw)
         revision = _basket_revision(basket)
         reviewed_revision = str(raw.get("reviewed_revision") or "") if isinstance(raw, dict) else ""
         return {
@@ -297,23 +307,6 @@ def _basket_token(account_id: str, basket: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _position_fx_to_base(position: dict) -> float:
-    """Read the explicit FX rate, or derive it from the position's paired local
-    and base market values. Current Flex snapshots can omit fx_rate_to_base even
-    though both values are present; defaulting a USD position to 1 would inflate
-    share sizing by roughly USD/CZK."""
-    explicit = _number(position.get("fx_rate_to_base"))
-    if explicit > 0:
-        return explicit
-    local_value = _number(position.get("market_value"))
-    base_value = _number(position.get("base_market_value"))
-    if local_value:
-        derived = base_value / local_value
-        if derived > 0:
-            return derived
-    return 1.0
-
-
 def _trade_price_map() -> dict[str, dict]:
     """Per-symbol {price, fx_to_base, currency} from the holdings snapshot -- the
     very marks the CZK basket was sized against, so held names size precisely.
@@ -326,7 +319,7 @@ def _trade_price_map() -> dict[str, dict]:
         if sym and isinstance(price, (int, float)) and price:
             out[sym] = {
                 "price": float(price),
-                "fx_to_base": _position_fx_to_base(p),
+                "fx_to_base": position_fx_to_base(p),
                 "currency": (p.get("currency") or "").upper(),
             }
     return out
@@ -348,17 +341,6 @@ def _position_quantity_map() -> dict[str, float]:
     return out
 
 
-def _option_root(symbol: Any) -> str:
-    raw = str(symbol or "").strip()
-    head = raw.split()[0] if raw.split() else ""
-    if head and len(head) <= 6:
-        return clean_symbol(head)
-    compact = raw.replace(" ", "")
-    if len(compact) >= 15:
-        return clean_symbol(compact[:-15])
-    return clean_symbol(head or raw)
-
-
 def _held_short_call_contracts() -> dict[str, int]:
     """Existing short-call assignment obligations by underlying."""
     holdings = _load(HOLDINGS_JSON) or {}
@@ -370,7 +352,7 @@ def _held_short_call_contracts() -> dict[str, int]:
         qty = _number(p.get("quantity"))
         if not parsed or parsed[0] != "C" or qty >= 0:
             continue
-        root = _option_root(p.get("symbol"))
+        root = option_root(p.get("symbol"))
         if root:
             out[root] = out.get(root, 0) + int(abs(qty))
     return out
@@ -419,7 +401,7 @@ def _live_position_call_capacity(
         desc = str(
             row.get("ticker") or row.get("symbol") or row.get("contractDesc") or ""
         ).strip()
-        root = _option_root(desc) if asset == "OPT" else clean_symbol(desc.split()[0] if desc else "")
+        root = option_root(desc) if asset == "OPT" else clean_symbol(desc.split()[0] if desc else "")
         if root != sym:
             continue
         qty = _number(row.get("position") if row.get("position") is not None else row.get("quantity"))
@@ -460,7 +442,7 @@ def covered_call_capacity(
             continue
         if _working_option_right(raw) == "P":
             continue
-        raw_sym = _option_root(raw.get("ticker") or raw.get("symbol"))
+        raw_sym = option_root(raw.get("ticker") or raw.get("symbol"))
         if raw_sym != sym or str(raw.get("side") or "").upper() != "SELL":
             continue
         remaining = raw.get("remainingQuantity")
@@ -530,7 +512,7 @@ def _fx_by_currency() -> dict[str, float]:
     out: dict[str, float] = {}
     for p in holdings.get("positions") or []:
         ccy = (p.get("currency") or "").upper()
-        fx = _position_fx_to_base(p)
+        fx = position_fx_to_base(p)
         if ccy and fx > 0:
             out[ccy] = fx
     return out
@@ -696,24 +678,25 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     # resolved again here; staged conid/price are audit context, never authority.
     for leg in [t for t in basket if t.get("type") == "covered_call"]:
         sym = leg["symbol"]
-        resolved_call = ibkr_trade.resolve_exact_call(sym, leg["expiry"], leg["strike"])
-        if not resolved_call:
-            raise ValueError(f"{sym}: exact covered-call contract no longer resolves")
-        if int(resolved_call["conid"]) != int(leg["conid"]):
-            raise ValueError(f"{sym}: covered-call contract changed — rebuild the Exit plan")
-        bid_raw, ask_raw = resolved_call.get("bid"), resolved_call.get("ask")
-        if (
-            not isinstance(bid_raw, (int, float))
-            or not isinstance(ask_raw, (int, float))
-            or not ibkr_trade.quotes_are_valid(bid_raw, ask_raw)
-        ):
-            raise ValueError(f"{sym}: covered call needs a live, uncrossed IBKR bid/ask quote")
-        bid, ask = float(bid_raw), float(ask_raw)
-        if not _option_quote_fresh(resolved_call.get("quote_timestamp")):
-            raise ValueError(f"{sym}: covered-call quote is stale — preview again")
-        limit = ibkr_trade.round_sell_limit_midpoint(bid, ask, resolved_call.get("rules"))
-        if limit is None:
-            raise ValueError(f"{sym}: could not derive a valid option limit price")
+        try:
+            resolved_call = ibkr_trade.resolve_executable_call(
+                sym,
+                leg["expiry"],
+                leg["strike"],
+                expected_conid=int(leg["conid"]),
+                max_quote_age_seconds=OPTION_QUOTE_MAX_AGE_S,
+            )
+        except ibkr_trade.ExecutableCallError as exc:
+            messages = {
+                "contract_missing": f"{sym}: exact covered-call contract no longer resolves",
+                "contract_changed": f"{sym}: covered-call contract changed — rebuild the Exit plan",
+                "quote_invalid": f"{sym}: covered call needs a live, uncrossed IBKR bid/ask quote",
+                "quote_stale": f"{sym}: covered-call quote is stale — preview again",
+                "limit_invalid": f"{sym}: could not derive a valid option limit price",
+            }
+            raise ValueError(messages[exc.reason]) from exc
+        bid, ask = resolved_call["bid"], resolved_call["ask"]
+        limit = resolved_call["limit_price"]
         cap = call_capacity.get(sym, {"current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0})
         if cap["capacity_contracts"] < 1:
             raise ValueError(
@@ -861,17 +844,6 @@ def _number(raw: Any) -> float:
         return 0.0
 
 
-def _option_quote_fresh(raw: Any) -> bool:
-    try:
-        stamp = dt.datetime.fromisoformat(str(raw or "").replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=dt.timezone.utc)
-    age = (dt.datetime.now(dt.timezone.utc) - stamp.astimezone(dt.timezone.utc)).total_seconds()
-    return 0 <= age <= OPTION_QUOTE_MAX_AGE_S
-
-
 def _normalized_working_orders(
     raw_orders: list[dict],
     symbols: set[str],
@@ -896,7 +868,7 @@ def _normalized_working_orders(
         is_option = _is_working_option(raw) or (conid is not None and conid in option_conids)
         if is_option and _working_option_right(raw) == "P":
             continue
-        sym = _option_root(raw_sym) if is_option else clean_symbol(raw_sym)
+        sym = option_root(raw_sym) if is_option else clean_symbol(raw_sym)
         if is_option:
             if not sym and conid not in option_conids:
                 continue
@@ -1397,28 +1369,30 @@ def _revalidate_covered_call_orders(
             strike = _number(order.get("strike"))
             if not expiry or strike <= 0:
                 raise _Conflict(f"{sym}: covered-call definition is incomplete — preview again")
-            resolved = ibkr_trade.resolve_exact_call(sym, expiry, strike)
-            if not resolved or int(resolved.get("conid") or 0) != int(order.get("conid") or 0):
-                raise _Conflict(f"{sym}: covered-call contract could not be revalidated — preview again")
-            bid_raw, ask_raw = resolved.get("bid"), resolved.get("ask")
-            if (
-                not isinstance(bid_raw, (int, float))
-                or not isinstance(ask_raw, (int, float))
-                or not ibkr_trade.quotes_are_valid(bid_raw, ask_raw)
-            ):
-                raise _Conflict(f"{sym}: covered-call quote is missing or crossed — no order was placed")
-            bid, ask = float(bid_raw), float(ask_raw)
-            if not _option_quote_fresh(resolved.get("quote_timestamp")):
-                raise _Conflict(f"{sym}: covered-call quote is stale — no order was placed")
-            fresh_limit = ibkr_trade.round_sell_limit_midpoint(
-                bid, ask, resolved.get("rules"),
-            )
-            if fresh_limit is None:
-                raise _Conflict(f"{sym}: covered-call limit could not be refreshed — no order was placed")
+            try:
+                resolved = ibkr_trade.resolve_executable_call(
+                    sym,
+                    expiry,
+                    strike,
+                    expected_conid=int(order.get("conid") or 0),
+                    max_quote_age_seconds=OPTION_QUOTE_MAX_AGE_S,
+                )
+            except ibkr_trade.ExecutableCallError as exc:
+                if exc.reason in {"contract_missing", "contract_changed"}:
+                    message = f"{sym}: covered-call contract could not be revalidated — preview again"
+                elif exc.reason == "quote_invalid":
+                    message = f"{sym}: covered-call quote is missing or crossed — no order was placed"
+                elif exc.reason == "quote_stale":
+                    message = f"{sym}: covered-call quote is stale — no order was placed"
+                else:
+                    message = f"{sym}: covered-call limit could not be refreshed — no order was placed"
+                raise _Conflict(message) from exc
+            bid, ask = resolved["bid"], resolved["ask"]
+            fresh_limit = resolved["limit_price"]
             old_limit = _number(order.get("price"))
-            rules_raw = resolved.get("rules")
-            rules: dict[str, Any] = rules_raw if isinstance(rules_raw, dict) else {}
-            tick = _number(rules.get("increment") or rules.get("minTick") or 0.01)
+            tick = _number(resolved.get("tick"))
+            if tick <= 0:
+                tick = ibkr_trade.tick_for_price(resolved.get("rules"), fresh_limit)
             spread = ask - bid
             if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
                 raise _Conflict(

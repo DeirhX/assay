@@ -7,6 +7,12 @@
 // way — if a new figure or fragment needs to appear on the desk, derive it here
 // first so it stays testable.
 import { esc, sensitive } from "./core";
+import type {
+  CoveredCallTradeLeg,
+  StockTradeLeg,
+  TradeLeg,
+  TradeLegProvenance,
+} from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 
 // r1 now lives in the shared weight-axis module; re-export for the desk's own
@@ -18,41 +24,33 @@ export const sideTag = (side: string) =>
 
 export type TradeInstrumentType = "stock" | "covered_call";
 
-export interface LegProvenance {
-  source?: string;
-  route?: string;
+type DisplayProvenance = Omit<TradeLegProvenance, "rung"> & {
+  // Read-only tolerance for queue rows persisted before the canonical contract.
   plan_timestamp?: string;
-  plan_as_of?: string;
-  plan_snapshot?: string;
-  plan_fingerprint?: string;
   tranche?: number;
-  tranche_index?: number;
-  rung?: number | { conid?: number; expiry?: string; strike?: number };
-  intended_shares?: number;
-  intended_assigned_shares?: number;
-}
+  rung?: number | TradeLegProvenance["rung"];
+};
 
-export interface OptionLegFields {
-  leg_id?: string;
+type OptionPreviewFields = Omit<
+  Partial<CoveredCallTradeLeg>,
+  "conid" | "multiplier" | "provenance"
+> & {
   instrument_type?: TradeInstrumentType;
   conid?: number | string;
-  expiry?: string;
-  strike?: number;
-  right?: string;
   multiplier?: number;
-  contracts?: number;
+  right?: string;
   current_shares?: number;
   coverage_shares?: number;
   if_assigned_shares?: number;
   premium_credit?: number;
   currency?: string | null;
-  provenance?: LegProvenance | LegProvenance[];
+  provenance?: DisplayProvenance | DisplayProvenance[];
   coverage_ok?: boolean;
   coverage_capacity_contracts?: number;
   coverage_working_contracts?: number;
-}
+};
 
-export interface WorkingOrderPreview extends OptionLegFields {
+export type WorkingOrderPreview = OptionPreviewFields & {
   order_id?: string;
   side?: string;
   remaining_qty?: number;
@@ -61,9 +59,9 @@ export interface WorkingOrderPreview extends OptionLegFields {
   order_type?: string;
   price?: number | null;
   tif?: string;
-}
+};
 
-export interface OrderReconciliation extends OptionLegFields {
+export type OrderReconciliation = OptionPreviewFields & {
   symbol: string;
   side: string;
   classification: "none" | "same_side_partial" | "fully_covered" | "opposite_side" | "coverage_blocked";
@@ -80,26 +78,7 @@ export interface OrderReconciliation extends OptionLegFields {
   working?: WorkingOrderPreview[];
   next_step?: string;
   placeable?: boolean;
-}
-
-export interface StockBasketLeg {
-  symbol: string;
-  delta_czk: number;
-  type?: "stock";
-  instrument_type?: "stock";
-  leg_id?: string;
-  provenance?: LegProvenance | LegProvenance[] | Array<Record<string, unknown>>;
-}
-
-export interface CoveredCallBasketLeg extends OptionLegFields {
-  symbol: string;
-  type?: "covered_call";
-  instrument_type?: "covered_call";
-  premium_credit?: number;
-  delta_czk?: number;
-}
-
-export type BasketTradeLeg = StockBasketLeg | CoveredCallBasketLeg;
+};
 
 export function tradeInstrumentType(
   leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
@@ -181,7 +160,9 @@ export function premiumCreditLabel(czk?: number | null, currency = "CZK"): strin
   return `Premium credit: ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`;
 }
 
-export function provenanceLabel(provenance?: LegProvenance | LegProvenance[] | null): string {
+export function provenanceLabel(
+  provenance?: DisplayProvenance | DisplayProvenance[] | null,
+): string {
   if (!provenance) return "";
   const row = Array.isArray(provenance) ? provenance[provenance.length - 1] : provenance;
   if (!row) return "";
@@ -372,14 +353,14 @@ export function gatewayOrigin(base: string | null | undefined) {
 // Buy/sell gross and the single largest trade, from the token-bound basket —
 // the CZK the human actually reasoned about (orders carry shares, not CZK). Used
 // for the last-mile confirmation modal.
-export function basketMoneyFacts(trades?: BasketTradeLeg[]): {
+export function basketMoneyFacts(trades?: TradeLeg[]): {
   buy: number; sell: number; largest: { symbol: string; czk: number } | null;
 } {
   let buy = 0, sell = 0;
   let largest: { symbol: string; czk: number } | null = null;
   for (const t of trades || []) {
     if (isCoveredCallLeg(t)) continue;
-    const d = Number((t as StockBasketLeg).delta_czk) || 0;
+    const d = Number((t as StockTradeLeg).delta_czk) || 0;
     if (d >= 0) buy += d; else sell += -d;
     if (!largest || Math.abs(d) > Math.abs(largest.czk)) largest = { symbol: t.symbol, czk: d };
   }

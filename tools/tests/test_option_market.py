@@ -1,0 +1,149 @@
+"""Tests for provider selection and caching at the option-market boundary."""
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+import sys
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import ibkr_trade  # noqa: E402
+import option_market  # noqa: E402
+import options_math  # noqa: E402
+import store  # noqa: E402
+import timeutil  # noqa: E402
+from providers import alpaca, fred, yahoo  # noqa: E402
+
+
+def _chain(source: str) -> dict:
+    return {
+        "source": source,
+        "symbol": "NVDA",
+        "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}],
+    }
+
+
+class SessionReady(unittest.TestCase):
+    def setUp(self):
+        option_market.reset_session_cache()
+
+    def tearDown(self):
+        option_market.reset_session_cache()
+
+    def test_reads_auth_status_and_fails_quietly(self):
+        with mock.patch.object(
+            ibkr_trade, "auth_status", return_value={"authenticated": True},
+        ):
+            self.assertTrue(option_market.session_ready())
+        option_market.reset_session_cache()
+        with mock.patch.object(ibkr_trade, "auth_status", side_effect=RuntimeError("down")):
+            self.assertFalse(option_market.session_ready())
+
+    def test_memoizes_within_ttl(self):
+        with mock.patch.object(
+            ibkr_trade, "auth_status", return_value={"authenticated": True},
+        ) as auth:
+            self.assertTrue(option_market.session_ready())
+            self.assertTrue(option_market.session_ready())
+        auth.assert_called_once()
+
+
+class ChainSelection(unittest.TestCase):
+    def test_prefers_ibkr_when_authenticated(self):
+        with mock.patch.object(option_market, "session_ready", return_value=True), \
+                mock.patch.object(ibkr_trade, "option_chain",
+                                  return_value=_chain("ibkr")) as ibkr_fn, \
+                mock.patch.object(yahoo, "option_chain") as yahoo_fn:
+            out = option_market.fetch_option_chain("NVDA")
+        self.assertEqual(out["source"], "ibkr")
+        ibkr_fn.assert_called_once()
+        yahoo_fn.assert_not_called()
+
+    def test_uses_alpaca_between_ibkr_and_yahoo(self):
+        with mock.patch.object(option_market, "session_ready", return_value=False), \
+                mock.patch.object(alpaca, "enabled", return_value=True), \
+                mock.patch.object(alpaca, "option_chain",
+                                  return_value=_chain("alpaca")) as alpaca_fn, \
+                mock.patch.object(yahoo, "option_chain") as yahoo_fn:
+            out = option_market.fetch_option_chain("NVDA")
+        self.assertEqual(out["source"], "alpaca")
+        alpaca_fn.assert_called_once()
+        yahoo_fn.assert_not_called()
+
+    def test_falls_through_provider_misses_to_yahoo(self):
+        with mock.patch.object(option_market, "session_ready", return_value=True), \
+                mock.patch.object(ibkr_trade, "option_chain", return_value=None), \
+                mock.patch.object(alpaca, "enabled", return_value=True), \
+                mock.patch.object(alpaca, "option_chain", return_value=None), \
+                mock.patch.object(yahoo, "option_chain",
+                                  return_value=_chain("yahoo")) as yahoo_fn:
+            out = option_market.fetch_option_chain("NVDA")
+        self.assertEqual(out["source"], "yahoo")
+        yahoo_fn.assert_called_once()
+
+    def test_ibkr_error_falls_through_to_yahoo(self):
+        with mock.patch.object(option_market, "session_ready", return_value=True), \
+                mock.patch.object(ibkr_trade, "option_chain",
+                                  side_effect=RuntimeError("gateway down")), \
+                mock.patch.object(alpaca, "enabled", return_value=False), \
+                mock.patch.object(yahoo, "option_chain",
+                                  return_value=_chain("yahoo")):
+            out = option_market.fetch_option_chain("NVDA")
+        self.assertEqual(out["source"], "yahoo")
+
+    def test_ibkr_budget_timeout_does_not_block_fallback(self):
+        def slow_chain(_symbol):
+            time.sleep(5.0)
+            return _chain("ibkr")
+
+        with mock.patch.object(option_market, "session_ready", return_value=True), \
+                mock.patch.object(ibkr_trade, "option_chain", side_effect=slow_chain), \
+                mock.patch.object(alpaca, "enabled", return_value=False), \
+                mock.patch.object(yahoo, "option_chain", return_value=_chain("yahoo")), \
+                mock.patch.object(option_market, "IBKR_CHAIN_BUDGET_SECONDS", 0.05):
+            started = time.perf_counter()
+            out = option_market.fetch_option_chain("NVDA")
+            elapsed = time.perf_counter() - started
+        self.assertEqual(out["source"], "yahoo")
+        self.assertLess(elapsed, 1.0)
+
+
+class MarketCaches(unittest.TestCase):
+    def test_option_chain_persists_and_serves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            with mock.patch.object(
+                option_market, "fetch_option_chain", return_value=_chain("ibkr"),
+            ) as fetch:
+                first = option_market.cached_option_chain("NVDA", cache_dir=cache_dir)
+                second = option_market.cached_option_chain("NVDA", cache_dir=cache_dir)
+        self.assertEqual(first["source"], "ibkr")
+        self.assertEqual(second["source"], "ibkr")
+        fetch.assert_called_once_with("NVDA")
+
+    def test_risk_free_rate_uses_fresh_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rate.json"
+            store.write_json(path, {"rate": 0.042, "fetched_at": timeutil.now_iso()})
+            self.assertEqual(
+                option_market.cached_risk_free_rate(cache_path=path),
+                0.042,
+            )
+
+    def test_risk_free_rate_fetches_once_then_uses_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rate.json"
+            with mock.patch.object(fred, "series_snapshot", return_value={"value": 4.3}) as series, \
+                    mock.patch.object(options_math, "risk_free_rate", return_value=0.043) as rate:
+                first = option_market.cached_risk_free_rate(cache_path=path)
+                second = option_market.cached_risk_free_rate(cache_path=path)
+        self.assertEqual((first, second), (0.043, 0.043))
+        series.assert_called_once_with("DGS10")
+        rate.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

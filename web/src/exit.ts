@@ -613,7 +613,7 @@ function coveredCallLadderTable(
   tbl.innerHTML =
     `<thead><tr>` +
       `<th>Strike</th><th>Expiry</th><th>Bid (sell)</th><th>Ask (buy)</th><th>Last</th>` +
-      `<th>Limit credit</th><th>Assignment</th><th>Action</th>` +
+      `<th>Limit credit</th><th>Yield p.a.</th><th>Assignment</th><th>Action</th>` +
     `</tr></thead>`;
   const tbody = el("tbody");
   rungs.forEach((r) => {
@@ -644,6 +644,7 @@ function coveredCallLadderTable(
       `<td>${quotePrice(r.ask, ccy)}</td>` +
       `<td>${quotePrice(r.last, ccy)}</td>` +
       `<td>${r.limit_price == null ? dash : quotePrice(r.limit_price, ccy)}</td>` +
+      `<td>${r.premium_yield_annual_pct == null ? dash : pct(r.premium_yield_annual_pct, 1)}</td>` +
       `<td>${assignmentCell(r)}</td>`;
     row.appendChild(actionCell);
     tbody.appendChild(row);

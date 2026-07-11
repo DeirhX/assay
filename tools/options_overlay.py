@@ -35,6 +35,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import ibkr_trade  # noqa: E402
 import options_math  # noqa: E402
 
 _UNSET = object()  # "fetch the chain yourself"; None means "force the BS path".
@@ -45,7 +46,7 @@ CALL_OTM_PCT = 0.05        # baseline OTM cushion for a covered call
 GUARD_CALL_OTM_PCT = 0.15  # far-OTM cushion when guarding a near-exempt lot
 PUT_OTM_PCT = 0.07         # protective-put strike below the mark
 DEFAULT_VOL = 0.35         # fallback annualized vol when no series is usable
-CONTRACT_SIZE = 100
+CONTRACT_SIZE = ibkr_trade.OPTION_MULTIPLIER
 
 # Covered-call strike ladder (the StrikePeek-style yield-vs-assignment view).
 LADDER_SIZE = 6            # OTM strikes to surface, cheapest cushion first
@@ -126,12 +127,6 @@ def _conid(contract: dict[str, Any] | None) -> int | None:
     return None
 
 
-def _two_sided_quote_ok(bid: Any, ask: Any) -> bool:
-    """Positive, uncrossed bid/ask -- the minimum for a stageable IBKR quote."""
-    return (isinstance(bid, (int, float)) and isinstance(ask, (int, float))
-            and bid > 0 and ask > 0 and bid <= ask)
-
-
 def _quote_timestamp(contract: dict[str, Any] | None, chain: dict[str, Any] | None) -> str | None:
     for obj in (contract, chain or {}):
         if not isinstance(obj, dict):
@@ -175,7 +170,7 @@ def _executable(*, chain_source: str, contract: dict[str, Any] | None, estimate:
         return False
     if _conid(contract) is None:
         return False
-    return _two_sided_quote_ok(contract.get("bid"), contract.get("ask"))
+    return ibkr_trade.quotes_are_valid(contract.get("bid"), contract.get("ask"))
 
 
 def _attach_executable_metadata(

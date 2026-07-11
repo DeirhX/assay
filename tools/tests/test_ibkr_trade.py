@@ -479,6 +479,13 @@ class TradeServiceGuards(unittest.TestCase):
             with self.assertRaises(apierror.Conflict):
                 trade_service.review_basket(state["revision"])
 
+    def test_basket_state_reads_persisted_queue_once(self):
+        raw = {"trades": [{"symbol": "AMD", "delta_czk": 1000}]}
+        with mock.patch.object(trade_service, "_load", return_value=raw) as load:
+            state = trade_service.basket_state()
+        load.assert_called_once_with(trade_service.STAGED_BASKET_JSON)
+        self.assertEqual(state["trades"][0]["symbol"], "AMD")
+
     def test_preview_gate_rejects_unreviewed_or_changed_queue(self):
         import tempfile
         from pathlib import Path
@@ -937,6 +944,57 @@ class RoundSellLimitMidpoint(unittest.TestCase):
 
     def test_returns_none_on_invalid_quotes(self):
         self.assertIsNone(ibt.round_sell_limit_midpoint(2.60, 2.40, self.RULES))
+
+
+class ResolveExecutableCall(unittest.TestCase):
+    NOW = dt.datetime(2026, 7, 9, 12, tzinfo=dt.timezone.utc)
+
+    def _resolved(self, **overrides):
+        row = {
+            "symbol": "NVDA",
+            "conid": 555,
+            "expiry": "2026-08-21",
+            "strike": 105.0,
+            "bid": 2.40,
+            "ask": 2.60,
+            "quote_timestamp": self.NOW.isoformat(),
+            "rules": {"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]},
+            "tick": 0.05,
+        }
+        row.update(overrides)
+        return row
+
+    def test_returns_normalized_executable_contract(self):
+        with mock.patch.object(ibt, "resolve_exact_call", return_value=self._resolved()):
+            out = ibt.resolve_executable_call(
+                "NVDA", "2026-08-21", 105,
+                expected_conid=555, now=self.NOW,
+            )
+        self.assertEqual(out["limit_price"], 2.50)
+        self.assertEqual(out["tick"], 0.05)
+        self.assertIsInstance(out["bid"], float)
+
+    def test_reports_stable_failure_reasons(self):
+        cases = [
+            (None, "contract_missing"),
+            (self._resolved(conid=777), "contract_changed"),
+            (self._resolved(bid=None), "quote_invalid"),
+            (
+                self._resolved(
+                    quote_timestamp=(self.NOW - dt.timedelta(seconds=121)).isoformat(),
+                ),
+                "quote_stale",
+            ),
+        ]
+        for resolved, reason in cases:
+            with self.subTest(reason=reason), \
+                    mock.patch.object(ibt, "resolve_exact_call", return_value=resolved):
+                with self.assertRaises(ibt.ExecutableCallError) as ctx:
+                    ibt.resolve_executable_call(
+                        "NVDA", "2026-08-21", 105,
+                        expected_conid=555, now=self.NOW,
+                    )
+                self.assertEqual(ctx.exception.reason, reason)
 
 
 class ResolveExactCall(unittest.TestCase):

@@ -100,12 +100,30 @@ class PendingOptionExposure(unittest.TestCase):
         self.assertAlmostEqual(k["net_pct"], k["long_pct"] - k["short_pct"], places=2)
 
     def test_root_parsing_handles_padded_and_unpadded_occ(self):
-        self.assertEqual(pf._option_root("KLAC  260717P00238000"), "KLAC")
-        self.assertEqual(pf._option_root("KLAC260717P00238000"), "KLAC")
+        self.assertEqual(pf.option_root("KLAC  260717P00238000"), "KLAC")
+        self.assertEqual(pf.option_root("KLAC260717P00238000"), "KLAC")
 
     def test_no_options_is_empty(self):
         self.assertEqual(pf.pending_option_exposure({"positions": [
             {"symbol": "AAA", "base_market_value": 100.0}]}), {})
+
+
+class PositionFx(unittest.TestCase):
+    def test_prefers_explicit_rate(self):
+        self.assertEqual(pf.position_fx_to_base({
+            "fx_rate_to_base": 23.5,
+            "market_value": 100,
+            "base_market_value": 2000,
+        }), 23.5)
+
+    def test_derives_rate_from_paired_values(self):
+        self.assertEqual(pf.position_fx_to_base({
+            "market_value": 100,
+            "base_market_value": 2350,
+        }), 23.5)
+
+    def test_incomplete_position_falls_back_to_one(self):
+        self.assertEqual(pf.position_fx_to_base({"market_value": 0}), 1.0)
 
 
 class TargetContext(unittest.TestCase):

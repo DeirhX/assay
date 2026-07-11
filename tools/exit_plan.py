@@ -31,22 +31,20 @@ import hashlib
 import json
 import math
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import ibkr_trade  # noqa: E402
 import market_data  # noqa: E402  -- shared fan-out width
+import option_market  # noqa: E402
 import portfolio  # noqa: E402
 import price_levels  # noqa: E402
 import rebalance  # noqa: E402
 import risk  # noqa: E402
-import store  # noqa: E402
 import tax_lots  # noqa: E402
 import timeutil  # noqa: E402  -- shared Z-tolerant ISO parse + cache-freshness
-from config import REPO_ROOT  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Config knobs (defaults; the API/UI can override per request).
@@ -63,28 +61,7 @@ FETCH_WORKERS = market_data.FETCH_WORKERS  # shared fan-out width (warms series 
 
 EPS = 1e-6
 
-# Option chains are fetched live from Yahoo; cache them so a second Exit-view
-# load (or a config tweak) doesn't re-hammer the chain endpoint for every trim
-# name. Same shape as risk.py's price-series cache.
-_OPT_CACHE_DIR = REPO_ROOT / "data" / "cache" / "options"
-OPT_CACHE_TTL_SECONDS = 3 * 3600
-_RATE_CACHE = _OPT_CACHE_DIR / "risk-free-rate.json"
-RATE_CACHE_TTL_SECONDS = 6 * 3600
-
-# The IBKR CPAPI option chain is a serial fan-out of secdef/market-snapshot calls
-# against the local gateway; when the gateway is sluggish a single cold chain can
-# take *minutes*, which used to hang the whole Exit view (the overlay fetches one
-# per trim candidate). It's advisory data with a fast, reliable Yahoo fallback,
-# so we give IBKR a strict wall-clock budget and drop to Yahoo the moment it's
-# exceeded. The abandoned IBKR fetch keeps running as a daemon (best-effort: it
-# may still populate its own cache for a later load) but never blocks the plan.
-IBKR_CHAIN_BUDGET_SECONDS = 5.0
-EXECUTION_QUOTE_MAX_AGE_SECONDS = 120
-# auth_status() is itself a ~2s gateway round-trip; memoize it briefly so a cold
-# multi-name plan doesn't pay it once per candidate.
-_SESSION_READY_TTL_SECONDS = 20.0
-_session_ready_cache: tuple[float, bool] | None = None
-_session_ready_lock = threading.Lock()
+EXECUTION_QUOTE_MAX_AGE_SECONDS = ibkr_trade.OPTION_QUOTE_MAX_AGE_SECONDS
 
 
 def _quote_age_seconds(raw: Any, *, now: dt.datetime | None = None) -> float | None:
@@ -178,8 +155,7 @@ def _position_index(holdings: dict[str, Any]) -> dict[str, dict[str, Any]]:
             continue
         if not isinstance(mv_base, (int, float)):
             continue
-        local_mv = p.get("market_value")
-        fx = (mv_base / local_mv) if isinstance(local_mv, (int, float)) and abs(local_mv) > EPS else 1.0
+        fx = portfolio.position_fx_to_base(p)
         out[sym] = {
             "qty": float(qty),
             "mv_base": float(mv_base),
@@ -587,132 +563,13 @@ def _prewarm_caches(
 
 
 def _cached_risk_free_rate() -> float | None:
-    """Risk-free rate (decimal) for the options overlay, cached 6h. FRED's
-    ``macro_snapshot()`` fetches nine CSV series (~10s); the rate barely moves
-    intraday, so caching it keeps the whole Exit view snappy. None on total
-    failure lets the overlay use its own neutral default."""
-    cached = store.load(_RATE_CACHE)
-    if isinstance(cached, dict) and timeutil.cache_fresh(cached.get("fetched_at"), RATE_CACHE_TTL_SECONDS):
-        val = cached.get("rate")
-        if isinstance(val, (int, float)):
-            return float(val)
-    try:
-        import options_math
-        from providers import fred
-        # Only DGS10 is needed here; fetch that one series instead of FRED's full
-        # nine-series macro snapshot so a cold Exit view isn't gated on ~8 CSVs.
-        rate = options_math.risk_free_rate(snapshot=fred.series_snapshot("DGS10"))
-    except Exception:  # noqa: BLE001
-        rate = None
-    if isinstance(rate, (int, float)):
-        store.write_json(_RATE_CACHE, {
-            "rate": rate,
-            "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        })
-    return rate
-
-
-def _ibkr_session_ready() -> bool:
-    """True when the Client Portal Gateway holds an authenticated session, so an
-    option-chain read will actually resolve. Best-effort and quiet: any failure
-    (gateway not running, import error) simply means 'use the Yahoo fallback'.
-    Reading a chain is not trading, so this is intentionally NOT gated behind
-    IBKR_TRADING_ENABLED.
-
-    Memoized for ``_SESSION_READY_TTL_SECONDS``: ``auth_status()`` is a ~2s
-    gateway round-trip and a cold plan checks it once per candidate otherwise."""
-    global _session_ready_cache
-    with _session_ready_lock:
-        cached = _session_ready_cache
-        if cached is not None and (time.monotonic() - cached[0]) < _SESSION_READY_TTL_SECONDS:
-            return cached[1]
-    try:
-        import ibkr_trade
-        ready = bool(ibkr_trade.auth_status().get("authenticated"))
-    except Exception:  # noqa: BLE001
-        ready = False
-    with _session_ready_lock:
-        _session_ready_cache = (time.monotonic(), ready)
-    return ready
-
-
-def _ibkr_chain_within_budget(symbol: str, budget: float) -> dict[str, Any] | None:
-    """Run ``ibkr_trade.option_chain`` on a daemon thread and wait at most
-    ``budget`` seconds. Returns the chain if it resolved in time, else None so
-    the caller falls back to Yahoo. The thread is *not* cancelled (Python can't
-    interrupt a blocking socket read); it keeps running best-effort and may still
-    warm IBKR's own cache for a later load, but it never blocks the exit plan."""
-    box: dict[str, Any] = {}
-
-    def _run() -> None:
-        try:
-            import ibkr_trade
-            box["chain"] = ibkr_trade.option_chain(symbol)
-        except Exception:  # noqa: BLE001 -- IBKR hiccup: caller uses Yahoo
-            box["chain"] = None
-
-    th = threading.Thread(target=_run, name=f"ibkr-chain-{symbol}", daemon=True)
-    th.start()
-    th.join(budget)
-    return None if th.is_alive() else box.get("chain")
-
-
-def _fetch_option_chain(symbol: str) -> dict[str, Any] | None:
-    """Live option chain for a canonical ticker, best source first:
-
-    1. **IBKR** (CPAPI) when the gateway is authenticated -- real strikes/expiries
-       even without an options market-data subscription (quotes just absent, the
-       overlay then estimates the premium). Time-boxed (``IBKR_CHAIN_BUDGET_SECONDS``):
-       a sluggish gateway would otherwise take minutes per name and hang the view.
-    2. **Alpaca** when keyed -- structured quotes + daily volume + near-money
-       greeks off the indicative/OPRA feed.
-    3. **Yahoo** -- the delayed/scraped last resort.
-
-    Each source's resolve-miss, timeout, or error falls through to the next; all
-    failing degrades to None -> Black-Scholes downstream. The chain is tagged with
-    its own ``source`` so premiums are labelled honestly."""
-    if _ibkr_session_ready():
-        chain = _ibkr_chain_within_budget(symbol, IBKR_CHAIN_BUDGET_SECONDS)
-        if chain and chain.get("expiries"):
-            return chain
-    try:
-        from providers import alpaca
-        if alpaca.enabled():
-            chain = alpaca.option_chain(portfolio.provider_symbol_for(symbol))
-            if chain and chain.get("expiries"):
-                return chain
-    except Exception:  # noqa: BLE001 -- Alpaca hiccup: fall through to Yahoo
-        pass
-    try:
-        from providers import yahoo
-        return yahoo.option_chain(portfolio.provider_symbol_for(symbol))
-    except Exception:  # noqa: BLE001 -- no chain: BS fallback happens downstream
-        return None
+    """Compatibility seam for tests and callers that patch the old helper."""
+    return option_market.cached_risk_free_rate()
 
 
 def _cached_option_chain(symbol: str) -> dict[str, Any] | None:
-    """Option chain for a held name (by canonical ticker), cached under
-    data/cache/options and tagged with its own ``source`` (ibkr/yahoo).
-
-    Live chain fetches are slow (an IBKR chain is many secdef calls; a Yahoo chain
-    is a crumb handshake plus one request per expiry), so a fresh cache entry
-    short-circuits the network. A miss caches None -- so a foreign name with no
-    listed options doesn't re-hit every load -- and a stale hit beats a failed
-    live pull (options are advisory, slightly-old strikes are fine)."""
-    safe = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in "-._=")
-    path = _OPT_CACHE_DIR / f"{safe}.json"
-    cached = store.load(path)
-    # A fresh entry short-circuits even when it recorded "no chain" (None), so a
-    # foreign name with no listed options doesn't 404 on every single load.
-    if isinstance(cached, dict) and "chain" in cached and timeutil.cache_fresh(cached.get("fetched_at"), OPT_CACHE_TTL_SECONDS):
-        return cached.get("chain")
-    chain = _fetch_option_chain(symbol)
-    store.write_json(path, {
-        "symbol": symbol.upper(),
-        "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "chain": chain,
-    })
-    return chain
+    """Compatibility seam around the option-market acquisition service."""
+    return option_market.cached_option_chain(symbol)
 
 
 def _options_overlay(sym, pos, layers, series, cfg, as_of, *, rate=None) -> dict[str, Any] | None:
@@ -830,7 +687,6 @@ def stage_covered_call(
     contracts: int,
 ) -> dict[str, Any]:
     """Validate and idempotently stage one exact covered-call exit leg."""
-    import ibkr_trade
     import trade_service
 
     sym = portfolio.clean_symbol(symbol)
@@ -894,16 +750,25 @@ def stage_covered_call(
             f"{staged_stock_sells} staged share sales, and {staged_other} other staged contract(s)"
         )
 
-    exact = ibkr_trade.resolve_exact_call(sym, expiry, strike)
-    if not exact or int(exact.get("conid") or 0) != int(conid):
-        raise ValueError(f"{sym}: exact call contract no longer resolves")
-    if not ibkr_trade.quotes_are_valid(exact.get("bid"), exact.get("ask")):
-        raise ValueError(f"{sym}: option bid/ask is missing or crossed")
-    limit = ibkr_trade.round_sell_limit_midpoint(
-        float(exact["bid"]), float(exact["ask"]), exact.get("rules"),
-    )
-    if limit is None:
-        raise ValueError(f"{sym}: no valid tick-rounded sell limit")
+    try:
+        exact = ibkr_trade.resolve_executable_call(
+            sym,
+            expiry,
+            strike,
+            expected_conid=int(conid),
+            max_quote_age_seconds=EXECUTION_QUOTE_MAX_AGE_SECONDS,
+        )
+    except ibkr_trade.ExecutableCallError as exc:
+        if exc.reason in {"contract_missing", "contract_changed"}:
+            message = f"{sym}: exact call contract no longer resolves"
+        elif exc.reason == "quote_invalid":
+            message = f"{sym}: option bid/ask is missing or crossed"
+        elif exc.reason == "quote_stale":
+            message = f"{sym}: option quote is stale"
+        else:
+            message = f"{sym}: no valid tick-rounded sell limit"
+        raise ValueError(message) from exc
+    limit = exact["limit_price"]
 
     fingerprint = _plan_fingerprint(plan, pos)
     provenance = {

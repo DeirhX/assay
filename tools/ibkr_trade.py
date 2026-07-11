@@ -38,6 +38,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
+import timeutil
 from config import TOOLS_SECRETS, config_value as _config_value
 
 SECRETS_FILE = TOOLS_SECRETS
@@ -51,6 +52,15 @@ DEFAULT_GATEWAY_BASE = "https://127.0.0.1:5000/v1/api"
 # wedged gateway from stalling the Trade view's polling and the exit overlay's
 # readiness probe for the full 30s default.
 _SESSION_TIMEOUT = 8.0
+OPTION_QUOTE_MAX_AGE_SECONDS = 120.0
+
+
+class ExecutableCallError(ValueError):
+    """A stable machine-readable failure from covered-call validation."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 # --------------------------------------------------------------------------- #
@@ -722,6 +732,65 @@ def tick_for_price(rules: Any, price: float, *, default: float = 0.01) -> float:
         except (TypeError, ValueError):
             best = None
     return best if best and best > 0 else default
+
+
+def resolve_executable_call(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    *,
+    expected_conid: int | None = None,
+    max_quote_age_seconds: float | None = OPTION_QUOTE_MAX_AGE_SECONDS,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Resolve and validate one exact call for a supervised SELL order.
+
+    This is the single executable-call boundary used by Exit staging and both
+    trade-preview/place validation. It returns the full resolver payload plus
+    normalized numeric quotes and ``limit_price``. Callers translate ``reason``
+    into context-appropriate user messages without reimplementing the gates.
+    """
+    resolved = resolve_exact_call(symbol, expiry, strike)
+    if not resolved:
+        raise ExecutableCallError("contract_missing")
+    try:
+        conid = int(resolved.get("conid") or 0)
+    except (TypeError, ValueError):
+        raise ExecutableCallError("contract_missing") from None
+    if expected_conid is not None and conid != int(expected_conid):
+        raise ExecutableCallError("contract_changed")
+
+    bid_raw, ask_raw = resolved.get("bid"), resolved.get("ask")
+    if (
+        not isinstance(bid_raw, (int, float))
+        or not isinstance(ask_raw, (int, float))
+        or not quotes_are_valid(bid_raw, ask_raw)
+    ):
+        raise ExecutableCallError("quote_invalid")
+    bid, ask = float(bid_raw), float(ask_raw)
+
+    if (
+        max_quote_age_seconds is not None
+        and not timeutil.cache_fresh(
+            resolved.get("quote_timestamp"),
+            max_quote_age_seconds,
+            now=now,
+        )
+    ):
+        raise ExecutableCallError("quote_stale")
+
+    limit = round_sell_limit_midpoint(bid, ask, resolved.get("rules"))
+    if limit is None:
+        raise ExecutableCallError("limit_invalid")
+    out = dict(resolved)
+    out.update({
+        "conid": conid,
+        "bid": bid,
+        "ask": ask,
+        "limit_price": limit,
+        "tick": float(resolved.get("tick") or tick_for_price(resolved.get("rules"), limit)),
+    })
+    return out
 
 
 def contract_rules(conid: int, *, is_buy: bool = True) -> dict:

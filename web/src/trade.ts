@@ -3,15 +3,14 @@ import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
 import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
-import type { TradeQueueState } from "./api-types";
+import type { TradeLeg, TradeLegProvenance, TradeQueueState } from "./api-types";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
   gatewayOrigin, orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
   reconciliationTitle, riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
-import type { LegProvenance, OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
-import type { TradeLeg } from "./api-types";
+import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -68,7 +67,7 @@ interface TradeOrder {
   if_assigned_shares?: number;
   premium_credit?: number;
   currency?: string | null;
-  provenance?: LegProvenance[];
+  provenance?: TradeLegProvenance[];
 }
 
 interface TradePreview {

@@ -17,6 +17,7 @@ import _support  # noqa: F401
 import apierror
 import ibkr_trade
 import kid_block
+import portfolio
 import rebalance
 import trade_service
 
@@ -49,7 +50,7 @@ class TradeSizingFx(unittest.TestCase):
             "market_value": 90072.0, "base_market_value": 1914030.0,
         }
         self.assertAlmostEqual(
-            trade_service._position_fx_to_base(position), 21.25, places=6,
+            portfolio.position_fx_to_base(position), 21.25, places=6,
         )
         with mock.patch.object(trade_service, "_load",
                                return_value={"positions": [position]}):
@@ -60,14 +61,14 @@ class TradeSizingFx(unittest.TestCase):
 
     def test_explicit_fx_wins_and_one_is_last_resort(self):
         self.assertEqual(
-            trade_service._position_fx_to_base({
+            portfolio.position_fx_to_base({
                 "fx_rate_to_base": 22.0,
                 "market_value": 100.0,
                 "base_market_value": 2125.0,
             }),
             22.0,
         )
-        self.assertEqual(trade_service._position_fx_to_base({}), 1.0)
+        self.assertEqual(portfolio.position_fx_to_base({}), 1.0)
 
 
 class OrderBandContext(unittest.TestCase):
@@ -922,6 +923,28 @@ class PlaceTimeCoveredCallRevalidation(unittest.TestCase):
         placed_order = place.call_args.args[1][0]
         self.assertEqual(placed_order["price"], 2.55)
         self.assertEqual(placed_order["premium_credit"], 510.0)
+
+    def test_place_limit_drift_uses_resolver_tick_for_nested_rules(self):
+        basket = trade_service._normalize_basket([_cc_leg()])
+        token = trade_service._basket_token("DU1", basket)
+        self._arm_cc_preview(token, self._cc_order(quantity=2, price=2.51))
+        resolved = _resolved_call(
+            bid=2.54,
+            ask=2.56,
+            tick=0.05,
+            rules={"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]},
+        )
+        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=True), \
+                mock.patch.object(ibkr_trade, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(ibkr_trade, "live_orders", return_value=[]), \
+                mock.patch.object(ibkr_trade, "resolve_exact_call", return_value=resolved), \
+                mock.patch.object(trade_service, "save_basket"), \
+                mock.patch.object(ibkr_trade, "place_orders",
+                                  return_value=[{"order_id": "tick"}]) as place:
+            trade_service._trade_place({
+                "trades": basket, "account": "DU1", "confirm": True, "token": token,
+            })
+        self.assertEqual(place.call_args.args[1][0]["price"], 2.55)
 
     def test_mixed_place_submits_covered_call_before_stock_sale(self):
         basket = trade_service._normalize_basket([

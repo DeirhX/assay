@@ -28,4 +28,12 @@ test.describe("app shell + navigation", () => {
     await expect(page.locator("#view-trade")).toHaveClass(/active/);
     await expect(page.locator('.group[data-group="rebalance"]')).toHaveClass(/active/);
   });
+
+  test("Journal keeps the Activity utility navigation highlighted", async ({ page }) => {
+    await installApi(page);
+    await page.goto("/?view=journal");
+
+    await expect(page.locator('.utility-tab[data-view="activity"]')).toHaveClass(/active/);
+    await expect(page.locator("#view-journal")).toHaveClass(/active/);
+  });
 });
