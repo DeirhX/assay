@@ -703,6 +703,35 @@ function liqBadge(liq: ExitCoveredCallRung["liquidity"]): string {
 
 // Executable covered-call ladder for the route UI. Bid/ask drive the order;
 // annualized premium yield is more decision-useful than the historical last.
+type LadderSortKey = "strike" | "expiry" | "bid" | "ask" | "yield" | "credit" | "assignment";
+type SortDirection = "asc" | "desc";
+
+function sortedRungs(
+  rungs: ExitCoveredCallRung[],
+  key: LadderSortKey,
+  direction: SortDirection,
+): ExitCoveredCallRung[] {
+  const value = (rung: ExitCoveredCallRung): number | string | null => {
+    if (key === "yield") return rung.premium_yield_annual_pct;
+    if (key === "credit") return rung.limit_price ?? null;
+    if (key === "assignment") return rung.assignment_prob_pct;
+    return rung[key] ?? null;
+  };
+  return rungs
+    .map((rung, index) => ({ rung, index }))
+    .sort((a, b) => {
+      const av = value(a.rung), bv = value(b.rung);
+      if (av == null && bv == null) return a.index - b.index;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const compared = typeof av === "string"
+        ? av.localeCompare(String(bv))
+        : Number(av) - Number(bv);
+      return (direction === "asc" ? compared : -compared) || a.index - b.index;
+    })
+    .map(({ rung }) => rung);
+}
+
 function coveredCallLadderTable(
   symbol: string,
   rungs: ExitCoveredCallRung[],
@@ -711,46 +740,91 @@ function coveredCallLadderTable(
 ): HTMLElement {
   const wrap = el("div", "exit-opt-card exit-ladder-wrap");
   const tbl = el("table", "exit-ladder exit-ladder-exec");
-  tbl.innerHTML =
-    `<thead><tr>` +
-      `<th>Strike</th><th>Expiry</th><th>Bid (sell)</th><th>Ask (buy)</th>` +
-      `<th title="Option premium annualized over days to expiry, as a percentage of strike">Yield p.a.</th>` +
-      `<th title="Minimum premium per share accepted by the sell-to-open limit order; multiply by 100 per contract">Min credit</th>` +
-      `<th>Assignment</th><th>Action</th>` +
-    `</tr></thead>`;
+  const thead = el("thead");
   const tbody = el("tbody");
-  rungs.forEach((r) => {
-    const row = el("tr", r.recommended ? "exit-ladder-rec" : "");
-    const blocked = rungBlockedReasons(r);
-    const canStage = blocked.length === 0 && contracts > 0;
+  let sortKey: LadderSortKey | null = null;
+  let direction: SortDirection = "asc";
+  const columns: Array<{ key: LadderSortKey; label: string; title?: string }> = [
+    { key: "strike", label: "Strike" },
+    { key: "expiry", label: "Expiry" },
+    { key: "bid", label: "Bid (sell)" },
+    { key: "ask", label: "Ask (buy)" },
+    {
+      key: "yield",
+      label: "Yield p.a.",
+      title: "Option premium annualized over days to expiry, as a percentage of strike",
+    },
+    {
+      key: "credit",
+      label: "Min credit",
+      title: "Minimum premium per share accepted by the sell-to-open limit order; multiply by 100 per contract",
+    },
+    { key: "assignment", label: "Assignment" },
+  ];
 
-    const actionCell = el("td");
-    if (canStage) {
-      const btn = el("button", "ghost exit-stage-cc-btn");
+  const renderHead = () => {
+    const tr = el("tr");
+    columns.forEach((column) => {
+      const active = sortKey === column.key;
+      const th = el("th", active ? "active" : "");
+      if (column.title) th.title = column.title;
+      th.setAttribute("aria-sort", active ? (direction === "asc" ? "ascending" : "descending") : "none");
+      const btn = el("button", "exit-ladder-sort");
       btn.type = "button";
-      btn.textContent = "Stage →";
-      btn.title = `Stage ${contracts}× ${fmtNum(r.strike)} call — assignment is conditional`;
-      btn.addEventListener("click", () => stageCoveredCall(symbol, r, contracts, btn));
-      actionCell.appendChild(btn);
-    } else {
-      const span = el("span", "muted exit-rung-blocked");
-      span.textContent = blocked.length ? blocked.join("; ") : dash;
-      if (blocked.length) span.title = blocked.join("; ");
-      actionCell.appendChild(span);
-    }
+      btn.dataset.sort = column.key;
+      btn.innerHTML = `${esc(column.label)} <span aria-hidden="true">${active ? (direction === "asc" ? "▲" : "▼") : "↕"}</span>`;
+      btn.addEventListener("click", () => {
+        if (sortKey === column.key) direction = direction === "asc" ? "desc" : "asc";
+        else { sortKey = column.key; direction = "asc"; }
+        renderHead();
+        renderRows();
+      });
+      th.appendChild(btn);
+      tr.appendChild(th);
+    });
+    tr.appendChild(el("th", undefined, "Action"));
+    thead.replaceChildren(tr);
+  };
 
-    row.innerHTML =
-      `<td>${quotePrice(r.strike, ccy)}${r.recommended ? ` <span class="exit-ladder-star" title="Recommended rung">★</span>` : ""}</td>` +
-      `<td>${esc(r.expiry)}<div class="muted">${sourceBadge(r.source, r.estimate)} ` +
-        `${r.quote_timestamp ? esc(relAge(r.quote_timestamp)) : "age unavailable"}</div></td>` +
-      `<td>${quotePrice(r.bid, ccy)}</td>` +
-      `<td>${quotePrice(r.ask, ccy)}</td>` +
-      `<td>${pct(r.premium_yield_annual_pct, 1)}</td>` +
-      `<td>${r.limit_price == null ? dash : quotePrice(r.limit_price, ccy)}</td>` +
-      `<td>${assignmentCell(r)}</td>`;
-    row.appendChild(actionCell);
-    tbody.appendChild(row);
-  });
+  const renderRows = () => {
+    tbody.replaceChildren();
+    const visible = sortKey ? sortedRungs(rungs, sortKey, direction) : rungs;
+    visible.forEach((r) => {
+      const row = el("tr", r.recommended ? "exit-ladder-rec" : "");
+      const blocked = rungBlockedReasons(r);
+      const canStage = blocked.length === 0 && contracts > 0;
+
+      const actionCell = el("td");
+      if (canStage) {
+        const btn = el("button", "ghost exit-stage-cc-btn");
+        btn.type = "button";
+        btn.textContent = "Stage →";
+        btn.title = `Stage ${contracts}× ${fmtNum(r.strike)} call — assignment is conditional`;
+        btn.addEventListener("click", () => stageCoveredCall(symbol, r, contracts, btn));
+        actionCell.appendChild(btn);
+      } else {
+        const span = el("span", "muted exit-rung-blocked");
+        span.textContent = blocked.length ? blocked.join("; ") : dash;
+        if (blocked.length) span.title = blocked.join("; ");
+        actionCell.appendChild(span);
+      }
+
+      row.innerHTML =
+        `<td>${quotePrice(r.strike, ccy)}${r.recommended ? ` <span class="exit-ladder-star" title="Recommended rung">★</span>` : ""}</td>` +
+        `<td>${esc(r.expiry)}<div class="muted">${sourceBadge(r.source, r.estimate)} ` +
+          `${r.quote_timestamp ? esc(relAge(r.quote_timestamp)) : "age unavailable"}</div></td>` +
+        `<td>${quotePrice(r.bid, ccy)}</td>` +
+        `<td>${quotePrice(r.ask, ccy)}</td>` +
+        `<td>${pct(r.premium_yield_annual_pct, 1)}</td>` +
+        `<td>${r.limit_price == null ? dash : quotePrice(r.limit_price, ccy)}</td>` +
+        `<td>${assignmentCell(r)}</td>`;
+      row.appendChild(actionCell);
+      tbody.appendChild(row);
+    });
+  };
+  renderHead();
+  renderRows();
+  tbl.appendChild(thead);
   tbl.appendChild(tbody);
   wrap.appendChild(tbl);
   return wrap;

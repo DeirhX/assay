@@ -559,12 +559,14 @@ function renderRebalance(plan: RebPlan) {
   const grid = el("div", "reb-tbl");
   grid.appendChild(headRow("Targets"));
   targetRows.forEach((r) => {
-    // Row + its tax-lot drawer live in one group so the drawer reads as an
-    // expandable part of the ticker, not a separator floating between names.
     const group = el("div", "reb-row-group");
-    group.appendChild(buildRow(r).row);
+    const built = buildRow(r);
+    group.appendChild(built.row);
     const tax = taxDetails(r);
-    if (tax) { group.classList.add("has-tax"); group.appendChild(tax); }
+    if (tax) {
+      built.row.classList.add("has-tax");
+      built.row.appendChild(tax);
+    }
     grid.appendChild(group);
     filterItems.push({ group, name: r.name.toLowerCase(), status: r.status, action: r.action || "none", conv: convOf(r) });
   });

@@ -2315,13 +2315,14 @@ a.tlink:hover { border-bottom-style: solid; }
 .risk-vol-val { width: 52px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* ---- tax-lot breakdown in the rebalance view ---------------------------- */
-/* Tax-lot drawer: visually hangs off the ticker row above it (shared left edge,
-   connected top border, indented) so it reads as an expandable part of that
-   ticker rather than a separator between names. */
+/* Tax-lot drawer is a full-width final row inside its ticker card. The parent
+   owns the outer border/radius; this gets only an internal divider. */
+.reb-row.has-tax { padding-bottom: 0; overflow: hidden; }
 .reb-tax {
-  background: var(--panel-2); border: 1px solid var(--border); border-top: none;
-  border-radius: 0 0 var(--radius-soft) var(--radius-soft);
-  margin: -1px 0 0 16px; padding: 0 12px 0;
+  grid-column: 1 / -1;
+  background: var(--panel-2); border: none; border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin: -3px -13px 0; padding: 0 13px;
 }
 .reb-tax[open] { padding-bottom: 10px; }
 .reb-tax > summary {
@@ -3828,6 +3829,14 @@ table.exit-sched th { color: var(--muted); font-weight: 600; font-size: 11px; te
 .exit-ladder-wrap { overflow-x: auto; }
 .exit-ladder { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .exit-ladder th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); }
+.exit-ladder th.active { color: var(--accent); }
+.exit-ladder-sort {
+  border: 0; padding: 0; background: none; color: inherit; cursor: pointer;
+  font: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap;
+}
+.exit-ladder-sort:hover { color: var(--text); }
+.exit-ladder-sort:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.exit-ladder-sort span { display: inline-block; width: 1em; margin-left: 2px; font-size: .9em; }
 .exit-ladder td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border); }
 .exit-ladder tbody tr:last-child td { border-bottom: none; }
 .exit-ladder-rec { background: color-mix(in srgb, var(--accent, #4a9) 12%, transparent); }
