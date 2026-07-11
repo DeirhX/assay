@@ -36,6 +36,48 @@ def clean_symbol(symbol: str | None) -> str:
     return str(symbol or "").upper().strip()
 
 
+def option_root(symbol: str | None) -> str:
+    """Underlying ticker of an OCC option symbol.
+
+    IBKR Flex writes a space-padded root followed by the fixed 15-character OCC
+    tail (``KLAC  260717P00238000``). CPAPI sometimes removes that padding, so
+    support both representations from one shared parser.
+    """
+    raw = str(symbol or "").strip()
+    parts = raw.split()
+    head = parts[0] if parts else ""
+    if head and len(head) <= 6:
+        return clean_symbol(head)
+    compact = raw.replace(" ", "")
+    if len(compact) >= 15:
+        return clean_symbol(compact[:-15])
+    return clean_symbol(head or raw)
+
+
+def position_fx_to_base(position: dict[str, Any]) -> float:
+    """Base-currency units per local-currency unit for one position.
+
+    Prefer the broker's explicit rate, then derive it from paired market values.
+    A neutral fallback preserves existing behavior for incomplete snapshots.
+    """
+    try:
+        explicit = float(position.get("fx_rate_to_base") or 0)
+    except (TypeError, ValueError):
+        explicit = 0.0
+    if explicit > 0:
+        return explicit
+    try:
+        local_value = float(position.get("market_value") or 0)
+        base_value = float(position.get("base_market_value") or 0)
+    except (TypeError, ValueError):
+        return 1.0
+    if local_value:
+        derived = base_value / local_value
+        if derived > 0:
+            return derived
+    return 1.0
+
+
 def normalize_basket(trades: Any) -> dict[str, float]:
     """Validate a staged basket and net duplicate symbols into
     ``{clean_symbol: delta_czk}``.
@@ -204,18 +246,6 @@ def option_exposure(position: dict[str, Any], invested: float) -> dict[str, Any]
     }
 
 
-def _option_root(symbol: str | None) -> str:
-    """Underlying ticker of an OCC option symbol. IBKR Flex writes a space-padded
-    root then the 15-char OCC tail ('KLAC  260717P00238000'); take the first
-    token, falling back to stripping the tail if the root wasn't space-separated."""
-    raw = str(symbol or "").strip()
-    head = raw.split()[0] if raw.split() else ""
-    if head and len(head) <= 6:
-        return head.upper()
-    compact = raw.replace(" ", "")
-    return (compact[:-15].upper() if len(compact) >= 15 else head.upper())
-
-
 def _leg_label(right: str, contracts: float, strike: float) -> str:
     """Compact human tag for one option leg, e.g. 'short 2× 238P'."""
     side = "short" if contracts < 0 else "long"
@@ -249,7 +279,7 @@ def pending_option_exposure(data: dict[str, Any] | None = None) -> dict[str, dic
         exp = option_exposure(p, invested)
         if not exp:
             continue
-        root = _option_root(p.get("symbol"))
+        root = option_root(p.get("symbol"))
         if not root:
             continue
         pct = float(exp["exercise_pct"])

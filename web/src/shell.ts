@@ -333,7 +333,9 @@ function updateChrome(active: string) {
   if (lastViewByGroup[group] && active !== "pipeline") lastViewByGroup[group] = active;
 
   document.querySelectorAll<HTMLElement>(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
-  document.querySelectorAll<HTMLElement>(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
+  document.querySelectorAll<HTMLElement>(".tab").forEach((b) => {
+    b.classList.toggle("active", b.dataset.view === active || b.dataset.view === group);
+  });
 
   // The sub-tab bar only exists for groups that fan out into multiple views.
   const subbar = $$("#subbar");

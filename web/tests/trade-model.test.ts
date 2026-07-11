@@ -54,8 +54,8 @@ describe("basketMoneyFacts", () => {
     const f = basketMoneyFacts([
       { symbol: "AAPL", delta_czk: 1000 },
       {
-        symbol: "AAPL", instrument_type: "covered_call", leg_id: "cc-1",
-        contracts: 1, premium_credit: 4200, conid: 12345,
+        type: "covered_call", symbol: "AAPL", route: "covered_call", leg_id: "cc-1",
+        contracts: 1, conid: 12345, expiry: "2026-08-21", strike: 250,
       },
       { symbol: "MSFT", delta_czk: -2500 },
     ]);
@@ -70,8 +70,8 @@ describe("basketMoneyFacts", () => {
       { symbol: "MSFT", delta_czk: -2500 },
     ]);
     const explicit = basketMoneyFacts([
-      { symbol: "AAPL", delta_czk: 1000, instrument_type: "stock" },
-      { symbol: "MSFT", delta_czk: -2500, instrument_type: "stock" },
+      { symbol: "AAPL", delta_czk: 1000, type: "stock" },
+      { symbol: "MSFT", delta_czk: -2500, type: "stock" },
     ]);
     expect(explicit).toEqual(legacy);
   });

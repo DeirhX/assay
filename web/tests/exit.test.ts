@@ -263,6 +263,7 @@ describe("Exit execution routes", () => {
     expect(headers).toContain("Ask (buy)");
     expect(headers).toContain("Last");
     expect(headers).toContain("Limit credit");
+    expect(headers).toContain("Yield p.a.");
     expect(headers).toContain("Assignment");
     expect(headers).toContain("Action");
 

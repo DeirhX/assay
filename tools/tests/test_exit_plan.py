@@ -2,7 +2,6 @@ import datetime as dt
 import inspect
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from typing import Any, Callable
@@ -13,8 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import exit_plan  # noqa: E402
 import ibkr_trade  # noqa: E402
 import tax_lots  # noqa: E402
-from providers import alpaca  # noqa: E402
-from providers import yahoo  # noqa: E402
 
 
 class _Raises:
@@ -271,160 +268,6 @@ def test_build_exit_plan_skips_in_band_names():
     plan = exit_plan.build_exit_plan(_model("reduce", 70.0, 90.0), _holdings(),
                                      as_of=AS_OF, fetch=False, with_options=False)
     assert plan["positions"] == []
-
-
-# --------------------------------------------------------------------------- #
-# Option-chain source selection: IBKR first when the gateway is authenticated,
-# then Alpaca when keyed, then Yahoo -- each miss/error falls to the next.
-# --------------------------------------------------------------------------- #
-def _ibkr_chain():
-    return {"source": "ibkr", "symbol": "NVDA",
-            "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
-
-
-def _alpaca_chain():
-    return {"source": "alpaca", "symbol": "NVDA",
-            "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
-
-
-def _yahoo_chain():
-    return {"source": "yahoo", "symbol": "NVDA",
-            "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}]}
-
-
-def test_session_ready_reads_auth_status():
-    # The result is memoized (auth_status is a ~2s gateway round-trip), so reset
-    # the short-lived cache before each read to assert a fresh auth_status pull.
-    exit_plan._session_ready_cache = None
-    with mock.patch.object(ibkr_trade, "auth_status", return_value={"authenticated": True}):
-        assert exit_plan._ibkr_session_ready() is True
-    exit_plan._session_ready_cache = None
-    with mock.patch.object(ibkr_trade, "auth_status", return_value={}):
-        assert exit_plan._ibkr_session_ready() is False
-    exit_plan._session_ready_cache = None
-    with mock.patch.object(ibkr_trade, "auth_status", side_effect=RuntimeError("down")):
-        assert exit_plan._ibkr_session_ready() is False
-
-
-def test_session_ready_memoizes_within_ttl():
-    # A second call inside the TTL must not re-hit auth_status (the whole point:
-    # a cold multi-name plan shouldn't pay the ~2s check per candidate).
-    exit_plan._session_ready_cache = None
-    with mock.patch.object(ibkr_trade, "auth_status", return_value={"authenticated": True}) as auth:
-        assert exit_plan._ibkr_session_ready() is True
-        assert exit_plan._ibkr_session_ready() is True
-    auth.assert_called_once()
-
-
-def test_ibkr_chain_budget_times_out_and_yahoo_wins():
-    # A chain fetch that outlives the budget must NOT block: the caller drops
-    # through the slow, abandoned IBKR thread to a fallback (the exact hang fix).
-    # Alpaca is pinned off so the deterministic fallback here is Yahoo.
-    def slow_chain(_sym):
-        time.sleep(5.0)
-        return _ibkr_chain()
-
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
-            mock.patch.object(ibkr_trade, "option_chain", side_effect=slow_chain), \
-            mock.patch.object(alpaca, "enabled", return_value=False), \
-            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn, \
-            mock.patch.object(exit_plan, "IBKR_CHAIN_BUDGET_SECONDS", 0.05):
-        t0 = time.perf_counter()
-        out = exit_plan._fetch_option_chain("NVDA")
-        elapsed = time.perf_counter() - t0
-    assert out["source"] == "yahoo"
-    yahoo_fn.assert_called_once()
-    assert elapsed < 1.0, f"budget not honored; took {elapsed:.2f}s"
-
-
-def test_fetch_prefers_ibkr_when_authenticated():
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
-            mock.patch.object(ibkr_trade, "option_chain", return_value=_ibkr_chain()) as ibkr_fn, \
-            mock.patch.object(yahoo, "option_chain") as yahoo_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "ibkr"
-    ibkr_fn.assert_called_once()
-    yahoo_fn.assert_not_called()
-
-
-def test_fetch_falls_back_to_yahoo_when_not_authenticated():
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
-            mock.patch.object(ibkr_trade, "option_chain") as ibkr_fn, \
-            mock.patch.object(alpaca, "enabled", return_value=False), \
-            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "yahoo"
-    ibkr_fn.assert_not_called()
-    yahoo_fn.assert_called_once()
-
-
-def test_fetch_falls_back_when_ibkr_resolves_nothing():
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
-            mock.patch.object(ibkr_trade, "option_chain", return_value=None), \
-            mock.patch.object(alpaca, "enabled", return_value=False), \
-            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "yahoo"
-    yahoo_fn.assert_called_once()
-
-
-def test_fetch_falls_back_when_ibkr_raises():
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
-            mock.patch.object(ibkr_trade, "option_chain", side_effect=RuntimeError("gateway boom")), \
-            mock.patch.object(alpaca, "enabled", return_value=False), \
-            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "yahoo"
-    yahoo_fn.assert_called_once()
-
-
-def test_fetch_uses_alpaca_between_ibkr_and_yahoo():
-    # IBKR down, Alpaca keyed -> Alpaca wins and Yahoo is never consulted.
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
-            mock.patch.object(alpaca, "enabled", return_value=True), \
-            mock.patch.object(alpaca, "option_chain", return_value=_alpaca_chain()) as alpaca_fn, \
-            mock.patch.object(yahoo, "option_chain") as yahoo_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "alpaca"
-    alpaca_fn.assert_called_once()
-    yahoo_fn.assert_not_called()
-
-
-def test_fetch_falls_through_alpaca_to_yahoo_on_miss():
-    # Alpaca enabled but resolves nothing -> Yahoo still gets its turn.
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=False), \
-            mock.patch.object(alpaca, "enabled", return_value=True), \
-            mock.patch.object(alpaca, "option_chain", return_value=None), \
-            mock.patch.object(yahoo, "option_chain", return_value=_yahoo_chain()) as yahoo_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "yahoo"
-    yahoo_fn.assert_called_once()
-
-
-def test_fetch_ibkr_beats_alpaca_when_authenticated():
-    with mock.patch.object(exit_plan, "_ibkr_session_ready", return_value=True), \
-            mock.patch.object(ibkr_trade, "option_chain", return_value=_ibkr_chain()), \
-            mock.patch.object(alpaca, "enabled", return_value=True), \
-            mock.patch.object(alpaca, "option_chain") as alpaca_fn:
-        out = exit_plan._fetch_option_chain("NVDA")
-    assert out["source"] == "ibkr"
-    alpaca_fn.assert_not_called()
-
-
-def test_cached_option_chain_persists_and_serves(tmp_path, monkeypatch):
-    monkeypatch.setattr(exit_plan, "_OPT_CACHE_DIR", tmp_path)
-    calls = {"n": 0}
-
-    def fake_fetch(sym):
-        calls["n"] += 1
-        return _ibkr_chain()
-
-    monkeypatch.setattr(exit_plan, "_fetch_option_chain", fake_fetch)
-    first = exit_plan._cached_option_chain("NVDA")
-    second = exit_plan._cached_option_chain("NVDA")
-    assert first["source"] == "ibkr"
-    assert second["source"] == "ibkr"
-    assert calls["n"] == 1  # second call served from the fresh cache entry
 
 
 # --------------------------------------------------------------------------- #

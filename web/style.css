@@ -2905,7 +2905,9 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
   border-radius: 5px; color: var(--muted); cursor: pointer; font-size: 11.5px;
   transition: color .15s ease, background-color .15s ease;
 }
-.trade-order-details > summary:hover, .trade-order-details > summary:focus-visible {
+.trade-order-details > summary:hover, .trade-order-details > summary:focus-visible,
+.trade-preview-details > summary:hover, .trade-preview-details > summary:focus-visible,
+.trade-impact-wrap > summary:hover, .trade-impact-wrap > summary:focus-visible {
   color: var(--text); background: var(--panel);
   outline: none;
 }
