@@ -24,7 +24,7 @@ import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./t
 
 // One sized order inside a /api/trade/preview response.
 interface TradeOrder {
-  instrument_type?: "stock" | "covered_call";
+  instrument_type?: "stock" | "covered_call" | "cash_secured_put";
   leg_id?: string;
   symbol?: string;
   conid?: string | number;
@@ -42,6 +42,7 @@ interface TradeOrder {
   coverage_shares?: number;
   if_assigned_shares?: number;
   premium_credit?: number;
+  cash_secured_czk?: number;
   currency?: string | null;
   provenance?: TradeLegProvenance[];
 }
@@ -478,10 +479,19 @@ function renderBasket() {
       review.addEventListener("click", () => openWorkflowView("target-state"));
       controls.appendChild(review);
     }
-    const hasCalls = basket.some((trade) => trade.type === "covered_call");
-    const edit = el("button", "ghost", hasCalls ? "Edit in Exit" : "Edit in Rebalance");
+    const hasExitCalls = basket.some((trade) =>
+      trade.type === "covered_call"
+      && !(trade.provenance || []).some((prov) => prov.source === "rebalance_routes"));
+    const hasRebalanceRoutes = basket.some((trade) =>
+      trade.type === "cash_secured_put"
+      || (trade.provenance || []).some((prov) => prov.source === "rebalance_routes"));
+    const edit = el(
+      "button", "ghost",
+      hasExitCalls && !hasRebalanceRoutes ? "Edit in Exit" : "Edit in Rebalance",
+    );
     edit.type = "button";
-    edit.addEventListener("click", () => openWorkflowView(hasCalls ? "exit" : "rebalance"));
+    edit.addEventListener("click", () =>
+      openWorkflowView(hasExitCalls && !hasRebalanceRoutes ? "exit" : "rebalance"));
     controls.appendChild(edit);
     const clear = el("button", "ghost", "Clear queue");
     clear.type = "button";
@@ -506,8 +516,14 @@ function renderBasket() {
 
   const facts = basketMoneyFacts(basket);
   const maxAbs = facts.largest ? Math.abs(facts.largest.czk) : 0;
-  const stocks = basket.filter((t) => t.type !== "covered_call");
-  const calls = basket.filter((t) => t.type === "covered_call");
+  const stocks = basket.filter(
+    (t) => t.type !== "covered_call" && t.type !== "cash_secured_put",
+  );
+  const options = basket.filter(
+    (t) => t.type === "covered_call" || t.type === "cash_secured_put",
+  );
+  const calls = options.filter((t) => t.type === "covered_call");
+  const puts = options.filter((t) => t.type === "cash_secured_put");
   const buys = stocks.filter((t) => Number(t.delta_czk) >= 0).length;
   const sells = stocks.length - buys;
   const net = facts.buy - facts.sell;      // >0 net cash out (buying), <0 net in
@@ -524,17 +540,18 @@ function renderBasket() {
       `<th><span class="sr-only">Actions</span></th>` +
     `</tr></thead>` +
     `<tbody>${basket.map((t) => {
-      if (t.type === "covered_call") {
-        const legId = t.leg_id || `covered_call:${t.symbol}:${t.conid}`;
+      if (t.type === "covered_call" || t.type === "cash_secured_put") {
+        const isPut = t.type === "cash_secured_put";
+        const legId = t.leg_id || `${t.type}:${t.symbol}:${t.conid}`;
         return `<tr class="trade-basket-option">` +
-          `<td>${tickerLink(t.symbol)}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} call</div></td>` +
+          `<td>${tickerLink(t.symbol)}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
           `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
           `<td>${sideTag("SELL")} <span class="muted">to open</span></td>` +
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
           `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}` +
           `${t.staging_warning ? `<div class="warn">${esc(t.staging_warning)}</div>` : ""}</td>` +
-          `<td class="tb-weight muted">conditional assignment</td>` +
-          `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove this covered call from the order queue">Remove</button></td>` +
+          `<td class="tb-weight muted">conditional assignment · ${isPut ? "entry" : "reduction"} · ${isPut ? "+" : "−"}${t.contracts * (t.multiplier || 100)} shares</td>` +
+          `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove this written option from the order queue">Remove</button></td>` +
         `</tr>`;
       }
       const delta = Number(t.delta_czk) || 0;
@@ -555,6 +572,7 @@ function renderBasket() {
         `<span class="trade-side buy">${buys} buy${buys === 1 ? "" : "s"}</span> · ` +
         `<span class="trade-side sell">${sells} stock sell${sells === 1 ? "" : "s"}</span>` +
         (calls.length ? ` · <span class="trade-side sell">${calls.length} covered call${calls.length === 1 ? "" : "s"}</span>` : "") +
+        (puts.length ? ` · <span class="trade-side sell">${puts.length} cash-secured put${puts.length === 1 ? "" : "s"}</span>` : "") +
       `</td>` +
       `<td class="num" title="net cash impact — buys minus sells">` +
         `<span class="muted">net</span> ${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(net))}`, "net basket cash")}` +
@@ -639,7 +657,8 @@ function renderPreview() {
     expiry: o.expiry, strike: o.strike, right: o.right, multiplier: o.multiplier,
     contracts: o.contracts, current_shares: o.current_shares,
     coverage_shares: o.coverage_shares, if_assigned_shares: o.if_assigned_shares,
-    premium_credit: o.premium_credit, provenance: o.provenance,
+    premium_credit: o.premium_credit, cash_secured_czk: o.cash_secured_czk,
+    provenance: o.provenance,
     placeable: true, next_step: "Review and confirm this new order.",
   }));
   const residualOrders = p.orders || [];
@@ -738,11 +757,13 @@ function renderPreview() {
   const orderGrid = el("div", "trade-order-grid");
   const bands = p.order_bands || {};
   const bandScale = weightScaleMax(
-    contexts.filter((c) => c.instrument_type !== "covered_call")
+    contexts.filter((c) => !c.instrument_type || c.instrument_type === "stock")
       .map((c) => bands[c.symbol]).filter(Boolean) as OrderBand[]);
   contexts.forEach((c) => {
     const sym = String(c.symbol || "").trim().toUpperCase();
-    const isOption = c.instrument_type === "covered_call";
+    const isOption =
+      c.instrument_type === "covered_call" || c.instrument_type === "cash_secured_put";
+    const isPut = c.instrument_type === "cash_secured_put";
     const orderIndex = residualOrders.findIndex((o) =>
       (c.leg_id && o.leg_id === c.leg_id)
       || (isOption && Number(o.conid) === Number(c.conid) && o.side === c.side)
@@ -789,7 +810,7 @@ function renderPreview() {
       primary.innerHTML = o
         ? `<strong>${coveredCallActionLabel()} ${esc(contractsLabel(c.residual_qty))}</strong>` +
           `<span class="trade-option-contract">${tickerLink(sym)} · ${esc(c.expiry || "")} · ` +
-          `${esc(qty(c.strike))} call</span>`
+          `${esc(qty(c.strike))} ${isPut ? "put" : "call"}</span>`
         : `<strong>No new option order</strong>`;
       if (c.current_shares != null && c.if_assigned_shares != null) {
         primary.innerHTML += `<span class="trade-position-effect">Conditional assignment: ` +
@@ -806,15 +827,17 @@ function renderPreview() {
     }
     item.appendChild(primary);
     if (isOption) {
-      const coverage = c.coverage_ok === false
-        ? `Coverage blocked · ${esc(c.coverage_capacity_contracts)} contract(s) available`
-        : `Coverage verified · ${esc(c.coverage_shares ?? 0)} shares reserved for this order`;
+      const coverage = isPut
+        ? `Cash secured · ${fmtCZK(Number(c.cash_secured_czk) || 0)} CZK reserved`
+        : c.coverage_ok === false
+          ? `Coverage blocked · ${esc(c.coverage_capacity_contracts)} contract(s) available`
+          : `Coverage verified · ${esc(c.coverage_shares ?? 0)} shares reserved for this order`;
       const prov = provenanceLabel(c.provenance);
       item.appendChild(el("div", "trade-order-breakdown",
         `<span><strong>${esc(coverage)}</strong></span>` +
         `<span>${esc(premiumCreditLabel(c.premium_credit, c.currency || "option currency"))}</span>` +
-        (prov ? `<span>From Exit · ${esc(prov)}</span>` : "") +
-        `<span>Assignment is conditional; the shares may not be sold.</span>`));
+        (prov ? `<span>From ${isPut ? "Rebalance" : "Exit"} · ${esc(prov)}</span>` : "") +
+        `<span>Assignment is conditional; shares may ${isPut ? "not be bought" : "not be sold"}.</span>`));
     } else if (c.classification !== "none") {
       const intent = c.side === "SELL" ? "Planned sale" : "Planned purchase";
       item.appendChild(el("div", "trade-order-breakdown",
@@ -993,15 +1016,21 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
     const largest = facts.largest
       ? `${esc(facts.largest.symbol)} ${facts.largest.czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(facts.largest.czk))} CZK`
       : "\u2014";
-    const optionOrders = (p.orders || []).filter((o) => o.instrument_type === "covered_call");
+    const optionOrders = (p.orders || []).filter(
+      (o) => o.instrument_type === "covered_call" || o.instrument_type === "cash_secured_put",
+    );
+    const hasPuts = optionOrders.some((o) => o.instrument_type === "cash_secured_put");
     const optionFacts = optionOrders.length
-      ? `<div class="trade-cf-options"><strong>Covered calls · sell to open</strong>` +
+      ? `<div class="trade-cf-options"><strong>${hasPuts ? "Written options" : "Covered calls"} · sell to open</strong>` +
         optionOrders.map((o) =>
           `<div>${tickerLink(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
-          `${esc(o.expiry || "")} ${esc(o.strike)}C · limit ${esc(o.price)} ${esc(o.currency || "")}` +
-          `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span></div>`
+          `${esc(o.expiry || "")} ${esc(o.strike)}${o.instrument_type === "cash_secured_put" ? "P" : "C"} · limit ${esc(o.price)} ${esc(o.currency || "")}` +
+          (o.instrument_type === "cash_secured_put"
+            ? `<span>Cash secured: ${fmtCZK(Number(o.cash_secured_czk) || 0)} CZK · +${esc(o.if_assigned_shares)} shares if assigned</span>`
+            : `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span>`) +
+          `</div>`
         ).join("") +
-        `<em>Assignment is conditional and may not reduce the position.</em></div>`
+        `<em>Assignment is conditional; the immediate share-weight projection is unchanged.</em></div>`
       : "";
     const ageLine = p.snapshot_age_days != null
       ? `<div class="trade-cf-row"><span>Snapshot age</span><span class="${p.snapshot_stale ? "bad" : ""}">` +
@@ -1116,14 +1145,16 @@ function logPlacedToJournal(res: PlaceResult) {
   const trades = _placedBasket;
   const first = trades[0];
   const summary = trades
-    .map((t) => t.type === "covered_call"
-      ? `${t.symbol} sell to open ${t.contracts}× ${t.strike}C ${t.expiry}`
+    .map((t) => t.type === "covered_call" || t.type === "cash_secured_put"
+      ? `${t.symbol} sell to open ${t.contracts}× ${t.strike}${t.type === "cash_secured_put" ? "P" : "C"} ${t.expiry}`
       : `${t.symbol} ${t.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(t.delta_czk))}`)
     .join(", ");
   openJournalWith({
     symbol: first?.symbol || "",
     action: first?.type === "covered_call" || Number(first?.delta_czk) < 0 ? "trim" : "buy",
-    size_czk: first && first.type !== "covered_call" ? Math.abs(first.delta_czk) : "",
+    size_czk: first && first.type !== "covered_call" && first.type !== "cash_secured_put"
+      ? Math.abs(first.delta_czk)
+      : "",
     thesis: `Placed orders on ${res.kind} account ${res.account}: ${summary || "(see IBKR)"}.`,
   });
 }

@@ -73,6 +73,25 @@ describe("projection review gate", () => {
     expect(html).toContain("conditional");
     expect(html).toContain("does not change share weights unless assigned");
   });
+
+  it("shows the if-assigned increase for a staged cash-secured put", () => {
+    const html = sourceBanner("basket", 1, {
+      trades: [{
+        type: "cash_secured_put",
+        route: "cash_secured_put",
+        symbol: "NVDA",
+        conid: 556,
+        expiry: "2026-08-21",
+        strike: 95,
+        contracts: 2,
+      }],
+      revision: "put-rev",
+      reviewed: false,
+    });
+    expect(html).toContain("written option");
+    expect(html).toContain("does not change share weights unless assigned");
+    expect(html).toContain("NVDA +200 shares");
+  });
 });
 
 describe("compareRows", () => {

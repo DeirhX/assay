@@ -2457,6 +2457,24 @@ a.tlink:hover { border-bottom-style: solid; }
 .whatif-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .whatif-table tbody tr { cursor: default; }
 .whatif-card .hint { margin: 8px 0 0; }
+.reb-route-card {
+  margin: 16px 0 10px; padding: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-soft);
+  background: var(--panel);
+}
+.reb-route-row { padding: 11px 0; border-top: 1px solid var(--border); }
+.reb-route-row:first-of-type { border-top: 0; }
+.reb-route-head, .reb-route-controls {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+}
+.reb-route-head { justify-content: space-between; margin-bottom: 7px; }
+.reb-route-controls .active, .reb-route-ladder button.active {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-soft);
+}
+.reb-route-detail { margin-top: 8px; }
+.reb-route-option-summary { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+.reb-route-option-summary strong { color: var(--text); }
+.reb-route-ladder { min-width: 760px; }
 
 /* ---- decision journal --------------------------------------------------- */
 .jrnl-form {

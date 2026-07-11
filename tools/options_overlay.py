@@ -45,6 +45,7 @@ COVERED_CALL_DTE = (30, 45)
 CALL_OTM_PCT = 0.05        # baseline OTM cushion for a covered call
 GUARD_CALL_OTM_PCT = 0.15  # far-OTM cushion when guarding a near-exempt lot
 PUT_OTM_PCT = 0.07         # protective-put strike below the mark
+CSP_OTM_PCT = 0.05         # baseline discount for a cash-secured entry put
 DEFAULT_VOL = 0.35         # fallback annualized vol when no series is usable
 CONTRACT_SIZE = ibkr_trade.OPTION_MULTIPLIER
 
@@ -324,6 +325,103 @@ def covered_call_ladder(
             cand["dte"] = max(1, (edate - as_of).days)
             rungs.append(cand)
     rungs.sort(key=lambda r: r["premium_yield_annual_pct"], reverse=True)
+    return rungs
+
+
+def _put_entry_candidate(
+    put: dict[str, Any], spot: float, vol: float, rate: float, as_of: dt.date,
+    edate: dt.date, chain_source: str, chain: dict[str, Any] | None, *,
+    contracts: int, fx: float,
+) -> dict[str, Any] | None:
+    """One cash-secured-put rung: premium yield and effective assigned entry."""
+    strike = put.get("strike")
+    if not isinstance(strike, (int, float)) or strike <= 0:
+        return None
+    t_years = _years_between(edate, as_of)
+    iv = put.get("implied_vol")
+    use_vol = iv if isinstance(iv, (int, float)) and iv > 0 else vol
+    premium = _mid(put)
+    source = chain_source if premium is not None else "black_scholes"
+    if premium is None:
+        premium = options_math.bs_price(spot, strike, t_years, use_vol, rate=rate, kind="put")
+    if premium is None or premium <= 0:
+        return None
+    raw_delta = put.get("delta")
+    delta = (
+        float(raw_delta)
+        if isinstance(raw_delta, (int, float)) and 0.0 < abs(raw_delta) <= 1.0
+        else options_math.bs_delta(spot, strike, t_years, use_vol, rate=rate, kind="put")
+    )
+    dte = max(1, (edate - as_of).days)
+    yield_annual = (premium / strike) * (365.0 / dte)
+    liq, spread = _liquidity(put, source)
+    estimate = source == "black_scholes"
+    out = {
+        "strike": round(float(strike), 2),
+        "premium": round(premium, 4),
+        "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
+        "effective_entry": round(float(strike) - premium, 4),
+        "cash_secured_czk": round(float(strike) * CONTRACT_SIZE * contracts * fx, 2),
+        "moneyness_pct": round((float(strike) / spot - 1.0) * 100.0, 2),
+        "premium_yield_annual_pct": round(yield_annual * 100.0, 2),
+        "assignment_prob_pct": round(abs(delta) * 100.0, 1) if delta is not None else None,
+        "open_interest": _as_int(put.get("open_interest")),
+        "volume": _as_int(put.get("volume")),
+        "spread_pct": round(spread * 100.0, 1) if spread is not None else None,
+        "liquidity": liq,
+        "source": source,
+        "estimate": estimate,
+    }
+    _attach_executable_metadata(
+        out, contract=put, chain=chain, chain_source=chain_source, estimate=estimate,
+    )
+    return out
+
+
+def cash_secured_put_ladder(
+    spot: float, vol: float, rate: float, as_of: dt.date, chain: dict[str, Any] | None,
+    *, contracts: int, fx: float,
+) -> list[dict[str, Any]]:
+    """Yield-ranked OTM puts for a conditional, cash-secured stock entry."""
+    if contracts < 1 or spot <= 0:
+        return []
+    cap_strike = spot * (1.0 - CSP_OTM_PCT)
+    chain_source = _chain_source(chain)
+    edate: dt.date | None = None
+    expiry_iso: str | None = None
+    puts: list[dict[str, Any]] = []
+    if chain and chain.get("expiries"):
+        exp = _pick_expiry(
+            chain["expiries"], as_of,
+            dte_min=COVERED_CALL_DTE[0], dte_max=COVERED_CALL_DTE[1],
+        )
+        if exp:
+            expiry_iso = exp["expiry"]
+            edate = dt.date.fromisoformat(expiry_iso)
+            puts = [
+                p for p in (exp.get("puts") or [])
+                if isinstance(p.get("strike"), (int, float)) and p["strike"] <= cap_strike
+            ]
+            puts.sort(key=lambda p: p["strike"], reverse=True)
+    if edate is None:
+        edate = as_of + dt.timedelta(days=37)
+        expiry_iso = edate.isoformat()
+    if not puts:
+        puts = [
+            {"strike": round(spot * (1.0 - CSP_OTM_PCT - i * LADDER_STEP_PCT), 2)}
+            for i in range(LADDER_SIZE)
+        ]
+    rungs: list[dict[str, Any]] = []
+    for put in puts[:LADDER_SIZE]:
+        candidate = _put_entry_candidate(
+            put, spot, vol, rate, as_of, edate, chain_source, chain,
+            contracts=contracts, fx=fx,
+        )
+        if candidate:
+            candidate["expiry"] = expiry_iso
+            candidate["dte"] = max(1, (edate - as_of).days)
+            rungs.append(candidate)
+    rungs.sort(key=lambda rung: rung["premium_yield_annual_pct"], reverse=True)
     return rungs
 
 

@@ -845,6 +845,32 @@ describe("trade desk mixed stock + covered call", () => {
     expect(foot.textContent).toContain("1 covered call");
   });
 
+  it("renders a cash-secured put as a conditional entry, not a covered call", async () => {
+    const basket: TradeLeg[] = [{
+      type: "cash_secured_put",
+      route: "cash_secured_put",
+      leg_id: "csp-nvda-1",
+      symbol: "NVDA",
+      conid: 556,
+      expiry: "20260815",
+      strike: 95,
+      contracts: 2,
+      multiplier: 100,
+      limit_price: 2.1,
+      currency: "USD",
+      fx_to_base: 23,
+      provenance: [{ source: "rebalance_routes", route: "cash_secured_put" }],
+    }];
+    await loadBasket(PAPER_STATUS, basket);
+    const table = document.querySelector(".trade-basket-table")!;
+    expect(table.textContent).toContain("95 put");
+    expect(table.textContent).toContain("conditional assignment");
+    expect(table.textContent).toContain("entry");
+    expect(table.textContent).toContain("+200 shares");
+    expect(table.querySelector("tfoot")!.textContent).toContain("1 cash-secured put");
+    expect(document.querySelector(".trade-queue-controls")!.textContent).toContain("Edit in Rebalance");
+  });
+
   it("removes the exact server-known covered-call leg", async () => {
     apiMock.mockImplementation((
       path: string,

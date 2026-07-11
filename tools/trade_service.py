@@ -36,6 +36,7 @@ from apierror import (
 from config import DATA_DIR
 from portfolio import (
     HOLDINGS_JSON,
+    cash_base,
     clean_symbol,
     normalize_basket,
     option_root,
@@ -67,10 +68,10 @@ OPTION_MULTIPLIER = ibkr_trade.OPTION_MULTIPLIER
 
 
 def _normalize_basket(trades: Any) -> list[dict]:
-    """Canonical stock + covered-call legs used for persistence and token hashing.
+    """Canonical stock + short-option legs used for persistence and token hashing.
 
     Legacy ``{symbol, delta_czk}`` rows remain valid stock legs. Stock rows net by
-    symbol; option rows never do. A covered-call ``leg_id`` is its idempotency key:
+    symbol; option rows never do. An option ``leg_id`` is its idempotency key:
     restaging the same exact contract replaces the prior row instead of doubling
     the write. Unknown fields are deliberately discarded so the preview hash binds
     only the server-understood order definition.
@@ -86,11 +87,13 @@ def _normalize_basket(trades: Any) -> list[dict]:
         if leg_type == "stock":
             stock_rows.append(raw)
             continue
-        if leg_type != "covered_call":
+        if leg_type not in {"covered_call", "cash_secured_put"}:
             raise ValueError(f"unsupported trade leg type {leg_type!r}")
+        option_name = "covered-call" if leg_type == "covered_call" else "cash-secured put"
+        right = "C" if leg_type == "covered_call" else "P"
         sym = clean_symbol(raw.get("symbol"))
         if not sym:
-            raise ValueError("each covered-call leg needs a symbol")
+            raise ValueError(f"each {option_name} leg needs a symbol")
         try:
             conid_raw = raw.get("conid")
             strike_raw = raw.get("strike")
@@ -102,24 +105,26 @@ def _normalize_basket(trades: Any) -> list[dict]:
             contracts = int(contracts_raw)
             multiplier = int(raw.get("multiplier") or OPTION_MULTIPLIER)
         except (TypeError, ValueError):
-            raise ValueError(f"{sym}: covered call needs numeric conid, strike, and contracts") from None
+            raise ValueError(
+                f"{sym}: {option_name} needs numeric conid, strike, and contracts"
+            ) from None
         expiry = str(raw.get("expiry") or "").strip()
         if conid <= 0 or strike <= 0 or contracts <= 0 or multiplier != OPTION_MULTIPLIER or not expiry:
-            raise ValueError(f"{sym}: invalid covered-call contract definition")
+            raise ValueError(f"{sym}: invalid {option_name} contract definition")
         try:
             # Strict ISO parsing also rejects clever garbage before it enters the token.
             import datetime as _dt
             _dt.date.fromisoformat(expiry)
         except ValueError:
-            raise ValueError(f"{sym}: covered-call expiry must be YYYY-MM-DD") from None
-        leg_id = str(raw.get("leg_id") or f"covered_call:{sym}:{conid}").strip()
+            raise ValueError(f"{sym}: {option_name} expiry must be YYYY-MM-DD") from None
+        leg_id = str(raw.get("leg_id") or f"{leg_type}:{sym}:{conid}").strip()
         if not leg_id:
-            raise ValueError(f"{sym}: covered-call leg_id is required")
+            raise ValueError(f"{sym}: {option_name} leg_id is required")
         limit_raw = raw.get("limit_price")
         try:
             limit_price = float(limit_raw) if limit_raw is not None else None
         except (TypeError, ValueError):
-            raise ValueError(f"{sym}: covered-call limit_price must be numeric") from None
+            raise ValueError(f"{sym}: {option_name} limit_price must be numeric") from None
         provenance = raw.get("provenance")
         if provenance is None:
             provenance = []
@@ -127,20 +132,24 @@ def _normalize_basket(trades: Any) -> list[dict]:
             provenance = [provenance]
         elif not isinstance(provenance, list) or not all(isinstance(p, dict) for p in provenance):
             raise ValueError(f"{sym}: provenance must be an object or list of objects")
+        fx_raw = raw.get("fx_to_base")
+        fx_value = float(fx_raw) if isinstance(fx_raw, (int, float)) else None
         option_rows[leg_id] = {
-            "type": "covered_call",
+            "type": leg_type,
             "leg_id": leg_id,
             "symbol": sym,
-            "route": "covered_call",
+            "route": leg_type,
             "conid": conid,
             "expiry": expiry,
             "strike": round(strike, 6),
-            "right": "C",
+            "right": right,
             "contracts": contracts,
             "multiplier": OPTION_MULTIPLIER,
             "limit_price": round(limit_price, 6) if limit_price and limit_price > 0 else None,
             "quote_timestamp": str(raw.get("quote_timestamp") or "") or None,
             "staging_warning": str(raw.get("staging_warning") or "") or None,
+            "currency": str(raw.get("currency") or "") or None,
+            "fx_to_base": round(fx_value, 8) if fx_value and fx_value > 0 else None,
             "provenance": provenance,
         }
 
@@ -234,23 +243,30 @@ def save_basket(trades: Any) -> list[dict]:
 
 
 def replace_stock_basket(trades: Any) -> list[dict]:
-    """Replace planner stock legs while preserving server-staged covered calls.
+    """Replace planner stock legs while preserving unrelated server-staged options.
 
-    The generic basket endpoint is intentionally stock-only. Covered calls must
-    come through Exit staging, where the server validates the exact contract,
-    quote, and covered-share capacity.
+    The generic basket endpoint is intentionally stock-only. Re-staging a plain
+    rebalance clears prior rebalance option alternatives, while Exit-planner
+    options survive. Every option must come through its validating stage endpoint.
     """
     with _basket_lock:
         incoming = _normalize_basket(trades) if trades else []
-        if any(leg.get("type") == "covered_call" for leg in incoming):
+        if any(leg.get("type") != "stock" for leg in incoming):
             raise ValueError(
-                "covered calls must be staged from the Exit plan; "
+                "covered calls must be staged from the Exit plan and cash-secured "
+                "puts from Rebalance; "
                 "direct basket option legs are rejected"
             )
-        existing_calls = [
-            leg for leg in load_basket() if leg.get("type") == "covered_call"
+        existing_options = [
+            leg for leg in load_basket()
+            if leg.get("type") in {"covered_call", "cash_secured_put"}
+            and not any(
+                str(prov.get("source") or "") == "rebalance_routes"
+                for prov in leg.get("provenance") or []
+                if isinstance(prov, dict)
+            )
         ]
-        return save_basket(existing_calls + incoming)
+        return save_basket(existing_options + incoming)
 
 
 def remove_basket_leg(leg_id: Any) -> list[dict]:
@@ -457,6 +473,68 @@ def covered_call_capacity(
     return base
 
 
+def _held_short_put_collateral(holdings: dict[str, Any] | None = None) -> float:
+    """Conservative strike notional already pledged by held short puts."""
+    holdings = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
+    total = 0.0
+    for row in holdings.get("positions") or []:
+        parsed = parse_occ_symbol(row.get("symbol"))
+        if not parsed or parsed[0] != "P":
+            continue
+        qty = _number(row.get("quantity"))
+        if qty >= 0:
+            continue
+        total += (
+            abs(qty) * parsed[1] * OPTION_MULTIPLIER * position_fx_to_base(row)
+        )
+    return total
+
+
+def cash_secured_put_capacity(
+    holdings: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Snapshot cash remaining after held short-put strike obligations."""
+    holdings = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
+    cash = max(0.0, float(cash_base(holdings) or 0))
+    held = _held_short_put_collateral(holdings)
+    return {
+        "cash_czk": cash,
+        "held_short_put_collateral_czk": round(held, 2),
+        "available_cash_czk": round(max(0.0, cash - held), 2),
+    }
+
+
+def working_short_put_collateral(raw_orders: list[dict]) -> float:
+    """Strike collateral for every non-terminal resting short put in the account."""
+    fx_map = _fx_by_currency()
+    total = 0.0
+    for raw in raw_orders:
+        if not isinstance(raw, dict) or _order_terminal(raw):
+            continue
+        is_put = (
+            raw.get("instrument_type") == "cash_secured_put"
+            or (_is_working_option(raw) and _working_option_right(raw) == "P")
+        )
+        if not is_put or str(raw.get("side") or "").upper() != "SELL":
+            continue
+        parsed = parse_occ_symbol(raw.get("ticker") or raw.get("symbol"))
+        strike = _number(raw.get("strike")) or (parsed[1] if parsed else 0.0)
+        remaining_raw = raw.get("remainingQuantity")
+        remaining = (
+            _number(remaining_raw)
+            if remaining_raw is not None
+            else _number(raw.get("remaining_qty"))
+            or max(
+                0.0,
+                _number(raw.get("totalSize") or raw.get("quantity"))
+                - _number(raw.get("filledQuantity")),
+            )
+        )
+        currency = str(raw.get("currency") or "USD").upper()
+        total += strike * OPTION_MULTIPLIER * remaining * fx_map.get(currency, 1.0)
+    return round(total, 2)
+
+
 def _is_working_option(raw: dict) -> bool:
     sec = str(raw.get("secType") or raw.get("assetClass") or raw.get("asset_class") or "").upper()
     desc = str(raw.get("orderDesc") or "").upper()
@@ -584,10 +662,10 @@ def _drop_blocked_buys(orders: list[dict], blocked: set[str]) -> list[dict]:
 
 
 def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dict], list[str]]:
-    """Translate canonical stock/covered-call legs to server-resolved CPAPI orders."""
+    """Translate canonical stock/short-option legs to server-resolved CPAPI orders."""
     price_map = _trade_price_map()
     position_qty = _position_quantity_map()
-    option_symbols = {t["symbol"] for t in basket if t.get("type") == "covered_call"}
+    call_symbols = {t["symbol"] for t in basket if t.get("type") == "covered_call"}
     stock_sell_symbols = {
         t["symbol"] for t in basket
         if t.get("type") in (None, "stock") and _number(t.get("delta_czk")) < 0
@@ -599,7 +677,7 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         })
         for sym in stock_sell_symbols
     }
-    if option_symbols:
+    if call_symbols:
         try:
             live_positions = _live_positions(account_id)
         except ibkr_trade.CPAPIError as exc:
@@ -610,7 +688,7 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
             **call_capacity,
             **{
                 sym: _live_position_call_capacity(account_id, sym, live_positions)
-                for sym in option_symbols
+                for sym in call_symbols
             },
         }
     fx_map = _fx_by_currency()
@@ -741,7 +819,107 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
             "_current_position_qty": cap["current_shares"],
         }
         orders.append(order)
+
+    # Cash-secured puts are exact-contract SELL LIMIT orders. Their assignment
+    # notional plus immediate stock buys must fit snapshot cash conservatively;
+    # IBKR preview still performs the authoritative margin check.
+    put_legs = [t for t in basket if t.get("type") == "cash_secured_put"]
+    put_cash = cash_secured_put_capacity()
+    remaining_cash = float(put_cash["available_cash_czk"]) - sum(
+        max(0.0, _number(t.get("delta_czk")))
+        for t in basket if t.get("type") == "stock"
+    )
+    total_put_collateral = 0.0
+    for leg in put_legs:
+        sym = leg["symbol"]
+        try:
+            resolved_put = ibkr_trade.resolve_executable_put(
+                sym,
+                leg["expiry"],
+                leg["strike"],
+                expected_conid=int(leg["conid"]),
+                max_quote_age_seconds=OPTION_QUOTE_MAX_AGE_S,
+            )
+        except ibkr_trade.ExecutablePutError as exc:
+            messages = {
+                "contract_missing": f"{sym}: exact cash-secured-put contract no longer resolves",
+                "contract_changed": f"{sym}: put contract changed — rebuild the Rebalance route",
+                "quote_invalid": f"{sym}: cash-secured put needs a live, uncrossed IBKR bid/ask quote",
+                "quote_stale": f"{sym}: cash-secured-put quote is stale — preview again",
+                "limit_invalid": f"{sym}: could not derive a valid put limit price",
+            }
+            raise ValueError(messages[exc.reason]) from exc
+        contracts = int(leg["contracts"])
+        fx = _number(leg.get("fx_to_base")) or _number(
+            (price_map.get(sym) or {}).get("fx_to_base")
+        ) or fx_map.get("USD", 1.0)
+        collateral = float(resolved_put["strike"]) * OPTION_MULTIPLIER * contracts * fx
+        total_put_collateral += collateral
+        if total_put_collateral > remaining_cash + 0.01:
+            raise ValueError(
+                f"{sym}: cash-secured puts need {total_put_collateral:,.0f} CZK after stock buys, "
+                f"but only {max(0.0, remaining_cash):,.0f} CZK is available"
+            )
+        limit = resolved_put["limit_price"]
+        current_shares = int(position_qty.get(sym, 0.0))
+        orders.append({
+            "instrument_type": "cash_secured_put",
+            "leg_id": leg["leg_id"],
+            "route": "cash_secured_put",
+            "symbol": sym,
+            "conid": int(resolved_put["conid"]),
+            "orderType": "LMT",
+            "side": "SELL",
+            "quantity": contracts,
+            "tif": "GTC",
+            "price": limit,
+            "cOID": (
+                f"assay-{_basket_token(account_id, basket)}-"
+                f"{int(resolved_put['conid'])}-{contracts}"
+            ),
+            "expiry": resolved_put["expiry"],
+            "strike": float(resolved_put["strike"]),
+            "right": "P",
+            "multiplier": OPTION_MULTIPLIER,
+            "contracts": contracts,
+            "bid": resolved_put["bid"],
+            "ask": resolved_put["ask"],
+            "last": resolved_put.get("last"),
+            "quote_timestamp": resolved_put.get("quote_timestamp"),
+            "underlying_last": resolved_put.get("underlying_last"),
+            "underlying_bid": resolved_put.get("underlying_bid"),
+            "underlying_ask": resolved_put.get("underlying_ask"),
+            "cash_secured_czk": round(collateral, 2),
+            "current_shares": current_shares,
+            "if_assigned_shares": current_shares + contracts * OPTION_MULTIPLIER,
+            "premium_credit": round(limit * OPTION_MULTIPLIER * contracts, 2),
+            "currency": leg.get("currency") or (price_map.get(sym) or {}).get("currency"),
+            "provenance": leg.get("provenance") or [],
+            "_estimate_price": limit,
+            "_estimate_fx_to_base": fx,
+            "_current_position_qty": current_shares,
+        })
     return orders, warnings + skip_warnings
+
+
+def _put_cash_requirement(
+    orders: list[dict], raw_working: list[dict],
+) -> tuple[float, float]:
+    """(required, available) cash for immediate buys plus all short-put obligations."""
+    available = float(cash_secured_put_capacity()["available_cash_czk"])
+    stock_buys = sum(
+        _number(order.get("_estimate_price"))
+        * _number(order.get("quantity"))
+        * (_number(order.get("_estimate_fx_to_base")) or 1.0)
+        for order in orders
+        if order.get("instrument_type") not in {"covered_call", "cash_secured_put"}
+        and order.get("side") == "BUY"
+    )
+    new_puts = sum(
+        _number(order.get("cash_secured_czk"))
+        for order in orders if order.get("instrument_type") == "cash_secured_put"
+    )
+    return stock_buys + new_puts + working_short_put_collateral(raw_working), available
 
 
 def _trade_status() -> dict:
@@ -867,8 +1045,8 @@ def _normalized_working_orders(
         except (TypeError, ValueError):
             conid = None
         is_option = _is_working_option(raw) or (conid is not None and conid in option_conids)
-        if is_option and _working_option_right(raw) == "P":
-            continue
+        option_right = _working_option_right(raw) if is_option else None
+        parsed_option = parse_occ_symbol(raw.get("ticker") or raw.get("symbol")) if is_option else None
         sym = option_root(raw_sym) if is_option else clean_symbol(raw_sym)
         if is_option:
             if not sym and conid not in option_conids:
@@ -886,7 +1064,15 @@ def _normalized_working_orders(
         out.append({
             "order_id": str(raw.get("orderId") or raw.get("order_id") or ""),
             "symbol": sym,
-            "instrument_type": "covered_call" if is_option else "stock",
+            "instrument_type": (
+                "cash_secured_put" if is_option and option_right == "P"
+                else "covered_call" if is_option else "stock"
+            ),
+            "right": option_right,
+            "strike": (
+                _number(raw.get("strike"))
+                or (parsed_option[1] if parsed_option else None)
+            ),
             "conid": conid,
             "side": str(raw.get("side") or "").strip().upper(),
             "remaining_qty": remaining,
@@ -909,6 +1095,8 @@ def _working_fingerprint(working: list[dict]) -> str:
         "id": o.get("order_id"),
         "instrument_type": o.get("instrument_type") or "stock",
         "conid": o.get("conid"),
+        "right": o.get("right"),
+        "strike": o.get("strike"),
         "symbol": o.get("symbol"),
         "side": o.get("side"),
         "remaining": round(_number(o.get("remaining_qty")), 8),
@@ -947,7 +1135,8 @@ def _reconcile_working_orders(
         sym = str(order.get("symbol") or "").strip().upper()
         side = str(order.get("side") or "").strip().upper()
         instrument_type = str(order.get("instrument_type") or "stock")
-        is_option = instrument_type == "covered_call"
+        is_option = instrument_type in {"covered_call", "cash_secured_put"}
+        is_call = instrument_type == "covered_call"
         leg_id = str(order.get("leg_id") or f"stock:{sym}")
         proposed_qty = _number(order.get("quantity"))
         symbol_rows = working_by_symbol.get((instrument_type, sym), [])
@@ -991,10 +1180,10 @@ def _reconcile_working_orders(
                     f"{residual_qty:g} more to complete the {proposed_qty:g}-{unit} plan."
                 )
 
-        coverage_working = _working_short_calls(symbol_rows, sym) if is_option else 0
-        coverage_capacity = int(order.get("coverage_capacity_contracts") or 0) if is_option else 0
-        coverage_ok = not is_option or coverage_working + residual_qty <= coverage_capacity
-        if is_option and not coverage_ok:
+        coverage_working = _working_short_calls(symbol_rows, sym) if is_call else 0
+        coverage_capacity = int(order.get("coverage_capacity_contracts") or 0) if is_call else 0
+        coverage_ok = not is_call or coverage_working + residual_qty <= coverage_capacity
+        if is_call and not coverage_ok:
             classification = "coverage_blocked"
             residual_qty = 0.0
             next_step = (
@@ -1041,25 +1230,38 @@ def _reconcile_working_orders(
             "placeable": residual_qty > 0,
         }
         if is_option:
-            total_assignment_contracts = (
-                int(order.get("held_short_calls") or 0) + coverage_working + int(residual_qty)
+            total_assignment_contracts = int(
+                (
+                    int(order.get("held_short_calls") or 0) + coverage_working + residual_qty
+                    if is_call else same_qty + residual_qty
+                )
+            )
+            current_shares = int(order.get("current_shares") or current_position_qty or 0)
+            if_assigned_shares = (
+                max(0, current_shares - total_assignment_contracts * OPTION_MULTIPLIER)
+                if is_call
+                else current_shares + total_assignment_contracts * OPTION_MULTIPLIER
             )
             context.update({
                 "expiry": order.get("expiry"),
                 "strike": order.get("strike"),
-                "right": "C",
+                "right": "C" if is_call else "P",
                 "multiplier": OPTION_MULTIPLIER,
                 "contracts": proposed_qty,
-                "current_shares": int(order.get("current_shares") or 0),
+                "current_shares": current_shares,
                 "coverage_capacity_contracts": coverage_capacity,
                 "coverage_working_contracts": coverage_working,
                 "coverage_ok": coverage_ok,
-                "coverage_shares": int(residual_qty * OPTION_MULTIPLIER),
-                "if_assigned_shares": max(
-                    0,
-                    int(order.get("current_shares") or 0)
-                    - total_assignment_contracts * OPTION_MULTIPLIER,
+                "coverage_shares": int(residual_qty * OPTION_MULTIPLIER) if is_call else None,
+                "cash_secured_czk": (
+                    round(
+                        _number(order.get("cash_secured_czk"))
+                        * (residual_qty / proposed_qty if proposed_qty else 0),
+                        2,
+                    )
+                    if not is_call else None
                 ),
+                "if_assigned_shares": if_assigned_shares,
                 "premium_credit": round(
                     residual_qty * _number(order.get("price")) * OPTION_MULTIPLIER, 2
                 ),
@@ -1095,7 +1297,7 @@ def _reconcile_working_orders(
         future_stock_sells = _working_stock_sell_shares(stock_working_rows, sym) + sum(
             int(_number(o.get("quantity")))
             for o in residual
-            if o.get("instrument_type") != "covered_call"
+            if o.get("instrument_type") not in {"covered_call", "cash_secured_put"}
             and o.get("symbol") == sym
             and o.get("side") == "SELL"
         )
@@ -1207,20 +1409,24 @@ def _trade_preview(body: dict) -> dict:
 
     relevant_stock_symbols = {
         str(o.get("symbol") or "").strip().upper() for o in proposed_orders
-        if o.get("symbol") and o.get("instrument_type") != "covered_call"
+        if o.get("symbol")
+        and o.get("instrument_type") not in {"covered_call", "cash_secured_put"}
     }
     relevant_option_symbols = {
         str(o.get("symbol") or "").strip().upper() for o in proposed_orders
-        if o.get("symbol") and o.get("instrument_type") == "covered_call"
+        if o.get("symbol")
+        and o.get("instrument_type") in {"covered_call", "cash_secured_put"}
     }
     coverage_symbols = relevant_option_symbols | {
         str(o.get("symbol") or "").strip().upper() for o in proposed_orders
-        if o.get("symbol") and o.get("instrument_type") != "covered_call"
+        if o.get("symbol")
+        and o.get("instrument_type") not in {"covered_call", "cash_secured_put"}
         and o.get("side") == "SELL"
     }
     relevant_option_conids = {
         int(o["conid"]) for o in proposed_orders
-        if o.get("instrument_type") == "covered_call" and o.get("conid") is not None
+        if o.get("instrument_type") in {"covered_call", "cash_secured_put"}
+        and o.get("conid") is not None
     }
     working_available = True
     working_error: str | None = None
@@ -1237,7 +1443,18 @@ def _trade_preview(body: dict) -> dict:
         # we could not rule out a double trade.
         working_available = False
         working_error = str(exc)
+        raw_working = []
         working_orders = []
+    if any(
+        order.get("instrument_type") == "cash_secured_put"
+        for order in proposed_orders
+    ) and working_available:
+        required_cash, available_cash = _put_cash_requirement(proposed_orders, raw_working)
+        if required_cash > available_cash + 0.01:
+            raise ValueError(
+                f"stock buys plus held, working, and proposed short puts need "
+                f"{required_cash:,.0f} CZK, but only {available_cash:,.0f} CZK is available"
+            )
     orders, order_context, effective_basket = _reconcile_working_orders(
         proposed_orders, basket, working_orders,
     )
@@ -1344,7 +1561,8 @@ def _revalidate_covered_call_orders(
     coverage_symbols = set(by_symbol) | {
         str(order.get("symbol") or "").upper()
         for order in orders
-        if order.get("instrument_type") != "covered_call" and order.get("side") == "SELL"
+        if order.get("instrument_type") not in {"covered_call", "cash_secured_put"}
+        and order.get("side") == "SELL"
     }
     if not coverage_symbols:
         return
@@ -1409,7 +1627,7 @@ def _revalidate_covered_call_orders(
         future_stock_sells = _working_stock_sell_shares(working, sym) + sum(
             int(_number(order.get("quantity")))
             for order in orders
-            if order.get("instrument_type") != "covered_call"
+            if order.get("instrument_type") not in {"covered_call", "cash_secured_put"}
             and str(order.get("symbol") or "").upper() == sym
             and order.get("side") == "SELL"
         )
@@ -1426,6 +1644,82 @@ def _revalidate_covered_call_orders(
                 f"{max(0, int(base.get('current_shares') or 0) - future_stock_sells)} "
                 "shares would remain after stock sells; preview again"
             )
+
+
+def _revalidate_cash_secured_put_orders(
+    orders: list[dict], working: list[dict], *, raw_working: list[dict] | None = None,
+) -> None:
+    """Refresh short-put contracts and fail closed if aggregate cash is insufficient."""
+    put_orders = [
+        order for order in orders
+        if order.get("instrument_type") == "cash_secured_put"
+    ]
+    if not put_orders:
+        return
+    for order in put_orders:
+        sym = str(order.get("symbol") or "").upper()
+        try:
+            resolved = ibkr_trade.resolve_executable_put(
+                sym,
+                str(order.get("expiry") or ""),
+                _number(order.get("strike")),
+                expected_conid=int(order.get("conid") or 0),
+                max_quote_age_seconds=OPTION_QUOTE_MAX_AGE_S,
+            )
+        except ibkr_trade.ExecutablePutError as exc:
+            messages = {
+                "contract_missing": f"{sym}: cash-secured-put contract no longer resolves",
+                "contract_changed": f"{sym}: cash-secured-put contract changed",
+                "quote_invalid": f"{sym}: cash-secured-put quote is missing or crossed",
+                "quote_stale": f"{sym}: cash-secured-put quote is stale",
+                "limit_invalid": f"{sym}: cash-secured-put limit could not be refreshed",
+            }
+            raise _Conflict(messages.get(exc.reason, f"{sym}: put validation failed") + " — preview again") from exc
+        fresh_limit = resolved["limit_price"]
+        old_limit = _number(order.get("price"))
+        tick = _number(resolved.get("tick")) or ibkr_trade.tick_for_price(
+            resolved.get("rules"), fresh_limit,
+        )
+        spread = float(resolved["ask"]) - float(resolved["bid"])
+        if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
+            raise _Conflict(
+                f"{sym}: cash-secured-put limit moved from {old_limit:g} "
+                f"to {fresh_limit:g} — preview again"
+            )
+        contracts = int(_number(order.get("quantity")))
+        fx = _number(order.get("_estimate_fx_to_base")) or 1.0
+        order.update({
+            "price": fresh_limit,
+            "bid": resolved.get("bid"),
+            "ask": resolved.get("ask"),
+            "last": resolved.get("last"),
+            "quote_timestamp": resolved.get("quote_timestamp"),
+            "cash_secured_czk": round(
+                float(resolved["strike"]) * OPTION_MULTIPLIER * contracts * fx, 2,
+            ),
+            "premium_credit": round(fresh_limit * OPTION_MULTIPLIER * contracts, 2),
+        })
+
+    capacity = cash_secured_put_capacity()
+    available = float(capacity["available_cash_czk"])
+    stock_buys = sum(
+        _number(order.get("_estimate_price"))
+        * _number(order.get("quantity"))
+        * (_number(order.get("_estimate_fx_to_base")) or 1.0)
+        for order in orders
+        if order.get("instrument_type") not in {"covered_call", "cash_secured_put"}
+        and order.get("side") == "BUY"
+    )
+    new_collateral = sum(_number(order.get("cash_secured_czk")) for order in put_orders)
+    working_collateral = working_short_put_collateral(
+        raw_working if raw_working is not None else working,
+    )
+    required = stock_buys + new_collateral + working_collateral
+    if required > available + 0.01:
+        raise _Conflict(
+            f"cash coverage changed — stock buys and short puts need {required:,.0f} CZK, "
+            f"but only {available:,.0f} CZK is available; preview again"
+        )
 
 
 def _trade_place(body: dict) -> dict:
@@ -1464,8 +1758,9 @@ def _trade_place(body: dict) -> dict:
     option_symbols = set(issued.get("working_option_symbols") or [])
     option_conids = {int(c) for c in issued.get("working_option_conids") or []}
     try:
+        fresh_raw_working = ibkr_trade.live_orders()
         fresh_working = _normalized_working_orders(
-            ibkr_trade.live_orders(), symbols, option_symbols, option_conids,
+            fresh_raw_working, symbols, option_symbols, option_conids,
         )
     except ibkr_trade.CPAPIError as exc:
         raise _Conflict(
@@ -1484,12 +1779,18 @@ def _trade_place(body: dict) -> dict:
     if not orders:
         raise ValueError("no residual orders remain to place — preview the updated basket")
     _revalidate_covered_call_orders(account_id, orders, fresh_working)
+    _revalidate_cash_secured_put_orders(
+        orders, fresh_working, raw_working=fresh_raw_working,
+    )
     # Calls go first so a partial gateway failure cannot sell the covering
     # shares and then fail before submitting their short call. If a later stock
     # sale fails, an accepted call remains covered by more shares than planned.
     placement_orders = sorted(
         orders,
-        key=lambda order: 0 if order.get("instrument_type") == "covered_call" else 1,
+        key=lambda order: (
+            0 if order.get("instrument_type") in {"covered_call", "cash_secured_put"}
+            else 1
+        ),
     )
     try:
         placed = ibkr_trade.place_orders(account_id, placement_orders)

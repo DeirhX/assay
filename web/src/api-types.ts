@@ -720,6 +720,69 @@ export interface ExitPlanResponse {
   };
 }
 
+export type RebalanceExecutionRoute =
+  "buy_shares" | "sell_shares" | "covered_call" | "cash_secured_put";
+
+export interface RebalanceOptionRung extends ExitQuoteFields {
+  strike: number;
+  expiry: string;
+  dte: number;
+  premium: number;
+  premium_czk: number;
+  effective_exit?: number;
+  effective_entry?: number;
+  cash_secured_czk?: number;
+  moneyness_pct: number;
+  premium_yield_annual_pct: number;
+  assignment_prob_pct: number | null;
+  open_interest: number | null;
+  volume: number | null;
+  spread_pct: number | null;
+  liquidity: "ok" | "thin" | "unknown";
+  source: string;
+  estimate: boolean;
+}
+
+export interface RebalanceRouteResponse {
+  symbol: string;
+  delta_czk: number;
+  direction: "increase" | "reduce";
+  planned_shares: number;
+  underlying?: number | null;
+  currency?: string | null;
+  fx_to_base: number;
+  source: string;
+  direct: {
+    kind: "buy_shares" | "sell_shares";
+    label: string;
+    eligible: boolean;
+    reasons: string[];
+  };
+  option: {
+    kind: "covered_call" | "cash_secured_put";
+    label: string;
+    eligible: boolean;
+    stageable: boolean;
+    reasons: string[];
+    contracts: number;
+    assignment_shares: number;
+    share_deviation: number;
+    rounded_up: boolean;
+    available_cash_czk?: number | null;
+  };
+  recommended: RebalanceExecutionRoute;
+  ladder: RebalanceOptionRung[];
+}
+
+export interface RebalanceRouteSelection {
+  symbol: string;
+  route: RebalanceExecutionRoute;
+  conid?: number;
+  expiry?: string;
+  strike?: number;
+  contracts?: number;
+}
+
 // Canonical staged trade-desk legs (GET/POST basket and Exit staging).
 export interface TradeLegProvenance {
   source?: string;
@@ -738,7 +801,7 @@ export interface StockTradeLeg {
   symbol: string;
   delta_czk: number;
   leg_id?: string;
-  route?: "sell_shares";
+  route?: "buy_shares" | "sell_shares";
   provenance?: TradeLegProvenance[];
 }
 
@@ -759,7 +822,26 @@ export interface CoveredCallTradeLeg {
   provenance?: TradeLegProvenance[];
 }
 
-export type TradeLeg = StockTradeLeg | CoveredCallTradeLeg;
+export interface CashSecuredPutTradeLeg {
+  type: "cash_secured_put";
+  symbol: string;
+  leg_id?: string;
+  route: "cash_secured_put";
+  conid: number;
+  expiry: string;
+  strike: number;
+  contracts: number;
+  delta_czk?: number;
+  limit_price?: number | null;
+  quote_timestamp?: string | null;
+  staging_warning?: string | null;
+  multiplier?: 100;
+  currency?: string | null;
+  fx_to_base?: number | null;
+  provenance?: TradeLegProvenance[];
+}
+
+export type TradeLeg = StockTradeLeg | CoveredCallTradeLeg | CashSecuredPutTradeLeg;
 
 export interface ExitStageResponse {
   staged: boolean;
