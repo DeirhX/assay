@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import Any
 
 import ibkr_trade
@@ -47,6 +49,7 @@ STAGED_BASKET_JSON = DATA_DIR / "cache" / "staged-basket.json"
 # demands a fresh preview).
 PREVIEW_TTL_S = 600
 _preview_issued: dict[str, dict] = {}
+_basket_lock = threading.RLock()
 
 # A holdings snapshot older than this shouldn't silently size real orders —
 # the CZK->shares math uses its marks. Warning only; the human decides.
@@ -65,28 +68,96 @@ def _normalize_basket(trades: Any) -> list[dict]:
 def load_basket() -> list[dict]:
     """The last basket staged from the planner, or [] when nothing is staged. A
     corrupt/foreign file reads as empty rather than raising."""
-    raw = _load(STAGED_BASKET_JSON)
-    trades = raw.get("trades") if isinstance(raw, dict) else None
-    if not isinstance(trades, list):
-        return []
-    try:
-        return _normalize_basket(trades)
-    except ValueError:
-        return []
+    with _basket_lock:
+        raw = _load(STAGED_BASKET_JSON)
+        trades = raw.get("trades") if isinstance(raw, dict) else None
+        if not isinstance(trades, list):
+            return []
+        try:
+            return _normalize_basket(trades)
+        except ValueError:
+            return []
+
+
+def _basket_revision(basket: list[dict]) -> str:
+    """Content identity for the exact normalized order queue."""
+    if not basket:
+        return ""
+    payload = json.dumps(basket, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def basket_state() -> dict:
+    """Current queue plus whether that exact revision was projection-reviewed."""
+    with _basket_lock:
+        raw = _load(STAGED_BASKET_JSON)
+        basket = load_basket()
+        revision = _basket_revision(basket)
+        reviewed_revision = str(raw.get("reviewed_revision") or "") if isinstance(raw, dict) else ""
+        return {
+            "trades": basket,
+            "revision": revision,
+            "reviewed": bool(revision and reviewed_revision == revision),
+            "reviewed_at": raw.get("reviewed_at") if isinstance(raw, dict) and reviewed_revision == revision else None,
+        }
 
 
 def save_basket(trades: Any) -> list[dict]:
     """Persist a normalized staged basket so the planner and the trade desk share
-    one durable source of truth. An empty/cleared basket removes the file."""
-    basket = _normalize_basket(trades) if trades else []
-    if basket:
-        _write_json(STAGED_BASKET_JSON, {"trades": basket})
-    else:
-        try:
-            STAGED_BASKET_JSON.unlink()
-        except OSError:
-            pass
-    return basket
+    one durable source of truth. A content change invalidates both projection
+    review and every outstanding IBKR preview token."""
+    with _basket_lock:
+        basket = _normalize_basket(trades) if trades else []
+        previous = basket_state()
+        revision = _basket_revision(basket)
+        changed = revision != previous["revision"]
+        if changed:
+            _preview_issued.clear()
+        if basket:
+            payload: dict[str, Any] = {"trades": basket, "revision": revision}
+            # Saving an identical queue is not a mutation; retain its review.
+            if not changed and previous["reviewed"]:
+                payload["reviewed_revision"] = revision
+                payload["reviewed_at"] = previous["reviewed_at"]
+            _write_json(STAGED_BASKET_JSON, payload)
+        else:
+            try:
+                STAGED_BASKET_JSON.unlink()
+            except OSError:
+                pass
+        return basket
+
+
+def review_basket(revision: Any) -> dict:
+    """Record that the human reviewed the projection for this exact queue."""
+    with _basket_lock:
+        state = basket_state()
+        requested = str(revision or "")
+        if not state["trades"]:
+            raise ValueError("nothing staged to review")
+        if not requested or requested != state["revision"]:
+            raise _Conflict("order queue changed since projection — reload Target state and review it again")
+        reviewed_at = datetime.now(UTC).isoformat()
+        _write_json(STAGED_BASKET_JSON, {
+            "trades": state["trades"],
+            "revision": state["revision"],
+            "reviewed_revision": state["revision"],
+            "reviewed_at": reviewed_at,
+        })
+        return basket_state()
+
+
+def _reviewed_preview_basket(body: dict) -> list[dict]:
+    """Return the staged queue only when this exact revision was reviewed."""
+    queue = basket_state()
+    submitted = _normalize_basket(body.get("trades"))
+    if not submitted:
+        raise ValueError("nothing staged to preview")
+    if submitted != queue["trades"] or str(body.get("queue_revision") or "") != queue["revision"]:
+        raise _Conflict("order queue changed since projection — review the current Target state before previewing")
+    if not queue["reviewed"]:
+        raise _Conflict("projected portfolio has not been approved — review Target state before previewing")
+    return submitted
 
 
 def _basket_token(account_id: str, basket: list[dict]) -> str:
@@ -592,9 +663,7 @@ def _trade_preview(body: dict) -> dict:
     can be eyeballed side by side, plus the token the place step must echo."""
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to use the trade desk")
-    basket = _normalize_basket(body.get("trades"))
-    if not basket:
-        raise ValueError("nothing staged to preview")
+    basket = _reviewed_preview_basket(body)
     account_id = _resolve_trade_account(body.get("account"))
     proposed_orders, warnings = _prepare_trade_orders(account_id, basket)
 

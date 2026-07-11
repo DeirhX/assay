@@ -2,8 +2,18 @@
 // auto-linker. The report text comes from Perplexity (untrusted), so the
 // escape-first guarantees here are load-bearing.
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildReportToc, collectReportTickers, linkifyTickers, mdToHtml, slugify } from "../src/analyses";
+import {
+  buildReportToc, collectReportTickers, linkifyTickers, mdToHtml, promptSegmentFor, slugify,
+} from "../src/analyses";
 import { state } from "../src/core";
+
+describe("deep prompt routing", () => {
+  it("uses real segments but skips synthetic ticker grouping keys", () => {
+    expect(promptSegmentFor({ segment: "semiconductors", kind: "segment" })).toBe("semiconductors");
+    expect(promptSegmentFor({ segment: "ticker-xsd", kind: "ticker" })).toBeNull();
+    expect(promptSegmentFor({ kind: "segment" })).toBeNull();
+  });
+});
 
 describe("mdToHtml", () => {
   it("escapes raw HTML so script never survives", () => {

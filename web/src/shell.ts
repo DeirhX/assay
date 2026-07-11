@@ -165,19 +165,25 @@ const VIEW_GROUP: Record<string, string> = {
   strategy: "strategy",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio", journal: "portfolio",
+  holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio",
   basket: "basket",
   // Activity is a global audit log (tickers viewed + tasks run), not part of any
   // one workflow, so it's its own top-level group rather than a Portfolio sub-tab.
-  activity: "activity",
+  activity: "activity", journal: "activity",
   setup: "setup",
 };
 // Which sub-tab lights up for a given view. With History promoted to its own
 // sub-tab, the data-view of each sub-tab button maps 1:1 to its key here.
 const VIEW_SUBTAB: Record<string, string> = {
-  leaderboard: "leaderboard", deepdive: "deepdive", analyses: "analyses", segment: "segment",
+  // Segment is the drill-down behind Explore, and the new-run pipeline is the
+  // creation path behind Deep Research — neither needs a duplicate subtab.
+  leaderboard: "leaderboard", segment: "leaderboard", deepdive: "deepdive",
+  analyses: "analyses", pipeline: "analyses",
   rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade", "target-state": "target-state",
-  holdings: "holdings", history: "history", risk: "risk", attribution: "attribution", tax: "tax", journal: "journal",
+  holdings: "holdings", history: "history",
+  // Risk/Attribution/Tax are three lenses inside one Analytics destination.
+  risk: "risk", attribution: "risk", tax: "risk",
+  activity: "activity", journal: "journal",
 };
 const GROUP_DEFAULT: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "holdings", basket: "basket", activity: "activity" };
 // Remember the last view visited within each group so re-clicking a group header
@@ -328,23 +334,18 @@ function updateChrome(active: string) {
 
   document.querySelectorAll<HTMLElement>(".group").forEach((b) => b.classList.toggle("active", b.dataset.group === group));
   document.querySelectorAll<HTMLElement>(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === active));
-  const brand = $$("#brand-home");
-  if (brand) {
-    brand.classList.toggle("active", active === "today");
-    if (active === "today") brand.setAttribute("aria-current", "page");
-    else brand.removeAttribute("aria-current");
-  }
 
   // The sub-tab bar only exists for groups that fan out into multiple views.
   const subbar = $$("#subbar");
-  const groupHasSubtabs = group === "research" || group === "rebalance" || group === "portfolio";
+  const groupHasSubtabs = group === "research" || group === "rebalance" ||
+    group === "portfolio" || group === "activity";
   if (subbar) subbar.hidden = !groupHasSubtabs;
   document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
   document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view ?? ""] === wantSub));
 
   // The rebalance group carries the guided flow bar (current book → plan
-  // changes → orders → target state) so the sibling sub-tabs read as one
+  // changes → target state → orders) so the sibling sub-tabs read as one
   // pipeline rather than a row of unrelated destinations.
   updateFlowBar(active, group);
 }

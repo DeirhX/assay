@@ -69,10 +69,10 @@ describe("kindLabel / taskTitle", () => {
   });
 });
 
-describe("task panel grouping + ordering", () => {
+describe("task panel scope", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("lists active tasks above recent ones, newest first, and marks navigable rows", async () => {
+  it("shows only in-progress work and sends completed history to Activity", async () => {
     const jobs: JobListing[] = [
       mk({ id: "j3", kind: "ticker_analysis", symbol: "AMD", state: "running", message: "thinking", created_at: "2026-06-16T10:00:03+00:00", updated_at: "2026-06-16T10:00:03+00:00" }),
       mk({ id: "j2", kind: "deep_research", state: "done", artifact: { stem: "ai-2026-06-16" }, created_at: "2026-06-16T10:00:02+00:00", updated_at: "2026-06-16T10:00:02+00:00" }),
@@ -84,12 +84,12 @@ describe("task panel grouping + ordering", () => {
     toggleTaskPanel(true);      // open the panel so it renders
 
     const list = document.getElementById("task-list") as HTMLElement;
-    await vi.waitFor(() => expect(list.querySelectorAll(".task-item").length).toBe(3));
+    await vi.waitFor(() => expect(list.querySelectorAll(".task-item").length).toBe(1));
 
     const items = [...list.querySelectorAll(".task-item")];
-    // active (running) first, then recent (done, error), each newest-first
-    expect(items.map((i) => i.getAttribute("data-open"))).toEqual(["j3", "j2", "j1"]);
+    expect(items.map((i) => i.getAttribute("data-open"))).toEqual(["j3"]);
     expect((list.querySelector(".task-group-head") as HTMLElement).textContent).toBe("In progress");
+    expect(list.textContent).toContain("Completed work is kept in the durable Activity log");
     // the running ticker analysis routes to a result, so its row is navigable
     expect(items[0].classList.contains("navigable")).toBe(true);
   });

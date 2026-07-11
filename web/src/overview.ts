@@ -213,10 +213,10 @@ export function draftCard(d: DraftSum): string {
 
 export function stagedBasketCard(b: StagedBasketSum): string {
   if (!b.count) return "";
-  return card("warn", "Staged basket",
+  return card("warn", "Order queue",
     `<span class="chip warn">${b.count} trade${b.count === 1 ? "" : "s"}</span>`,
     `${b.buys} buy${b.buys === 1 ? "" : "s"}, ${b.sells} sell${b.sells === 1 ? "" : "s"} · ` +
-    `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "staged basket size")} total — simulated in the planner, not yet placed.`,
+    `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "staged order size")} total — staged for review, not yet placed.`,
     goBtn("trade", "Trade desk →", "primary"));
 }
 
@@ -262,13 +262,13 @@ export function basketTriageCard(r: ResearchSum): string {
   const b = r.basket;
   if (!b.count) {
     return card("muted", "Shortlist triage", "",
-      `Your basket is empty. Star (☆) names from a segment table, a report, or a deep-dive to build the funnel.`,
+      `Your watchlist is empty. Star (☆) names from Explore, Deep Research, or a ticker dossier to build the funnel.`,
       goBtn("analyses", "Research →"));
   }
   if (!b.unresearched_count) {
     return card("ok", "Shortlist triage", `<span class="chip good">all researched</span>`,
-      `All ${b.count} basket pick${b.count === 1 ? "" : "s"} have a saved analysis.`,
-      goBtn("basket", "Basket →"));
+      `All ${b.count} watchlist pick${b.count === 1 ? "" : "s"} have a saved analysis.`,
+      goBtn("basket", "Watchlist →"));
   }
   const rows = b.unresearched.map((p) =>
     `<span class="today-pick">${tlink(p.symbol)}` +
@@ -279,7 +279,7 @@ export function basketTriageCard(r: ResearchSum): string {
     `<span class="chip ${b.aging_count ? "warn" : "muted"}">${b.unresearched_count} unresearched</span>`,
     `${b.unresearched_count} of ${b.count} pick${b.count === 1 ? "" : "s"} have no saved analysis` +
     (b.aging_count ? ` — ${b.aging_count} sitting for 30+ days` : "") + `: ${rows}`,
-    goBtn("basket", "Basket →"));
+    goBtn("basket", "Watchlist →"));
 }
 
 export function queueCard(r: ResearchSum): string {

@@ -14,7 +14,7 @@ test.describe("trade desk safety states", () => {
     await expect(banner).toContainText("Gateway not connected");
   });
 
-  test("shows the connected paper account and an empty-basket hint", async ({ page }) => {
+  test("shows the connected paper account and an empty order-queue hint", async ({ page }) => {
     await installApi(page, {
       "/api/trade/status": {
         trading_enabled: true, authenticated: true, default_account: "DU1",
@@ -24,7 +24,7 @@ test.describe("trade desk safety states", () => {
     await page.goto("/?view=trade");
 
     await expect(page.locator("#trade-banner")).toContainText("Paper account DU1");
-    // No basket staged from the rebalance planner -> the desk refuses gracefully.
-    await expect(page.locator("#trade-result")).toContainText("No basket staged");
+    // No orders staged from the rebalance planner -> the desk refuses gracefully.
+    await expect(page.locator("#trade-result")).toContainText("No orders staged");
   });
 });
