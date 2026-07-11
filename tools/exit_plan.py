@@ -68,6 +68,10 @@ EPS = 1e-6
 # name. Same shape as risk.py's price-series cache.
 _OPT_CACHE_DIR = REPO_ROOT / "data" / "cache" / "options"
 OPT_CACHE_TTL_SECONDS = 3 * 3600
+# Broker chains carry execution quotes, not merely advisory strikes. Keep their
+# cache shorter than the 120s execution TTL so "rebuild" can actually obtain a
+# newer quote instead of replaying a stale three-hour cache entry.
+IBKR_CHAIN_CACHE_TTL_SECONDS = 30
 _RATE_CACHE = _OPT_CACHE_DIR / "risk-free-rate.json"
 RATE_CACHE_TTL_SECONDS = 6 * 3600
 
@@ -94,6 +98,54 @@ def _quote_age_seconds(raw: Any, *, now: dt.datetime | None = None) -> float | N
     return timeutil.age_seconds(raw, now=current)
 
 
+def _covered_call_contract_plan(
+    entry: dict[str, Any], capacity_contracts: int,
+) -> dict[str, Any]:
+    """Choose whole contracts that best land inside the target band.
+
+    Flooring ``exit_shares / 100`` systematically left a remainder above the
+    ceiling; it also hid valid one-contract exits such as trimming 88 shares when
+    assigning 100 still lands inside the no-trade band. Prefer the closest
+    in-band whole-contract outcome. If no whole-contract outcome can hit the
+    band, keep the conservative floor and expose the unresolved share remainder.
+    """
+    qty = max(0.0, float(entry.get("quantity") or 0))
+    desired = max(0.0, min(qty, float(entry.get("exit_shares") or 0)))
+    current_pct = max(0.0, float(entry.get("current_pct") or 0))
+    low = max(0.0, float(entry.get("target_low_pct") or 0))
+    high = max(low, float(entry.get("target_pct") or 0))
+    max_contracts = min(max(0, int(capacity_contracts)), int(qty // 100))
+
+    def post_pct(contracts: int) -> float:
+        remaining = max(0.0, qty - contracts * 100)
+        return current_pct * remaining / qty if qty > 0 else 0.0
+
+    in_band = [
+        contracts
+        for contracts in range(1, max_contracts + 1)
+        if low - EPS <= post_pct(contracts) <= high + EPS
+    ]
+    if in_band:
+        planned = min(in_band, key=lambda c: (abs(c * 100 - desired), c))
+    else:
+        planned = min(max_contracts, int(desired // 100))
+
+    assigned = planned * 100
+    projected_pct = post_pct(planned)
+    return {
+        "capacity_contracts": planned,
+        "assigned_shares": assigned,
+        "unresolved_exit_shares": max(0, int(round(desired - assigned))),
+        "overtrim_shares": max(0, int(round(assigned - desired))),
+        "post_assignment_pct": round(projected_pct, 2),
+        "target_low_pct": round(low, 2),
+        "target_high_pct": round(high, 2),
+        "reaches_target_band": bool(
+            planned > 0 and low - EPS <= projected_pct <= high + EPS
+        ),
+    }
+
+
 def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) -> dict[str, Any]:
     """Server-computed route availability; staging repeats every safety check."""
     import trade_service
@@ -104,15 +156,18 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
     options = entry.get("options") or {}
     ladder = options.get("covered_call_ladder") or []
     capacity = trade_service.covered_call_capacity(entry["symbol"])
-    intended = max(0, int(float(entry.get("exit_shares") or 0) // 100))
-    capacity_contracts = min(int(capacity.get("capacity_contracts") or 0), intended)
+    contract_plan = _covered_call_contract_plan(
+        entry, int(capacity.get("capacity_contracts") or 0),
+    )
+    capacity_contracts = int(contract_plan["capacity_contracts"])
     executable: list[dict] = []
     for rung in ladder:
         age = _quote_age_seconds(rung.get("quote_timestamp"), now=now)
         rung["quote_age_seconds"] = round(age, 1) if age is not None else None
         rung["quote_fresh"] = age is not None and age <= EXECUTION_QUOTE_MAX_AGE_SECONDS
         bid, ask = rung.get("bid"), rung.get("ask")
-        if rung.get("executable") and rung["quote_fresh"] and bid and ask:
+        real_time = rung.get("market_data_timeline") == "real_time"
+        if rung.get("executable") and real_time and rung["quote_fresh"] and bid and ask:
             # Display estimate only. stage_covered_call obtains the exact tick and
             # recomputes this from a fresh quote.
             rung["limit_price"] = math.floor((((float(bid) + float(ask)) / 2.0) + EPS) * 100) / 100
@@ -127,19 +182,42 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
             f"{capacity.get('held_short_calls', 0)} held short call(s))."
         )
     if not executable:
-        if any(r.get("executable") and not r.get("quote_fresh") for r in ladder):
+        non_realtime = next((
+            r.get("market_data_timeline") or "status unavailable"
+            for r in ladder
+            if r.get("conid") and r.get("market_data_timeline") != "real_time"
+        ), None)
+        if non_realtime:
+            reasons.append(
+                f"IBKR option data is {non_realtime}, not real-time."
+            )
+        elif any(r.get("executable") and not r.get("quote_fresh") for r in ladder):
             reasons.append("IBKR option quote is stale; rebuild the Exit plan.")
         else:
             reasons.append("No exact IBKR call contract with a live two-sided quote.")
     covered_ok = capacity_contracts > 0 and bool(executable)
+    has_liquid_quote = any(r.get("liquidity") == "ok" for r in executable)
+    covered_preferred = (
+        covered_ok
+        and bool(contract_plan["reaches_target_band"])
+        and has_liquid_quote
+        and entry.get("rule") in {"hold", "trim_only", "wait"}
+    )
     return {
         "sell_shares": {"eligible": sell_ok, "reasons": sell_reasons},
         "covered_call": {
             "eligible": covered_ok,
             "reasons": reasons,
-            "capacity_contracts": capacity_contracts,
+            **contract_plan,
         },
-        "recommended": "covered_call" if not sell_ok and covered_ok else "sell_shares",
+        "recommended": (
+            "covered_call"
+            if covered_ok and (
+                covered_preferred
+                or (not sell_ok and bool(contract_plan["reaches_target_band"]))
+            )
+            else "sell_shares"
+        ),
     }
 
 
@@ -417,17 +495,29 @@ def _candidates(
         if not sym or sym in seen:
             continue
         seen.add(sym)
-        out.append({"symbol": sym, "rule": row.get("rule"), "high": row.get("high"), "source": "trim"})
+        out.append({
+            "symbol": sym,
+            "rule": row.get("rule"),
+            "low": row.get("low"),
+            "high": row.get("high"),
+            "source": "trim",
+        })
     for u in plan.get("untargeted", []) or []:
         sym = portfolio.clean_symbol(u.get("symbol"))
         if sym and sym in include and sym not in seen:
             seen.add(sym)
-            out.append({"symbol": sym, "rule": "avoid", "high": 0.0, "source": "untargeted"})
+            out.append({
+                "symbol": sym, "rule": "avoid", "low": 0.0,
+                "high": 0.0, "source": "untargeted",
+            })
     for sym in sorted(include | full_exit):
         sym = portfolio.clean_symbol(sym)
         if sym and sym not in seen:
             seen.add(sym)
-            out.append({"symbol": sym, "rule": "avoid", "high": 0.0, "source": "explicit"})
+            out.append({
+                "symbol": sym, "rule": "avoid", "low": 0.0,
+                "high": 0.0, "source": "explicit",
+            })
     return out
 
 
@@ -516,6 +606,7 @@ def build_exit_plan(
             "current_pct": round(cur_pct, 2),
             "current_czk": round(pos["mv_base"], 2),
             "end_state": state_label,
+            "target_low_pct": round(float(cand.get("low") or 0), 2),
             "target_pct": round(target_pct, 2),
             "exit_czk": round(exit_czk, 2),
             "exit_shares": round(exit_shares, 4),
@@ -704,8 +795,15 @@ def _cached_option_chain(symbol: str) -> dict[str, Any] | None:
     cached = store.load(path)
     # A fresh entry short-circuits even when it recorded "no chain" (None), so a
     # foreign name with no listed options doesn't 404 on every single load.
-    if isinstance(cached, dict) and "chain" in cached and timeutil.cache_fresh(cached.get("fetched_at"), OPT_CACHE_TTL_SECONDS):
-        return cached.get("chain")
+    if isinstance(cached, dict) and "chain" in cached:
+        cached_chain = cached.get("chain")
+        ttl = (
+            IBKR_CHAIN_CACHE_TTL_SECONDS
+            if isinstance(cached_chain, dict) and cached_chain.get("source") == "ibkr"
+            else OPT_CACHE_TTL_SECONDS
+        )
+        if timeutil.cache_fresh(cached.get("fetched_at"), ttl):
+            return cached_chain
     chain = _fetch_option_chain(symbol)
     store.write_json(path, {
         "symbol": symbol.upper(),
@@ -873,7 +971,7 @@ def stage_covered_call(
     leg_id = f"covered_call:{sym}:{int(conid)}"
     existing = trade_service.load_basket()
     staged_stock_sells = _staged_exit_share_sales(existing, sym)
-    intended = max(0, int(float(pos.get("exit_shares") or 0) // 100))
+    intended = max(0, int(route.get("capacity_contracts") or 0))
     post_sell_capacity = max(
         0,
         max(0, int(capacity.get("current_shares") or 0) - staged_stock_sells) // 100
@@ -897,6 +995,16 @@ def stage_covered_call(
     exact = ibkr_trade.resolve_exact_call(sym, expiry, strike)
     if not exact or int(exact.get("conid") or 0) != int(conid):
         raise ValueError(f"{sym}: exact call contract no longer resolves")
+    if not ibkr_trade.market_data_is_realtime(
+        exact.get("market_data_availability")
+    ):
+        timeline = exact.get("market_data_timeline") or "unavailable"
+        raise ValueError(
+            f"{sym}: option market data is {timeline}, not real-time"
+        )
+    exact_age = _quote_age_seconds(exact.get("quote_timestamp"))
+    if exact_age is None or exact_age > EXECUTION_QUOTE_MAX_AGE_SECONDS:
+        raise ValueError(f"{sym}: exact option quote is stale or missing")
     if not ibkr_trade.quotes_are_valid(exact.get("bid"), exact.get("ask")):
         raise ValueError(f"{sym}: option bid/ask is missing or crossed")
     limit = ibkr_trade.round_sell_limit_midpoint(
@@ -930,6 +1038,8 @@ def stage_covered_call(
         "multiplier": 100,
         "limit_price": limit,
         "quote_timestamp": exact.get("quote_timestamp"),
+        "market_data_availability": exact.get("market_data_availability"),
+        "market_data_timeline": exact.get("market_data_timeline"),
         "provenance": [provenance],
     }
     basket = trade_service.save_basket(existing + [leg])

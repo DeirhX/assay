@@ -427,6 +427,106 @@ def test_cached_option_chain_persists_and_serves(tmp_path, monkeypatch):
     assert calls["n"] == 1  # second call served from the fresh cache entry
 
 
+def test_cached_ibkr_chain_refreshes_before_execution_quote_ttl(tmp_path, monkeypatch):
+    monkeypatch.setattr(exit_plan, "_OPT_CACHE_DIR", tmp_path)
+    old = (
+        dt.datetime.now(dt.timezone.utc)
+        - dt.timedelta(seconds=exit_plan.IBKR_CHAIN_CACHE_TTL_SECONDS + 1)
+    ).isoformat()
+    exit_plan.store.write_json(tmp_path / "NVDA.json", {
+        "symbol": "NVDA",
+        "fetched_at": old,
+        "chain": _ibkr_chain(),
+    })
+    fetch = mock.Mock(return_value=_ibkr_chain())
+    monkeypatch.setattr(exit_plan, "_fetch_option_chain", fetch)
+
+    out = exit_plan._cached_option_chain("NVDA")
+    assert out["source"] == "ibkr"
+    fetch.assert_called_once_with("NVDA")
+
+
+# --------------------------------------------------------------------------- #
+# covered-call route sizing — whole contracts should target the actual band
+# --------------------------------------------------------------------------- #
+def test_contract_plan_exposes_remainder_when_no_whole_contract_hits_band():
+    plan = exit_plan._covered_call_contract_plan({
+        "quantity": 300,
+        "exit_shares": 224,
+        "current_pct": 11.46,
+        "target_low_pct": 1.9,
+        "target_pct": 2.9,
+    }, 3)
+    assert plan["capacity_contracts"] == 2
+    assert plan["assigned_shares"] == 200
+    assert plan["unresolved_exit_shares"] == 24
+    assert plan["post_assignment_pct"] == 3.82
+    assert plan["reaches_target_band"] is False
+
+
+def test_contract_plan_may_overtrim_exact_ceiling_when_result_stays_in_band():
+    plan = exit_plan._covered_call_contract_plan({
+        "quantity": 300,
+        "exit_shares": 88,
+        "current_pct": 6.65,
+        "target_low_pct": 0,
+        "target_pct": 4.7,
+    }, 3)
+    assert plan["capacity_contracts"] == 1
+    assert plan["assigned_shares"] == 100
+    assert plan["overtrim_shares"] == 12
+    assert plan["post_assignment_pct"] == 4.43
+    assert plan["reaches_target_band"] is True
+
+
+def test_contract_plan_selects_closest_in_band_assignment():
+    plan = exit_plan._covered_call_contract_plan({
+        "quantity": 1300,
+        "exit_shares": 692,
+        "current_pct": 4.27,
+        "target_low_pct": 1.0,
+        "target_pct": 2.0,
+    }, 13)
+    assert plan["capacity_contracts"] == 7
+    assert plan["overtrim_shares"] == 8
+    assert plan["post_assignment_pct"] == 1.97
+    assert plan["reaches_target_band"] is True
+
+
+def test_execution_route_prefers_liquid_in_band_call_for_trim_only_name():
+    now = dt.datetime(2026, 7, 1, 12, tzinfo=dt.timezone.utc)
+    entry = {
+        "symbol": "ARM",
+        "rule": "trim_only",
+        "quantity": 300,
+        "exit_shares": 88,
+        "current_pct": 6.65,
+        "target_low_pct": 0,
+        "target_pct": 4.7,
+        "schedule": {"tranches": [{"index": 1}]},
+        "options": {"covered_call_ladder": [{
+            "executable": True,
+            "quote_timestamp": now.isoformat(),
+            "market_data_timeline": "real_time",
+            "bid": 2.4,
+            "ask": 2.6,
+            "liquidity": "ok",
+        }]},
+    }
+    with mock.patch(
+        "trade_service.covered_call_capacity",
+        return_value={
+            "current_shares": 300, "held_short_calls": 0,
+            "capacity_contracts": 3,
+        },
+    ):
+        routes = exit_plan._execution_routes(entry, now=now)
+    assert routes["covered_call"]["capacity_contracts"] == 1
+    assert routes["covered_call"]["overtrim_shares"] == 12
+    assert routes["covered_call"]["reaches_target_band"] is True
+    assert routes["recommended"] == "covered_call"
+
+
 # --------------------------------------------------------------------------- #
 # stage_covered_call — server validation, idempotence, provenance
 # --------------------------------------------------------------------------- #
@@ -444,6 +544,9 @@ def _exit_plan_with_cc(*, eligible=True, exit_shares=400, capacity_contracts=4,
         "ask": 2.60,
         "executable": True,
         "quote_timestamp": _fresh_quote_ts(),
+        "market_data_availability": "RpB",
+        "market_data_timeline": "real_time",
+        "liquidity": "ok",
     }
     if rung_overrides:
         rung.update(rung_overrides)
@@ -523,6 +626,8 @@ def _stage_mocks(
             "bid": 2.40,
             "ask": 2.60,
             "quote_timestamp": _fresh_quote_ts(),
+            "market_data_availability": "RpB",
+            "market_data_timeline": "real_time",
             "rules": {"increment": 0.05},
         },
     )
@@ -648,9 +753,49 @@ def test_stage_covered_call_rejects_crossed_live_quote(tmp_path, monkeypatch):
         "conid": 555, "expiry": "2026-08-21", "strike": 105.0,
         "bid": 2.80, "ask": 2.60,
         "quote_timestamp": _fresh_quote_ts(),
+        "market_data_availability": "RpB",
+        "market_data_timeline": "real_time",
         "rules": {"increment": 0.05},
     })
     with pytest.raises(ValueError, match="bid/ask is missing or crossed"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_frozen_close(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path, exact={
+        "conid": 555, "expiry": "2026-08-21", "strike": 105.0,
+        "bid": 2.40, "ask": 2.60,
+        "quote_timestamp": _fresh_quote_ts(),
+        "market_data_availability": "ZpB",
+        "market_data_timeline": "frozen",
+        "rules": {"increment": 0.05},
+    })
+    with pytest.raises(ValueError, match="frozen, not real-time"):
+        exit_plan.stage_covered_call(
+            plan, "EXITME", conid=555, expiry=rung["expiry"],
+            strike=rung["strike"], contracts=1,
+        )
+
+
+def test_stage_covered_call_rejects_stale_exact_resolve(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    stale = (
+        dt.datetime.now(dt.timezone.utc)
+        - dt.timedelta(seconds=exit_plan.EXECUTION_QUOTE_MAX_AGE_SECONDS + 1)
+    ).isoformat()
+    _stage_mocks(monkeypatch, tmp_path, exact={
+        "conid": 555, "expiry": "2026-08-21", "strike": 105.0,
+        "bid": 2.40, "ask": 2.60,
+        "quote_timestamp": stale,
+        "market_data_availability": "RpB",
+        "market_data_timeline": "real_time",
+        "rules": {"increment": 0.05},
+    })
+    with pytest.raises(ValueError, match="exact option quote is stale or missing"):
         exit_plan.stage_covered_call(
             plan, "EXITME", conid=555, expiry=rung["expiry"],
             strike=rung["strike"], contracts=1,

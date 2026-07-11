@@ -25,6 +25,7 @@ function ccRung(over: Partial<ExitCoveredCallRung> = {}): ExitCoveredCallRung {
     liquidity: "ok", source: "ibkr", estimate: false,
     bid: 2.4, ask: 2.6, last: 2.5, conid: 12345678, multiplier: 100,
     limit_price: 2.5, quote_timestamp: new Date().toISOString(),
+    market_data_availability: "RpB", market_data_timeline: "real_time",
     quote_fresh: true, executable: true,
     recommended: true,
     ...over,
@@ -73,12 +74,21 @@ function routeFixture(): ExitPlanResponse {
   const base = planFixture();
   base.positions[0].routes = {
     sell_shares: { eligible: true, reasons: [] },
-    covered_call: { eligible: true, reasons: [], capacity_contracts: 10 },
+    covered_call: {
+      eligible: true, reasons: [], capacity_contracts: 10,
+      assigned_shares: 1000, unresolved_exit_shares: 6700,
+      overtrim_shares: 0, post_assignment_pct: 70,
+      target_low_pct: 1, target_high_pct: 3, reaches_target_band: false,
+    },
     recommended: "sell_shares",
   };
   base.positions[0].options = {
     symbol: "EXITME", underlying: 105, currency: "USD", source: "ibkr",
-    underlying_quote: { last: 105.25, bid: 105.2, ask: 105.3, source: "ibkr", quote_timestamp: new Date().toISOString() },
+    underlying_quote: {
+      last: 105.25, bid: 105.2, ask: 105.3, source: "ibkr",
+      quote_timestamp: new Date().toISOString(),
+      market_data_availability: "RpB", market_data_timeline: "real_time",
+    },
     covered_call: null,
     covered_call_ladder: [
       ccRung(),
@@ -238,6 +248,7 @@ describe("Exit execution routes", () => {
     expect(body).toContain("Underlying last");
     expect(body).toMatch(/105[,.]25/);
     expect(body).toContain("ibkr");
+    expect(body).toContain("real-time");
 
     const routes = document.querySelectorAll("#exit-body .exit-route-btn");
     expect(routes.length).toBeGreaterThanOrEqual(2);
@@ -257,6 +268,8 @@ describe("Exit execution routes", () => {
     const body = document.querySelector("#exit-body")!.textContent || "";
     expect(body).toContain("conditional");
     expect(body).toContain("if assigned");
+    expect(body).toContain("planned exit shares remain deterministic work");
+    expect(body).toContain("projected position is 70.00%");
 
     const headers = document.querySelector("#exit-body table.exit-ladder-exec thead")!.textContent || "";
     expect(headers).toContain("Bid (sell)");
@@ -348,6 +361,26 @@ describe("Exit execution routes", () => {
 
     const firstRow = document.querySelector("#exit-body table.exit-ladder-exec tbody tr")!;
     expect(firstRow.textContent).toContain("Quote is stale");
+    expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeNull();
+  });
+
+  it("shows frozen closing quotes but never enables staging", async () => {
+    const data = routeFixture();
+    const rung = data.positions[0].options!.covered_call_ladder![0];
+    rung.market_data_availability = "ZpB";
+    rung.market_data_timeline = "frozen";
+    rung.executable = false;
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const firstRow = document.querySelector("#exit-body table.exit-ladder-exec tbody tr")!;
+    expect(firstRow.textContent).toContain("frozen close");
     expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeNull();
   });
 

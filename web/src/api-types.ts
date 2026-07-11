@@ -558,6 +558,9 @@ export interface ExitQuoteFields {
   quote_age_seconds?: number | null;
   quote_fresh?: boolean;
   executable?: boolean;
+  market_data_availability?: string | null;
+  market_data_timeline?: "real_time" | "delayed" | "frozen" | "frozen_delayed" |
+    "not_subscribed" | "acknowledgement_required" | "unknown" | null;
 }
 
 export interface ExitCoveredCall extends ExitQuoteFields {
@@ -623,6 +626,8 @@ export interface ExitUnderlyingQuote {
   ask?: number | null;
   source?: string;
   quote_timestamp?: string | null;
+  market_data_availability?: string | null;
+  market_data_timeline?: ExitQuoteFields["market_data_timeline"];
 }
 
 export interface ExitOptionsOverlay {
@@ -646,6 +651,13 @@ export interface ExitRouteEligibility {
 
 export interface ExitCoveredCallRoute extends ExitRouteEligibility {
   capacity_contracts?: number;
+  assigned_shares?: number;
+  unresolved_exit_shares?: number;
+  overtrim_shares?: number;
+  post_assignment_pct?: number;
+  target_low_pct?: number;
+  target_high_pct?: number;
+  reaches_target_band?: boolean;
 }
 
 export interface ExitRoutes {
@@ -664,6 +676,7 @@ export interface ExitPosition {
   current_pct: number;
   current_czk: number;
   end_state: "ceiling" | "stub" | "zero";
+  target_low_pct?: number;
   target_pct: number;
   exit_czk: number;
   exit_shares: number;
@@ -729,6 +742,8 @@ export interface CoveredCallTradeLeg {
   delta_czk?: number;
   limit_price?: number | null;
   quote_timestamp?: string | null;
+  market_data_availability?: string | null;
+  market_data_timeline?: ExitQuoteFields["market_data_timeline"];
   multiplier?: 100;
   provenance?: TradeLegProvenance[];
 }

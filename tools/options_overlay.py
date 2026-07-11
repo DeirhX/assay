@@ -133,10 +133,14 @@ def _two_sided_quote_ok(bid: Any, ask: Any) -> bool:
 
 
 def _quote_timestamp(contract: dict[str, Any] | None, chain: dict[str, Any] | None) -> str | None:
-    for obj in (contract, chain or {}):
-        if not isinstance(obj, dict):
-            continue
-        ts = obj.get("quote_timestamp") or obj.get("fetched_at")
+    if isinstance(contract, dict):
+        ts = contract.get("quote_timestamp")
+        if isinstance(ts, str) and ts:
+            return ts
+    # Provider fetch times are acceptable provenance for advisory feeds. They
+    # must never substitute for IBKR's broker-reported `_updated` timestamp.
+    if isinstance(chain, dict) and chain.get("source") != "ibkr":
+        ts = chain.get("quote_timestamp") or chain.get("fetched_at")
         if isinstance(ts, str) and ts:
             return ts
     return None
@@ -148,7 +152,10 @@ def _underlying_quote(chain: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     nested = chain.get("underlying_quote")
     if isinstance(nested, dict):
-        nested_out = {k: nested[k] for k in ("conid", "bid", "ask", "last", "quote_timestamp")
+        nested_out = {k: nested[k] for k in (
+            "conid", "bid", "ask", "last", "quote_timestamp",
+            "market_data_availability", "market_data_timeline",
+        )
                       if nested.get(k) is not None}
         return nested_out or None
     out: dict[str, Any] = {}
@@ -158,6 +165,8 @@ def _underlying_quote(chain: dict[str, Any] | None) -> dict[str, Any] | None:
         ("ask", "underlying_ask"),
         ("last", "underlying_last"),
         ("quote_timestamp", "underlying_quote_timestamp"),
+        ("market_data_availability", "underlying_market_data_availability"),
+        ("market_data_timeline", "underlying_market_data_timeline"),
     ):
         val = chain.get(src)
         if val is not None:
@@ -166,14 +175,23 @@ def _underlying_quote(chain: dict[str, Any] | None) -> dict[str, Any] | None:
         out["last"] = chain["underlying_price"]
     if "quote_timestamp" not in out and isinstance(chain.get("quote_timestamp"), str):
         out["quote_timestamp"] = chain["quote_timestamp"]
+    for key in ("market_data_availability", "market_data_timeline"):
+        if key not in out and chain.get(key) is not None:
+            out[key] = chain[key]
     return out or None
 
 
 def _executable(*, chain_source: str, contract: dict[str, Any] | None, estimate: bool) -> bool:
-    """True only for a live IBKR contract with a usable two-sided quote."""
+    """True only for real-time IBKR data with a usable two-sided quote."""
     if estimate or chain_source != "ibkr" or not isinstance(contract, dict):
         return False
     if _conid(contract) is None:
+        return False
+    timeline = contract.get("market_data_timeline")
+    availability = str(contract.get("market_data_availability") or "")
+    if timeline != "real_time" and not availability.upper().startswith("R"):
+        return False
+    if not isinstance(contract.get("quote_timestamp"), str):
         return False
     return _two_sided_quote_ok(contract.get("bid"), contract.get("ask"))
 
@@ -191,6 +209,9 @@ def _attach_executable_metadata(
     out["conid"] = _conid(contract)
     for key in ("bid", "ask", "last"):
         out[key] = contract.get(key)
+    for key in ("market_data_availability", "market_data_timeline"):
+        if contract.get(key) is not None:
+            out[key] = contract[key]
     out["multiplier"] = CONTRACT_SIZE
     ts = _quote_timestamp(contract, chain)
     if ts is not None:

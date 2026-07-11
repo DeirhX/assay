@@ -273,12 +273,16 @@ def market_snapshot(conids: list[int], fields: tuple[str, ...] = ("31", "84", "8
 #   * quote (bid/ask/last/IV) -- needs an options market-data (OPRA) subscription;
 #     absent without one, so the caller (options_overlay) estimates the premium.
 _MD_LAST, _MD_BID, _MD_ASK, _MD_IV = "31", "84", "86", "7283"
+_MD_AVAILABILITY = "6509"
 # Option-specific fields: 87 = day volume (may arrive as "1.2K"), 7308 = delta,
 # 7638 = option open interest. Delta/OI need an options market-data (OPRA)
 # subscription; absent without one, in which case the overlay models them.
 _MD_VOLUME, _MD_DELTA, _MD_OI = "87", "7308", "7638"
-_OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV, _MD_VOLUME, _MD_DELTA, _MD_OI)
-_STOCK_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK)
+_OPTION_MD_FIELDS = (
+    _MD_LAST, _MD_BID, _MD_ASK, _MD_IV, _MD_VOLUME, _MD_DELTA, _MD_OI,
+    _MD_AVAILABILITY,
+)
+_STOCK_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_AVAILABILITY)
 _COUNT_MULT = {"K": 1e3, "M": 1e6, "B": 1e9}
 OPTION_MULTIPLIER = 100
 _MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
@@ -457,6 +461,49 @@ def _utc_now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def _snapshot_quote_timestamp(row: dict[str, Any]) -> str | None:
+    """IBKR ``_updated`` epoch milliseconds as a UTC ISO timestamp.
+
+    This is the market-data update time reported by IBKR. The old implementation
+    stamped snapshots with our fetch time, which made Friday's frozen close look
+    freshly executable on Saturday. Missing/invalid broker timestamps stay
+    missing so execution fails closed.
+    """
+    raw = row.get("_updated")
+    try:
+        epoch = float(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if epoch <= 0:
+        return None
+    # CPAPI documents milliseconds, but tolerate seconds defensively.
+    seconds = epoch / 1000.0 if epoch >= 100_000_000_000 else epoch
+    try:
+        stamp = dt.datetime.fromtimestamp(seconds, tz=dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return stamp.isoformat(timespec="seconds")
+
+
+def market_data_timeline(value: Any) -> str | None:
+    """Human-readable timeline from IBKR field 6509's first character."""
+    code = str(value or "").strip()
+    if not code:
+        return None
+    return {
+        "R": "real_time",
+        "D": "delayed",
+        "Z": "frozen",
+        "Y": "frozen_delayed",
+        "N": "not_subscribed",
+        "O": "acknowledgement_required",
+    }.get(code[0].upper(), "unknown")
+
+
+def market_data_is_realtime(value: Any) -> bool:
+    return market_data_timeline(value) == "real_time"
+
+
 def _exact_strike_match(a: float, b: float) -> bool:
     return _fmt_strike(a) == _fmt_strike(b)
 
@@ -510,6 +557,9 @@ def _quote_contract(info: dict[str, Any], quotes: dict[int, dict]) -> dict[str, 
         "delta": _snap_num(row.get(_MD_DELTA)),
         "volume": _snap_count(row.get(_MD_VOLUME)),
         "open_interest": _snap_count(row.get(_MD_OI)),
+        "quote_timestamp": _snapshot_quote_timestamp(row),
+        "market_data_availability": row.get(_MD_AVAILABILITY),
+        "market_data_timeline": market_data_timeline(row.get(_MD_AVAILABILITY)),
     }
 
 
@@ -586,7 +636,9 @@ def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float
         "underlying_bid": u_bid,
         "underlying_ask": u_ask,
         "underlying_last": u_last,
-        "quote_timestamp": _utc_now_iso(),
+        "quote_timestamp": _snapshot_quote_timestamp(urow),
+        "market_data_availability": urow.get(_MD_AVAILABILITY),
+        "market_data_timeline": market_data_timeline(urow.get(_MD_AVAILABILITY)),
         "expiries": expiries,
     }
 
@@ -653,7 +705,14 @@ def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any
         "underlying_last": u_last,
         "underlying_bid": u_bid,
         "underlying_ask": u_ask,
-        "quote_timestamp": _utc_now_iso(),
+        "quote_timestamp": _snapshot_quote_timestamp(orow),
+        "market_data_availability": orow.get(_MD_AVAILABILITY),
+        "market_data_timeline": market_data_timeline(orow.get(_MD_AVAILABILITY)),
+        "underlying_quote_timestamp": _snapshot_quote_timestamp(urow),
+        "underlying_market_data_availability": urow.get(_MD_AVAILABILITY),
+        "underlying_market_data_timeline": market_data_timeline(
+            urow.get(_MD_AVAILABILITY)
+        ),
         "tick": tick,
         "rules": rules,
     }

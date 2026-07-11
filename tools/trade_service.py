@@ -133,6 +133,12 @@ def _normalize_basket(trades: Any) -> list[dict]:
             "multiplier": OPTION_MULTIPLIER,
             "limit_price": round(limit_price, 6) if limit_price and limit_price > 0 else None,
             "quote_timestamp": str(raw.get("quote_timestamp") or "") or None,
+            "market_data_availability": (
+                str(raw.get("market_data_availability") or "") or None
+            ),
+            "market_data_timeline": (
+                str(raw.get("market_data_timeline") or "") or None
+            ),
             "provenance": provenance,
         }
 
@@ -701,6 +707,13 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
             raise ValueError(f"{sym}: exact covered-call contract no longer resolves")
         if int(resolved_call["conid"]) != int(leg["conid"]):
             raise ValueError(f"{sym}: covered-call contract changed — rebuild the Exit plan")
+        if not ibkr_trade.market_data_is_realtime(
+            resolved_call.get("market_data_availability")
+        ):
+            timeline = resolved_call.get("market_data_timeline") or "unavailable"
+            raise ValueError(
+                f"{sym}: covered-call market data is {timeline}, not real-time"
+            )
         bid_raw, ask_raw = resolved_call.get("bid"), resolved_call.get("ask")
         if (
             not isinstance(bid_raw, (int, float))
@@ -742,9 +755,18 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
             "ask": ask,
             "last": resolved_call.get("last"),
             "quote_timestamp": resolved_call.get("quote_timestamp"),
+            "market_data_availability": resolved_call.get("market_data_availability"),
+            "market_data_timeline": resolved_call.get("market_data_timeline"),
             "underlying_last": resolved_call.get("underlying_last"),
             "underlying_bid": resolved_call.get("underlying_bid"),
             "underlying_ask": resolved_call.get("underlying_ask"),
+            "underlying_quote_timestamp": resolved_call.get("underlying_quote_timestamp"),
+            "underlying_market_data_availability": resolved_call.get(
+                "underlying_market_data_availability"
+            ),
+            "underlying_market_data_timeline": resolved_call.get(
+                "underlying_market_data_timeline"
+            ),
             "current_shares": cap["current_shares"],
             "held_short_calls": cap["held_short_calls"],
             "coverage_capacity_contracts": cap["capacity_contracts"],
@@ -1095,6 +1117,8 @@ def _reconcile_working_orders(
                 "ask": order.get("ask"),
                 "last": order.get("last"),
                 "quote_timestamp": order.get("quote_timestamp"),
+                "market_data_availability": order.get("market_data_availability"),
+                "market_data_timeline": order.get("market_data_timeline"),
                 "provenance": (basket_by_leg.get(leg_id) or {}).get("provenance") or [],
             })
         contexts.append(context)
@@ -1400,6 +1424,14 @@ def _revalidate_covered_call_orders(
             resolved = ibkr_trade.resolve_exact_call(sym, expiry, strike)
             if not resolved or int(resolved.get("conid") or 0) != int(order.get("conid") or 0):
                 raise _Conflict(f"{sym}: covered-call contract could not be revalidated — preview again")
+            if not ibkr_trade.market_data_is_realtime(
+                resolved.get("market_data_availability")
+            ):
+                timeline = resolved.get("market_data_timeline") or "unavailable"
+                raise _Conflict(
+                    f"{sym}: covered-call market data is {timeline}, not real-time "
+                    "— no order was placed"
+                )
             bid_raw, ask_raw = resolved.get("bid"), resolved.get("ask")
             if (
                 not isinstance(bid_raw, (int, float))
@@ -1431,6 +1463,8 @@ def _revalidate_covered_call_orders(
                 "ask": resolved.get("ask"),
                 "last": resolved.get("last"),
                 "quote_timestamp": resolved.get("quote_timestamp"),
+                "market_data_availability": resolved.get("market_data_availability"),
+                "market_data_timeline": resolved.get("market_data_timeline"),
                 "premium_credit": round(
                     fresh_limit * OPTION_MULTIPLIER * int(_number(order.get("quantity"))), 2,
                 ),

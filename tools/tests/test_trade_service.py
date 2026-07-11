@@ -350,6 +350,8 @@ def _resolved_call(**overrides):
         "ask": 2.60,
         "last": 2.50,
         "quote_timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "market_data_availability": "RpB",
+        "market_data_timeline": "real_time",
         "rules": {"increment": 0.05},
     }
     base.update(overrides)
@@ -586,6 +588,22 @@ class PrepareCoveredCallOrders(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 trade_service._prepare_trade_orders("DU1", basket)
         self.assertIn("quote is stale", str(ctx.exception))
+
+    def test_prepare_rejects_frozen_close_even_when_timestamp_is_recent(self):
+        basket = trade_service._normalize_basket([_cc_leg()])
+        with mock.patch.object(trade_service, "_load", return_value=_nvda_holdings()), \
+             mock.patch.object(ibkr_trade, "build_orders", return_value=([], [])), \
+             mock.patch.object(ibkr_trade, "market_snapshot", return_value={}), \
+             mock.patch.object(
+                 ibkr_trade, "resolve_exact_call",
+                 return_value=_resolved_call(
+                     market_data_availability="ZpB",
+                     market_data_timeline="frozen",
+                 ),
+             ), \
+             mock.patch.object(kid_block, "blocked_symbols", return_value=set()):
+            with self.assertRaisesRegex(ValueError, "frozen, not real-time"):
+                trade_service._prepare_trade_orders("DU1", basket)
 
     def test_prepare_rejects_when_no_covered_capacity(self):
         basket = trade_service._normalize_basket([_cc_leg()])
