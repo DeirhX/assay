@@ -69,6 +69,17 @@ export function compareRows(before: PlanRow[], after: PlanRow[] | null): Compare
 }
 
 const statusCls = (s: string) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
+const ruleCls = (rule: string) => {
+  const normalized = rule.toLowerCase();
+  if (normalized.includes("reduce") || normalized.includes("trim")) return "bad";
+  if (
+    normalized.includes("wait")
+    || normalized.includes("don\u2019t add")
+    || normalized.includes("don't add")
+  ) return "warn";
+  if (normalized.includes("accumulate") || normalized.includes("add")) return "good";
+  return "muted";
+};
 
 export function scaleMaxOf(rows: CompareRow[]): number {
   const vals: number[] = [];
@@ -92,16 +103,32 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
   const arrow = r.changed
     ? `<span class="chip ${statusCls(r.statusBefore)} tstate-before">${esc(r.statusBefore)}</span><span class="tstate-arrow">→</span>${afterChip}`
     : afterChip;
-  return `<div class="tstate-row${r.changed ? " tstate-changed" : ""}">` +
-    `<div class="tstate-name"><strong>${esc(r.name)}</strong><span class="reb-rule">${esc(r.rule)}</span></div>` +
+  const outcome = (
+    r.statusBefore !== "IN" && r.statusAfter === "IN"
+      ? " tstate-resolved"
+      : r.statusBefore === "IN" && r.statusAfter !== "IN"
+        ? " tstate-regressed"
+        : r.statusAfter !== "IN"
+          ? " tstate-unresolved"
+          : ""
+  );
+  const kind = r.kind === "sleeve" ? "sleeve total" : "target";
+  return `<div class="tstate-row${r.changed ? " tstate-changed" : ""}${outcome}">` +
+    `<div class="tstate-name">` +
+      `<strong title="${esc(r.name)}">${esc(r.name)}</strong>` +
+      `<span class="tstate-name-meta"><span class="tstate-kind">${kind}</span>` +
+      `<span class="tstate-rule ${ruleCls(r.rule)}">${esc(r.rule)}</span></span>` +
+    `</div>` +
     `<div class="reb-track" role="img" aria-label="${esc(r.name)}: now ${r.cur.toFixed(1)}%, after ${r.proj.toFixed(1)}%, band ${r.low}–${r.high}%">` +
       `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
       conn +
       `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="now ${r.cur.toFixed(2)}%"></span>` +
       (r.changed ? `<span class="reb-proj-mark ${inAfter ? "in" : "out"}" style="left:${r1(projP)}%" title="after ${r.proj.toFixed(2)}%"></span>` : "") +
     `</div>` +
-    `<div class="tstate-nums">${r.cur.toFixed(2)}%` +
-    (r.changed ? ` <span class="tstate-arrow">→</span> <strong>${r.proj.toFixed(2)}%</strong>` : "") +
+    `<div class="tstate-nums"><span><small>now</small>${r.cur.toFixed(2)}%</span>` +
+    (r.changed
+      ? ` <span class="tstate-arrow">→</span> <strong><small>after</small>${r.proj.toFixed(2)}%</strong>`
+      : "") +
     `</div>` +
     `<div class="tstate-status">${arrow}</div>` +
     `</div>`;
@@ -199,9 +226,11 @@ function render(
   const changed = rows.filter((r) => r.changed);
   const same = rows.filter((r) => !r.changed);
 
-  const head = `<div class="tstate-head-row"><span class="tstate-col-name">Name</span>` +
-    `<span>0–${scaleMax}% of book · <span class="tstate-ghost-key">◦ now</span> · <span class="tstate-proj-key">● after</span></span>` +
-    `<span class="tstate-col-nums">now → after</span><span>status</span></div>`;
+  const head = `<div class="tstate-head-row"><span class="tstate-col-name">Position</span>` +
+    `<span class="tstate-col-track">Allocation path <small>0–${scaleMax}% of book · ` +
+    `<span class="tstate-band-key">target band</span> · ` +
+    `<span class="tstate-ghost-key">◆ now</span> · <span class="tstate-proj-key">● after</span></small></span>` +
+    `<span class="tstate-col-nums">Weight</span><span>Status</span></div>`;
 
   const changedBlock = changed.length
     ? `<div class="tstate-grid">${head}${changed.map((r) => compareRowHtml(r, scaleMax)).join("")}</div>`
@@ -221,12 +250,17 @@ function render(
       `</div></details>`
     : "";
 
-  const caveats = (wf && wf.caveats || []).map((c) => `<div class="hint">${esc(c)}</div>`).join("");
+  const caveats = (wf && wf.caveats || []).map((c) => {
+    const severe = /negative|blocked|exceed|cannot/i.test(c);
+    return `<div class="tstate-caveat${severe ? " bad" : ""}">` +
+      `<span aria-hidden="true">${severe ? "!" : "i"}</span><p>${esc(c)}</p></div>`;
+  }).join("");
 
   body.innerHTML =
     sourceBanner(source, nTrades, queue) +
     summaryTiles(plan, wf, rows) +
-    changedBlock + sameBlock + tradesBlock + caveats;
+    changedBlock + sameBlock + tradesBlock +
+    (caveats ? `<div class="tstate-caveats">${caveats}</div>` : "");
 }
 
 // ---- load --------------------------------------------------------------------

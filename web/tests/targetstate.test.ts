@@ -133,6 +133,11 @@ describe("compareRowHtml", () => {
     expect(html).toContain("6.00%");
     expect(html).toContain("ABOVE");
     expect(html).toContain("IN");
+    expect(html).toContain("tstate-resolved");
+    expect(html).toContain("tstate-kind");
+    expect(html).toContain("target");
+    expect(html).toContain("<small>now</small>");
+    expect(html).toContain("<small>after</small>");
   });
 
   it("an unchanged row shows a single tick and a single status", () => {
@@ -140,5 +145,22 @@ describe("compareRowHtml", () => {
     const html = compareRowHtml(still, 10);
     expect(html).not.toContain("reb-proj-mark");
     expect(html).not.toContain("tstate-arrow");
+  });
+
+  it("styles sleeve identity and action separately so long labels do not collide", () => {
+    const sleeve = compareRows(
+      [row({
+        name: "semis-equipment", kind: "sleeve", rule: "accumulate",
+        current_pct: 0, status: "BELOW",
+      })],
+      [row({
+        name: "semis-equipment", kind: "sleeve", rule: "accumulate",
+        current_pct: 3.9, status: "BELOW",
+      })],
+    )[0];
+    const html = compareRowHtml(sleeve, 15);
+    expect(html).toContain("sleeve total");
+    expect(html).toContain('class="tstate-rule good"');
+    expect(html).toContain('title="semis-equipment"');
   });
 });
