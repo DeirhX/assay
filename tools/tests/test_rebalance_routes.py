@@ -4,21 +4,12 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, mock
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import rebalance_routes  # noqa: E402
 import trade_service  # noqa: E402
 
 NOW = dt.datetime(2026, 7, 1, 12, tzinfo=dt.timezone.utc)
-
-
-@pytest.fixture(autouse=True)
-def _offline_gateway():
-    with mock.patch.object(rebalance_routes.option_market, "session_ready", return_value=False), \
-            mock.patch.object(trade_service, "load_basket", return_value=[]):
-        yield
 
 
 def _holdings(cash=1_000_000):
