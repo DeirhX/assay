@@ -1073,6 +1073,22 @@ class ResolveExecutableCall(unittest.TestCase):
         self.assertEqual(out["tick"], 0.05)
         self.assertIsInstance(out["bid"], float)
 
+    def test_put_uses_same_supervised_sell_limit_boundary(self):
+        resolved = self._resolved(right="P", strike=95.0, conid=556)
+        with mock.patch.object(ibt, "resolve_exact_put", return_value=resolved):
+            out = ibt.resolve_executable_put(
+                "NVDA", "2026-08-21", 95,
+                expected_conid=556, now=self.NOW,
+            )
+        self.assertEqual(out["limit_price"], 2.50)
+        self.assertEqual(out["right"], "P")
+
+    def test_put_reports_put_specific_error_type(self):
+        with mock.patch.object(ibt, "resolve_exact_put", return_value=None):
+            with self.assertRaises(ibt.ExecutablePutError) as ctx:
+                ibt.resolve_executable_put("NVDA", "2026-08-21", 95)
+        self.assertEqual(ctx.exception.reason, "contract_missing")
+
     def test_allows_staging_exact_contract_while_quote_is_missing(self):
         with mock.patch.object(
             ibt,
@@ -1166,6 +1182,19 @@ class ResolveExactCall(unittest.TestCase):
         self.assertEqual(out["quote_timestamp"], fixed)
         self.assertAlmostEqual(out["tick"], 0.05)
         self.assertIn("incrementRules", out["rules"])
+
+    def test_resolves_exact_put_with_right_and_quotes(self):
+        gw = _FakeGateway(
+            quotes={_FakeGateway.opt_conid(95, "P"): {
+                "31": "1.90", "84": "1.80", "86": "2.00",
+            }},
+        )
+        with mock.patch.object(ibt, "_request", gw):
+            out = ibt.resolve_exact_put("NVDA", self.EXPIRY, 95)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["conid"], gw.opt_conid(95, "P"))
+        self.assertEqual(out["right"], "P")
+        self.assertAlmostEqual(out["bid"], 1.80)
 
     def test_rejects_expiry_mismatch(self):
         gw = _FakeGateway(maturity="20260918")

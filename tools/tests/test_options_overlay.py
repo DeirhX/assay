@@ -113,6 +113,36 @@ def test_premium_converted_to_base_currency():
     assert cc["premium_czk"] == 50_600.0
 
 
+def test_cash_secured_put_ladder_ranks_effective_entry_and_secured_cash():
+    chain = _chain()
+    put = chain["expiries"][0]["puts"][0]
+    put.update({"delta": -0.28, "open_interest": 500, "volume": 30})
+    ladder = ov.cash_secured_put_ladder(
+        100.0, 0.30, 0.04, AS_OF.date(), chain, contracts=2, fx=23.0,
+    )
+    assert len(ladder) == 1
+    rung = ladder[0]
+    assert rung["strike"] == 93.0
+    assert rung["premium"] == 2.0
+    assert rung["effective_entry"] == 91.0
+    assert rung["cash_secured_czk"] == 427_800.0
+    assert rung["assignment_prob_pct"] == 28.0
+    assert rung["premium_yield_annual_pct"] > 0
+
+
+def test_cash_secured_put_ibkr_rung_is_stageable():
+    chain = _chain()
+    chain["source"] = "ibkr"
+    put = chain["expiries"][0]["puts"][0]
+    put.update({"conid": 987, "delta": -0.25})
+    ladder = ov.cash_secured_put_ladder(
+        100.0, 0.30, 0.04, AS_OF.date(), chain, contracts=1, fx=23.0,
+    )
+    assert ladder[0]["conid"] == 987
+    assert ladder[0]["stageable"] is True
+    assert ladder[0]["executable"] is True
+
+
 # --------------------------------------------------------------------------- #
 # Source labeling -- a from-chain premium inherits the chain's own source, so an
 # IBKR chain is not mislabeled as "yahoo".

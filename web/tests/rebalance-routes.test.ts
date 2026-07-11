@@ -1,0 +1,190 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/core")>()),
+  api: vi.fn(),
+}));
+
+import { api, state } from "../src/core";
+import { executionRouteChoices, renderWhatif } from "../src/rebalance";
+import type {
+  RebalanceRouteResponse, RebalanceRouteSelection, WhatifTrade,
+  Whatif,
+} from "../src/api-types";
+
+const apiMock = vi.mocked(api);
+
+function route(direction: "increase" | "reduce", stageable = true): RebalanceRouteResponse {
+  const put = direction === "increase";
+  return {
+    symbol: "NVDA",
+    delta_czk: put ? 230_000 : -230_000,
+    direction,
+    planned_shares: 100,
+    underlying: 100,
+    currency: "USD",
+    fx_to_base: 23,
+    source: stageable ? "ibkr" : "yahoo",
+    direct: {
+      kind: put ? "buy_shares" : "sell_shares",
+      label: put ? "Buy shares" : "Sell shares",
+      eligible: true,
+      reasons: [],
+    },
+    option: {
+      kind: put ? "cash_secured_put" : "covered_call",
+      label: put ? "Sell cash-secured put" : "Sell covered call",
+      eligible: true,
+      stageable,
+      reasons: stageable ? [] : ["Indicative yahoo levels; exact IBKR contract required."],
+      contracts: 1,
+      assignment_shares: 100,
+      share_deviation: 0,
+      rounded_up: false,
+      available_cash_czk: put ? 1_000_000 : null,
+    },
+    recommended: put ? "buy_shares" : "sell_shares",
+    ladder: [{
+      conid: stageable ? 556 : null,
+      strike: put ? 93 : 105,
+      expiry: "2026-08-07",
+      dte: 37,
+      premium: 2,
+      premium_czk: 4_600,
+      effective_entry: put ? 91 : undefined,
+      effective_exit: put ? undefined : 107,
+      cash_secured_czk: put ? 213_900 : undefined,
+      moneyness_pct: put ? -7 : 5,
+      premium_yield_annual_pct: 21.2,
+      assignment_prob_pct: 25,
+      open_interest: 500,
+      volume: 50,
+      spread_pct: 10,
+      liquidity: "ok",
+      source: stageable ? "ibkr" : "yahoo",
+      estimate: false,
+      stageable,
+      executable: stageable,
+    }],
+  };
+}
+
+describe("rebalance execution route choices", () => {
+  beforeEach(() => apiMock.mockReset());
+
+  it("defaults both directions to stock and selects an exact CSP rung lazily", async () => {
+    apiMock.mockResolvedValue(route("increase"));
+    const trades: WhatifTrade[] = [
+      { symbol: "NVDA", delta_czk: 230_000 },
+      { symbol: "AMD", delta_czk: -100_000 },
+    ];
+    const selected = new Map<string, RebalanceRouteSelection>();
+    const host = executionRouteChoices(trades, selected);
+    document.body.innerHTML = "";
+    document.body.appendChild(host);
+
+    expect(selected.get("NVDA")?.route).toBe("buy_shares");
+    expect(selected.get("AMD")?.route).toBe("sell_shares");
+    expect(host.textContent).toContain("Check cash-secured puts");
+    expect(host.textContent).toContain("Check covered calls");
+
+    const button = [...host.querySelectorAll("button")]
+      .find((node) => node.textContent === "Check cash-secured puts")!;
+    button.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("Sell cash-secured put"));
+    expect(apiMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/rebalance/route?"),
+      "GET",
+      null,
+      { timeoutMs: 60_000 },
+    );
+    const use = [...host.querySelectorAll("button")]
+      .find((node) => node.textContent === "Use")!;
+    use.click();
+    expect(selected.get("NVDA")).toMatchObject({
+      route: "cash_secured_put",
+      conid: 556,
+      strike: 93,
+      contracts: 1,
+    });
+    expect(host.textContent).toContain("Selected ✓");
+  });
+
+  it("shows fallback rungs but does not allow staging them", async () => {
+    apiMock.mockResolvedValue(route("reduce", false));
+    const selected = new Map<string, RebalanceRouteSelection>();
+    const host = executionRouteChoices(
+      [{ symbol: "NVDA", delta_czk: -230_000 }],
+      selected,
+    );
+    document.body.innerHTML = "";
+    document.body.appendChild(host);
+    host.querySelector<HTMLButtonElement>("button:nth-of-type(2)")!.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("Indicative"));
+    const indicative = [...host.querySelectorAll("button")]
+      .find((node) => node.textContent === "Indicative") as HTMLButtonElement;
+    expect(indicative.disabled).toBe(true);
+    expect(selected.get("NVDA")?.route).toBe("sell_shares");
+    expect(host.textContent).toContain("exact IBKR contract required");
+  });
+
+  it("stages the simulated trades and selected option rung in one request", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (typeof path === "string" && path.startsWith("/api/rebalance/route?")) {
+        return Promise.resolve(route("increase"));
+      }
+      if (path === "/api/rebalance/stage") {
+        return Promise.resolve({
+          trades: [{
+            type: "cash_secured_put",
+            route: "cash_secured_put",
+            symbol: "NVDA",
+            conid: 556,
+            expiry: "2026-08-07",
+            strike: 93,
+            contracts: 1,
+          }],
+          revision: "mixed-rev",
+          reviewed: false,
+        });
+      }
+      return Promise.resolve({});
+    });
+    document.body.innerHTML = '<div id="reb-whatif"></div>';
+    renderWhatif({
+      currency: "CZK",
+      trades: [{ symbol: "NVDA", delta_czk: 230_000 }],
+      summary: {},
+      before_status: {},
+      after: { rows: [] },
+      caveats: [],
+    } as unknown as Whatif);
+    const option = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent === "Check cash-secured puts")!;
+    option.click();
+    await vi.waitFor(() =>
+      expect(document.getElementById("reb-whatif")!.textContent).toContain("Sell cash-secured put"));
+    const use = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent === "Use")!;
+    use.click();
+    const stage = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent?.startsWith("Stage 1 order"))!;
+    stage.click();
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith(
+      "/api/rebalance/stage",
+      "POST",
+      {
+        trades: [{ symbol: "NVDA", delta_czk: 230_000 }],
+        selections: [{
+          symbol: "NVDA",
+          route: "cash_secured_put",
+          conid: 556,
+          expiry: "2026-08-07",
+          strike: 93,
+          contracts: 1,
+        }],
+      },
+    ));
+    expect(state.stagedBasket[0].type).toBe("cash_secured_put");
+  });
+});

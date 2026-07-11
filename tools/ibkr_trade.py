@@ -64,6 +64,14 @@ class ExecutableCallError(ValueError):
         self.reason = reason
 
 
+class ExecutablePutError(ValueError):
+    """A stable machine-readable failure from cash-secured-put validation."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 # --------------------------------------------------------------------------- #
 # Config / safety flags
 # --------------------------------------------------------------------------- #
@@ -777,9 +785,9 @@ def option_chain(
             today,
             deadline_monotonic,
         )
-        # One protective put is enough for the tax-deferral route; sample a few
-        # downside strikes only after preserving the covered-call ladder.
-        put_count = max(1, min(3, strikes_per_side // 2))
+        # Rebalance can write cash-secured puts, so preserve a real downside
+        # ladder rather than the old protective-put-only sample of 1–3 strikes.
+        put_count = max(1, strikes_per_side)
         put_strikes = _targeted_strikes(
             strikes.get("put") or [],
             spot,
@@ -930,16 +938,14 @@ def refresh_option_chain_quotes(
     return refreshed
 
 
-def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any] | None:
-    """Resolve one listed call contract by exact symbol + ISO expiry + strike.
-
-    Walks ``option_months`` / ``option_info`` until a contract's reference
-    data matches the requested expiry and strike exactly; mismatches and misses
-    return ``None``. When resolved, attaches live option + underlying quotes,
-    UTC quote timestamp, and sell-side tick/rules for limit pricing."""
+def _resolve_exact_option(
+    symbol: str, expiry: str, strike: float, right: str,
+) -> dict[str, Any] | None:
+    """Resolve one listed call/put and attach live quotes plus SELL rules."""
     sym = str(symbol or "").strip().upper()
     exp = str(expiry or "").strip()
-    if not sym or not exp:
+    normalized_right = str(right or "").strip().upper()
+    if not sym or not exp or normalized_right not in {"C", "P"}:
         return None
     try:
         strike_f = float(strike)
@@ -959,7 +965,7 @@ def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any
         return None
 
     info: dict[str, Any] | None = None
-    for cand in option_infos(u_conid, target_month, strike_f, "C"):
+    for cand in option_infos(u_conid, target_month, strike_f, normalized_right):
         if cand.get("expiry") != exp:
             continue
         if not _exact_strike_match(float(cand.get("strike", 0)), strike_f):
@@ -992,7 +998,7 @@ def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any
         "conid": o_conid,
         "expiry": exp,
         "strike": strike_f,
-        "right": "C",
+        "right": normalized_right,
         "multiplier": OPTION_MULTIPLIER,
         "bid": bid,
         "ask": ask,
@@ -1004,6 +1010,16 @@ def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any
         "tick": tick,
         "rules": rules,
     }
+
+
+def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any] | None:
+    """Resolve one exact listed call with live quote and SELL tick rules."""
+    return _resolve_exact_option(symbol, expiry, strike, "C")
+
+
+def resolve_exact_put(symbol: str, expiry: str, strike: float) -> dict[str, Any] | None:
+    """Resolve one exact listed put with live quote and SELL tick rules."""
+    return _resolve_exact_option(symbol, expiry, strike, "P")
 
 
 # --------------------------------------------------------------------------- #
@@ -1071,33 +1087,30 @@ def tick_for_price(rules: Any, price: float, *, default: float = 0.01) -> float:
     return best if best and best > 0 else default
 
 
-def resolve_executable_call(
+def _resolve_executable_option(
     symbol: str,
     expiry: str,
     strike: float,
     *,
+    right: str,
     expected_conid: int | None = None,
     max_quote_age_seconds: float | None = OPTION_QUOTE_MAX_AGE_SECONDS,
     now: dt.datetime | None = None,
     allow_missing_quote: bool = False,
 ) -> dict[str, Any]:
-    """Resolve and validate one exact call for a supervised SELL order.
-
-    This is the single executable-call boundary used by Exit staging and both
-    trade-preview/place validation. It returns the full resolver payload plus
-    normalized numeric quotes and ``limit_price``. Staging may explicitly allow a
-    missing quote; preview/place keep the strict default and therefore cannot
-    submit an unpriced order.
-    """
-    resolved = resolve_exact_call(symbol, expiry, strike)
+    """Resolve and validate one exact short option for a supervised SELL."""
+    normalized_right = str(right or "").upper()
+    error_type = ExecutableCallError if normalized_right == "C" else ExecutablePutError
+    resolver = resolve_exact_call if normalized_right == "C" else resolve_exact_put
+    resolved = resolver(symbol, expiry, strike)
     if not resolved:
-        raise ExecutableCallError("contract_missing")
+        raise error_type("contract_missing")
     try:
         conid = int(resolved.get("conid") or 0)
     except (TypeError, ValueError):
-        raise ExecutableCallError("contract_missing") from None
+        raise error_type("contract_missing") from None
     if expected_conid is not None and conid != int(expected_conid):
-        raise ExecutableCallError("contract_changed")
+        raise error_type("contract_changed")
 
     bid_raw, ask_raw = resolved.get("bid"), resolved.get("ask")
     quote_missing = (
@@ -1119,11 +1132,11 @@ def resolve_executable_call(
                 ),
             })
             return out
-        raise ExecutableCallError("quote_invalid")
+        raise error_type("quote_invalid")
     assert isinstance(bid_raw, (int, float))
     assert isinstance(ask_raw, (int, float))
     if not quotes_are_valid(bid_raw, ask_raw):
-        raise ExecutableCallError("quote_invalid")
+        raise error_type("quote_invalid")
     bid, ask = float(bid_raw), float(ask_raw)
 
     if (
@@ -1134,11 +1147,11 @@ def resolve_executable_call(
             now=now,
         )
     ):
-        raise ExecutableCallError("quote_stale")
+        raise error_type("quote_stale")
 
     limit = round_sell_limit_midpoint(bid, ask, resolved.get("rules"))
     if limit is None:
-        raise ExecutableCallError("limit_invalid")
+        raise error_type("limit_invalid")
     out = dict(resolved)
     out.update({
         "conid": conid,
@@ -1148,6 +1161,40 @@ def resolve_executable_call(
         "tick": float(resolved.get("tick") or tick_for_price(resolved.get("rules"), limit)),
     })
     return out
+
+
+def resolve_executable_call(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    *,
+    expected_conid: int | None = None,
+    max_quote_age_seconds: float | None = OPTION_QUOTE_MAX_AGE_SECONDS,
+    now: dt.datetime | None = None,
+    allow_missing_quote: bool = False,
+) -> dict[str, Any]:
+    return _resolve_executable_option(
+        symbol, expiry, strike, right="C", expected_conid=expected_conid,
+        max_quote_age_seconds=max_quote_age_seconds, now=now,
+        allow_missing_quote=allow_missing_quote,
+    )
+
+
+def resolve_executable_put(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    *,
+    expected_conid: int | None = None,
+    max_quote_age_seconds: float | None = OPTION_QUOTE_MAX_AGE_SECONDS,
+    now: dt.datetime | None = None,
+    allow_missing_quote: bool = False,
+) -> dict[str, Any]:
+    return _resolve_executable_option(
+        symbol, expiry, strike, right="P", expected_conid=expected_conid,
+        max_quote_age_seconds=max_quote_age_seconds, now=now,
+        allow_missing_quote=allow_missing_quote,
+    )
 
 
 def contract_rules(conid: int, *, is_buy: bool = True) -> dict:
