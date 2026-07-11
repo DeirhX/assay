@@ -368,6 +368,39 @@ describe("Exit execution routes", () => {
     expect(rows[0].textContent).toContain("18.2%");
   });
 
+  it("sorts the covered-call ladder by any decision column", async () => {
+    apiMock.mockResolvedValue(routeFixture());
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const bidSort = document.querySelector<HTMLButtonElement>(
+      "#exit-body table.exit-ladder-exec button[data-sort='bid']",
+    )!;
+    const strikes = () => [...document.querySelectorAll<HTMLTableRowElement>(
+      "#exit-body table.exit-ladder-exec tbody tr",
+    )].map((row) => row.cells[0].textContent || "");
+
+    bidSort.click();
+    expect(strikes()[0]).toMatch(/115/);
+    expect(strikes()[1]).toMatch(/110/);
+    expect(strikes()[2]).toMatch(/120/); // missing bid stays last
+    expect(document.querySelector(
+      "#exit-body table.exit-ladder-exec button[data-sort='bid']",
+    )!.closest("th")!.getAttribute("aria-sort")).toBe("ascending");
+
+    document.querySelector<HTMLButtonElement>(
+      "#exit-body table.exit-ladder-exec button[data-sort='bid']",
+    )!.click();
+    expect(strikes()[0]).toMatch(/110/);
+    expect(strikes()[1]).toMatch(/115/);
+    expect(strikes()[2]).toMatch(/120/);
+  });
+
   it("keeps an indicative covered-call route selectable while staging is unavailable", async () => {
     const data = routeFixture();
     data.positions[0].routes!.covered_call.stageable = false;
