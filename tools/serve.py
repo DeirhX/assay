@@ -49,6 +49,7 @@ import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
+import rebalance_routes  # noqa: E402
 import risk  # noqa: E402
 import attribution  # noqa: E402  -- process attribution: actual TWR vs never-rebalanced / benchmark
 import regime  # noqa: E402  -- descriptive macro strip over the segment leaderboard
@@ -276,6 +277,7 @@ _GET_EXACT = {
     "/api/portfolio-history": "_get_portfolio_history",
     "/api/ibkr/status": "_get_ibkr_status",
     "/api/rebalance": "_get_rebalance",
+    "/api/rebalance/route": "_get_rebalance_route",
     "/api/exit-plan": "_get_exit_plan",
     "/api/risk": "_get_risk",
     "/api/attribution": "_get_attribution",
@@ -364,6 +366,7 @@ _POST_EXACT = {
     "/api/portfolio-review": "_post_portfolio_review",
     "/api/history/delete": "_post_history_delete",
     "/api/rebalance/funding": "_post_rebalance_funding",
+    "/api/rebalance/stage": "_post_rebalance_stage_routes",
     "/api/tax-plan": "_post_tax_plan",
     "/api/exit-plan/stage": "_post_exit_plan_stage",
     "/api/whatif": "_post_whatif",
@@ -583,6 +586,18 @@ class Handler(BaseHTTPRequestHandler):
             "pending": target_staging.diff_staged_vs_live()["counts"]["total"] if has_draft else 0,
         }
         return self._send_json(plan)
+
+    def _get_rebalance_route(self, path, query):
+        holdings = _load(HOLDINGS_JSON)
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        symbol = str((query.get("symbol") or [""])[0]).strip()
+        try:
+            delta_czk = float((query.get("delta_czk") or [""])[0])
+            route = rebalance_routes.build_route(holdings, symbol, delta_czk)
+        except (TypeError, ValueError) as exc:
+            return self._send_error_json(400, str(exc))
+        return self._send_json(route)
 
     def _get_overview(self, path, query):
         # The "Today" cockpit: lane summaries + one next-step recommendation,
@@ -1428,6 +1443,19 @@ class Handler(BaseHTTPRequestHandler):
         if not holdings or not model:
             return self._send_error_json(404, "need both a holdings snapshot and a target model")
         return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
+
+    def _post_rebalance_stage_routes(self, path):
+        body = self._read_body()
+        holdings = _load(HOLDINGS_JSON)
+        if not holdings:
+            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        try:
+            result = rebalance_routes.stage_routes(
+                holdings, body.get("trades"), body.get("selections"),
+            )
+        except (TypeError, ValueError) as exc:
+            return self._send_error_json(400, str(exc))
+        return self._send_json({**result, **_basket_state()})
 
     def _post_trade_reconnect(self, path):
         # Re-establish the brokerage session (ssodh/init) without a browser

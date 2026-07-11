@@ -1,6 +1,10 @@
 import { starHtml } from "./basket";
 import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
+import type {
+  FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan,
+  PlanRow as RebRow, PlanMember, RebalanceOptionRung, RebalanceRouteResponse,
+  RebalanceRouteSelection, TradeQueueState, Whatif, WhatifTrade,
+} from "./api-types";
 import { gatewayConnected, gatewayUnavailableReason, refreshGatewayStatus } from "./gateway";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
@@ -1032,7 +1036,165 @@ function renderRebalance(plan: RebPlan) {
 // ---- what-if "after" panel -------------------------------------------------
 const whatifStat = (label: string, valueHtml: string, cls?: string) => statTile(label, valueHtml, { cls, html: true });
 
-function renderWhatif(wf: Whatif) {
+export function executionRouteChoices(
+  trades: WhatifTrade[],
+  selections: Map<string, RebalanceRouteSelection>,
+): HTMLElement {
+  const host = el("div", "reb-route-card");
+  host.appendChild(el("div", "whatif-title", "Choose how each position is rebalanced"));
+  host.appendChild(el(
+    "div", "hint",
+    "Shares move the portfolio immediately. Written options collect premium now; weights change only if assigned.",
+  ));
+  trades.forEach((trade) => {
+    const directRoute = trade.delta_czk >= 0 ? "buy_shares" : "sell_shares";
+    const optionRoute = trade.delta_czk >= 0 ? "cash_secured_put" : "covered_call";
+    selections.set(trade.symbol, { symbol: trade.symbol, route: directRoute });
+
+    const row = el("div", "reb-route-row");
+    const head = el("div", "reb-route-head");
+    head.appendChild(el("strong", "", trade.symbol));
+    head.appendChild(el(
+      "span", "muted",
+      `${trade.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(trade.delta_czk))} CZK`,
+    ));
+    row.appendChild(head);
+    const controls = el("div", "reb-route-controls");
+    const direct = el(
+      "button", "ghost active",
+      trade.delta_czk >= 0 ? "Buy shares" : "Sell shares",
+    );
+    direct.type = "button";
+    const option = el(
+      "button", "ghost",
+      trade.delta_czk >= 0 ? "Check cash-secured puts" : "Check covered calls",
+    );
+    option.type = "button";
+    controls.appendChild(direct);
+    controls.appendChild(option);
+    row.appendChild(controls);
+    const detail = el("div", "reb-route-detail");
+    row.appendChild(detail);
+
+    direct.addEventListener("click", () => {
+      selections.set(trade.symbol, { symbol: trade.symbol, route: directRoute });
+      direct.classList.add("active");
+      option.classList.remove("active");
+      detail.innerHTML = `<div class="hint">Stock route selected — immediate portfolio effect.</div>`;
+    });
+
+    option.addEventListener("click", async () => {
+      option.disabled = true;
+      option.textContent = "Loading live option routes…";
+      detail.innerHTML = `<div class="status"><span class="spinner"></span> loading strikes and quotes…</div>`;
+      try {
+        const query = new URLSearchParams({
+          symbol: trade.symbol,
+          delta_czk: String(trade.delta_czk),
+        });
+        const route = await api<RebalanceRouteResponse>(
+          `/api/rebalance/route?${query.toString()}`,
+          "GET",
+          null,
+          { timeoutMs: 60_000 },
+        );
+        option.textContent = route.option.label;
+        direct.disabled = !route.direct.eligible;
+        if (!route.option.eligible) {
+          detail.innerHTML =
+            `<div class="ibkr-data-notice"><strong>${esc(route.option.label)} unavailable.</strong> ` +
+            `${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</div>`;
+          return;
+        }
+        const intro = el("div", "reb-route-option-summary");
+        intro.innerHTML =
+          `<strong>Conditional ${route.direction === "increase" ? "entry" : "reduction"}</strong> · ` +
+          `${route.option.contracts} contract${route.option.contracts === 1 ? "" : "s"} / ` +
+          `${route.option.assignment_shares} shares if assigned` +
+          (route.option.share_deviation
+            ? ` · ${route.option.share_deviation > 0 ? "+" : ""}${route.option.share_deviation} shares vs plan`
+            : "");
+        detail.innerHTML = "";
+        detail.appendChild(intro);
+        const table = el("div", "table-wrap");
+        table.innerHTML =
+          `<table class="whatif-table reb-route-ladder"><thead><tr>` +
+          `<th>Expiry / strike</th><th class="num">Bid / ask</th>` +
+          `<th class="num">Yield p.a.</th><th class="num">Effective</th>` +
+          `<th class="num">Assign.</th><th>Source / quote</th><th>Liquidity</th><th></th>` +
+          `</tr></thead><tbody></tbody></table>`;
+        const tbody = table.querySelector("tbody")!;
+        route.ladder.forEach((rung: RebalanceOptionRung) => {
+          const tr = document.createElement("tr");
+          const effective = route.direction === "increase"
+            ? rung.effective_entry
+            : rung.effective_exit;
+          tr.innerHTML =
+            `<td>${esc(rung.expiry)} · ${rung.strike}${route.direction === "increase" ? "P" : "C"}</td>` +
+            `<td class="num">${rung.bid ?? "—"} / ${rung.ask ?? "—"}</td>` +
+            `<td class="num">${rung.premium_yield_annual_pct.toFixed(1)}%</td>` +
+            `<td class="num">${effective != null ? effective.toFixed(2) : "—"} ${esc(route.currency || "")}` +
+            (rung.cash_secured_czk
+              ? `<small class="muted">${fmtCZK(rung.cash_secured_czk)} CZK secured</small>`
+              : `<small class="muted">${route.option.assignment_shares} shares covered</small>`) +
+            `</td>` +
+            `<td class="num">${rung.assignment_prob_pct != null ? rung.assignment_prob_pct.toFixed(0) + "%" : "—"}</td>` +
+            `<td><span class="chip ${rung.source === "ibkr" ? "good" : "muted"}">${esc(rung.source.replace(/_/g, " "))}</span>` +
+            `<small class="muted">${rung.quote_fresh ? "fresh" : rung.stageable ? "stale / no quote" : "indicative"}</small></td>` +
+            `<td><span class="chip ${rung.liquidity === "ok" ? "good" : rung.liquidity === "thin" ? "warn" : "muted"}">${esc(rung.liquidity)}</span></td>`;
+          const action = document.createElement("td");
+          const use = el("button", "ghost", rung.stageable ? "Use" : "Indicative");
+          use.type = "button";
+          use.disabled = !rung.stageable || !rung.conid;
+          use.title = rung.stageable
+            ? "Use this exact contract in the order queue"
+            : "Staging requires an exact IBKR contract";
+          use.addEventListener("click", () => {
+            selections.set(trade.symbol, {
+              symbol: trade.symbol,
+              route: optionRoute,
+              conid: Number(rung.conid),
+              expiry: rung.expiry,
+              strike: rung.strike,
+              contracts: route.option.contracts,
+            });
+            direct.classList.remove("active");
+            option.classList.add("active");
+            table.querySelectorAll("button").forEach((button) => {
+              button.classList.remove("active");
+              if (button !== use && !button.textContent?.includes("Indicative")) {
+                button.textContent = "Use";
+              }
+            });
+            use.classList.add("active");
+            use.textContent = "Selected ✓";
+          });
+          action.appendChild(use);
+          tr.appendChild(action);
+          tbody.appendChild(tr);
+        });
+        detail.appendChild(table);
+        if (route.option.reasons.length) {
+          detail.appendChild(el("div", "hint", route.option.reasons.join(" · ")));
+        }
+      } catch (error) {
+        detail.innerHTML =
+          `<div class="status err">Could not load option routes: ${esc((error as Error).message)}</div>`;
+      } finally {
+        option.disabled = false;
+        if (option.textContent === "Loading live option routes…") {
+          option.textContent = trade.delta_czk >= 0
+            ? "Check cash-secured puts"
+            : "Check covered calls";
+        }
+      }
+    });
+    host.appendChild(row);
+  });
+  return host;
+}
+
+export function renderWhatif(wf: Whatif) {
   const box = $$("#reb-whatif");
   box.innerHTML = "";
   const s = wf.summary || {};
@@ -1091,6 +1253,8 @@ function renderWhatif(wf: Whatif) {
     if (r.kind === "target") afterRows[r.name] = r;
     else if (r.kind === "sleeve" && r.members) r.members.forEach((m) => { sleeveByMember[m.symbol] = r; });
   });
+  const trades = (wf.trades || []).slice();
+  const routeSelections = new Map<string, RebalanceRouteSelection>();
   card.appendChild(simpleTable({
     className: "whatif-table",
     head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr>`,
@@ -1110,6 +1274,7 @@ function renderWhatif(wf: Whatif) {
         `<td class="num">${status ? status.current_pct.toFixed(2) + "%" : "\u2014"}</td>`;
     },
   }));
+  card.appendChild(executionRouteChoices(trades, routeSelections));
 
   const tt = wf.tax && wf.tax.totals;
   if (tt && (tt.proceeds || tt.taxable_gain || tt.exempt_proceeds || tt.harvestable_loss)) {
@@ -1123,7 +1288,6 @@ function renderWhatif(wf: Whatif) {
 
   const actions = el("div", "thesis-actions");
   const stageStatus = el("span", "status");
-  const trades = (wf.trades || []).slice();
   const stageBtn = el("button", "primary",
     `Stage ${trades.length} order${trades.length === 1 ? "" : "s"} \u2192`);
   stageBtn.type = "button";
@@ -1136,7 +1300,11 @@ function renderWhatif(wf: Whatif) {
     try {
       // Staging is intentionally separate from simulation: a read-only preview
       // must not mutate the order queue as a hidden side effect.
-      const saved = await api<TradeQueueState>("/api/trade/basket", "POST", { trades });
+      const saved = await api<TradeQueueState>(
+        "/api/rebalance/stage",
+        "POST",
+        { trades, selections: [...routeSelections.values()] },
+      );
       state.stagedBasket = saved.trades.slice();
       stageBtn.className = "ghost";
       stageBtn.textContent = "Orders staged ✓";

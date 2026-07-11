@@ -102,6 +102,19 @@ class TestStagedBasketAndJournal(unittest.TestCase):
         self.assertEqual(b["total_abs_czk"], 1400)
         self.assertEqual(overview.staged_basket_summary(None)["count"], 0)
 
+    def test_basket_counts_conditional_option_routes_separately(self):
+        b = overview.staged_basket_summary([
+            {"type": "stock", "symbol": "A", "delta_czk": 1000},
+            {"type": "cash_secured_put", "symbol": "B", "contracts": 1},
+            {"type": "covered_call", "symbol": "C", "contracts": 2},
+        ])
+        self.assertEqual(b["count"], 3)
+        self.assertEqual((b["buys"], b["sells"]), (1, 0))
+        self.assertEqual(b["conditional_buys"], 1)
+        self.assertEqual(b["conditional_reductions"], 1)
+        self.assertEqual(b["option_legs"], 2)
+        self.assertEqual(b["total_abs_czk"], 1000)
+
     def test_journal_pending_and_review_due(self):
         entries = [
             {"created_at": _iso(10), "outcome": None},

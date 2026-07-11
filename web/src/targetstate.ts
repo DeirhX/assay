@@ -154,12 +154,21 @@ export function sourceBanner(
   if (source === "basket") {
     const reviewed = !!queue?.reviewed;
     const optionCount = (queue?.trades || []).filter(
-      (trade) => trade.type === "covered_call",
+      (trade) => trade.type === "covered_call" || trade.type === "cash_secured_put",
     ).length;
+    const assignment = (queue?.trades || [])
+      .filter((trade) => trade.type === "covered_call" || trade.type === "cash_secured_put")
+      .map((trade) =>
+        `${trade.symbol} ${trade.type === "cash_secured_put" ? "+" : "−"}` +
+        `${trade.contracts * (trade.multiplier || 100)} shares`,
+      )
+      .join(" · ");
     return `<div class="tstate-src"><span class="chip warn">order queue</span>` +
       ` Projected from the <strong>${n} staged order${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — review this outcome before placing them.` +
       (optionCount
-        ? ` ${optionCount} covered call${optionCount === 1 ? "" : "s"} ${optionCount === 1 ? "is" : "are"} conditional and ${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.`
+        ? ` ${optionCount} written option${optionCount === 1 ? " is" : "s are"} conditional and ` +
+          `${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.` +
+          ` <span class="muted">If assigned: ${esc(assignment)}.</span>`
         : "") +
       (reviewed
         ? ` <span class="chip good">projection approved</span>` +
@@ -246,7 +255,9 @@ async function loadTargetState(): Promise<void> {
     if (Array.isArray(queue.trades) && queue.trades.length) {
       stagedCount = queue.trades.length;
       trades = queue.trades
-        .filter((trade) => trade.type !== "covered_call")
+        .filter(
+          (trade) => trade.type !== "covered_call" && trade.type !== "cash_secured_put",
+        )
         .map((trade) => ({ symbol: trade.symbol, delta_czk: trade.delta_czk }));
       source = "basket";
     }

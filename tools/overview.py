@@ -169,12 +169,18 @@ def plan_summary(plan: dict) -> dict:
 def staged_basket_summary(trades: list[dict] | None) -> dict:
     """The basket the planner last staged for the trade desk."""
     trades = trades or []
-    buys = sum(1 for t in trades if (t.get("delta_czk") or 0) > 0)
-    total = sum(abs(t.get("delta_czk") or 0) for t in trades)
+    stock = [t for t in trades if t.get("type") in {None, "stock"}]
+    puts = [t for t in trades if t.get("type") == "cash_secured_put"]
+    calls = [t for t in trades if t.get("type") == "covered_call"]
+    buys = sum(1 for t in stock if (t.get("delta_czk") or 0) > 0)
+    total = sum(abs(t.get("delta_czk") or 0) for t in stock)
     return {
         "count": len(trades),
         "buys": buys,
-        "sells": len(trades) - buys,
+        "sells": len(stock) - buys,
+        "conditional_buys": len(puts),
+        "conditional_reductions": len(calls),
+        "option_legs": len(puts) + len(calls),
         "total_abs_czk": round(total),
     }
 

@@ -45,7 +45,10 @@ interface DriftSum {
   by_symbol: DriftBySymbol[];
 }
 interface DraftSum { has_draft: boolean; pending: number }
-interface StagedBasketSum { count: number; buys: number; sells: number; total_abs_czk: number }
+interface StagedBasketSum {
+  count: number; buys: number; sells: number; total_abs_czk: number;
+  conditional_buys?: number; conditional_reductions?: number; option_legs?: number;
+}
 interface JournalSum { total: number; pending_outcomes: number; oldest_pending_days?: number | null; review_due: number }
 interface PickRow { symbol: string; tier?: string; segment?: string | null; age_days?: number | null }
 interface QueueRow { symbol: string; score: number; segment?: string | null; decision?: string | null }
@@ -213,10 +216,20 @@ export function draftCard(d: DraftSum): string {
 
 export function stagedBasketCard(b: StagedBasketSum): string {
   if (!b.count) return "";
+  const conditional = [
+    b.conditional_buys
+      ? `${b.conditional_buys} cash-secured put${b.conditional_buys === 1 ? "" : "s"}`
+      : "",
+    b.conditional_reductions
+      ? `${b.conditional_reductions} covered call${b.conditional_reductions === 1 ? "" : "s"}`
+      : "",
+  ].filter(Boolean).join(", ");
   return card("warn", "Order queue",
     `<span class="chip warn">${b.count} trade${b.count === 1 ? "" : "s"}</span>`,
-    `${b.buys} buy${b.buys === 1 ? "" : "s"}, ${b.sells} sell${b.sells === 1 ? "" : "s"} · ` +
-    `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "staged order size")} total — staged for review, not yet placed.`,
+    `${b.buys} share buy${b.buys === 1 ? "" : "s"}, ` +
+    `${b.sells} share sell${b.sells === 1 ? "" : "s"}` +
+    `${conditional ? ` · conditional: ${conditional}` : ""} · ` +
+    `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "staged direct-share size")} direct-share value — staged for review, not yet placed.`,
     goBtn("trade", "Trade desk →", "primary"));
 }
 

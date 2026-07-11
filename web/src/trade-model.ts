@@ -22,7 +22,7 @@ export { r1 };
 export const sideTag = (side: string) =>
   `<span class="trade-side ${side === "BUY" ? "buy" : "sell"}">${esc(side)}</span>`;
 
-export type TradeInstrumentType = "stock" | "covered_call";
+export type TradeInstrumentType = "stock" | "covered_call" | "cash_secured_put";
 
 type DisplayProvenance = Omit<TradeLegProvenance, "rung"> & {
   // Read-only tolerance for queue rows persisted before the canonical contract.
@@ -43,6 +43,7 @@ type OptionPreviewFields = Omit<
   coverage_shares?: number;
   if_assigned_shares?: number;
   premium_credit?: number;
+  cash_secured_czk?: number;
   currency?: string | null;
   provenance?: DisplayProvenance | DisplayProvenance[];
   coverage_ok?: boolean;
@@ -83,7 +84,13 @@ export type OrderReconciliation = OptionPreviewFields & {
 export function tradeInstrumentType(
   leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
 ): TradeInstrumentType {
-  return leg?.instrument_type === "covered_call" || leg?.type === "covered_call" ? "covered_call" : "stock";
+  if (leg?.instrument_type === "covered_call" || leg?.type === "covered_call") {
+    return "covered_call";
+  }
+  if (leg?.instrument_type === "cash_secured_put" || leg?.type === "cash_secured_put") {
+    return "cash_secured_put";
+  }
+  return "stock";
 }
 
 export function isCoveredCallLeg(
@@ -95,7 +102,13 @@ export function isCoveredCallLeg(
 export function isStockLeg(
   leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
 ): boolean {
-  return !isCoveredCallLeg(leg);
+  return tradeInstrumentType(leg) === "stock";
+}
+
+export function isOptionLeg(
+  leg: { instrument_type?: TradeInstrumentType; type?: TradeInstrumentType } | null | undefined,
+): boolean {
+  return tradeInstrumentType(leg) !== "stock";
 }
 
 export function optionRightLabel(right?: string | null): string {
@@ -174,7 +187,9 @@ export function provenanceLabel(
   else if (row.rung && typeof row.rung === "object") {
     const contract = [
       row.rung.expiry,
-      row.rung.strike != null ? `${row.rung.strike} call` : "",
+      row.rung.strike != null
+        ? `${row.rung.strike} ${row.route === "cash_secured_put" ? "put" : "call"}`
+        : "",
     ].filter(Boolean).join(" · ");
     if (contract) bits.push(contract);
   }
@@ -185,7 +200,7 @@ export function provenanceLabel(
 }
 
 export function residualStockValueCzk(ctx: OrderReconciliation): number {
-  if (isCoveredCallLeg(ctx)) return 0;
+  if (!isStockLeg(ctx)) return 0;
   const d = ctx.residual_delta_czk;
   return typeof d === "number" && Number.isFinite(d) ? Math.abs(d) : 0;
 }
@@ -197,6 +212,12 @@ export function reconciliationTitle(c: OrderReconciliation): string {
     if (c.classification === "fully_covered") return "Option order already working";
     if (c.classification === "same_side_partial") return "Reduced by working option order";
     return "New covered call";
+  }
+  if (tradeInstrumentType(c) === "cash_secured_put") {
+    if (c.classification === "opposite_side") return "Resolve opposite put order";
+    if (c.classification === "fully_covered") return "Put order already working";
+    if (c.classification === "same_side_partial") return "Reduced by working put order";
+    return "New cash-secured put";
   }
   if (c.classification === "opposite_side") return "Resolve opposite order";
   if (c.classification === "fully_covered") return "Already covered";
@@ -359,7 +380,7 @@ export function basketMoneyFacts(trades?: TradeLeg[]): {
   let buy = 0, sell = 0;
   let largest: { symbol: string; czk: number } | null = null;
   for (const t of trades || []) {
-    if (isCoveredCallLeg(t)) continue;
+    if (!isStockLeg(t)) continue;
     const d = Number((t as StockTradeLeg).delta_czk) || 0;
     if (d >= 0) buy += d; else sell += -d;
     if (!largest || Math.abs(d) > Math.abs(largest.czk)) largest = { symbol: t.symbol, czk: d };

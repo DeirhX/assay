@@ -123,6 +123,22 @@ describe("in-flight cards hide when there is nothing in flight", () => {
     expect(html).toContain("4 pending");
     expect(html).toContain('data-goto="working-draft"');
   });
+
+  it("distinguishes conditional puts and calls from direct share value", () => {
+    const html = stagedBasketCard({
+      count: 3,
+      buys: 1,
+      sells: 0,
+      conditional_buys: 1,
+      conditional_reductions: 1,
+      option_legs: 2,
+      total_abs_czk: 250_000,
+    });
+    expect(html).toContain("1 share buy");
+    expect(html).toContain("1 cash-secured put");
+    expect(html).toContain("1 covered call");
+    expect(html).toContain("direct-share value");
+  });
 });
 
 describe("research lane", () => {

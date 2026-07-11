@@ -57,6 +57,10 @@ describe("basketMoneyFacts", () => {
         type: "covered_call", symbol: "AAPL", route: "covered_call", leg_id: "cc-1",
         contracts: 1, conid: 12345, expiry: "2026-08-21", strike: 250,
       },
+      {
+        type: "cash_secured_put", symbol: "NVDA", route: "cash_secured_put",
+        contracts: 1, conid: 12346, expiry: "2026-08-21", strike: 150,
+      },
       { symbol: "MSFT", delta_czk: -2500 },
     ]);
     expect(f.buy).toBe(1000);
@@ -143,6 +147,10 @@ describe("working-order preview model", () => {
       classification: "none", proposed_qty: 1, residual_qty: 1,
     })).toBe("New covered call");
     expect(reconciliationTitle({
+      symbol: "NVDA", side: "SELL", instrument_type: "cash_secured_put",
+      classification: "none", proposed_qty: 1, residual_qty: 1,
+    })).toBe("New cash-secured put");
+    expect(reconciliationTitle({
       symbol: "NVDA", side: "SELL", instrument_type: "covered_call",
       classification: "fully_covered", proposed_qty: 1, residual_qty: 0,
     })).toBe("Option order already working");
@@ -154,6 +162,7 @@ describe("option leg helpers", () => {
     expect(tradeInstrumentType({})).toBe("stock");
     expect(tradeInstrumentType({ instrument_type: "stock" })).toBe("stock");
     expect(tradeInstrumentType({ instrument_type: "covered_call" })).toBe("covered_call");
+    expect(tradeInstrumentType({ instrument_type: "cash_secured_put" })).toBe("cash_secured_put");
     expect(isCoveredCallLeg({ instrument_type: "covered_call" })).toBe(true);
   });
 
