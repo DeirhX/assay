@@ -569,7 +569,6 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
         t["symbol"] for t in basket
         if t.get("type") in (None, "stock") and _number(t.get("delta_czk")) < 0
     }
-    coverage_symbols = option_symbols | stock_sell_symbols
     snapshot_capacity = _held_call_capacity() if stock_sell_symbols else {}
     call_capacity: dict[str, dict[str, int]] = {
         sym: (snapshot_capacity.get(sym) or {
