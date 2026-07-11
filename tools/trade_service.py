@@ -222,6 +222,41 @@ def save_basket(trades: Any) -> list[dict]:
         return basket
 
 
+def replace_stock_basket(trades: Any) -> list[dict]:
+    """Replace planner stock legs while preserving server-staged covered calls.
+
+    The generic basket endpoint is intentionally stock-only. Covered calls must
+    come through Exit staging, where the server validates the exact contract,
+    quote, and covered-share capacity.
+    """
+    with _basket_lock:
+        incoming = _normalize_basket(trades) if trades else []
+        if any(leg.get("type") == "covered_call" for leg in incoming):
+            raise ValueError(
+                "covered calls must be staged from the Exit plan; "
+                "direct basket option legs are rejected"
+            )
+        existing_calls = [
+            leg for leg in load_basket() if leg.get("type") == "covered_call"
+        ]
+        return save_basket(existing_calls + incoming)
+
+
+def remove_basket_leg(leg_id: Any) -> list[dict]:
+    """Remove one server-known queue leg without accepting a client definition."""
+    requested = str(leg_id or "").strip()
+    if not requested:
+        raise ValueError("remove_leg_id is required")
+    with _basket_lock:
+        current = load_basket()
+        remaining = [
+            leg for leg in current if str(leg.get("leg_id") or "") != requested
+        ]
+        if len(remaining) == len(current):
+            raise _Conflict("order queue changed — reload it before removing that leg")
+        return save_basket(remaining)
+
+
 def review_basket(revision: Any) -> dict:
     """Record that the human reviewed the projection for this exact queue."""
     with _basket_lock:

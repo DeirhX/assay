@@ -127,6 +127,8 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
     _trade_tickle, basket_state as _basket_state, load_basket as _load_basket,
+    remove_basket_leg as _remove_basket_leg,
+    replace_stock_basket as _replace_stock_basket,
     review_basket as _review_basket, save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
@@ -1440,10 +1442,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_peg_stop(self._read_body()))
 
     def _post_trade_basket(self, path):
-        # Persist (or clear) the planner-staged basket. Normalizes server-side and
-        # echoes the stored basket back so the client and disk stay in sync.
+        # Planner writes replace stock legs but cannot forge covered calls.
+        # Queue controls mutate server-known legs by id so stale clients fail
+        # closed instead of replacing a newer queue snapshot.
         body = self._read_body()
-        _save_basket(body.get("trades"))
+        if body.get("clear") is True:
+            _save_basket([])
+        elif body.get("remove_leg_id") is not None:
+            _remove_basket_leg(body.get("remove_leg_id"))
+        else:
+            _replace_stock_basket(body.get("trades"))
         return self._send_json(_basket_state())
 
     def _post_trade_basket_review(self, path):

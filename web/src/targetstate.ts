@@ -153,8 +153,14 @@ export function sourceBanner(
 ): string {
   if (source === "basket") {
     const reviewed = !!queue?.reviewed;
+    const optionCount = (queue?.trades || []).filter(
+      (trade) => trade.type === "covered_call",
+    ).length;
     return `<div class="tstate-src"><span class="chip warn">order queue</span>` +
       ` Projected from the <strong>${n} staged order${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — review this outcome before placing them.` +
+      (optionCount
+        ? ` ${optionCount} covered call${optionCount === 1 ? "" : "s"} ${optionCount === 1 ? "is" : "are"} conditional and ${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.`
+        : "") +
       (reviewed
         ? ` <span class="chip good">projection approved</span>` +
           ` <button class="primary" type="button" data-ts-goto="trade">Open Trade desk →</button>`

@@ -478,14 +478,14 @@ function openWorkflowView(view: "rebalance" | "target-state" | "exit"): void {
 }
 
 async function persistQueue(
-  trades: TradeLeg[],
+  mutation: Record<string, unknown>,
   trigger: HTMLButtonElement,
 ): Promise<void> {
   const previous = trigger.textContent || "";
   trigger.disabled = true;
   trigger.textContent = "Updating…";
   try {
-    const saved = await api<TradeQueueState>("/api/trade/basket", "POST", { trades });
+    const saved = await api<TradeQueueState>("/api/trade/basket", "POST", mutation);
     state.stagedBasket = Array.isArray(saved.trades) ? saved.trades : [];
     _queueState = {
       trades: state.stagedBasket.slice(),
@@ -535,7 +535,7 @@ function renderBasket() {
     clear.type = "button";
     clear.addEventListener("click", () => {
       if (window.confirm("Clear every staged order? Your rebalance plan is untouched.")) {
-        void persistQueue([], clear);
+        void persistQueue({ clear: true }, clear);
       }
     });
     controls.appendChild(clear);
@@ -573,6 +573,7 @@ function renderBasket() {
     `</tr></thead>` +
     `<tbody>${basket.map((t) => {
       if (t.type === "covered_call") {
+        const legId = t.leg_id || `covered_call:${t.symbol}:${t.conid}`;
         return `<tr class="trade-basket-option">` +
           `<td>${tickerLink(t.symbol)}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} call</div></td>` +
           `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
@@ -580,19 +581,20 @@ function renderBasket() {
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
           `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}</td>` +
           `<td class="tb-weight muted">conditional assignment</td>` +
-          `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-conid="${esc(t.conid)}" title="Remove this covered call from the order queue">Remove</button></td>` +
+          `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove this covered call from the order queue">Remove</button></td>` +
         `</tr>`;
       }
       const delta = Number(t.delta_czk) || 0;
       const buy = delta >= 0;
       const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(delta))} CZK`;
+      const legId = t.leg_id || `stock:${t.symbol}`;
       return `<tr>` +
         `<td>${tickerLink(t.symbol)}</td>` +
         `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
         `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
         `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
         `<td class="tb-weight">${sensitive(basketBar(delta, maxAbs), "relative trade size")}</td>` +
-        `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove="${esc(t.symbol)}" title="Remove ${esc(t.symbol)} from the order queue">Remove</button></td>` +
+        `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove ${esc(t.symbol)} from the order queue">Remove</button></td>` +
       `</tr>`;
     }).join("")}</tbody>` +
     `<tfoot><tr>` +
@@ -606,22 +608,9 @@ function renderBasket() {
       `</td>` +
       `<td class="tb-weight muted" title="gross traded value — buys plus sells">gross ${sensitive(fmtCZK(gross), "gross basket value")}</td><td></td>` +
     `</tr></tfoot>`;
-  table.querySelectorAll<HTMLButtonElement>("[data-queue-remove]").forEach((button) => {
+  table.querySelectorAll<HTMLButtonElement>("[data-queue-remove-leg]").forEach((button) => {
     button.addEventListener("click", () => {
-      const symbol = button.dataset.queueRemove || "";
-      void persistQueue(
-        basket.filter((trade) => trade.type === "covered_call" || trade.symbol !== symbol),
-        button,
-      );
-    });
-  });
-  table.querySelectorAll<HTMLButtonElement>("[data-queue-remove-conid]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const conid = button.dataset.queueRemoveConid || "";
-      void persistQueue(
-        basket.filter((trade) => trade.type !== "covered_call" || String(trade.conid) !== conid),
-        button,
-      );
+      void persistQueue({ remove_leg_id: button.dataset.queueRemoveLeg || "" }, button);
     });
   });
   card.appendChild(table);

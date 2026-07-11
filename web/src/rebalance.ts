@@ -1,6 +1,6 @@
 import { starHtml } from "./basket";
 import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
-import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, Whatif, WhatifTrade } from "./api-types";
+import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
@@ -1114,8 +1114,8 @@ function renderWhatif(wf: Whatif) {
     try {
       // Staging is intentionally separate from simulation: a read-only preview
       // must not mutate the order queue as a hidden side effect.
-      await api("/api/trade/basket", "POST", { trades });
-      state.stagedBasket = trades.slice();
+      const saved = await api<TradeQueueState>("/api/trade/basket", "POST", { trades });
+      state.stagedBasket = saved.trades.slice();
       stageBtn.className = "ghost";
       stageBtn.textContent = "Orders staged ✓";
       const reviewBtn = el("button", "primary", "Review target state →");

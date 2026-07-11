@@ -55,6 +55,24 @@ describe("projection review gate", () => {
     expect(reviewed).toContain("projection approved");
     expect(reviewed).toContain('data-ts-goto="trade"');
   });
+
+  it("explains that covered calls do not immediately change share weights", () => {
+    const html = sourceBanner("basket", 1, {
+      trades: [{
+        type: "covered_call",
+        route: "covered_call",
+        symbol: "NVDA",
+        conid: 555,
+        expiry: "2026-08-21",
+        strike: 105,
+        contracts: 1,
+      }],
+      revision: "call-rev",
+      reviewed: false,
+    });
+    expect(html).toContain("conditional");
+    expect(html).toContain("does not change share weights unless assigned");
+  });
 });
 
 describe("compareRows", () => {

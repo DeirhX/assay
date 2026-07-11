@@ -677,11 +677,14 @@ describe("trade desk staged basket", () => {
       { symbol: "ARM", delta_czk: -500 },
     ];
     apiMock.mockImplementation((
-      path: string, method?: string, body?: { trades?: typeof basket },
+      path: string, method?: string,
+      body?: { remove_leg_id?: string; clear?: boolean },
     ) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
       if (path === "/api/trade/basket" && method === "POST") {
-        const trades = body?.trades || [];
+        const trades = body?.clear
+          ? []
+          : basket.filter((trade) => `stock:${trade.symbol}` !== body?.remove_leg_id);
         return Promise.resolve({
           trades, revision: trades.length ? "changed-rev" : "", reviewed: false,
         });
@@ -696,10 +699,10 @@ describe("trade desk staged basket", () => {
     await flush();
     expect(document.querySelector(".chip.good")?.textContent).toContain("projection approved");
 
-    document.querySelector<HTMLButtonElement>('[data-queue-remove="NVDA"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-queue-remove-leg="stock:NVDA"]')!.click();
     await flush();
     expect(apiMock).toHaveBeenCalledWith(
-      "/api/trade/basket", "POST", { trades: [{ symbol: "ARM", delta_czk: -500 }] },
+      "/api/trade/basket", "POST", { remove_leg_id: "stock:NVDA" },
     );
     expect(state.stagedBasket).toEqual([{ symbol: "ARM", delta_czk: -500 }]);
     expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.disabled).toBe(true);
@@ -707,7 +710,7 @@ describe("trade desk staged basket", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     byText((text) => text === "Clear queue")!.click();
     await flush();
-    expect(apiMock).toHaveBeenCalledWith("/api/trade/basket", "POST", { trades: [] });
+    expect(apiMock).toHaveBeenCalledWith("/api/trade/basket", "POST", { clear: true });
     expect(state.stagedBasket).toEqual([]);
     expect(document.querySelector(".trade-basket-table")).toBeFalsy();
   });
@@ -840,6 +843,38 @@ describe("trade desk mixed stock + covered call", () => {
     const foot = table.querySelector("tfoot")!;
     expect(foot.textContent).toContain("1 stock sell");
     expect(foot.textContent).toContain("1 covered call");
+  });
+
+  it("removes the exact server-known covered-call leg", async () => {
+    apiMock.mockImplementation((
+      path: string,
+      method?: string,
+      body?: { remove_leg_id?: string },
+    ) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket" && method === "POST") {
+        const trades = MIXED_BASKET.filter((trade) => trade.leg_id !== body?.remove_leg_id);
+        return Promise.resolve({ trades, revision: "rev-stock-only", reviewed: false });
+      }
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({ trades: MIXED_BASKET, revision: "rev-mixed", reviewed: true });
+      }
+      if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
+      return Promise.resolve({ orders: [] });
+    });
+    await loadTrade();
+    await flush();
+
+    document.querySelector<HTMLButtonElement>(
+      '[data-queue-remove-leg="cc-nvda-1"]',
+    )!.click();
+    await flush();
+
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket", "POST", { remove_leg_id: "cc-nvda-1" },
+    );
+    expect(state.stagedBasket.every((trade) => trade.type !== "covered_call")).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.disabled).toBe(true);
   });
 
   it("renders option order card with contract, expiry, strike, coverage, premium, and provenance", async () => {

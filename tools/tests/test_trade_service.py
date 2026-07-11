@@ -432,6 +432,43 @@ class NormalizeBasket(unittest.TestCase):
         self.assertEqual(len(basket), 1)
         self.assertEqual(basket[0]["contracts"], 3)
 
+    def test_replace_stock_basket_preserves_server_staged_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged):
+                trade_service.save_basket([_cc_leg()])
+                basket = trade_service.replace_stock_basket([
+                    {"symbol": "AMD", "delta_czk": 1000},
+                ])
+        self.assertEqual(
+            {(row["type"], row["symbol"]) for row in basket},
+            {("stock", "AMD"), ("covered_call", "NVDA")},
+        )
+
+    def test_replace_stock_basket_rejects_client_option_definition(self):
+        with self.assertRaisesRegex(ValueError, "must be staged from the Exit plan"):
+            trade_service.replace_stock_basket([_cc_leg()])
+
+    def test_remove_leg_invalidates_review_and_rejects_stale_identifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged):
+                trade_service.save_basket([
+                    {"symbol": "AMD", "delta_czk": 1000},
+                    _cc_leg(),
+                ])
+                state = trade_service.basket_state()
+                trade_service.review_basket(state["revision"])
+                trade_service._preview_issued["token"] = {"test": True}
+
+                basket = trade_service.remove_basket_leg("covered_call:NVDA:555")
+                self.assertEqual([row["symbol"] for row in basket], ["AMD"])
+                self.assertFalse(trade_service.basket_state()["reviewed"])
+                self.assertEqual(trade_service._preview_issued, {})
+
+                with self.assertRaises(apierror.Conflict):
+                    trade_service.remove_basket_leg("covered_call:NVDA:555")
+
     def test_basket_token_sensitive_to_every_canonical_field(self):
         base = trade_service._normalize_basket([_cc_leg(), {"symbol": "AMD", "delta_czk": 100}])
         account = "DU1"
