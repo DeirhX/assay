@@ -280,7 +280,7 @@ export interface WhatifTrade {
 }
 
 export interface TradeQueueState {
-  trades: WhatifTrade[];
+  trades: TradeLeg[];
   revision: string;
   reviewed: boolean;
   reviewed_at?: string | null;
@@ -546,7 +546,21 @@ export interface ExitSchedule {
   max_shares_per_day: number | null;
 }
 
-export interface ExitCoveredCall {
+// Live quote fields shared by the underlying and option rungs on the Exit overlay.
+export interface ExitQuoteFields {
+  bid?: number | null;
+  ask?: number | null;
+  last?: number | null;
+  conid?: number | null;
+  multiplier?: number | null;
+  limit_price?: number | null;
+  quote_timestamp?: string | null;
+  quote_age_seconds?: number | null;
+  quote_fresh?: boolean;
+  executable?: boolean;
+}
+
+export interface ExitCoveredCall extends ExitQuoteFields {
   type: "covered_call";
   source: string;
   contracts: number;
@@ -563,7 +577,7 @@ export interface ExitCoveredCall {
   assignment_guard?: boolean;
 }
 
-export interface ExitCoveredCallRung {
+export interface ExitCoveredCallRung extends ExitQuoteFields {
   strike: number;
   expiry: string;
   dte: number;
@@ -603,15 +617,41 @@ export interface ExitProtectivePut {
   estimate: boolean;
 }
 
+export interface ExitUnderlyingQuote {
+  last?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  source?: string;
+  quote_timestamp?: string | null;
+}
+
 export interface ExitOptionsOverlay {
   symbol: string;
   underlying: number;
   currency: string | null;
   source: string;
+  underlying_quote?: ExitUnderlyingQuote | null;
   covered_call: ExitCoveredCall | null;
   covered_call_ladder: ExitCoveredCallRung[];
   protective_put: ExitProtectivePut | null;
   notes: string[];
+}
+
+export type ExitRouteKind = "sell_shares" | "covered_call";
+
+export interface ExitRouteEligibility {
+  eligible: boolean;
+  reasons: string[];
+}
+
+export interface ExitCoveredCallRoute extends ExitRouteEligibility {
+  capacity_contracts?: number;
+}
+
+export interface ExitRoutes {
+  sell_shares: ExitRouteEligibility;
+  covered_call: ExitCoveredCallRoute;
+  recommended: ExitRouteKind;
 }
 
 export interface ExitPosition {
@@ -631,6 +671,7 @@ export interface ExitPosition {
   tax: ExitTaxLayers;
   schedule: ExitSchedule;
   options?: ExitOptionsOverlay | null;
+  routes?: ExitRoutes | null;
 }
 
 export interface ExitPlanResponse {
@@ -654,10 +695,51 @@ export interface ExitPlanResponse {
   };
 }
 
+// Canonical staged trade-desk legs (GET/POST basket and Exit staging).
+export interface TradeLegProvenance {
+  source?: string;
+  route?: string;
+  plan_as_of?: string;
+  plan_snapshot?: string;
+  plan_fingerprint?: string;
+  tranche_index?: number;
+  intended_shares?: number;
+  rung?: { conid?: number; expiry?: string; strike?: number };
+  intended_assigned_shares?: number;
+}
+
+export interface StockTradeLeg {
+  type?: "stock";
+  symbol: string;
+  delta_czk: number;
+  leg_id?: string;
+  route?: "sell_shares";
+  provenance?: TradeLegProvenance[];
+}
+
+export interface CoveredCallTradeLeg {
+  type: "covered_call";
+  symbol: string;
+  leg_id?: string;
+  route: "covered_call";
+  conid: number;
+  expiry: string;
+  strike: number;
+  contracts: number;
+  delta_czk?: number;
+  limit_price?: number | null;
+  quote_timestamp?: string | null;
+  multiplier?: 100;
+  provenance?: TradeLegProvenance[];
+}
+
+export type TradeLeg = StockTradeLeg | CoveredCallTradeLeg;
+
 export interface ExitStageResponse {
   staged: boolean;
-  basket: Array<{ symbol: string; delta_czk: number }>;
-  tranche: ExitTranche;
+  basket: TradeLeg[];
+  tranche?: ExitTranche | null;
+  leg?: TradeLeg | null;
   symbol: string;
 }
 

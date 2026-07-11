@@ -8,10 +8,11 @@
 // book is reviewed next; placement remains a separate explicit Trade-desk step.
 import {
   $, api, el, esc, fmtCZK, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
+  relAge,
 } from "./core";
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
-  ExitCoveredCallRung,
+  ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
 import { pushNav, setActiveView } from "./shell";
@@ -20,8 +21,40 @@ import { pushNav, setActiveView } from "./shell";
 // back on every (re)build and stage so the server rebuilds an identical plan.
 const cfg = { horizon_days: 10, adv_slice_pct: 0.12, near_exempt_days: 120, tax_rate: 0.15 };
 
+// Per-symbol route tab state survives re-renders until the user switches away.
+const routePick = new Map<string, ExitRouteKind>();
+
 const czk = (v: number | null | undefined) => (v == null ? "n/a" : sensitive(fmtCZK(v)));
 const pct = (v: number | null | undefined, digits = 1) => (v == null ? "n/a" : `${Number(v).toFixed(digits)}%`);
+const dash = "–";
+const EXECUTION_QUOTE_MAX_AGE_MS = 120_000;
+
+function selectedRoute(p: ExitPosition): ExitRouteKind {
+  const routes = routesFor(p);
+  const picked = routePick.get(p.symbol);
+  if (picked && routes[picked].eligible) return picked;
+  const recommended = p.routes?.recommended ?? "sell_shares";
+  if (routes[recommended].eligible) return recommended;
+  if (routes.sell_shares.eligible) return "sell_shares";
+  if (routes.covered_call.eligible) return "covered_call";
+  return "sell_shares";
+}
+
+function routesFor(p: ExitPosition): ExitRoutes {
+  const cc = p.routes?.covered_call;
+  const ss = p.routes?.sell_shares;
+  return {
+    sell_shares: ss ?? { eligible: true, reasons: [] },
+    covered_call: cc ?? { eligible: false, reasons: ["Covered-call route not available for this name"] },
+    recommended: p.routes?.recommended ?? "sell_shares",
+  };
+}
+
+function quotePrice(v: number | null | undefined, ccy?: string | null): string {
+  if (v == null || !Number.isFinite(v)) return dash;
+  const cur = ccy ? ` ${esc(ccy)}` : "";
+  return `${fmtNum(v)}${cur}`;
+}
 
 const END_STATE_LABEL: Record<string, string> = {
   zero: "Full exit → 0%",
@@ -152,10 +185,10 @@ function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
   // the card reads as "do this" first, "here's the math" on demand.
   card.appendChild(recommendationBlock(p));
 
-  const hasOpts = !!(p.options && (p.options.covered_call || p.options.protective_put));
+  const hasOpts = !!(p.options && (p.options.protective_put || (!p.routes && p.options.covered_call)));
   const details = el("details", "exit-details");
   const summary = el("summary", "exit-details-summary");
-  summary.textContent = `Show details — tax layering, scale-out schedule${hasOpts ? ", options overlay" : ""}`;
+  summary.textContent = `Show details — tax layering, scale-out schedule${hasOpts ? ", options analysis" : ""}`;
   details.appendChild(summary);
   details.appendChild(taxBlock(p));
   details.appendChild(scheduleBlock(p, baseCcy));
@@ -168,6 +201,90 @@ function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
 // One-sentence "what to do", built from the same numbers the details expand on.
 function recommendationBlock(p: ExitPosition): HTMLElement {
   const box = el("div", "exit-reco");
+  const routes = routesFor(p);
+  const route = selectedRoute(p);
+  const o = p.options;
+  const ccy = p.currency || o?.currency || "";
+
+  if (o) box.appendChild(underlyingQuoteBar(o, ccy));
+  if (p.routes || o?.covered_call_ladder?.length) {
+    box.appendChild(routeControls(p, routes, () => {
+      box.replaceWith(recommendationBlock(p));
+    }));
+  }
+
+  if (route === "sell_shares") {
+    box.appendChild(sellSharesReco(p, routes.sell_shares));
+  } else {
+    box.appendChild(coveredCallReco(p, routes.covered_call, ccy));
+  }
+  return box;
+}
+
+function underlyingQuoteBar(o: NonNullable<ExitPosition["options"]>, ccy: string): HTMLElement {
+  const bar = el("div", "exit-underlying-quote");
+  const q = o.underlying_quote;
+  const last = q?.last != null ? `<strong class="exit-underlying-last">${fmtNum(q.last)} ${esc(ccy)}</strong>` : dash;
+  const src = q?.source ? esc(q.source) : "source unknown";
+  const age = q?.quote_timestamp
+    ? `<span class="muted">${esc(relAge(q.quote_timestamp))}</span>`
+    : "";
+  bar.innerHTML =
+    `<span class="exit-underlying-label">Underlying last</span> ${last}` +
+    `<span class="muted"> · ${src}${age ? ` · ${age}` : ""}</span>`;
+  return bar;
+}
+
+function routeControls(
+  p: ExitPosition,
+  routes: ExitRoutes,
+  onChange: () => void,
+): HTMLElement {
+  const wrap = el("div", "exit-route-controls");
+  const route = selectedRoute(p);
+  const mk = (kind: ExitRouteKind, label: string, elig: { eligible: boolean; reasons: string[] }) => {
+    const btn = el("button", `exit-route-btn${route === kind ? " active" : ""}${elig.eligible ? "" : " disabled"}`);
+    btn.type = "button";
+    btn.textContent = label;
+    if (!elig.eligible && elig.reasons.length) btn.title = elig.reasons.join("; ");
+    if (elig.eligible) {
+      btn.addEventListener("click", () => {
+        routePick.set(p.symbol, kind);
+        onChange();
+      });
+    } else {
+      btn.disabled = true;
+    }
+    return btn;
+  };
+  wrap.appendChild(mk("sell_shares", "Sell shares", routes.sell_shares));
+  wrap.appendChild(mk("covered_call", "Covered-call exit", routes.covered_call));
+  if (!routes.covered_call.eligible && routes.covered_call.reasons.length) {
+    const why = el("span", "exit-route-why muted");
+    why.textContent = `Covered call unavailable: ${routes.covered_call.reasons.join(" · ")}`;
+    wrap.appendChild(why);
+  }
+  if (routes.recommended === route) {
+    const tag = el("span", "exit-route-rec muted", "recommended");
+    wrap.appendChild(tag);
+  }
+  return wrap;
+}
+
+function routeBlocked(box: HTMLElement, reasons: string[]): void {
+  if (!reasons.length) return;
+  const note = el("div", "exit-route-blocked warn");
+  note.textContent = reasons.join(" · ");
+  box.appendChild(note);
+}
+
+function sellSharesReco(p: ExitPosition, elig: { eligible: boolean; reasons: string[] }): HTMLElement {
+  const inner = el("div", "exit-reco-route");
+  if (!elig.eligible) {
+    routeBlocked(inner, elig.reasons);
+    return inner;
+  }
+
   const t = p.tax;
   const s = p.schedule;
   const keepPct = p.current_czk > 0 ? (100 * (p.current_czk - p.exit_czk)) / p.current_czk : 0;
@@ -195,10 +312,10 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
 
   const lead = el("div", "exit-reco-lead");
   lead.innerHTML = `<span class="exit-reco-verb">${verb}:</span> sell <strong>${fmtNum(p.exit_shares)} sh</strong> (${czk(p.exit_czk)}).${keepStr}`;
-  box.appendChild(lead);
+  inner.appendChild(lead);
   const sub = el("div", "exit-reco-sub");
   sub.innerHTML = `${timing}${taxStr}.${liq}${thin}`;
-  box.appendChild(sub);
+  inner.appendChild(sub);
 
   if (s.tranches.length) {
     const first = s.tranches[0];
@@ -209,9 +326,54 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
       : `Stage the sell (${fmtNum(first.shares)} sh) →`;
     cta.title = "Add this slice to the order queue, then review the projected portfolio";
     cta.addEventListener("click", () => stageTranche(p.symbol, first.index, cta));
-    box.appendChild(cta);
+    inner.appendChild(cta);
   }
-  return box;
+  return inner;
+}
+
+function coveredCallReco(
+  p: ExitPosition,
+  elig: { eligible: boolean; reasons: string[]; capacity_contracts?: number },
+  ccy: string,
+): HTMLElement {
+  const inner = el("div", "exit-reco-route");
+  const o = p.options;
+  const ladder = o?.covered_call_ladder ?? [];
+  const contracts = elig.capacity_contracts ?? o?.covered_call?.contracts ?? 0;
+
+  const disclaimer = el("div", "exit-reco-sub hint");
+  disclaimer.innerHTML =
+    `Covered-call exit is <strong>conditional</strong>: you collect premium now, but the position shrinks only if the calls are assigned. ` +
+    `Assignment is not guaranteed — you may need to buy back the calls or roll.`;
+  inner.appendChild(disclaimer);
+
+  if (!elig.eligible) {
+    routeBlocked(inner, elig.reasons);
+    return inner;
+  }
+
+  const cap = el("div", "exit-reco-sub");
+  cap.textContent = contracts > 0
+    ? `Up to ${contracts} contract${contracts === 1 ? "" : "s"} (${fmtNum(contracts * 100)} sh if assigned).`
+    : "No whole contracts available to write.";
+  inner.appendChild(cap);
+  inner.appendChild(el(
+    "div", "hint",
+    "Live positions, working orders, and quote freshness are rechecked when you stage and place.",
+  ));
+
+  if (!ladder.length) {
+    inner.appendChild(el("div", "hint", "No covered-call rungs available for this name."));
+    return inner;
+  }
+
+  inner.appendChild(coveredCallLadderTable(p.symbol, ladder, ccy, contracts));
+  return inner;
+}
+
+function assignmentCell(r: ExitCoveredCallRung): string {
+  if (r.assignment_prob_pct == null) return dash;
+  return `~${pct(r.assignment_prob_pct, 0)} assign prob`;
 }
 
 function fmtNum(v: number | null | undefined): string {
@@ -329,8 +491,10 @@ async function stageTranche(symbol: string, index: number, btn: HTMLButtonElemen
   btn.disabled = true;
   btn.textContent = "Staging…";
   try {
-    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", { symbol, index, cfg });
-    state.stagedBasket = resp.basket.slice();
+    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
+      symbol, route: "sell_shares", index, cfg,
+    });
+    state.stagedBasket = resp.basket.slice() as typeof state.stagedBasket;
     btn.textContent = "Staged ✓";
     // Projection is a pre-trade safety gate: show where the accumulated order
     // queue lands before offering IBKR preview / placement.
@@ -343,15 +507,68 @@ async function stageTranche(symbol: string, index: number, btn: HTMLButtonElemen
   }
 }
 
-// ---- options overlay -------------------------------------------------------
+async function stageCoveredCall(
+  symbol: string,
+  rung: ExitCoveredCallRung,
+  contracts: number,
+  btn: HTMLButtonElement,
+): Promise<void> {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Staging…";
+  try {
+    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
+      symbol,
+      route: "covered_call",
+      conid: rung.conid,
+      expiry: rung.expiry,
+      strike: rung.strike,
+      contracts,
+      cfg,
+    });
+    state.stagedBasket = resp.basket.slice() as typeof state.stagedBasket;
+    btn.textContent = "Staged ✓";
+    pushNav({ view: "target-state" });
+    setActiveView("target-state");
+  } catch (e) {
+    btn.textContent = "Failed";
+    btn.title = (e as Error)?.message || "stage failed";
+    setTimeout(() => { btn.disabled = false; btn.textContent = prev; }, 1500);
+  }
+}
+
+function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
+  const quoteTime = r.quote_timestamp ? new Date(r.quote_timestamp).getTime() : NaN;
+  const localAge = Date.now() - quoteTime;
+  const locallyFresh = Number.isFinite(quoteTime)
+    && localAge >= -10_000 && localAge <= EXECUTION_QUOTE_MAX_AGE_MS;
+  const quoteOk = typeof r.bid === "number" && typeof r.ask === "number"
+    && r.bid > 0 && r.ask > 0 && r.bid <= r.ask;
+  if (r.executable === true && r.conid && r.quote_fresh === true && locallyFresh && quoteOk) return [];
+  const reasons: string[] = [];
+  if (r.executable === false) reasons.push("Not executable");
+  if (r.estimate) reasons.push("Modeled premium — no live IBKR quote");
+  if (r.bid == null || r.ask == null) reasons.push("Missing bid/ask");
+  if (typeof r.bid === "number" && typeof r.ask === "number" && r.bid > r.ask)
+    reasons.push("Crossed bid/ask");
+  if (!r.conid) reasons.push("No contract id");
+  if (r.quote_fresh === false || !locallyFresh) reasons.push("Quote is stale");
+  if (!reasons.length) reasons.push("Quote not executable");
+  return reasons;
+}
+
+// ---- options overlay (analysis-only: puts/collars; covered calls live in route UI) ----
 function optionsBlock(p: ExitPosition): HTMLElement | null {
   const o = p.options;
-  if (!o || (!o.covered_call && !o.protective_put)) return null;
+  if (!o) return null;
+  const showCcAnalysis = !p.routes && (o.covered_call || o.covered_call_ladder?.length);
+  if (!o.protective_put && !showCcAnalysis && !o.notes.length) return null;
   const box = el("div", "exit-section exit-options");
-  box.appendChild(el("h3", "exit-h3", "Options overlay <span class=\"muted exit-h3-sub\">analysis only — no option orders are placed</span>"));
+  box.appendChild(el("h3", "exit-h3",
+    "Options analysis <span class=\"muted exit-h3-sub\">advisory only — protective puts and collars are not placeable from Exit</span>"));
 
-  if (o.covered_call) box.appendChild(coveredCallCard(o.covered_call, o.currency));
-  if (o.covered_call_ladder && o.covered_call_ladder.length > 1)
+  if (showCcAnalysis && o.covered_call) box.appendChild(coveredCallCard(o.covered_call, o.currency));
+  if (showCcAnalysis && o.covered_call_ladder && o.covered_call_ladder.length > 1)
     box.appendChild(coveredCallLadder(o.covered_call_ladder, o.currency));
   if (o.protective_put) box.appendChild(protectivePutCard(o.protective_put, o.currency));
 
@@ -384,8 +601,59 @@ function liqBadge(liq: ExitCoveredCallRung["liquidity"]): string {
   return `<span class="exit-liq exit-liq-unknown" title="No live quote — premium is modeled">n/a</span>`;
 }
 
-// StrikePeek-style ladder: annualized yield vs. assignment odds across OTM
-// strikes for the recommended expiry, so the user can pick their own cushion.
+// Executable covered-call ladder for the route UI (live bid/ask/last, stage per rung).
+function coveredCallLadderTable(
+  symbol: string,
+  rungs: ExitCoveredCallRung[],
+  ccy: string,
+  contracts: number,
+): HTMLElement {
+  const wrap = el("div", "exit-opt-card exit-ladder-wrap");
+  const tbl = el("table", "exit-ladder exit-ladder-exec");
+  tbl.innerHTML =
+    `<thead><tr>` +
+      `<th>Strike</th><th>Expiry</th><th>Bid (sell)</th><th>Ask (buy)</th><th>Last</th>` +
+      `<th>Limit credit</th><th>Assignment</th><th>Action</th>` +
+    `</tr></thead>`;
+  const tbody = el("tbody");
+  rungs.forEach((r) => {
+    const row = el("tr", r.recommended ? "exit-ladder-rec" : "");
+    const blocked = rungBlockedReasons(r);
+    const canStage = blocked.length === 0 && contracts > 0;
+
+    const actionCell = el("td");
+    if (canStage) {
+      const btn = el("button", "ghost exit-stage-cc-btn");
+      btn.type = "button";
+      btn.textContent = "Stage →";
+      btn.title = `Stage ${contracts}× ${fmtNum(r.strike)} call — assignment is conditional`;
+      btn.addEventListener("click", () => stageCoveredCall(symbol, r, contracts, btn));
+      actionCell.appendChild(btn);
+    } else {
+      const span = el("span", "muted exit-rung-blocked");
+      span.textContent = blocked.length ? blocked.join("; ") : dash;
+      if (blocked.length) span.title = blocked.join("; ");
+      actionCell.appendChild(span);
+    }
+
+    row.innerHTML =
+      `<td>${quotePrice(r.strike, ccy)}${r.recommended ? ` <span class="exit-ladder-star" title="Recommended rung">★</span>` : ""}</td>` +
+      `<td>${esc(r.expiry)}<div class="muted">${sourceBadge(r.source, r.estimate)} ` +
+        `${r.quote_timestamp ? esc(relAge(r.quote_timestamp)) : "age unavailable"}</div></td>` +
+      `<td>${quotePrice(r.bid, ccy)}</td>` +
+      `<td>${quotePrice(r.ask, ccy)}</td>` +
+      `<td>${quotePrice(r.last, ccy)}</td>` +
+      `<td>${r.limit_price == null ? dash : quotePrice(r.limit_price, ccy)}</td>` +
+      `<td>${assignmentCell(r)}</td>`;
+    row.appendChild(actionCell);
+    tbody.appendChild(row);
+  });
+  tbl.appendChild(tbody);
+  wrap.appendChild(tbl);
+  return wrap;
+}
+
+// Analysis ladder (yield vs assignment) for names without route UI.
 function coveredCallLadder(rungs: ExitCoveredCallRung[], ccy: string | null): HTMLElement {
   const cur = ccy || "";
   const wrap = el("div", "exit-opt-card exit-ladder-wrap");

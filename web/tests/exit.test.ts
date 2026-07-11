@@ -1,7 +1,5 @@
-// Tests for the Exit planner view: it must render the tax-layering summary and a
-// per-tranche scale-out schedule, and "Stage →" must POST the exact tranche to
-// /api/exit-plan/stage (server re-derives size; we only send symbol/index/cfg)
-// and mirror the returned basket into shared state for the Trade desk.
+// Tests for the Exit planner view: tax-layering summary, scale-out schedule,
+// execution-route controls (sell shares vs covered-call), and staging payloads.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { apiMock } = vi.hoisted(() => ({ apiMock: vi.fn() }));
@@ -11,13 +9,27 @@ vi.mock("../src/core", async (importOriginal) => {
 });
 
 import { state } from "../src/core";
-import type { ExitPlanResponse } from "../src/api-types";
+import type { ExitCoveredCallRung, ExitPlanResponse } from "../src/api-types";
 import { loadExit } from "../src/exit";
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
   await new Promise((r) => setTimeout(r, 0));
 };
+
+function ccRung(over: Partial<ExitCoveredCallRung> = {}): ExitCoveredCallRung {
+  return {
+    strike: 110, expiry: "2026-08-15", dte: 45, premium: 2.5, premium_czk: 57_500,
+    effective_exit: 112.5, moneyness_pct: 4.8, premium_yield_annual_pct: 18.2,
+    assignment_prob_pct: 28, open_interest: 1200, volume: 340, spread_pct: 3.1,
+    liquidity: "ok", source: "ibkr", estimate: false,
+    bid: 2.4, ask: 2.6, last: 2.5, conid: 12345678, multiplier: 100,
+    limit_price: 2.5, quote_timestamp: new Date().toISOString(),
+    quote_fresh: true, executable: true,
+    recommended: true,
+    ...over,
+  };
+}
 
 function planFixture(over: Partial<ExitPlanResponse> = {}): ExitPlanResponse {
   return {
@@ -57,6 +69,28 @@ function planFixture(over: Partial<ExitPlanResponse> = {}): ExitPlanResponse {
   };
 }
 
+function routeFixture(): ExitPlanResponse {
+  const base = planFixture();
+  base.positions[0].routes = {
+    sell_shares: { eligible: true, reasons: [] },
+    covered_call: { eligible: true, reasons: [], capacity_contracts: 10 },
+    recommended: "sell_shares",
+  };
+  base.positions[0].options = {
+    symbol: "EXITME", underlying: 105, currency: "USD", source: "ibkr",
+    underlying_quote: { last: 105.25, bid: 105.2, ask: 105.3, source: "ibkr", quote_timestamp: new Date().toISOString() },
+    covered_call: null,
+    covered_call_ladder: [
+      ccRung(),
+      ccRung({ strike: 115, recommended: false, bid: 1.1, ask: 1.3, last: 1.2, conid: 87654321, limit_price: 1.2, executable: true }),
+      ccRung({ strike: 120, recommended: false, estimate: true, executable: false, bid: null, ask: null, conid: null, source: "black_scholes" }),
+    ],
+    protective_put: null,
+    notes: [],
+  };
+  return base;
+}
+
 beforeEach(() => {
   apiMock.mockReset();
   state.stagedBasket = [];
@@ -76,16 +110,13 @@ describe("Exit planner rendering", () => {
     await loadExit();
     await flush();
 
-    // Summary stat strip carries the sell-now / deferred / tax-saved headline.
     const summary = document.querySelector("#exit-summary")!.textContent || "";
     expect(summary).toContain("Sell now");
     expect(summary).toContain("Tax saved by waiting");
 
-    // Schedule renders one row per tranche.
     const rows = document.querySelectorAll("#exit-body table.exit-sched tbody tr");
     expect(rows).toHaveLength(2);
 
-    // The deferred near-exempt lot surfaces with its wait note.
     const body = document.querySelector("#exit-body")!.textContent || "";
     expect(body).toContain("wait until 2026-09-29");
   });
@@ -100,24 +131,25 @@ describe("Exit planner rendering", () => {
     const recoText = reco!.textContent || "";
     expect(recoText).toContain("Reduce to 3.00%");
     expect(recoText).toContain("Keeps 4% of the position");
-    // Primary CTA stages the first slice.
     const cta = document.querySelector<HTMLButtonElement>("#exit-body .exit-reco-cta");
     expect(cta).toBeTruthy();
     expect(cta!.textContent).toContain("Stage first slice");
 
-    // The detail sections live inside a <details> that is closed by default.
     const details = document.querySelector<HTMLDetailsElement>("#exit-body details.exit-details");
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
-    expect(details!.querySelector("table.exit-sched")).toBeTruthy();       // schedule moved inside
-    expect(details!.querySelector(".exit-posbar")).toBeTruthy();           // tax bar moved inside
+    expect(details!.querySelector("table.exit-sched")).toBeTruthy();
+    expect(details!.querySelector(".exit-posbar")).toBeTruthy();
   });
 
-  it("the headline CTA stages the first tranche", async () => {
+  it("the headline CTA stages the first tranche with route sell_shares", async () => {
     apiMock.mockImplementation((path: string) => {
       if (path.startsWith("/api/exit-plan?")) return Promise.resolve(planFixture());
       if (path === "/api/exit-plan/stage") {
-        return Promise.resolve({ staged: true, symbol: "EXITME", basket: [], tranche: null });
+        return Promise.resolve({
+          staged: true, symbol: "EXITME", basket: [],
+          tranche: { index: 1, date: "2026-07-01", shares: 2000, czk: 200_000, limit_price: 100, limit_currency: "USD", over_adv_cap: true },
+        });
       }
       return Promise.resolve({ orders: [] });
     });
@@ -127,7 +159,7 @@ describe("Exit planner rendering", () => {
     await flush();
     expect(apiMock).toHaveBeenCalledWith(
       "/api/exit-plan/stage", "POST",
-      expect.objectContaining({ symbol: "EXITME", index: 1, cfg: expect.any(Object) }),
+      expect.objectContaining({ symbol: "EXITME", route: "sell_shares", index: 1, cfg: expect.any(Object) }),
     );
   });
 
@@ -139,19 +171,15 @@ describe("Exit planner rendering", () => {
   });
 
   it("a partial reduce renders a Keep segment sized to the kept remainder", async () => {
-    // Fixture keeps 30k of an 800k position — the bar must NOT read as a full exit.
     apiMock.mockResolvedValue(planFixture());
     await loadExit();
     await flush();
     const segs = [...document.querySelectorAll<HTMLElement>("#exit-body .exit-posbar-seg")];
     const keep = segs.find((s) => s.classList.contains("keep"));
     expect(keep).toBeTruthy();
-    // keep = (800k-770k)/800k = 3.75% of the position.
     expect(keep!.style.width).toBe("3.8%");
-    // Sell-now slice is only half the position, never full.
     const sellNow = segs.find((s) => s.classList.contains("good"))!;
     expect(sellNow.style.width).toBe("50.0%");
-    // Header spells out the partial nature.
     const body = document.querySelector("#exit-body")!.textContent || "";
     expect(body).toContain("keeping 4%");
   });
@@ -159,7 +187,7 @@ describe("Exit planner rendering", () => {
   it("a full exit keeps nothing (no keep segment)", async () => {
     const full = planFixture();
     full.positions[0].end_state = "zero";
-    full.positions[0].exit_czk = 800_000;      // sell the whole position
+    full.positions[0].exit_czk = 800_000;
     await apiMock.mockResolvedValue(full);
     await loadExit();
     await flush();
@@ -169,17 +197,17 @@ describe("Exit planner rendering", () => {
     expect(body).toContain("full exit — nothing kept");
   });
 
-  it("stages a tranche to the trade desk with only symbol/index/cfg", async () => {
+  it("stages a schedule tranche with route sell_shares", async () => {
     apiMock.mockImplementation((path: string) => {
       if (path.startsWith("/api/exit-plan?")) return Promise.resolve(planFixture());
       if (path === "/api/exit-plan/stage") {
         return Promise.resolve({
           staged: true, symbol: "EXITME",
-          basket: [{ symbol: "EXITME", delta_czk: -200_000 }],
+          basket: [{ type: "stock", symbol: "EXITME", delta_czk: -200_000, route: "sell_shares" }],
           tranche: { index: 1, date: "2026-07-01", shares: 2000, czk: 200_000, limit_price: 100, limit_currency: "USD", over_adv_cap: true },
         });
       }
-      return Promise.resolve({ orders: [] }); // trade desk status/etc after nav
+      return Promise.resolve({ orders: [] });
     });
 
     await loadExit();
@@ -192,9 +220,158 @@ describe("Exit planner rendering", () => {
 
     expect(apiMock).toHaveBeenCalledWith(
       "/api/exit-plan/stage", "POST",
-      expect.objectContaining({ symbol: "EXITME", index: 1, cfg: expect.any(Object) }),
+      expect.objectContaining({ symbol: "EXITME", route: "sell_shares", index: 1, cfg: expect.any(Object) }),
     );
-    // The returned basket is mirrored into shared state for the Trade desk.
-    expect(state.stagedBasket).toEqual([{ symbol: "EXITME", delta_czk: -200_000 }]);
+    expect(state.stagedBasket).toEqual([{ type: "stock", symbol: "EXITME", delta_czk: -200_000, route: "sell_shares" }]);
+  });
+});
+
+describe("Exit execution routes", () => {
+  it("shows route controls and underlying last with source", async () => {
+    apiMock.mockResolvedValue(routeFixture());
+    await loadExit();
+    await flush();
+
+    const body = document.querySelector("#exit-body")!.textContent || "";
+    expect(body).toContain("Sell shares");
+    expect(body).toContain("Covered-call exit");
+    expect(body).toContain("Underlying last");
+    expect(body).toMatch(/105[,.]25/);
+    expect(body).toContain("ibkr");
+
+    const routes = document.querySelectorAll("#exit-body .exit-route-btn");
+    expect(routes.length).toBeGreaterThanOrEqual(2);
+    expect(document.querySelector("#exit-body .exit-route-btn.active")!.textContent).toContain("Sell shares");
+  });
+
+  it("switches to covered-call ladder with bid/ask/last columns", async () => {
+    apiMock.mockResolvedValue(routeFixture());
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const body = document.querySelector("#exit-body")!.textContent || "";
+    expect(body).toContain("conditional");
+    expect(body).toContain("if assigned");
+
+    const headers = document.querySelector("#exit-body table.exit-ladder-exec thead")!.textContent || "";
+    expect(headers).toContain("Bid (sell)");
+    expect(headers).toContain("Ask (buy)");
+    expect(headers).toContain("Last");
+    expect(headers).toContain("Limit credit");
+    expect(headers).toContain("Assignment");
+    expect(headers).toContain("Action");
+
+    const rows = document.querySelectorAll("#exit-body table.exit-ladder-exec tbody tr");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toMatch(/2[,.]4/);
+    expect(rows[0].textContent).toMatch(/2[,.]6/);
+  });
+
+  it("stages an executable covered-call rung with the full payload", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith("/api/exit-plan?")) return Promise.resolve(routeFixture());
+      if (path === "/api/exit-plan/stage") {
+        return Promise.resolve({
+          staged: true, symbol: "EXITME",
+          basket: [{
+            type: "covered_call", symbol: "EXITME", route: "covered_call",
+            conid: 12345678, expiry: "2026-08-15", strike: 110, contracts: 10,
+          }],
+        });
+      }
+      return Promise.resolve({ orders: [] });
+    });
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const stageBtn = document.querySelector<HTMLButtonElement>("#exit-body .exit-stage-cc-btn")!;
+    expect(stageBtn).toBeTruthy();
+    stageBtn.click();
+    await flush();
+
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/exit-plan/stage", "POST",
+      expect.objectContaining({
+        symbol: "EXITME",
+        route: "covered_call",
+        conid: 12345678,
+        expiry: "2026-08-15",
+        strike: 110,
+        contracts: 10,
+        cfg: expect.any(Object),
+      }),
+    );
+    expect(state.stagedBasket[0]).toMatchObject({ type: "covered_call", route: "covered_call" });
+  });
+
+  it("shows blocked reasons instead of a stage button for non-executable rungs", async () => {
+    apiMock.mockResolvedValue(routeFixture());
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const blocked = document.querySelectorAll("#exit-body .exit-rung-blocked");
+    expect(blocked.length).toBeGreaterThan(0);
+    const blockedText = [...blocked].map((n) => n.textContent).join(" ");
+    expect(blockedText).toMatch(/Not executable|Modeled premium|Missing bid\/ask|No contract id/);
+
+    const stageBtns = document.querySelectorAll("#exit-body .exit-stage-cc-btn");
+    expect(stageBtns.length).toBe(2);
+  });
+
+  it("expires executable rung actions locally after the two-minute quote window", async () => {
+    const data = routeFixture();
+    data.positions[0].options!.covered_call_ladder![0].quote_timestamp =
+      new Date(Date.now() - 121_000).toISOString();
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const firstRow = document.querySelector("#exit-body table.exit-ladder-exec tbody tr")!;
+    expect(firstRow.textContent).toContain("Quote is stale");
+    expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeNull();
+  });
+
+  it("labels protective puts as analysis-only in details", async () => {
+    const data = routeFixture();
+    data.positions[0].options!.protective_put = {
+      type: "protective_put", source: "black_scholes", contracts: 10,
+      expiry: "2026-09-29", dte: 90, days_to_exempt: 90, exempt_on: "2026-09-29",
+      put_strike: 95, put_premium: 3.5, put_cost_czk: 80_500, protected_floor: 95,
+      collar_call_strike: 115, collar_call_premium: 1.2, net_collar_premium: 2.3,
+      net_collar_czk: 52_900, tax_saved_by_waiting_czk: 41_625, vol_used: 0.35, estimate: true,
+    };
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const details = document.querySelector<HTMLDetailsElement>("#exit-body details.exit-details")!;
+    details.open = true;
+    await flush();
+
+    const optHead = details.querySelector(".exit-options .exit-h3")!.textContent || "";
+    expect(optHead).toContain("analysis");
+    expect(optHead).toContain("not placeable");
+    expect(details.textContent).toContain("Protective put");
+    expect(details.querySelector(".exit-ladder-exec")).toBeFalsy();
   });
 });

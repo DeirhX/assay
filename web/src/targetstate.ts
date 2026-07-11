@@ -232,13 +232,20 @@ async function loadTargetState(): Promise<void> {
   // Projection source: the staged basket wins (it's what will be placed);
   // else the plan's suggested amounts; else nothing (projection = now).
   let trades: WhatifTrade[] = [];
+  let stagedCount = 0;
   let source: "basket" | "suggestions" | "none" = "none";
   let queue: TradeQueueState | null = null;
   try {
     queue = await api<TradeQueueState>("/api/trade/basket");
-    if (Array.isArray(queue.trades) && queue.trades.length) { trades = queue.trades; source = "basket"; }
+    if (Array.isArray(queue.trades) && queue.trades.length) {
+      stagedCount = queue.trades.length;
+      trades = queue.trades
+        .filter((trade) => trade.type !== "covered_call")
+        .map((trade) => ({ symbol: trade.symbol, delta_czk: trade.delta_czk }));
+      source = "basket";
+    }
   } catch { /* fall through to suggestions */ }
-  if (!trades.length) {
+  if (source !== "basket") {
     trades = deriveSuggestionTrades(plan);
     source = trades.length ? "suggestions" : "none";
   }
@@ -253,7 +260,7 @@ async function loadTargetState(): Promise<void> {
     }
   }
   if (status) status.textContent = "";
-  render(plan, wf, source, trades.length, queue);
+  render(plan, wf, source, source === "basket" ? stagedCount : trades.length, queue);
 }
 
 let _wired = false;
