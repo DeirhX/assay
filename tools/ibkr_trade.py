@@ -564,7 +564,7 @@ def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float
     u_bid = _snap_num(urow.get(_MD_BID))
     u_ask = _snap_num(urow.get(_MD_ASK))
     spot = u_last
-    if spot is None and quotes_are_valid(u_bid, u_ask):
+    if spot is None and u_bid is not None and u_ask is not None and quotes_are_valid(u_bid, u_ask):
         spot = (u_bid + u_ask) / 2.0
 
     expiries: list[dict[str, Any]] = []

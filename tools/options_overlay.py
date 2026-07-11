@@ -148,9 +148,9 @@ def _underlying_quote(chain: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     nested = chain.get("underlying_quote")
     if isinstance(nested, dict):
-        out = {k: nested[k] for k in ("conid", "bid", "ask", "last", "quote_timestamp")
-               if nested.get(k) is not None}
-        return out or None
+        nested_out = {k: nested[k] for k in ("conid", "bid", "ask", "last", "quote_timestamp")
+                      if nested.get(k) is not None}
+        return nested_out or None
     out: dict[str, Any] = {}
     for key, src in (
         ("conid", "underlying_conid"),

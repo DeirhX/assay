@@ -85,9 +85,14 @@ def _normalize_basket(trades: Any) -> list[dict]:
         if not sym:
             raise ValueError("each covered-call leg needs a symbol")
         try:
-            conid = int(raw.get("conid"))
-            strike = float(raw.get("strike"))
-            contracts = int(raw.get("contracts"))
+            conid_raw = raw.get("conid")
+            strike_raw = raw.get("strike")
+            contracts_raw = raw.get("contracts")
+            if conid_raw is None or strike_raw is None or contracts_raw is None:
+                raise TypeError
+            conid = int(conid_raw)
+            strike = float(strike_raw)
+            contracts = int(contracts_raw)
             multiplier = int(raw.get("multiplier") or OPTION_MULTIPLIER)
         except (TypeError, ValueError):
             raise ValueError(f"{sym}: covered call needs numeric conid, strike, and contracts") from None
@@ -600,8 +605,8 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     symbols = [t["symbol"] for t in stock_basket]
     workers = min(_PREPARE_MAX_WORKERS, len(symbols) or 1)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        resolved = list(pool.map(lambda s: (s, ibkr_trade.resolve_conid(s)), symbols))
-    conids: dict[str, int] = {s: cid for s, cid in resolved if cid is not None}
+        resolved_conids = list(pool.map(lambda s: (s, ibkr_trade.resolve_conid(s)), symbols))
+    conids: dict[str, int] = {s: cid for s, cid in resolved_conids if cid is not None}
 
     missing = [s for s in conids if s not in price_map]
     snap = ibkr_trade.market_snapshot([conids[s] for s in missing]) if missing else {}
@@ -656,17 +661,22 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
     # resolved again here; staged conid/price are audit context, never authority.
     for leg in [t for t in basket if t.get("type") == "covered_call"]:
         sym = leg["symbol"]
-        resolved = ibkr_trade.resolve_exact_call(sym, leg["expiry"], leg["strike"])
-        if not resolved:
+        resolved_call = ibkr_trade.resolve_exact_call(sym, leg["expiry"], leg["strike"])
+        if not resolved_call:
             raise ValueError(f"{sym}: exact covered-call contract no longer resolves")
-        if int(resolved["conid"]) != int(leg["conid"]):
+        if int(resolved_call["conid"]) != int(leg["conid"]):
             raise ValueError(f"{sym}: covered-call contract changed — rebuild the Exit plan")
-        bid, ask = resolved.get("bid"), resolved.get("ask")
-        if not ibkr_trade.quotes_are_valid(bid, ask):
+        bid_raw, ask_raw = resolved_call.get("bid"), resolved_call.get("ask")
+        if (
+            not isinstance(bid_raw, (int, float))
+            or not isinstance(ask_raw, (int, float))
+            or not ibkr_trade.quotes_are_valid(bid_raw, ask_raw)
+        ):
             raise ValueError(f"{sym}: covered call needs a live, uncrossed IBKR bid/ask quote")
-        if not _option_quote_fresh(resolved.get("quote_timestamp")):
+        bid, ask = float(bid_raw), float(ask_raw)
+        if not _option_quote_fresh(resolved_call.get("quote_timestamp")):
             raise ValueError(f"{sym}: covered-call quote is stale — preview again")
-        limit = ibkr_trade.round_sell_limit_midpoint(bid, ask, resolved.get("rules"))
+        limit = ibkr_trade.round_sell_limit_midpoint(bid, ask, resolved_call.get("rules"))
         if limit is None:
             raise ValueError(f"{sym}: could not derive a valid option limit price")
         cap = call_capacity.get(sym, {"current_shares": 0, "held_short_calls": 0, "capacity_contracts": 0})
@@ -681,25 +691,25 @@ def _prepare_trade_orders(account_id: str, basket: list[dict]) -> tuple[list[dic
             "leg_id": leg["leg_id"],
             "route": "covered_call",
             "symbol": sym,
-            "conid": int(resolved["conid"]),
+            "conid": int(resolved_call["conid"]),
             "orderType": "LMT",
             "side": "SELL",
             "quantity": contracts,
             "tif": "GTC",
             "price": limit,
-            "cOID": f"assay-{_basket_token(account_id, basket)}-{int(resolved['conid'])}-{contracts}",
-            "expiry": resolved["expiry"],
-            "strike": float(resolved["strike"]),
+            "cOID": f"assay-{_basket_token(account_id, basket)}-{int(resolved_call['conid'])}-{contracts}",
+            "expiry": resolved_call["expiry"],
+            "strike": float(resolved_call["strike"]),
             "right": "C",
             "multiplier": OPTION_MULTIPLIER,
             "contracts": contracts,
             "bid": bid,
             "ask": ask,
-            "last": resolved.get("last"),
-            "quote_timestamp": resolved.get("quote_timestamp"),
-            "underlying_last": resolved.get("underlying_last"),
-            "underlying_bid": resolved.get("underlying_bid"),
-            "underlying_ask": resolved.get("underlying_ask"),
+            "last": resolved_call.get("last"),
+            "quote_timestamp": resolved_call.get("quote_timestamp"),
+            "underlying_last": resolved_call.get("underlying_last"),
+            "underlying_bid": resolved_call.get("underlying_bid"),
+            "underlying_ask": resolved_call.get("underlying_ask"),
             "current_shares": cap["current_shares"],
             "held_short_calls": cap["held_short_calls"],
             "coverage_capacity_contracts": cap["capacity_contracts"],
@@ -844,7 +854,8 @@ def _normalized_working_orders(
             continue
         raw_sym = str(raw.get("ticker") or raw.get("symbol") or "").strip().upper()
         try:
-            conid = int(raw.get("conid")) if raw.get("conid") is not None else None
+            conid_raw = raw.get("conid")
+            conid = int(conid_raw) if conid_raw is not None else None
         except (TypeError, ValueError):
             conid = None
         is_option = _is_working_option(raw) or (conid is not None and conid in option_conids)
@@ -1347,22 +1358,33 @@ def _revalidate_covered_call_orders(
     for sym in coverage_symbols:
         option_orders = by_symbol.get(sym, [])
         for order in option_orders:
-            resolved = ibkr_trade.resolve_exact_call(sym, order.get("expiry"), order.get("strike"))
+            expiry = str(order.get("expiry") or "")
+            strike = _number(order.get("strike"))
+            if not expiry or strike <= 0:
+                raise _Conflict(f"{sym}: covered-call definition is incomplete — preview again")
+            resolved = ibkr_trade.resolve_exact_call(sym, expiry, strike)
             if not resolved or int(resolved.get("conid") or 0) != int(order.get("conid") or 0):
                 raise _Conflict(f"{sym}: covered-call contract could not be revalidated — preview again")
-            if not ibkr_trade.quotes_are_valid(resolved.get("bid"), resolved.get("ask")):
+            bid_raw, ask_raw = resolved.get("bid"), resolved.get("ask")
+            if (
+                not isinstance(bid_raw, (int, float))
+                or not isinstance(ask_raw, (int, float))
+                or not ibkr_trade.quotes_are_valid(bid_raw, ask_raw)
+            ):
                 raise _Conflict(f"{sym}: covered-call quote is missing or crossed — no order was placed")
+            bid, ask = float(bid_raw), float(ask_raw)
             if not _option_quote_fresh(resolved.get("quote_timestamp")):
                 raise _Conflict(f"{sym}: covered-call quote is stale — no order was placed")
             fresh_limit = ibkr_trade.round_sell_limit_midpoint(
-                resolved.get("bid"), resolved.get("ask"), resolved.get("rules"),
+                bid, ask, resolved.get("rules"),
             )
             if fresh_limit is None:
                 raise _Conflict(f"{sym}: covered-call limit could not be refreshed — no order was placed")
             old_limit = _number(order.get("price"))
-            rules = resolved.get("rules") if isinstance(resolved.get("rules"), dict) else {}
+            rules_raw = resolved.get("rules")
+            rules: dict[str, Any] = rules_raw if isinstance(rules_raw, dict) else {}
             tick = _number(rules.get("increment") or rules.get("minTick") or 0.01)
-            spread = _number(resolved.get("ask")) - _number(resolved.get("bid"))
+            spread = ask - bid
             if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
                 raise _Conflict(
                     f"{sym}: covered-call limit moved from {old_limit:g} to {fresh_limit:g} "
