@@ -1,5 +1,6 @@
 import type { HoldingPosition, HoldingsLiveResponse, HoldingsPayload, RebalancePlan } from "./api-types";
 import { $$, api, copyToClipboard, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
+import { gatewayUnavailableReason, getGatewayStatus } from "./gateway";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { buildPortfolioPrompt } from "./prompt-export";
 
@@ -31,6 +32,7 @@ interface RenderOpts { live: boolean; asOf?: string | null; coverage?: { live: n
 async function loadHoldings() {
   const status = $$("#hold-status");
   const token = ++_holdToken;
+  renderLiveNotice(null);
   status.textContent = "Loading portfolio snapshot...";
   try {
     const h = await api<HoldingsPayload>("/api/holdings");
@@ -45,16 +47,35 @@ async function loadHoldings() {
   }
 }
 
-// Best-effort live-mark overlay. The gateway auth + positions fetch is a few
-// seconds; it runs after first paint and silently no-ops when the gateway is
-// down/unauthenticated, so the delayed snapshot always stands on its own.
+function renderLiveNotice(reason: string | null): void {
+  const host = document.getElementById("hold-gateway-notice");
+  if (!host) return;
+  host.innerHTML = reason
+    ? `<div class="ibkr-data-notice"><strong>Showing the Flex snapshot.</strong> ` +
+      `Live IBKR marks were not received: ${esc(reason)}</div>`
+    : "";
+}
+
+// Best-effort live-mark overlay. The delayed Flex snapshot paints first; a
+// failed live overlay remains usable but is now explicit instead of silent.
 async function overlayLive(token: number) {
   try {
     const live = await api<HoldingsLiveResponse>("/api/holdings/live");
     if (token !== _holdToken) return;                 // navigated away / reloaded
-    if (!live.available || !live.payload) return;     // gateway down: keep snapshot
+    if (!live.available || !live.payload) {
+      renderLiveNotice(
+        live.reason || gatewayUnavailableReason(getGatewayStatus()) ||
+        "the gateway returned no live position data",
+      );
+      return;
+    }
+    renderLiveNotice(null);
     renderHoldings(live.payload, { live: true, asOf: live.as_of, coverage: live.coverage });
-  } catch { /* offline / gateway hiccup: the delayed snapshot is fine */ }
+  } catch {
+    renderLiveNotice(
+      gatewayUnavailableReason(getGatewayStatus()) || "the live-mark request failed",
+    );
+  }
 }
 
 function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {

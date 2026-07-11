@@ -7,7 +7,9 @@
 // where the book lands is a pre-trade safety gate, not an after-the-fact report.
 // Each stage shows live counts and clicks through to the view that owns it.
 import { $, api, esc } from "./core";
+import { gatewayConnected, refreshGatewayStatus } from "./gateway";
 import { pushNav, setActiveView } from "./shell";
+import type { GatewayStatus } from "./api-types";
 
 // ---- data ------------------------------------------------------------------
 interface FlowOverview {
@@ -20,6 +22,7 @@ interface FlowOverview {
 export interface FlowData {
   ov: FlowOverview | null;
   working: number | null;  // null = unknown (gateway off/unreachable), not zero
+  gateway?: GatewayStatus | null;
 }
 
 let _cache: FlowData | null = null;
@@ -30,18 +33,16 @@ async function fetchFlowData(): Promise<FlowData> {
   if (_cache && Date.now() - _cacheAt < TTL_MS) return _cache;
   let ov: FlowOverview | null = null;
   let working: number | null = null;
+  let gateway: GatewayStatus | null = null;
   try { ov = await api<FlowOverview>("/api/overview"); } catch { /* sections degrade */ }
   try {
-    // Do not hammer the protected orders endpoint when trading is disabled or
-    // the gateway is logged out. Besides wasting a request, that produced a 403
-    // in the browser console on every pipeline navigation.
-    const status = await api<{ trading_enabled?: boolean; authenticated?: boolean }>("/api/trade/status");
-    if (status.trading_enabled && status.authenticated) {
+    gateway = await refreshGatewayStatus();
+    if (gatewayConnected(gateway)) {
       const res = await api<{ orders?: unknown[] }>("/api/trade/orders");
       working = Array.isArray(res.orders) ? res.orders.length : 0;
     }
-  } catch { /* trading disabled / gateway down -> unknown */ }
-  _cache = { ov, working };
+  } catch { /* gateway down / orders read failed -> unknown */ }
+  _cache = { ov, working, gateway };
   _cacheAt = Date.now();
   return _cache;
 }
@@ -100,6 +101,9 @@ export function flowStages(d: FlowData): Stage[] {
   const bits3 = [];
   if (staged) bits3.push(`${staged} staged`);
   if (d.working) bits3.push(`${d.working} working`);
+  if (d.working == null) {
+    bits3.push(gatewayConnected(d.gateway || null) ? "orders unavailable" : "IBKR offline");
+  }
   const rows = plan?.rows || 0;
   const inBand = rows - (plan?.out_of_band || 0);
   const cashOff = plan?.cash && plan.cash.status && plan.cash.status !== "IN";

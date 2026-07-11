@@ -210,11 +210,22 @@ class TradeQuotes(unittest.TestCase):
             self.assertEqual(trade_service._trade_quotes([]), {})
         ms.assert_not_called()
 
-    def test_forbidden_when_trading_disabled(self):
-        from apierror import Forbidden
-        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=False):
-            with self.assertRaises(Forbidden):
-                trade_service._trade_quotes([111])
+    def test_live_quotes_remain_readable_when_trading_disabled(self):
+        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=False), \
+             mock.patch.object(ibkr_trade, "market_snapshot", return_value={
+                 111: {"conid": 111, "31": "100.20", "84": "100.00", "86": "100.50"},
+             }):
+            out = trade_service._trade_quotes([111])
+        self.assertEqual(out["111"]["last"], 100.20)
+
+    def test_working_orders_remain_readable_when_trading_disabled(self):
+        working = [{"orderId": "o-1", "ticker": "AMD", "status": "Submitted"}]
+        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=False), \
+             mock.patch.object(ibkr_trade, "live_orders", return_value=working), \
+             mock.patch.object(trade_service, "_attach_avg_cost", side_effect=lambda rows: rows), \
+             mock.patch.object(trade_service.order_peg, "active_pegs", return_value=[]):
+            out = trade_service._trade_orders()
+        self.assertEqual(out["orders"], working)
 
 
 class DropBlockedBuys(unittest.TestCase):

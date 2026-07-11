@@ -1,7 +1,7 @@
 // Tests for the rebalance flow bar's pure builders: stage counts and tones from
 // the overview payload, the working-orders chip only when the gateway answered,
 // the view->stage mapping, and the active-stage highlight.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Keep updateFlowBar's best-effort data fetch off the network so it doesn't leave
 // a pending request happy-dom has to abort on teardown; $ and esc stay real.
@@ -11,6 +11,7 @@ vi.mock("../src/core", async (importOriginal) => ({
 }));
 
 import { api } from "../src/core";
+import { resetGatewayState } from "../src/gateway";
 import {
   flowBarHtml, flowStages, invalidateFlowData, stageForView, updateFlowBar, type FlowData,
 } from "../src/flowbar";
@@ -25,7 +26,15 @@ const data = (over: Partial<FlowData> = {}): FlowData => ({
     staged_basket: { count: 4 },
   },
   working: 1,
+  gateway: { authenticated: true, connected: true },
   ...over,
+});
+
+beforeEach(() => {
+  apiMock.mockReset();
+  apiMock.mockResolvedValue({});
+  resetGatewayState();
+  invalidateFlowData();
 });
 
 describe("stageForView", () => {
@@ -57,26 +66,33 @@ describe("updateFlowBar visibility", () => {
 });
 
 describe("working-order polling gate", () => {
-  it("does not request protected orders while trading is disabled", async () => {
+  it("does not request working orders while the gateway is disconnected", async () => {
     apiMock.mockImplementation((path: string) => {
       if (path === "/api/overview") return Promise.resolve({});
       if (path === "/api/trade/status") {
-        return Promise.resolve({ trading_enabled: false, authenticated: false });
+        return Promise.resolve({
+          trading_enabled: false, authenticated: false, connected: false,
+        });
       }
       return Promise.reject(new Error("orders should not be requested"));
     });
     document.body.innerHTML = '<nav id="flowbar" hidden></nav>';
     invalidateFlowData();
     updateFlowBar("rebalance", "rebalance");
-    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith("/api/trade/status"));
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/status", "GET", null,
+      { timeoutMs: 15_000, reportError: false },
+    ));
     expect(apiMock).not.toHaveBeenCalledWith("/api/trade/orders");
   });
 
-  it("loads working orders only for an authenticated enabled session", async () => {
+  it("loads working orders for an authenticated data session even when trading is disabled", async () => {
     apiMock.mockImplementation((path: string) => {
       if (path === "/api/overview") return Promise.resolve({});
       if (path === "/api/trade/status") {
-        return Promise.resolve({ trading_enabled: true, authenticated: true });
+        return Promise.resolve({
+          trading_enabled: false, authenticated: true, connected: true,
+        });
       }
       if (path === "/api/trade/orders") return Promise.resolve({ orders: [{ id: 1 }] });
       return Promise.resolve({});
@@ -101,6 +117,14 @@ describe("flowStages", () => {
   it("omits the working-order bit when the gateway state is unknown", () => {
     const s1 = flowStages(data({ working: null }))[0];
     expect(s1.sub).not.toContain("working");
+  });
+
+  it("labels the Orders stage when IBKR data is unavailable", () => {
+    const orders = flowStages(data({
+      working: null,
+      gateway: { authenticated: false, connected: false },
+    }))[3];
+    expect(orders.sub).toContain("IBKR offline");
   });
 
   it("counts suggestions, drafts, and triggered gates in stage 2", () => {
