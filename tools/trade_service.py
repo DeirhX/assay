@@ -2,9 +2,9 @@
 """Live trading service (Client Portal Web API) -- GATED.
 
 Extracted from serve.py so the HTTP handlers stay thin wrappers over this and
-the security-sensitive logic lives in one separately-testable module. Unlike
-the read-only Flex path, these helpers can place REAL orders, so every entry
-point checks ibkr_trade.trading_enabled(); placement additionally requires a
+the security-sensitive logic lives in one separately-testable module. Session
+and market-data reads remain available in data-only mode; every order mutation
+checks ibkr_trade.trading_enabled(), and placement additionally requires a
 matching preview token, an explicit confirm flag, and (for live, non-paper
 accounts) IBKR_ALLOW_LIVE. Order details are retained server-side with the
 token-bound preview so a tampered client payload cannot place something the
@@ -1162,8 +1162,6 @@ def _trade_reconnect() -> dict:
     returned so the UI re-renders its banner in one round-trip; a failure is
     reported in-band as ``reconnect_error`` rather than as a 5xx, because
     'not connected' is exactly the state the user is trying to fix."""
-    if not ibkr_trade.trading_enabled():
-        raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to use the trade desk")
     reconnect_error: str | None = None
     try:
         ibkr_trade.reauthenticate()
@@ -1175,14 +1173,11 @@ def _trade_reconnect() -> dict:
 
 
 def _trade_tickle() -> dict:
-    """Keepalive for an open Trade view. The brokerage session idles out after a
-    few minutes; a periodic tickle holds it warm during an active sitting. The
+    """App-wide read-only keepalive. The brokerage session idles out after a
+    few minutes; a periodic tickle holds it warm while Assay is open. The
     tickle response carries the current session booleans, so we return them (no
     second call) and the UI can flip its banner the moment the link drops. Never
     raises: a failed tickle reads as not-authenticated."""
-    if not ibkr_trade.trading_enabled():
-        return {"trading_enabled": False, "authenticated": False,
-                "connected": False, "competing": False}
     auth: dict = {}
     try:
         res = ibkr_trade.tickle()
@@ -1192,7 +1187,7 @@ def _trade_tickle() -> dict:
     except Exception:  # noqa: BLE001
         auth = {}
     return {
-        "trading_enabled": True,
+        "trading_enabled": ibkr_trade.trading_enabled(),
         "authenticated": bool(auth.get("authenticated")),
         "connected": bool(auth.get("connected")),
         "competing": bool(auth.get("competing")),
@@ -1596,8 +1591,6 @@ def _trade_quotes(conids: list[int]) -> dict[str, dict]:
 
     Best-effort: a cold/unentitled feed (or a snapshot failure) yields {} so the
     UI simply keeps the 'no quote' state rather than erroring."""
-    if not ibkr_trade.trading_enabled():
-        raise _Forbidden("trading is disabled")
     cids = sorted({int(c) for c in conids if c is not None})
     if not cids:
         return {}
@@ -1621,8 +1614,6 @@ def _trade_quotes(conids: list[int]) -> dict[str, dict]:
 
 
 def _trade_orders() -> dict:
-    if not ibkr_trade.trading_enabled():
-        raise _Forbidden("trading is disabled")
     try:
         # Fold in the active pegs so the UI can badge which working orders are
         # being kept at the top of book (and offer a Stop) in a single call, plus

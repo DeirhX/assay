@@ -1,9 +1,12 @@
 import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } from "./core";
 import { pollDeepJob } from "./jobs";
 import { openJournalWith } from "./journal";
+import {
+  getGatewayStatus, reconnectGateway, refreshGatewayStatus, subscribeGatewayStatus,
+} from "./gateway";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
 import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
-import type { TradeLeg, TradeLegProvenance, TradeQueueState } from "./api-types";
+import type { GatewayStatus, TradeLeg, TradeLegProvenance, TradeQueueState } from "./api-types";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
   gatewayOrigin, orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
@@ -18,33 +21,6 @@ import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./t
 // IBKR's Client Portal Web API for margin/commission, and places it only after
 // per-order human confirmation. Everything is gated server-side too; this UI
 // just refuses early and explains why.
-
-// /api/trade/status: gateway connection + account posture.
-interface TradeAccount {
-  id: string;
-  kind?: string;
-}
-
-interface TradeStatus {
-  trading_enabled?: boolean;
-  authenticated?: boolean;
-  gateway_base?: string | null;
-  default_account?: string | null;
-  accounts?: TradeAccount[];
-  live_allowed?: boolean;
-  competing?: boolean;
-  // Present only on a /api/trade/reconnect response: the reason a reconnect
-  // attempt failed (e.g. the saved SSO login expired), else null.
-  reconnect_error?: string | null;
-}
-
-// /api/trade/tickle: the lightweight session-only shape used by the keepalive.
-interface TradeTickle {
-  trading_enabled?: boolean;
-  authenticated?: boolean;
-  connected?: boolean;
-  competing?: boolean;
-}
 
 // One sized order inside a /api/trade/preview response.
 interface TradeOrder {
@@ -154,7 +130,7 @@ interface PegState {
   tick?: number;
 }
 
-let _status: TradeStatus | null = null;   // last /api/trade/status
+let _status: GatewayStatus | null = null;   // shared gateway status snapshot
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
 let _queueState: TradeQueueState = { trades: [], revision: "", reviewed: false };
 // The basket as it was placed — snapshotted before the staged store is cleared,
@@ -169,15 +145,19 @@ let _previewTimer: ReturnType<typeof setInterval> | null = null;
 // show without the user hitting Refresh. Cleared when no peg is active.
 let _pegPollTimer: ReturnType<typeof setInterval> | null = null;
 const PEG_POLL_MS = 5000;
-// While the Trade view is open, tickle the gateway so the brokerage session
-// (which idles out after a few minutes) stays warm, and so a silent drop shows
-// up without a manual refresh. Scoped to the view: the tick self-cancels once
-// #view-trade is no longer active.
-let _tickleTimer: ReturnType<typeof setInterval> | null = null;
-const TICKLE_MS = 60000;
-
 type TradeDeskTab = "basket" | "review" | "orders";
 let _tradeDeskTab: TradeDeskTab = "basket";
+let _gatewaySubscribed = false;
+
+function ensureGatewaySubscription(): void {
+  if (_gatewaySubscribed) return;
+  _gatewaySubscribed = true;
+  subscribeGatewayStatus((status) => {
+    _status = status;
+    const view = document.getElementById("view-trade");
+    if (status && view?.classList.contains("active")) paintConnection();
+  });
+}
 
 function ensureTradeWorkspace(): HTMLElement | null {
   const wrap = $("#trade-result");
@@ -295,6 +275,7 @@ function updateTradeReviewAvailability(): void {
 }
 
 async function loadTrade() {
+  ensureGatewaySubscription();
   const token = nextToken("trade");
   stopPreviewCountdown();  // a re-entry drops any previous preview's countdown
   const wrap = $("#trade-result");
@@ -313,6 +294,7 @@ async function loadTrade() {
   if (_tradeDeskTab === "review") {
     showTradeReviewLoading();
   }
+  _status = getGatewayStatus();
   const refresh = $("#trade-refresh");
   // "Refresh connection" actively re-establishes the brokerage session (not just
   // a status re-read) so a session that idled out can recover without a browser
@@ -368,7 +350,7 @@ async function renderConnection(token?: number) {
   const status = $("#trade-status");
   if (status) status.textContent = "";
   try {
-    _status = await api<TradeStatus>("/api/trade/status", "GET", null, { timeoutMs: 15_000 });
+    _status = await refreshGatewayStatus();
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
     if (banner) banner.innerHTML = `<div class="trade-bnr bad">Could not read trade status: ${esc((e as Error).message)}</div>`;
@@ -385,7 +367,7 @@ async function reconnect(): Promise<void> {
   const banner = $("#trade-banner");
   if (banner) banner.innerHTML = `<div class="trade-bnr warn"><span class="spinner"></span> reconnecting to the IBKR gateway\u2026</div>`;
   try {
-    _status = await api<TradeStatus>("/api/trade/reconnect", "POST", null, { timeoutMs: 30_000 });
+    _status = await reconnectGateway();
   } catch (_e) {
     if (isStaleToken("trade", token)) return;
     return void renderConnection(token);
@@ -427,35 +409,6 @@ function paintConnection(token?: number) {
 
   renderBasket();
   void renderLiveOrders(token);
-  startKeepalive();
-}
-
-function startKeepalive() {
-  stopKeepalive();
-  if (!(_status && _status.trading_enabled)) return;  // nothing to keep warm
-  _tickleTimer = setInterval(() => void keepaliveTick(), TICKLE_MS);
-}
-
-function stopKeepalive() {
-  if (_tickleTimer) { clearInterval(_tickleTimer); _tickleTimer = null; }
-}
-
-async function keepaliveTick() {
-  // Self-terminate once the user has navigated off the Trade view (no teardown
-  // hook exists; the view just loses its .active class).
-  const view = document.getElementById("view-trade");
-  if (!view || !view.classList.contains("active")) return stopKeepalive();
-  let t: TradeTickle;
-  try {
-    t = await api<TradeTickle>("/api/trade/tickle", "GET", null, { timeoutMs: 10_000 });
-  } catch (_e) {
-    return;  // transient; the next tick tries again
-  }
-  // If the session state flipped since the last paint (a silent drop, or a
-  // recovery), re-read + repaint so the banner reflects reality without a click.
-  if (_status && (t.authenticated !== _status.authenticated || t.competing !== _status.competing)) {
-    void renderConnection();
-  }
 }
 
 // A center-origin magnitude bar for a basket row: buys grow right (green),
@@ -1206,7 +1159,7 @@ async function renderLiveOrders(token?: number) {
   if (!wrap) return;
   wrap.innerHTML = "";
   const s = _status;
-  if (!s || !s.trading_enabled) return;  // the banner already explains why
+  if (!s) return;
 
   const card = el("div", "card trade-live-card");
   const head = el("div", "trade-card-head");

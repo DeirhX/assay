@@ -831,6 +831,20 @@ tr:last-child td { border-bottom: 0; }
 }
 .task-indicator:hover { border-color: var(--accent); }
 .task-indicator.busy { border-color: var(--accent); color: var(--accent); }
+.gateway-indicator {
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  font-size: 12px; font-weight: 750; white-space: nowrap;
+}
+.gateway-indicator:hover { border-color: var(--accent); color: var(--text); }
+.gateway-indicator:disabled { cursor: wait; opacity: .72; }
+.gateway-indicator.checking { color: var(--muted); }
+.gateway-indicator.offline,
+.gateway-indicator.competing { color: var(--warn); border-color: rgba(240,200,120,.55); }
+.gateway-indicator.connected,
+.gateway-indicator.paper { color: var(--good); border-color: rgba(120,210,160,.5); }
+.gateway-indicator.live { color: var(--bad); border-color: rgba(255,122,122,.7); background: rgba(255,122,122,.1); }
 .task-history-link {
   padding: 10px 12px; color: var(--muted); font-size: 12px;
   border-top: 1px solid var(--border);
@@ -2807,6 +2821,16 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .trade-bnr.warn { border-color: rgba(240,200,120,.5); background: rgba(240,200,120,.08); }
 .trade-bnr.paper { border-color: rgba(120,210,160,.5); background: rgba(120,210,160,.08); }
 .trade-bnr.live { border-color: var(--bad); background: rgba(255,122,122,.12); }
+.ibkr-data-notice {
+  margin: 8px 0 14px; padding: 9px 12px; border-radius: var(--radius-soft);
+  border: 1px solid rgba(240,200,120,.45);
+  background: rgba(240,200,120,.07); color: var(--muted);
+  font-size: 13px; line-height: 1.45;
+}
+.ibkr-data-notice strong { color: var(--text); }
+.ibkr-data-notice.info {
+  border-color: rgba(130,170,255,.42); background: rgba(130,170,255,.07);
+}
 
 .trade-card { margin: 12px 0; border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel-2); padding: 14px 16px; }
 .trade-card-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }

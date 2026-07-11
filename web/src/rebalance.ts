@@ -1,6 +1,7 @@
 import { starHtml } from "./basket";
 import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
+import { gatewayConnected, gatewayUnavailableReason, refreshGatewayStatus } from "./gateway";
 import { ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
@@ -677,15 +678,28 @@ function renderRebalance(plan: RebPlan) {
   out.appendChild(mech);
 
   // Unfilled orders already working at IBKR are part of the current state a
-  // suggestion must be judged against - badge the rows that have one. Silent
-  // no-op when trading is disabled or the gateway is down.
+  // suggestion must be judged against. If they cannot be read, say so plainly:
+  // silently omitting them makes the plan look more complete than it is.
   type WorkingOrder = { ticker?: string; symbol?: string; side?: string; orderDesc?: string; remainingQuantity?: number | string; status?: string };
-  void api<{ trading_enabled?: boolean; authenticated?: boolean }>("/api/trade/status")
-    .then((status) => status.trading_enabled && status.authenticated
-      ? api<{ orders?: WorkingOrder[] }>("/api/trade/orders")
-      : null)
+  const gatewayNotice = $("#reb-gateway-notice");
+  if (gatewayNotice) gatewayNotice.innerHTML = "";
+  void refreshGatewayStatus()
+    .then((status) => {
+      if (!gatewayConnected(status)) {
+        if (gatewayNotice) {
+          gatewayNotice.innerHTML =
+            `<div class="ibkr-data-notice"><strong>Working IBKR orders are not included.</strong> ` +
+            `${esc(gatewayUnavailableReason(status) || "The gateway is unavailable")}</div>`;
+        }
+        return null;
+      }
+      return api<{ orders?: WorkingOrder[] }>(
+        "/api/trade/orders", "GET", null, { timeoutMs: 20_000, reportError: false },
+      );
+    })
     .then((res) => {
       if (!res) return;
+      if (gatewayNotice) gatewayNotice.innerHTML = "";
       (res.orders || []).forEach((o) => {
         const osym = cleanSymbol(o.ticker || o.symbol);
         const cell = nameCells[osym];
@@ -696,7 +710,13 @@ function renderRebalance(plan: RebPlan) {
         cell.appendChild(chip);
       });
     })
-    .catch(() => { /* trading disabled / gateway offline - no badges */ });
+    .catch(() => {
+      if (gatewayNotice) {
+        gatewayNotice.innerHTML =
+          `<div class="ibkr-data-notice"><strong>Working IBKR orders could not be read.</strong> ` +
+          `The rebalance plan does not include their pending effect.</div>`;
+      }
+    });
 
   // ---- omnifilter: ticker search + status / action / confidence facets -----
   // Pills within a facet OR together; facets AND together; the search box ANDs

@@ -10,6 +10,9 @@ import {
   $, api, el, esc, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
   relAge,
 } from "./core";
+import {
+  gatewayUnavailableReason, getGatewayStatus, refreshGatewayStatus,
+} from "./gateway";
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
   ExitCoveredCallRoute, ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
@@ -23,6 +26,7 @@ const cfg = { horizon_days: 10, adv_slice_pct: 0.12, near_exempt_days: 120, tax_
 
 // Per-symbol route tab state survives re-renders until the user switches away.
 const routePick = new Map<string, ExitRouteKind>();
+let _lastExitPlan: ExitPlanResponse | null = null;
 
 const fmtSignificant = (v: number, digits = 2) =>
   Number(v).toLocaleString(undefined, { maximumSignificantDigits: digits });
@@ -85,6 +89,11 @@ const END_STATE_LABEL: Record<string, string> = {
 
 export async function loadExit(): Promise<void> {
   const token = nextToken("exit");
+  _lastExitPlan = null;
+  renderExitGatewayNotice(null);
+  void refreshGatewayStatus()
+    .then(() => renderExitGatewayNotice(_lastExitPlan))
+    .catch(() => renderExitGatewayNotice(_lastExitPlan));
   const status = $("#exit-status");
   setLoading(status, "Building exit plans…", true);
   const summary = $("#exit-summary");
@@ -97,7 +106,9 @@ export async function loadExit(): Promise<void> {
       `/api/exit-plan?${query}&with_options=0`,
     );
     if (isStaleToken("exit", token)) return;
+    _lastExitPlan = base;
     renderExit(base);
+    renderExitGatewayNotice(base);
     if (!base.positions.length) {
       if (status) status.textContent = "";
       return;
@@ -111,7 +122,9 @@ export async function loadExit(): Promise<void> {
         { timeoutMs: 60_000 },
       );
       if (isStaleToken("exit", token)) return;
+      _lastExitPlan = enriched;
       renderExit(enriched);
+      renderExitGatewayNotice(enriched);
       if (status) status.textContent = "";
     } catch (e) {
       if (isStaleToken("exit", token)) return;
@@ -127,6 +140,44 @@ export async function loadExit(): Promise<void> {
     if (body) body.innerHTML = "";
     loadError(status, "Could not build exit plan", e);
   }
+}
+
+function renderExitGatewayNotice(data: ExitPlanResponse | null): void {
+  const host = $("#exit-gateway-notice");
+  if (!host) return;
+  if (data && !data.positions.length) {
+    host.innerHTML = "";
+    return;
+  }
+  const gateway = getGatewayStatus();
+  if (!gateway) {
+    host.innerHTML =
+      `<div class="ibkr-data-notice info"><strong>Checking live IBKR option data…</strong> ` +
+      `The tax and direct-sale plan is already available.</div>`;
+    return;
+  }
+  const reason = gatewayUnavailableReason(gateway);
+  if (reason) {
+    host.innerHTML =
+      `<div class="ibkr-data-notice"><strong>Live IBKR option data unavailable.</strong> ` +
+      `${esc(reason)} Exit plans remain usable with Yahoo/Alpaca or modeled levels, ` +
+      `but exact contracts and executable bid/ask staging require IBKR.</div>`;
+    return;
+  }
+  const sources = new Set(
+    (data?.positions || [])
+      .map((position) => position.options?.source)
+      .filter((source): source is string => !!source && source !== "ibkr"),
+  );
+  if (sources.size) {
+    const labels = [...sources].map((source) => source.replace(/_/g, " ")).join(", ");
+    host.innerHTML =
+      `<div class="ibkr-data-notice info"><strong>IBKR is connected, but did not return ` +
+      `usable option data for every exit.</strong> Fallback levels shown from ${esc(labels)}; ` +
+      `those rows remain indicative until an exact live IBKR quote is available.</div>`;
+    return;
+  }
+  host.innerHTML = "";
 }
 
 function cfgQuery(): string {

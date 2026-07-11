@@ -24,6 +24,7 @@
     <button class="tab utility-tab" data-view="basket" type="button">Watchlist <span class="group-badge" id="basket-count" hidden></span></button>
     <button class="tab utility-tab" data-view="activity" type="button">Activity</button>
     <button class="task-indicator" id="task-indicator" type="button" aria-expanded="false" aria-controls="task-panel" title="Background tasks">Tasks</button>
+    <button class="gateway-indicator checking" id="gateway-indicator" type="button" aria-live="polite" title="Checking the IBKR Client Portal Gateway">IBKR: checking…</button>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
     <button class="tab settings-cog" data-view="setup" type="button" title="Settings" aria-label="Settings">
@@ -413,6 +414,7 @@
         </div>
       </div>
       <div class="status" id="reb-status"></div>
+      <div id="reb-gateway-notice"></div>
       <div id="reb-summary"></div>
       <div id="reb-whatif"></div>
       <div id="reb-result"></div>
@@ -476,6 +478,7 @@
         <div class="reb-head-actions" id="exit-controls"></div>
       </div>
       <div class="status" id="exit-status"></div>
+      <div id="exit-gateway-notice"></div>
       <div id="exit-summary"></div>
       <div id="exit-body"></div>
     </section>
@@ -641,6 +644,7 @@
       </div>
       <div class="hint">Your sanitized IBKR positions, cash, and tax lots. Resync runs a read-only Flex pull — a point-in-time snapshot, not live prices. Weights are % of NAV from base-currency market value; refresh before acting on exact figures.</div>
       <div class="status" id="hold-status"></div>
+      <div id="hold-gateway-notice"></div>
       <div id="hold-result"></div>
     </section>
 

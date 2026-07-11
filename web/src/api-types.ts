@@ -60,6 +60,24 @@ export interface HoldingsLiveResponse {
   payload?: HoldingsPayload;
 }
 
+// ---- live IBKR Client Portal Gateway --------------------------------------
+export interface GatewayAccount {
+  id: string;
+  kind?: "paper" | "live" | string;
+}
+
+export interface GatewayStatus {
+  trading_enabled?: boolean;
+  live_allowed?: boolean;
+  gateway_base?: string | null;
+  authenticated?: boolean;
+  connected?: boolean;
+  competing?: boolean;
+  accounts?: GatewayAccount[];
+  default_account?: string | null;
+  reconnect_error?: string | null;
+}
+
 // ---- rebalance plan (GET /api/rebalance) ----------------------------------
 export type BandStatus = "BELOW" | "IN" | "ABOVE";
 // "wait" is set by the research overlay when a locked price trigger blocks the

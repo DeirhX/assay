@@ -692,14 +692,21 @@ class TradeServiceGuards(unittest.TestCase):
 
 
 class SessionLifecycle(unittest.TestCase):
-    """Reconnect + keepalive: session ops, gated like the rest of the desk, that
-    never let a gateway hiccup turn into a 5xx (the whole point is to recover
-    from / report a dropped connection, not crash on it)."""
+    """Reconnect + keepalive are read-only session operations. They remain
+    available when order execution is disabled and never turn a gateway hiccup
+    into a 5xx."""
 
-    def test_reconnect_refused_when_trading_disabled(self):
-        with mock.patch.object(ibt, "trading_enabled", return_value=False):
-            with self.assertRaises(apierror.Forbidden):
-                trade_service._trade_reconnect()
+    def test_reconnect_available_when_trading_disabled(self):
+        with mock.patch.object(ibt, "trading_enabled", return_value=False), \
+                mock.patch.object(ibt, "reauthenticate",
+                                  return_value={"authenticated": True}) as reauth, \
+                mock.patch.object(ibt, "auth_status",
+                                  return_value={"authenticated": True, "connected": True}), \
+                mock.patch.object(ibt, "accounts", return_value=[]):
+            res = trade_service._trade_reconnect()
+        reauth.assert_called_once()
+        self.assertFalse(res["trading_enabled"])
+        self.assertTrue(res["authenticated"])
 
     def test_reconnect_reauths_and_returns_status(self):
         with mock.patch.object(ibt, "trading_enabled", return_value=True), \
@@ -725,11 +732,15 @@ class SessionLifecycle(unittest.TestCase):
         self.assertFalse(res["authenticated"])
         self.assertIn("cannot reach the gateway", res["reconnect_error"])
 
-    def test_tickle_disabled_shape(self):
-        with mock.patch.object(ibt, "trading_enabled", return_value=False):
+    def test_tickle_keeps_data_session_alive_when_trading_disabled(self):
+        payload = {"iserver": {"authStatus": {"authenticated": True, "connected": True,
+                                              "competing": False}}}
+        with mock.patch.object(ibt, "trading_enabled", return_value=False), \
+                mock.patch.object(ibt, "tickle", return_value=payload) as tickle:
             res = trade_service._trade_tickle()
-        self.assertEqual(res, {"trading_enabled": False, "authenticated": False,
-                               "connected": False, "competing": False})
+        tickle.assert_called_once()
+        self.assertEqual(res, {"trading_enabled": False, "authenticated": True,
+                               "connected": True, "competing": False})
 
     def test_tickle_parses_session_from_response(self):
         payload = {"iserver": {"authStatus": {"authenticated": True, "connected": True,

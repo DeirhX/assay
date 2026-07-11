@@ -11,6 +11,7 @@ vi.mock("../src/core", async (importOriginal) => {
 import { state } from "../src/core";
 import type { ExitCoveredCallRung, ExitPlanResponse } from "../src/api-types";
 import { loadExit } from "../src/exit";
+import { resetGatewayState } from "../src/gateway";
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -93,6 +94,7 @@ function routeFixture(): ExitPlanResponse {
 
 beforeEach(() => {
   apiMock.mockReset();
+  resetGatewayState();
   state.stagedBasket = [];
   ["#exit-summary", "#exit-body", "#exit-status"].forEach((s) => {
     const n = document.querySelector(s);
@@ -105,6 +107,48 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Exit planner rendering", () => {
+  it("explains when fallback option levels are caused by a disconnected gateway", async () => {
+    const fallback = routeFixture();
+    fallback.positions[0].options!.source = "yahoo";
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") {
+        return Promise.resolve({
+          trading_enabled: false, authenticated: false, connected: false,
+        });
+      }
+      if (path.startsWith("/api/exit-plan?")) return Promise.resolve(fallback);
+      return Promise.resolve({});
+    });
+    await loadExit();
+    await flush();
+
+    const notice = document.querySelector("#exit-gateway-notice")!.textContent || "";
+    expect(notice).toContain("Live IBKR option data unavailable");
+    expect(notice).toContain("not connected");
+    expect(notice).toContain("exact contracts");
+  });
+
+  it("distinguishes connected IBKR fallback data from disconnection", async () => {
+    const fallback = routeFixture();
+    fallback.positions[0].options!.source = "yahoo";
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") {
+        return Promise.resolve({
+          trading_enabled: false, authenticated: true, connected: true,
+        });
+      }
+      if (path.startsWith("/api/exit-plan?")) return Promise.resolve(fallback);
+      return Promise.resolve({});
+    });
+    await loadExit();
+    await flush();
+
+    const notice = document.querySelector("#exit-gateway-notice")!.textContent || "";
+    expect(notice).toContain("IBKR is connected");
+    expect(notice).toContain("Fallback levels shown from yahoo");
+    expect(notice).not.toContain("not connected");
+  });
+
   it("renders the tax-layering summary and a scale-out schedule", async () => {
     apiMock.mockResolvedValue(planFixture());
     await loadExit();
@@ -138,8 +182,11 @@ describe("Exit planner rendering", () => {
     const loading = loadExit();
     await flush();
 
-    expect(apiMock.mock.calls[0][0]).toContain("with_options=0");
-    expect(apiMock.mock.calls[1][0]).toContain("with_options=1");
+    const exitPaths = apiMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((path) => path.startsWith("/api/exit-plan?"));
+    expect(exitPaths[0]).toContain("with_options=0");
+    expect(exitPaths[1]).toContain("with_options=1");
     expect(document.querySelector("#exit-body")!.textContent).toContain("Reduce to 3.00%");
     expect(document.querySelector("#exit-status")!.textContent).toContain("loading live option routes");
 
