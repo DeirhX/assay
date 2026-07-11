@@ -2,7 +2,7 @@ import { starHtml } from "./basket";
 import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type { FundingCandidate, FundingResponse, Provenance, RebalancePlan as RebPlan, PlanRow as RebRow, PlanMember, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
 import { gatewayConnected, gatewayUnavailableReason, refreshGatewayStatus } from "./gateway";
-import { ruleWord } from "./band-viz";
+import { ruleTone, ruleWord } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
@@ -20,18 +20,6 @@ import type { MemberInput, RowInput, SleeveInput } from "./rebalance-model";
 
 const rebStatusClass = (s: string | null | undefined) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
 const rebActionClass = (a: string | null | undefined) => (a === "trim" ? "bad" : a === "buy" ? "good" : a === "review" ? "warn" : "muted");
-// Standing-stance verb -> tone, so the suggested action (the most important word
-// on the row) reads in the same green-add / red-trim language as the status and
-// delta chips. Colour is reserved for actionable stances; a plain hold stays
-// neutral but bold ("hold") so it's pronounced without shouting.
-const RULE_TONE: Record<string, "good" | "bad" | "warn" | "hold"> = {
-  accumulate: "good", buy: "good",
-  reduce: "bad", trim_only: "bad", avoid: "bad",
-  wait: "warn",
-  hold: "hold", do_not_add: "hold",
-};
-const rebRuleTone = (r?: string | null) => RULE_TONE[r || ""] || "hold";
-
 // The applied-funding summary card (pure; exported for tests): which trims got
 // filled in, from which bucket, and what each would realize tax-wise.
 export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[]): string {
@@ -474,7 +462,7 @@ function renderRebalance(plan: RebPlan) {
     const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
     if (prov) nameHead.appendChild(prov);
     nameCell.appendChild(nameHead);
-    nameCell.appendChild(el("span", `reb-rule reb-rule-${rebRuleTone(r.rule)}`, esc(ruleWord(r.rule) || r.rule)));
+    nameCell.appendChild(el("span", `reb-rule reb-rule-${ruleTone(r.rule)}`, esc(ruleWord(r.rule) || r.rule)));
     // A single-name row gets a cached-only trend cue; sleeves are baskets, no
     // one price to spark. Filled by the batch hydrateSparks() call after render.
     if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", sparkPlaceholder(r.name));
@@ -1082,6 +1070,15 @@ function renderWhatif(wf: Whatif) {
   card.appendChild(stats);
   (risk && risk.warnings || []).forEach((w) =>
     card.appendChild(el("div", "whatif-risk-warn", `\u26a0 ${esc(w)}`)));
+  (wf.stock_sell_violations || []).forEach((violation) =>
+    card.appendChild(el(
+      "div",
+      "tstate-invalid",
+      `<strong>${esc(violation.symbol)} sell exceeds holdings</strong>` +
+      `Requested ${sensitive(`${fmtCZK(violation.requested_sell_czk)} CZK`, "requested sell")} ` +
+      `against ${sensitive(`${fmtCZK(violation.held_czk)} CZK`, "held value")} held. ` +
+      `Reduce it by at least ${sensitive(`${fmtCZK(violation.excess_czk)} CZK`, "oversell excess")}.`,
+    )));
 
   const afterRows: Record<string, RebRow> = {};
   // A member trade (e.g. XSD) doesn't have its own row — it rolls up into its
@@ -1093,7 +1090,7 @@ function renderWhatif(wf: Whatif) {
   });
   card.appendChild(simpleTable({
     className: "whatif-table",
-    head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">After weight</th></tr>`,
+    head: `<tr><th>Name</th><th class="num">Trade</th><th>Before</th><th>After</th><th class="num">Governed after weight</th></tr>`,
     rows: wf.trades || [],
     cells: (t: { symbol: string; delta_czk: number }) => {
       const ar = afterRows[t.symbol];
@@ -1103,11 +1100,14 @@ function renderWhatif(wf: Whatif) {
       const nameCell = sleeve
         ? `${esc(t.symbol)} <small class="muted">\u2192 ${esc(sleeve.name)}</small>`
         : esc(t.symbol);
+      const weightScope = sleeve
+        ? `${esc(sleeve.name)} sleeve total`
+        : status ? `${esc(status.name)} target` : "";
       return `<td>${nameCell}</td>` +
         `<td class="num">${sensitive(`${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`, "trade size")}</td>` +
         `<td><span class="chip ${rebStatusClass(before)}">${esc(before)}</span></td>` +
         `<td>${status ? `<span class="chip ${rebStatusClass(status.status)}">${esc(status.status)}</span>` : "\u2014"}</td>` +
-        `<td class="num">${status ? status.current_pct.toFixed(2) + "%" : "\u2014"}</td>`;
+        `<td class="num">${status ? `${weightScope}<br><strong>${status.current_pct.toFixed(2)}%</strong>` : "\u2014"}</td>`;
     },
   }));
 
@@ -1128,7 +1128,11 @@ function renderWhatif(wf: Whatif) {
     `Stage ${trades.length} order${trades.length === 1 ? "" : "s"} \u2192`);
   stageBtn.type = "button";
   stageBtn.title = "Save these exact simulated trades to the order queue; nothing is sent to IBKR yet";
-  stageBtn.addEventListener("click", async () => {
+  if (wf.valid === false) {
+    stageBtn.disabled = true;
+    stageBtn.textContent = "Fix blocked sells before staging";
+    stageBtn.title = "One or more stock sells exceed the held position";
+  } else stageBtn.addEventListener("click", async () => {
     stageBtn.disabled = true;
     stageBtn.textContent = "Staging orders…";
     stageStatus.classList.remove("err");

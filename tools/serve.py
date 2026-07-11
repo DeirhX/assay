@@ -55,6 +55,7 @@ import regime  # noqa: E402  -- descriptive macro strip over the segment leaderb
 import tax_lots  # noqa: E402
 import tax_calendar  # noqa: E402  -- forward 3-year-exemption calendar (proactive tax lever)
 import exit_plan  # noqa: E402  -- advisory graceful-exit planner (tax-timed scale-out)
+import option_market  # noqa: E402  -- instrument-wide option quote refresh
 import whatif  # noqa: E402
 import journal  # noqa: E402
 import jobs  # noqa: E402
@@ -365,6 +366,7 @@ _POST_EXACT = {
     "/api/history/delete": "_post_history_delete",
     "/api/rebalance/funding": "_post_rebalance_funding",
     "/api/tax-plan": "_post_tax_plan",
+    "/api/exit-plan/refresh-options": "_post_exit_plan_refresh_options",
     "/api/exit-plan/stage": "_post_exit_plan_stage",
     "/api/whatif": "_post_whatif",
     "/api/trade/reconnect": "_post_trade_reconnect",
@@ -1371,6 +1373,32 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             return self._send_error_json(400, "amount_czk must be a number")
         return self._send_json(tax_lots.breakdown_for_symbol(holdings, sym, amount))
+
+    def _post_exit_plan_refresh_options(self, path):
+        """Refresh every cached option quote for one exit-plan instrument."""
+        body = self._read_body()
+        model = target_staging.active_model()
+        holdings = _load(HOLDINGS_JSON)
+        if not model or not holdings:
+            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        try:
+            symbol = _safe_symbol(str(body.get("symbol") or ""))
+        except ValueError as exc:
+            return self._send_error_json(400, str(exc))
+        include = body.get("include") if isinstance(body.get("include"), list) else []
+        full = body.get("full_exit") if isinstance(body.get("full_exit"), list) else []
+        cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else None
+        with _PULL_LOCK:
+            option_market.cached_option_chain(symbol, force_quotes=True)
+            plan = exit_plan.build_exit_plan(
+                model,
+                holdings,
+                include=include,
+                full_exit=full,
+                cfg=cfg,
+                with_options=True,
+            )
+        return self._send_json(plan)
 
     def _post_exit_plan_stage(self, path):
         # Rebuild the plan server-side (it's ephemeral) with the same params the

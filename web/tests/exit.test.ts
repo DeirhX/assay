@@ -414,18 +414,18 @@ describe("Exit execution routes", () => {
     )].map((row) => row.cells[0].textContent || "");
 
     bidSort.click();
-    expect(strikes()[0]).toMatch(/115/);
-    expect(strikes()[1]).toMatch(/110/);
+    expect(strikes()[0]).toMatch(/110/);
+    expect(strikes()[1]).toMatch(/115/);
     expect(strikes()[2]).toMatch(/120/); // missing bid stays last
     expect(document.querySelector(
       "#exit-body table.exit-ladder-exec button[data-sort='bid']",
-    )!.closest("th")!.getAttribute("aria-sort")).toBe("ascending");
+    )!.closest("th")!.getAttribute("aria-sort")).toBe("descending");
 
     document.querySelector<HTMLButtonElement>(
       "#exit-body table.exit-ladder-exec button[data-sort='bid']",
     )!.click();
-    expect(strikes()[0]).toMatch(/110/);
-    expect(strikes()[1]).toMatch(/115/);
+    expect(strikes()[0]).toMatch(/115/);
+    expect(strikes()[1]).toMatch(/110/);
     expect(strikes()[2]).toMatch(/120/);
   });
 
@@ -453,6 +453,25 @@ describe("Exit execution routes", () => {
     expect(body).toContain("Indicative covered-call levels are available");
     expect(document.querySelectorAll(".exit-stage-cc-btn")).toHaveLength(0);
     expect(document.querySelector("table.exit-ladder-exec")).toBeTruthy();
+  });
+
+  it("summarizes an unavailable covered-call route without bloating the button row", async () => {
+    const data = routeFixture();
+    data.positions[0].routes!.covered_call.eligible = false;
+    data.positions[0].routes!.covered_call.reasons = [
+      "The planned 24-share exit is too far from one 100-share option contract.",
+      "Indicative covered-call levels from Black Scholes are available; staging needs an exact IBKR contract with a live two-sided quote.",
+    ];
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const why = document.querySelector<HTMLElement>("#exit-body .exit-route-why")!;
+    expect(why.textContent).toBe("Needs about 100 shares; this exit is 24.");
+    expect(why.title).toContain("Indicative covered-call levels");
+    const labels = [...document.querySelectorAll<HTMLElement>("#exit-body .exit-route-btn")]
+      .map((button) => button.textContent);
+    expect(labels).toEqual(["Sell shares", "Covered-call exit"]);
   });
 
   it("stages an executable covered-call rung with the full payload", async () => {
@@ -544,7 +563,7 @@ describe("Exit execution routes", () => {
     expect(warningRow.querySelector(".exit-stage-cc-btn")).toBeTruthy();
   });
 
-  it("offers automatic refresh when a displayed quote ages out", async () => {
+  it("offers a whole-instrument refresh when a displayed quote ages out", async () => {
     const data = routeFixture();
     const rung = data.positions[0].options!.covered_call_ladder![0];
     rung.stageable = true;
@@ -552,7 +571,10 @@ describe("Exit execution routes", () => {
     rung.quote_timestamp = new Date(Date.now() - 121_000).toISOString();
     rung.staging_warning =
       "The displayed quote is stale. Staging will refresh it from IBKR before calculating a limit price.";
-    apiMock.mockResolvedValue(data);
+    const refreshed = routeFixture();
+    apiMock.mockImplementation((path: string) => Promise.resolve(
+      path === "/api/exit-plan/refresh-options" ? refreshed : data,
+    ));
     await loadExit();
     await flush();
 
@@ -565,6 +587,22 @@ describe("Exit execution routes", () => {
     expect(firstRow.textContent).toContain("displayed quote is stale");
     expect(firstRow.textContent).toContain("Refresh & stage");
     expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeTruthy();
+
+    const refreshBtn = document.querySelector<HTMLButtonElement>("#exit-body .exit-cc-refresh-btn")!;
+    expect(refreshBtn.textContent).toContain("Refresh all EXITME quotes");
+    refreshBtn.click();
+    await flush();
+
+    expect(apiMock).toHaveBeenLastCalledWith(
+      "/api/exit-plan/refresh-options",
+      "POST",
+      expect.objectContaining({ symbol: "EXITME", cfg: expect.any(Object) }),
+      { timeoutMs: 60_000 },
+    );
+    expect(document.querySelector("#exit-body .exit-cc-refresh-btn")).toBeFalsy();
+    expect(document.querySelector("#exit-status")!.textContent).toContain(
+      "EXITME underlying and option quotes refreshed",
+    );
   });
 
   it("labels protective puts as analysis-only in details", async () => {

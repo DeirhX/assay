@@ -41,41 +41,57 @@ _cash_base = portfolio.cash_base
 
 def _after_positions(holdings: dict[str, Any], deltas: dict[str, float]) -> list[dict[str, Any]]:
     """Copy the snapshot's positions, apply the per-symbol CZK deltas, and add
-    any freshly-bought symbol that wasn't held before."""
+    any freshly-bought symbol that wasn't held before.
+
+    Stock rows are aggregated by symbol before applying a delta.  This avoids
+    applying one net basket leg repeatedly when a broker snapshot has multiple
+    rows for the same stock.
+    """
     positions = holdings.get("positions", []) or []
+    held = portfolio.stock_base_values(holdings)
+    projected = {
+        sym: max(0.0, held.get(sym, 0.0) + delta)
+        for sym, delta in deltas.items()
+    }
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for p in positions:
+        if not isinstance(p, dict):
+            continue
         sym = portfolio.clean_symbol(p.get("symbol"))
+        is_option = str(p.get("asset_class") or "STK").upper() == "OPT"
+        if is_option or sym not in projected:
+            out.append(dict(p))
+            continue
+        if sym in seen:
+            continue
         np = dict(p)
-        bmv = p.get("base_market_value")
-        if sym and sym in deltas and isinstance(bmv, (int, float)):
-            new_bmv = bmv + deltas[sym]
-            np["base_market_value"] = 0.0 if abs(new_bmv) < EPS else new_bmv
+        np["base_market_value"] = projected[sym]
         out.append(np)
-        if sym:
-            seen.add(sym)
+        seen.add(sym)
     for sym, delta in deltas.items():
-        if sym not in seen and abs(delta) >= EPS:
-            out.append({"symbol": sym, "base_market_value": delta, "asset_class": "STK"})
+        if sym not in seen and delta > EPS:
+            out.append({
+                "symbol": sym,
+                "base_market_value": projected[sym],
+                "asset_class": "STK",
+            })
     return out
-
-
-def _in_band_count(plan: dict[str, Any]) -> tuple[int, int]:
-    rows = [r for r in plan.get("rows", []) if r.get("kind") == "target"]
-    in_band = sum(1 for r in rows if r.get("status") == "IN")
-    return in_band, len(rows)
 
 
 def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as_of=None) -> dict[str, Any]:
     """Recompute the portfolio after applying a staged basket of trades."""
     deltas = _coerce_trades(trades)
+    violations = portfolio.stock_sell_violations(holdings, deltas)
+    applied_deltas = dict(deltas)
+    for violation in violations:
+        applied_deltas[violation["symbol"]] = -float(violation["held_czk"])
 
     after_holdings = {
         "net_asset_value": holdings.get("net_asset_value"),
         "base_currency": holdings.get("base_currency"),
         "generated_at": holdings.get("generated_at"),
-        "positions": _after_positions(holdings, deltas),
+        "positions": _after_positions(holdings, applied_deltas),
     }
     before_plan = rebalance.plan(model, holdings)
     after_plan = rebalance.plan(model, after_holdings)
@@ -93,7 +109,7 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
     per_symbol: list[dict[str, Any]] = []
     tax_total = {"proceeds": 0.0, "taxable_gain": 0.0, "exempt_proceeds": 0.0,
                  "taxable_proceeds": 0.0, "harvestable_loss": 0.0, "realized_gain": 0.0}
-    for sym, delta in sorted(deltas.items()):
+    for sym, delta in sorted(applied_deltas.items()):
         if delta >= -EPS:
             continue
         bd = tax_lots.breakdown_for_symbol(holdings, sym, -delta, as_of=as_of)
@@ -102,9 +118,9 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
             tax_total[k] += bd["totals"].get(k, 0.0)
     tax_total = {k: round(v, 2) for k, v in tax_total.items()}
 
-    spend = round(sum(d for d in deltas.values() if d > 0), 2)
-    raised = round(-sum(d for d in deltas.values() if d < 0), 2)
-    net_delta = round(sum(deltas.values()), 2)
+    spend = round(sum(d for d in applied_deltas.values() if d > 0), 2)
+    raised = round(-sum(d for d in applied_deltas.values() if d < 0), 2)
+    net_delta = round(sum(applied_deltas.values()), 2)
 
     cash_before = _cash_base(holdings)
     cash_after = None if cash_before is None else round(cash_before - net_delta, 2)
@@ -125,8 +141,8 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
             "status_after": rebalance._status(after_pct, cash_band["low"], cash_band["high"]),
         }
 
-    in_before, n_before = _in_band_count(before_plan)
-    in_after, n_after = _in_band_count(after_plan)
+    in_before, n_before = rebalance.band_counts(before_plan)
+    in_after, n_after = rebalance.band_counts(after_plan)
 
     caveats = [
         "Value-neutral recompute: it ignores commissions, FX moves, and bid/ask "
@@ -134,6 +150,12 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
         "Realized tax is selected from pre-trade lots using the Czech 3-year rule; "
         "analysis, not tax advice.",
     ]
+    if violations:
+        caveats.insert(
+            0,
+            "Projection blocked: one or more staged sells exceed the held stock. "
+            "Affected positions are floored at zero below; resize or remove those orders.",
+        )
     if cash_after is not None and cash_after < -EPS:
         caveats.insert(0, "Cash goes negative after these trades — you would need "
                           "margin or more sells to fund the buys.")
@@ -147,7 +169,13 @@ def simulate(holdings: dict[str, Any], model: dict[str, Any], trades: Any, *, as
         "as_of": model.get("as_of"),
         "snapshot": holdings.get("generated_at"),
         "currency": holdings.get("base_currency") or "CZK",
+        "valid": not violations,
+        "stock_sell_violations": violations,
         "trades": [{"symbol": s, "delta_czk": round(d, 2)} for s, d in sorted(deltas.items())],
+        "applied_trades": [
+            {"symbol": s, "delta_czk": round(d, 2)}
+            for s, d in sorted(applied_deltas.items())
+        ],
         "after": after_plan,
         "before_status": {r["name"]: r["status"]
                           for r in before_plan.get("rows", []) if r.get("kind") == "target"},

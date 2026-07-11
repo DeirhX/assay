@@ -38,6 +38,40 @@ class Weights(unittest.TestCase):
     def test_invested_value_sums_only_numeric(self):
         self.assertEqual(pf.invested_value(HOLDINGS["positions"]), 400.0)
 
+    def test_stock_values_aggregate_rows_and_exclude_options(self):
+        values = pf.stock_base_values({"positions": [
+            {"symbol": "AAA", "base_market_value": 100.0},
+            {"symbol": "aaa", "base_market_value": 50.0},
+            {"symbol": "AAA  260717C00100000", "asset_class": "OPT",
+             "base_market_value": 10.0},
+        ]})
+        self.assertEqual(values, {"AAA": 150.0})
+
+    def test_stock_sell_violations_report_only_the_excess(self):
+        violations = pf.stock_sell_violations(
+            HOLDINGS,
+            {"AAA": -125.0, "BBB": -250.0, "NEW": -10.0},
+        )
+        self.assertEqual(
+            violations,
+            [
+                {
+                    "symbol": "AAA",
+                    "held_czk": 100.0,
+                    "requested_sell_czk": 125.0,
+                    "excess_czk": 25.0,
+                    "after_czk": -25.0,
+                },
+                {
+                    "symbol": "NEW",
+                    "held_czk": 0.0,
+                    "requested_sell_czk": 10.0,
+                    "excess_czk": 10.0,
+                    "after_czk": -10.0,
+                },
+            ],
+        )
+
 
 class OptionExposure(unittest.TestCase):
     # A real 2-lot SPY put: premium ~870 CZK, but ~9% of invested if exercised.

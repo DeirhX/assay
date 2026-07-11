@@ -169,6 +169,35 @@ class MarketCaches(unittest.TestCase):
         refresh.assert_called_once()
         fetch.assert_not_called()
 
+    def test_forced_refresh_bypasses_fresh_quote_ttl_for_entire_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            chain = _chain("ibkr")
+            now = timeutil.now_iso()
+            chain["quote_timestamp"] = now
+            store.write_json(cache_dir / "NVDA.json", {
+                "symbol": "NVDA",
+                "fetched_at": now,
+                "reference_fetched_at": now,
+                "chain": chain,
+            })
+            refreshed = {**chain, "quote_timestamp": "2026-07-11T20:00:00+00:00"}
+            with mock.patch.object(option_market, "session_ready", return_value=True), \
+                    mock.patch.object(
+                        ibkr_trade,
+                        "refresh_option_chain_quotes",
+                        return_value=refreshed,
+                    ) as refresh, \
+                    mock.patch.object(option_market, "fetch_option_chain") as fetch:
+                out = option_market.cached_option_chain(
+                    "NVDA",
+                    cache_dir=cache_dir,
+                    force_quotes=True,
+                )
+        self.assertEqual(out["quote_timestamp"], refreshed["quote_timestamp"])
+        refresh.assert_called_once()
+        fetch.assert_not_called()
+
     def test_risk_free_rate_uses_fresh_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "rate.json"

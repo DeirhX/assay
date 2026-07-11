@@ -73,6 +73,15 @@ describe("projection review gate", () => {
     expect(html).toContain("conditional");
     expect(html).toContain("does not change share weights unless assigned");
   });
+
+  it("blocks approval while the projection contains an oversell", () => {
+    const html = sourceBanner("basket", 1, {
+      trades: [], revision: "bad-rev", reviewed: false,
+    }, false);
+    expect(html).toContain("Fix blocked sells first");
+    expect(html).toContain("disabled");
+    expect(html).not.toContain("data-ts-review");
+  });
 });
 
 describe("compareRows", () => {
@@ -99,6 +108,14 @@ describe("compareRows", () => {
     const rows = compareRows(before, null);
     expect(rows.every((r) => !r.changed && r.proj === r.cur)).toBe(true);
   });
+
+  it("defensively floors an impossible negative after-weight at zero", () => {
+    const rows = compareRows(
+      [row({ name: "OVERSELL", current_pct: 5 })],
+      [row({ name: "OVERSELL", current_pct: -2.5, status: "BELOW" })],
+    );
+    expect(rows[0].proj).toBe(0);
+  });
 });
 
 describe("compareRowHtml", () => {
@@ -114,6 +131,18 @@ describe("compareRowHtml", () => {
     expect(html).toContain("6.00%");
     expect(html).toContain("ABOVE");
     expect(html).toContain("IN");
+    expect(html).toContain("reb-rule-hold");
+    expect(html).toContain("target");
+  });
+
+  it("color-codes and formats the portfolio action", () => {
+    const reduce = compareRows(
+      [row({ name: "TRIM", rule: "trim_only" })],
+      null,
+    )[0];
+    const html = compareRowHtml(reduce, 10);
+    expect(html).toContain("reb-rule-bad");
+    expect(html).toContain(">trim only</span>");
   });
 
   it("an unchanged row shows a single tick and a single status", () => {

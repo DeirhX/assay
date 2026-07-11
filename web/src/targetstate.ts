@@ -11,6 +11,7 @@
 // Approving records only the exact queue revision shown; this view never trades.
 import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
 import type { PlanRow, RebalancePlan, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
+import { ruleTone, ruleWord } from "./band-viz";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
@@ -56,7 +57,7 @@ export function compareRows(before: PlanRow[], after: PlanRow[] | null): Compare
   (after || []).forEach((r) => { afterBy[`${r.kind}:${r.name}`] = r; });
   return (before || []).map((r) => {
     const a = after ? afterBy[`${r.kind}:${r.name}`] : null;
-    const proj = a ? a.current_pct : r.current_pct;
+    const proj = Math.max(0, a ? a.current_pct : r.current_pct);
     return {
       name: r.name, kind: r.kind, rule: r.rule,
       low: r.low, high: r.high,
@@ -93,7 +94,9 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
     ? `<span class="chip ${statusCls(r.statusBefore)} tstate-before">${esc(r.statusBefore)}</span><span class="tstate-arrow">→</span>${afterChip}`
     : afterChip;
   return `<div class="tstate-row${r.changed ? " tstate-changed" : ""}">` +
-    `<div class="tstate-name"><strong>${esc(r.name)}</strong><span class="reb-rule">${esc(r.rule)}</span></div>` +
+    `<div class="tstate-name"><strong>${esc(r.name)}</strong>` +
+      `<span class="tstate-scope">${r.kind === "sleeve" ? "sleeve total" : "target"}</span>` +
+      `<span class="reb-rule reb-rule-${ruleTone(r.rule)}">${esc(ruleWord(r.rule) || r.rule)}</span></div>` +
     `<div class="reb-track" role="img" aria-label="${esc(r.name)}: now ${r.cur.toFixed(1)}%, after ${r.proj.toFixed(1)}%, band ${r.low}–${r.high}%">` +
       `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
       conn +
@@ -150,6 +153,7 @@ export function sourceBanner(
   source: "basket" | "suggestions" | "none",
   n: number,
   queue: TradeQueueState | null,
+  projectionValid = true,
 ): string {
   if (source === "basket") {
     const reviewed = !!queue?.reviewed;
@@ -161,7 +165,9 @@ export function sourceBanner(
       (optionCount
         ? ` ${optionCount} covered call${optionCount === 1 ? "" : "s"} ${optionCount === 1 ? "is" : "are"} conditional and ${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.`
         : "") +
-      (reviewed
+      (!projectionValid
+        ? ` <button class="primary" type="button" disabled>Fix blocked sells first</button>`
+        : reviewed
         ? ` <span class="chip good">projection approved</span>` +
           ` <button class="primary" type="button" data-ts-goto="trade">Open Trade desk →</button>`
         : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve this projection →</button>`) +
@@ -213,9 +219,22 @@ function render(
     : "";
 
   const caveats = (wf && wf.caveats || []).map((c) => `<div class="hint">${esc(c)}</div>`).join("");
+  const violations = (wf && wf.stock_sell_violations) || queue?.stock_sell_violations || [];
+  const projectionValid = wf ? wf.valid !== false : queue?.valid !== false;
+  const violationsBlock = violations.length
+    ? `<div class="tstate-invalid"><strong>Projection blocked — staged sells exceed holdings</strong>` +
+      violations.map((violation) =>
+        `<div><b>${esc(violation.symbol)}</b>: selling ` +
+        `${sensitive(`${fmtCZK(violation.requested_sell_czk)} CZK`, "requested sell")} against ` +
+        `${sensitive(`${fmtCZK(violation.held_czk)} CZK`, "held value")} held; reduce by at least ` +
+        `${sensitive(`${fmtCZK(violation.excess_czk)} CZK`, "oversell excess")}.</div>`,
+      ).join("") +
+      `</div>`
+    : "";
 
   body.innerHTML =
-    sourceBanner(source, nTrades, queue) +
+    sourceBanner(source, nTrades, queue, projectionValid) +
+    violationsBlock +
     summaryTiles(plan, wf, rows) +
     changedBlock + sameBlock + tradesBlock + caveats;
 }

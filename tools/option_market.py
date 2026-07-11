@@ -126,8 +126,14 @@ def cached_option_chain(
     symbol: str,
     *,
     cache_dir: Path | None = None,
+    force_quotes: bool = False,
 ) -> dict[str, Any] | None:
-    """Cached provider-selected option chain for a canonical ticker."""
+    """Cached provider-selected option chain for a canonical ticker.
+
+    ``force_quotes`` bypasses only the short quote TTL.  Fresh IBKR security
+    definitions are retained, so an instrument-level refresh updates every
+    contract snapshot without repeating the expensive secdef discovery.
+    """
     directory = cache_dir or OPT_CACHE_DIR
     safe = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in "-._=")
     path = directory / f"{safe}.json"
@@ -137,7 +143,7 @@ def cached_option_chain(
         if isinstance(cached_chain, dict) and cached_chain.get("source") == "ibkr":
             reference_at = cached.get("reference_fetched_at") or cached.get("fetched_at")
             if timeutil.cache_fresh(reference_at, OPT_CACHE_TTL_SECONDS):
-                if timeutil.cache_fresh(
+                if not force_quotes and timeutil.cache_fresh(
                     cached_chain.get("quote_timestamp"),
                     IBKR_QUOTE_CACHE_TTL_SECONDS,
                 ):

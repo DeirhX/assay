@@ -402,6 +402,141 @@ def _suggest(rule: str, status: str, cur: float, low: float, high: float) -> tup
     return None, 0.0
 
 
+def _band_landing_pct(action: str, low: float, high: float) -> float:
+    """Land just inside a band so CZK/share rounding does not grade it outside."""
+    buffer_pct = min(0.02, max(0.0, (high - low) / 2.0))
+    return low + buffer_pct if action == "buy" else high - buffer_pct
+
+
+def _coupled_band_suggestions(
+    model: dict[str, Any],
+    weights: dict[str, float],
+    invested: float,
+) -> dict[tuple[str, str], tuple[str | None, float]]:
+    """Solve all automatic band-closing trades against one final denominator.
+
+    Rows are disjoint governance groups (a target symbol or a sleeve aggregate).
+    For active groups, ``value_after = target_weight * invested_after`` and the
+    same ``invested_after`` is used for every row.  Ambiguous overlapping model
+    rows remain review-only rather than double-counting the same stock.
+    """
+    if invested <= EPS:
+        return {}
+    specs: list[dict[str, Any]] = []
+    targets: dict[str, Any] = model.get("targets", {})
+    sleeves: dict[str, Any] = model.get("sleeves", {})
+
+    def add(
+        key: tuple[str, str],
+        rule: str,
+        cur: float,
+        low: float,
+        high: float,
+        symbols: set[str],
+    ) -> None:
+        action, fallback_delta = _suggest(rule, _status(cur, low, high), cur, low, high)
+        specs.append({
+            "key": key,
+            "action": action,
+            "fallback_delta": fallback_delta,
+            "current_value": cur / 100.0 * invested,
+            "target_pct": (
+                _band_landing_pct(action, low, high)
+                if action in {"buy", "trim"} else None
+            ),
+            "symbols": symbols,
+        })
+
+    for sym, target in targets.items():
+        if _band_ok(target.get("low"), target.get("high")):
+            add(
+                ("target", sym),
+                str(target.get("rule")),
+                weights.get(sym, 0.0),
+                float(target["low"]),
+                float(target["high"]),
+                {portfolio.clean_symbol(sym)},
+            )
+    for name, sleeve in sleeves.items():
+        if not _band_ok(sleeve.get("low"), sleeve.get("high")):
+            continue
+        members = {
+            portfolio.clean_symbol(member)
+            for member in sleeve.get("members", [])
+            if member
+        }
+        add(
+            ("sleeve", name),
+            str(sleeve.get("rule", "accumulate")),
+            sum(weights.get(member, 0.0) for member in members),
+            float(sleeve["low"]),
+            float(sleeve["high"]),
+            members,
+        )
+
+    owners: dict[str, int] = {}
+    for spec in specs:
+        for symbol in spec["symbols"]:
+            owners[symbol] = owners.get(symbol, 0) + 1
+    result = {
+        spec["key"]: (spec["action"], spec["fallback_delta"])
+        for spec in specs
+    }
+    active = [
+        spec for spec in specs
+        if spec["action"] in {"buy", "trim"}
+        and all(owners[symbol] == 1 for symbol in spec["symbols"])
+    ]
+    for spec in specs:
+        if spec["action"] in {"buy", "trim"} and spec not in active:
+            result[spec["key"]] = ("review", 0.0)
+
+    # Coupling can change the required sign for an edge-case row. Remove such a
+    # row and solve again rather than recommending a trade opposite its rule.
+    while active:
+        target_sum = sum(float(spec["target_pct"]) / 100.0 for spec in active)
+        fixed_value = invested - sum(float(spec["current_value"]) for spec in active)
+        if target_sum >= 1.0 - 1e-9 or fixed_value < -EPS:
+            for spec in active:
+                result[spec["key"]] = ("review", 0.0)
+            break
+        final_invested = fixed_value / (1.0 - target_sum)
+        solved = {
+            spec["key"]: (
+                float(spec["target_pct"]) / 100.0 * final_invested
+                - float(spec["current_value"])
+            )
+            for spec in active
+        }
+        wrong_sign = [
+            spec for spec in active
+            if (
+                spec["action"] == "buy" and solved[spec["key"]] <= EPS
+            ) or (
+                spec["action"] == "trim" and solved[spec["key"]] >= -EPS
+            )
+        ]
+        if wrong_sign:
+            for spec in wrong_sign:
+                result[spec["key"]] = ("review", 0.0)
+                active.remove(spec)
+            continue
+        for spec in active:
+            delta_pct = solved[spec["key"]] / invested * 100.0
+            result[spec["key"]] = (spec["action"], delta_pct)
+        break
+    return result
+
+
+def band_counts(plan: dict[str, Any]) -> tuple[int, int]:
+    """In-band and total counts for every displayed target and sleeve row."""
+    rows = [
+        row for row in plan.get("rows", [])
+        if row.get("kind") in {"target", "sleeve"}
+    ]
+    return sum(1 for row in rows if row.get("status") == "IN"), len(rows)
+
+
 def _allocate_sleeve_members(
     sl: dict[str, Any], members: list[str], weights: dict[str, float],
     czk: Callable[[float | None], int | None], action: str | None, delta: float,
@@ -477,6 +612,7 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
     targets: dict[str, Any] = model.get("targets", {})
     sleeves: dict[str, Any] = model.get("sleeves", {})
     cash_target = float(model.get("cash_target_pct", 0.0) or 0.0)
+    solved_suggestions = _coupled_band_suggestions(model, weights, invested)
 
     def czk(pct: float | None) -> int | None:
         if not invested or pct is None:
@@ -489,7 +625,10 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
                 high: float, note: Any, members: list[dict[str, Any]] | None = None,
                 interactive: bool = True) -> None:
         status = _status(cur, low, high)
-        action, delta = _suggest(rule, status, cur, low, high)
+        action, delta = solved_suggestions.get(
+            (kind, name),
+            _suggest(rule, status, cur, low, high),
+        )
         mid = (low + high) / 2.0
         rows.append({
             "key": key, "name": name, "kind": kind, "rule": rule,
@@ -516,7 +655,10 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
         high = float(sl["high"])
         cur = sum(weights.get(m, 0.0) for m in members)
         rule = str(sl.get("rule", "accumulate"))
-        action, delta = _suggest(rule, _status(cur, low, high), cur, low, high)
+        action, delta = solved_suggestions.get(
+            ("sleeve", name),
+            _suggest(rule, _status(cur, low, high), cur, low, high),
+        )
         member_rows = _allocate_sleeve_members(sl, members, weights, czk, action, delta, provenance)
         add_row(f"[{name}]", name, "sleeve", rule, cur, low, high, sl.get("note"),
                 members=member_rows, interactive=False)

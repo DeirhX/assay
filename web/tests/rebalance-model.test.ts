@@ -65,8 +65,9 @@ describe("computePlan", () => {
         { current: 8, low: 3, high: 6, delta: 0 },     // stays above
       ],
       [], [], BASE);
-    expect(comp.rows[0]).toMatchObject({ proj: 3.5, inBand: true, czk: 15_000 });
-    expect(comp.rows[1]).toMatchObject({ proj: 8, inBand: false });
+    expect(comp.rows[0]).toMatchObject({ inBand: true, czk: 15_000 });
+    expect(comp.rows[0].proj).toBeCloseTo(3.5 / 1.015);
+    expect(comp.rows[1].proj).toBeCloseTo(8 / 1.015);
     expect(comp.totals.closed).toBe(1);
     expect(comp.totals.total).toBe(2);
   });
@@ -97,11 +98,27 @@ describe("computePlan", () => {
     ], [], BASE);
     const s = comp.sleeves[0];
     expect(s.sum).toBeCloseTo(1.8);
-    expect(s.proj).toBeCloseTo(5.8);
+    expect(s.proj).toBeCloseTo(5.8 / 1.018);
     expect(s.inBand).toBe(true);
     expect(s.members[0].overCap).toBe(true);
     expect(s.members[0].atTarget).toBe(false); // over cap never reads as "good"
     expect(s.members[1]).toMatchObject({ overCap: false, atTarget: true });
+  });
+
+  it("uses one final invested denominator across targets and sleeves", () => {
+    const comp = computePlan(
+      [{ current: 10, low: 8, high: 10, delta: -1 }],
+      [{ current: 2, low: 3, high: 5, members: [
+        { cur: 2, target: 3, cap: null, delta: 2 },
+      ] }],
+      [],
+      BASE,
+    );
+    // Net buy is +1% of the original book, so every after-weight uses 101%.
+    expect(comp.rows[0].proj).toBeCloseTo(9 / 1.01);
+    expect(comp.sleeves[0].proj).toBeCloseTo(4 / 1.01);
+    expect(comp.totals.total).toBe(2);
+    expect(comp.totals.closed).toBe(2);
   });
 
   it("sizes CZK off the invested base, and returns null money without one", () => {

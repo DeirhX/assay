@@ -97,6 +97,26 @@ class Simulate(unittest.TestCase):
         untargeted = {u["symbol"] for u in wf["after"].get("untargeted", [])}
         self.assertIn("NVDA", untargeted)
 
+    def test_oversell_is_visible_but_projection_floors_at_zero(self):
+        wf = whatif.simulate(holdings(), MODEL, [{"symbol": "AMD", "delta_czk": -250}])
+        after = {r["name"]: r for r in wf["after"]["rows"]}
+        self.assertFalse(wf["valid"])
+        self.assertEqual(after["AMD"]["current_pct"], 0.0)
+        self.assertEqual(wf["stock_sell_violations"][0]["excess_czk"], 50.0)
+        self.assertEqual(wf["applied_trades"][0]["delta_czk"], -200.0)
+        self.assertTrue(any("Projection blocked" in c for c in wf["caveats"]))
+
+    def test_duplicate_position_rows_receive_one_netted_delta(self):
+        h = holdings()
+        h["positions"] = [
+            {"symbol": "AMD", "base_market_value": 100.0},
+            {"symbol": "AMD", "base_market_value": 100.0},
+            {"symbol": "REST", "base_market_value": 800.0},
+        ]
+        wf = whatif.simulate(h, MODEL, [{"symbol": "AMD", "delta_czk": -50}])
+        after = {r["name"]: r for r in wf["after"]["rows"]}
+        self.assertAlmostEqual(after["AMD"]["current_pct"], 150 / 950 * 100, places=2)
+
     def test_carries_a_pre_trade_risk_delta(self):
         # REST is the dominant name (80%); buying more of it raises top-1 share.
         wf = whatif.simulate(holdings(), MODEL, [{"symbol": "REST", "delta_czk": 100}])
@@ -104,6 +124,21 @@ class Simulate(unittest.TestCase):
         self.assertIn("top1_pct", risk)
         self.assertGreater(risk["top1_pct"]["after"], risk["top1_pct"]["before"])
         self.assertFalse(risk["has_correlation"])   # no series in the pure recompute
+
+    def test_band_summary_counts_targets_and_sleeves_consistently(self):
+        model = {
+            **MODEL,
+            "sleeves": {
+                "growth": {
+                    "low": 3, "high": 5, "rule": "accumulate",
+                    "members": ["NVDA"],
+                },
+            },
+        }
+        wf = whatif.simulate(holdings(), model, [])
+        self.assertEqual(wf["summary"]["bands_total"], 3)
+        self.assertEqual(wf["summary"]["bands_in_before"], 1)
+        self.assertEqual(wf["summary"]["bands_in_after"], 1)
 
     def test_does_not_mutate_input_holdings(self):
         h = holdings()
