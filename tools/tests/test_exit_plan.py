@@ -734,6 +734,8 @@ def test_stage_covered_call_rejects_crossed_live_quote(tmp_path, monkeypatch):
         "conid": 555, "expiry": "2026-08-21", "strike": 105.0,
         "bid": 2.80, "ask": 2.60,
         "quote_timestamp": _fresh_quote_ts(),
+        "market_data_availability": "RpB",
+        "market_data_timeline": "real_time",
         "rules": {"increment": 0.05},
     })
     with pytest.raises(ValueError, match="bid/ask is missing or crossed"):
