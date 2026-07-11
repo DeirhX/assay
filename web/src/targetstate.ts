@@ -10,7 +10,9 @@
 // table it degrades to "current book vs its bands" — every tick single.
 // Approving records only the exact queue revision shown; this view never trades.
 import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
-import type { PlanRow, RebalancePlan, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
+import type {
+  PlanRow, RebalancePlan, StockSellViolation, TradeQueueState, Whatif, WhatifTrade,
+} from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
@@ -216,6 +218,20 @@ export function sourceBanner(
     ` <button class="primary" type="button" data-ts-goto="rebalance">Build orders →</button></div>`;
 }
 
+export function violationsHtml(violations: StockSellViolation[]): string {
+  if (!violations.length) return "";
+  return `<div class="tstate-invalid"><strong>Projection blocked — staged sells exceed holdings</strong>` +
+    violations.map((violation) =>
+      `<div class="tstate-invalid-row"><span><b>${esc(violation.symbol)}</b>: selling ` +
+      `${sensitive(`${fmtCZK(violation.requested_sell_czk)} CZK`, "requested sell")} against ` +
+      `${sensitive(`${fmtCZK(violation.held_czk)} CZK`, "held value")} held; reduce by at least ` +
+      `${sensitive(`${fmtCZK(violation.excess_czk)} CZK`, "oversell excess")}.</span>` +
+      `<button class="ghost" type="button" data-ts-remove-leg="stock:${esc(violation.symbol)}">` +
+      `Remove ${esc(violation.symbol)} sell</button></div>`,
+    ).join("") +
+    `</div>`;
+}
+
 function render(
   plan: RebalancePlan,
   wf: Whatif | null,
@@ -256,16 +272,7 @@ function render(
 
   const violations = (wf && wf.stock_sell_violations) || queue?.stock_sell_violations || [];
   const projectionValid = wf ? wf.valid !== false : queue?.valid !== false;
-  const violationsBlock = violations.length
-    ? `<div class="tstate-invalid"><strong>Projection blocked — staged sells exceed holdings</strong>` +
-      violations.map((violation) =>
-        `<div><b>${esc(violation.symbol)}</b>: selling ` +
-        `${sensitive(`${fmtCZK(violation.requested_sell_czk)} CZK`, "requested sell")} against ` +
-        `${sensitive(`${fmtCZK(violation.held_czk)} CZK`, "held value")} held; reduce by at least ` +
-        `${sensitive(`${fmtCZK(violation.excess_czk)} CZK`, "oversell excess")}.</div>`,
-      ).join("") +
-      `</div>`
-    : "";
+  const violationsBlock = violationsHtml(violations);
   const caveats = (wf && wf.caveats || []).map((c) => {
     const severe = /negative|blocked|exceed|cannot/i.test(c);
     return `<div class="tstate-caveat${severe ? " bad" : ""}">` +
@@ -340,6 +347,24 @@ function initTargetState(): void {
   const host = $("#view-target-state");
   if (!host) return;
   host.addEventListener("click", (e) => {
+    const remove = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-remove-leg]");
+    if (remove) {
+      const legId = remove.dataset.tsRemoveLeg || "";
+      const status = $("#tstate-status");
+      remove.disabled = true;
+      remove.textContent = "Removing…";
+      void api<TradeQueueState>("/api/trade/basket", "POST", { remove_leg_id: legId })
+        .then(() => loadTargetState())
+        .catch((err) => {
+          remove.disabled = false;
+          remove.textContent = "Remove blocked sell";
+          if (status) {
+            status.classList.add("err");
+            status.textContent = (err as Error).message;
+          }
+        });
+      return;
+    }
     const review = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-review]");
     if (review) {
       const revision = review.dataset.tsReview || "";

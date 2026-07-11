@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareRowHtml, compareRows, deriveSuggestionTrades, scaleMaxOf, sourceBanner,
+  violationsHtml,
 } from "../src/targetstate";
 import type { PlanRow, RebalancePlan } from "../src/api-types";
 
@@ -81,6 +82,18 @@ describe("projection review gate", () => {
     expect(html).toContain("Fix blocked sells first");
     expect(html).toContain("disabled");
     expect(html).not.toContain("data-ts-review");
+  });
+
+  it("offers removal of the blocked stock leg", () => {
+    const html = violationsHtml([{
+      symbol: "EEFT",
+      held_czk: 1_600_000,
+      requested_sell_czk: 2_500_000,
+      excess_czk: 900_000,
+      after_czk: -900_000,
+    }]);
+    expect(html).toContain('data-ts-remove-leg="stock:EEFT"');
+    expect(html).toContain("Remove EEFT sell");
   });
 
   it("shows the if-assigned increase for a staged cash-secured put", () => {

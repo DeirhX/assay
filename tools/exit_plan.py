@@ -717,6 +717,29 @@ def stage_tranche(plan: dict[str, Any], symbol: str, index: int) -> dict[str, An
         "intended_shares": tranche.get("shares"),
     }
     existing = trade_service.load_basket()
+    already_staged = any(
+        isinstance(p, dict)
+        and p.get("source") == "exit_plan"
+        and p.get("route") == "sell_shares"
+        and p.get("plan_fingerprint") == fingerprint
+        and int(p.get("tranche_index") or 0) == index
+        for row in existing
+        if row.get("type") in (None, "stock") and row.get("symbol") == sym
+        for p in (
+            [row.get("provenance")]
+            if isinstance(row.get("provenance"), dict)
+            else row.get("provenance") or []
+        )
+    )
+    if already_staged:
+        return {
+            "staged": True,
+            "already_staged": True,
+            "route": "sell_shares",
+            "basket": existing,
+            "tranche": tranche,
+            "symbol": sym,
+        }
     staged_calls = sum(
         int(row.get("contracts") or 0)
         for row in existing
@@ -743,6 +766,7 @@ def stage_tranche(plan: dict[str, Any], symbol: str, index: int) -> dict[str, An
         "delta_czk": -abs(float(tranche["czk"])),
         "provenance": provenance,
     }]
+    trade_service.validate_stock_sell_capacity(merged)
     basket = trade_service.save_basket(merged)
     return {"staged": True, "route": "sell_shares", "basket": basket, "tranche": tranche, "symbol": sym}
 

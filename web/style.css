@@ -4091,6 +4091,10 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
   color: var(--text); font-size: 12.5px; line-height: 1.45;
 }
 .tstate-invalid strong { display: block; margin-bottom: 4px; color: var(--bad); }
+.tstate-invalid-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.tstate-invalid-row button { flex: 0 0 auto; white-space: nowrap; }
 .tstate-tiles { margin-bottom: 18px; }
 .tstate-arrow { color: var(--muted); font-weight: 400; padding: 0 2px; }
 
@@ -4237,6 +4241,7 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
   .tstate-row .reb-track { grid-area: track; }
   .tstate-nums { grid-area: nums; justify-content: flex-start; }
   .tstate-status { grid-area: status; }
+  .tstate-invalid-row { align-items: stretch; flex-direction: column; }
 }
 
 /* Row-level sparklines (spark.ts). The SVG strokes with currentColor, so tone

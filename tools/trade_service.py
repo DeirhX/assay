@@ -223,6 +223,25 @@ def _oversell_message(violation: dict[str, Any]) -> str:
     )
 
 
+def validate_stock_sell_capacity(
+    basket: list[dict],
+    holdings: dict[str, Any] | None = None,
+) -> None:
+    """Reject a candidate basket that would sell more stock than is held.
+
+    Additive staging flows must call this before persistence so independently
+    staged routes cannot silently net into a short position.
+    """
+    normalized = _normalize_basket(basket)
+    violations = _basket_sell_violations(normalized, holdings)
+    if violations:
+        raise ValueError(
+            "staged stock sells exceed holdings — " + "; ".join(
+                _oversell_message(violation) for violation in violations
+            )
+        )
+
+
 def basket_state() -> dict:
     """Current queue plus whether that exact revision was projection-reviewed."""
     with _basket_lock:
