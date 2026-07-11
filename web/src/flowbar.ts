@@ -1,11 +1,9 @@
-// The rebalance-group flow bar: one persistent strip that turns the sibling
-// sub-tabs into a legible pipeline —
+// The execution flow bar keeps one persistent, unambiguous pipeline —
 //
-//   ① Current book → ② Plan changes → ③ Target state → ④ Orders
+//   current-book input → ① Build orders → ② Review impact → ③ Preview & place
 //
-// The projected outcome deliberately comes before the Trade desk: reviewing
-// where the book lands is a pre-trade safety gate, not an after-the-fact report.
-// Each stage shows live counts and clicks through to the view that owns it.
+// Target-model design lives under Plan. Current holdings are an input, not a
+// task, and the projected outcome remains the explicit pre-trade safety gate.
 import { $, api, esc } from "./core";
 import { gatewayConnected, refreshGatewayStatus } from "./gateway";
 import { pushNav, setActiveView } from "./shell";
@@ -17,7 +15,10 @@ interface FlowOverview {
   plan?: { rows?: number; out_of_band?: number; actionable?: number; gates_open?: number;
            cash?: { status?: string } | null } | null;
   draft?: { pending?: number } | null;
-  staged_basket?: { count?: number } | null;
+  staged_basket?: {
+    count?: number; buys?: number; sells?: number;
+    conditional_buys?: number; conditional_reductions?: number;
+  } | null;
 }
 export interface FlowData {
   ov: FlowOverview | null;
@@ -27,6 +28,8 @@ export interface FlowData {
 
 let _cache: FlowData | null = null;
 let _cacheAt = 0;
+let _activeView = "";
+let _activeGroup = "";
 const TTL_MS = 15_000;
 
 async function fetchFlowData(): Promise<FlowData> {
@@ -51,77 +54,71 @@ async function fetchFlowData(): Promise<FlowData> {
 export function invalidateFlowData(): void { _cacheAt = 0; }
 
 // ---- pure builders (exported for tests) -------------------------------------
-// Which pipeline stage a view belongs to. `holdings`/`setup` are stage 1 (the
-// current book) even though they live in the portfolio group, so the bar stays
-// put — and highlights the right step — when you click through to "Current book".
-export function stageForView(view: string): 1 | 2 | 3 | 4 {
-  if (view === "holdings" || view === "setup") return 1;
-  if (view === "target-state") return 3;
-  if (view === "trade") return 4;
-  return 2;  // rebalance / optimizer / working-draft / exit: deciding the changes
+// Which execution stage owns a view. The contextual Exit tool remains part of
+// order construction; Optimizer and pending model changes are no longer here.
+export function stageForView(view: string): 1 | 2 | 3 {
+  if (view === "target-state") return 2;
+  if (view === "trade") return 3;
+  return 1;  // rebalance / exit
 }
-
-// Non-rebalance-group views that still belong to the pipeline and so keep the
-// flow bar visible. Only the "Current book" target (holdings) — the other
-// portfolio views (history, risk, tax, …) aren't pipeline steps.
-const FLOW_VIEWS = new Set(["holdings"]);
 
 const plural = (n: number, s: string) => `${n} ${s}${n === 1 ? "" : "s"}`;
 const ago = (d: number | null | undefined) =>
   d == null ? "" : d === 0 ? "synced today" : d === 1 ? "synced yesterday" : `synced ${d}d ago`;
 
-interface Stage { n: 1 | 2 | 3 | 4; label: string; sub: string; tone: "ok" | "warn" | "muted"; view: string; title: string }
+interface Stage { n: 1 | 2 | 3; label: string; sub: string; tone: "ok" | "warn" | "muted"; view: string; title: string }
 
 export function flowStages(d: FlowData): Stage[] {
-  const snap = d.ov?.snapshot || {};
   const plan = d.ov?.plan;
-  const draft = d.ov?.draft || {};
   const basket = d.ov?.staged_basket || {};
 
-  const workingBit = d.working ? ` · ${plural(d.working, "working order")}` : "";
-  const s1: Stage = snap.exists
-    ? { n: 1, label: "Current book", view: "holdings", tone: snap.stale ? "warn" : "ok",
-        sub: `${plural(snap.positions || 0, "position")} · ${ago(snap.age_days)}${workingBit}`,
-        title: "Your holdings snapshot" + (d.working ? " plus unfilled orders at IBKR" : "") + " — the ground truth every suggestion is computed from" }
-    : { n: 1, label: "Current book", view: "setup", tone: "warn", sub: "no holdings yet",
-        title: "Connect your data to begin" };
-
   const actionable = plan?.actionable || 0;
-  const pending = draft.pending || 0;
-  const bits2 = [];
-  if (actionable) bits2.push(`${actionable} suggested`);
-  if (pending) bits2.push(`${pending} drafted`);
-  if (plan?.gates_open) bits2.push(`${plural(plan.gates_open, "gate")} triggered`);
-  const s2: Stage = { n: 2, label: "Plan changes", view: "rebalance",
-    tone: actionable || pending ? "warn" : "muted",
-    sub: bits2.join(" · ") || (plan ? "nothing to do" : "no plan yet"),
-    title: "Suggested trades from your target bands, plus anything drafted in the Optimizer / Working draft / Exit planner" };
-
   const staged = basket.count || 0;
-  const bits3 = [];
-  if (staged) bits3.push(`${staged} staged`);
-  if (d.working) bits3.push(`${d.working} working`);
-  if (d.working == null) {
-    bits3.push(gatewayConnected(d.gateway || null) ? "orders unavailable" : "IBKR offline");
-  }
+  const buildBits = [];
+  if (staged) buildBits.push(`${staged} queued`);
+  if (actionable) buildBits.push(`${actionable} suggested`);
+  if (plan?.gates_open) buildBits.push(`${plural(plan.gates_open, "gate")} triggered`);
+  const s1: Stage = { n: 1, label: "Build orders", view: "rebalance",
+    tone: staged || actionable ? "warn" : "muted",
+    sub: buildBits.join(" · ") || (plan ? "nothing to do" : "no target model"),
+    title: "Choose amounts and stock or option routes, then add the exact result to the order queue" };
+
   const rows = plan?.rows || 0;
   const inBand = rows - (plan?.out_of_band || 0);
   const cashOff = plan?.cash && plan.cash.status && plan.cash.status !== "IN";
-  const s3: Stage = { n: 3, label: "Target state", view: "target-state",
+  const s2: Stage = { n: 2, label: "Review impact", view: "target-state",
     tone: rows && inBand === rows && !cashOff ? "ok" : "muted",
-    sub: rows ? `${inBand}/${rows} bands in${cashOff ? " · cash off target" : ""}` : "—",
-    title: "Review the current vs projected book before sending any orders" };
+    sub: staged
+      ? `${inBand}/${rows} bands in${cashOff ? " · cash off target" : ""}`
+      : "waiting for queued orders",
+    title: "Approve the portfolio projected from the exact order queue" };
 
-  const s4: Stage = { n: 4, label: "Orders", view: "trade",
+  const placeBits = [];
+  if (staged) placeBits.push(`${staged} queued`);
+  if (d.working) placeBits.push(`${d.working} working`);
+  if (d.working == null) {
+    placeBits.push(gatewayConnected(d.gateway || null) ? "IBKR orders unavailable" : "IBKR offline");
+  }
+  const s3: Stage = { n: 3, label: "Preview & place", view: "trade",
     tone: staged ? "warn" : "muted",
-    sub: bits3.join(" · ") || "nothing staged",
-    title: "Preview staged orders through IBKR and place them one confirmed order at a time" };
+    sub: placeBits.join(" · ") || "nothing queued",
+    title: "Preview the approved queue through IBKR and place confirmed orders" };
 
-  return [s1, s2, s3, s4];
+  return [s1, s2, s3];
 }
 
 export function flowBarHtml(d: FlowData, activeStage: number): string {
-  return flowStages(d).map((s) =>
+  const snap = d.ov?.snapshot || {};
+  const currentView = snap.exists ? "holdings" : "setup";
+  const currentTone = snap.exists && !snap.stale ? "ok" : "warn";
+  const currentSub = snap.exists
+    ? `${plural(snap.positions || 0, "position")} · ${ago(snap.age_days)}`
+    : "connect holdings";
+  const input = `<button type="button" class="flow-input flow-${currentTone}" data-flow-view="${currentView}"` +
+    ` title="The holdings snapshot used to calculate every order and projection">` +
+    `<span>Using</span><strong>Current book</strong><small>${esc(currentSub)}</small></button>` +
+    `<span class="flow-input-link" aria-hidden="true">→</span>`;
+  return input + flowStages(d).map((s) =>
     `<button type="button" class="flow-stage flow-${s.tone}${s.n === activeStage ? " active" : ""}"` +
     ` data-flow-view="${esc(s.view)}" title="${esc(s.title)}">` +
     `<span class="flow-dot">${s.n}</span>` +
@@ -135,6 +132,10 @@ let _wired = false;
 export function initFlowBar(): void {
   if (_wired) return;
   _wired = true;
+  window.addEventListener("assay:queue-changed", () => {
+    invalidateFlowData();
+    if (_activeView) updateFlowBar(_activeView, _activeGroup);
+  });
   const host = $("#flowbar");
   if (!host) return;
   host.addEventListener("click", (e) => {
@@ -145,14 +146,14 @@ export function initFlowBar(): void {
   });
 }
 
-// Show the bar on rebalance-group views plus the pipeline's "Current book"
-// target (holdings), so clicking stage 1 doesn't drop the guide (the shell calls
-// this on every view switch); render instantly from cache, then refresh once the
-// fetch lands.
+// The execution bar replaces rebalance subtabs and is shown only while building,
+// reviewing, or placing orders. Clicking Current book deliberately leaves it.
 export function updateFlowBar(view: string, group: string): void {
+  _activeView = view;
+  _activeGroup = group;
   const host = $("#flowbar");
   if (!host) return;
-  if (group !== "rebalance" && !FLOW_VIEWS.has(view)) { host.hidden = true; return; }
+  if (group !== "rebalance") { host.hidden = true; return; }
   host.hidden = false;
   const stage = stageForView(view);
   if (_cache) host.innerHTML = flowBarHtml(_cache, stage);

@@ -1480,6 +1480,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = rebalance_routes.stage_routes(
                 holdings, body.get("trades"), body.get("selections"),
+                mode=body.get("mode") or "replace",
             )
         except (TypeError, ValueError) as exc:
             return self._send_error_json(400, str(exc))

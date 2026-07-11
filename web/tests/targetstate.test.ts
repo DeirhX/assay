@@ -101,6 +101,13 @@ describe("projection review gate", () => {
     expect(html).toContain("does not change share weights unless assigned");
     expect(html).toContain("NVDA +200 shares");
   });
+
+  it("does not present unstaged plan suggestions as an execution projection", () => {
+    const html = sourceBanner("none", 0, null);
+    expect(html).toContain("order queue empty");
+    expect(html).toContain("Build orders");
+    expect(html).toContain("suggestions are not treated as executable orders");
+  });
 });
 
 describe("compareRows", () => {
@@ -150,18 +157,11 @@ describe("compareRowHtml", () => {
     expect(html).toContain("6.00%");
     expect(html).toContain("ABOVE");
     expect(html).toContain("IN");
-    expect(html).toContain("reb-rule-hold");
+    expect(html).toContain("tstate-resolved");
+    expect(html).toContain("tstate-kind");
     expect(html).toContain("target");
-  });
-
-  it("color-codes and formats the portfolio action", () => {
-    const reduce = compareRows(
-      [row({ name: "TRIM", rule: "trim_only" })],
-      null,
-    )[0];
-    const html = compareRowHtml(reduce, 10);
-    expect(html).toContain("reb-rule-bad");
-    expect(html).toContain(">trim only</span>");
+    expect(html).toContain("<small>now</small>");
+    expect(html).toContain("<small>after</small>");
   });
 
   it("an unchanged row shows a single tick and a single status", () => {
@@ -169,5 +169,22 @@ describe("compareRowHtml", () => {
     const html = compareRowHtml(still, 10);
     expect(html).not.toContain("reb-proj-mark");
     expect(html).not.toContain("tstate-arrow");
+  });
+
+  it("styles sleeve identity and action separately so long labels do not collide", () => {
+    const sleeve = compareRows(
+      [row({
+        name: "semis-equipment", kind: "sleeve", rule: "accumulate",
+        current_pct: 0, status: "BELOW",
+      })],
+      [row({
+        name: "semis-equipment", kind: "sleeve", rule: "accumulate",
+        current_pct: 3.9, status: "BELOW",
+      })],
+    )[0];
+    const html = compareRowHtml(sleeve, 15);
+    expect(html).toContain("sleeve total");
+    expect(html).toContain('class="tstate-rule good"');
+    expect(html).toContain('title="semis-equipment"');
   });
 });

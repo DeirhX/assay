@@ -666,8 +666,8 @@ describe("trade desk staged basket", () => {
 
     const review = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!;
     expect(review.disabled).toBe(true);
-    expect(review.title).toContain("Target state");
-    expect(byText((text) => text === "Review target state →")).toBeTruthy();
+    expect(review.title).toContain("Review impact");
+    expect(byText((text) => text === "Review projected portfolio →")).toBeTruthy();
     expect(apiMock).not.toHaveBeenCalledWith("/api/trade/preview", expect.anything(), expect.anything());
   });
 

@@ -162,9 +162,9 @@ const DEFAULT_VIEW = "today";
 // `setup` (the gear) sits outside the group bar entirely.
 const VIEW_GROUP: Record<string, string> = {
   today: "today",
-  strategy: "strategy",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
-  rebalance: "rebalance", optimizer: "rebalance", "working-draft": "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
+  strategy: "strategy", optimizer: "strategy", "working-draft": "strategy",
+  rebalance: "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
   holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio",
   basket: "basket",
   // Activity is a global audit log (tickers viewed + tasks run), not part of any
@@ -179,7 +179,7 @@ const VIEW_SUBTAB: Record<string, string> = {
   // creation path behind Deep Research — neither needs a duplicate subtab.
   leaderboard: "leaderboard", segment: "leaderboard", deepdive: "deepdive",
   analyses: "analyses", pipeline: "analyses",
-  rebalance: "rebalance", optimizer: "optimizer", "working-draft": "working-draft", exit: "exit", trade: "trade", "target-state": "target-state",
+  strategy: "strategy", optimizer: "optimizer", "working-draft": "working-draft",
   holdings: "holdings", history: "history",
   // Risk/Attribution/Tax are three lenses inside one Analytics destination.
   risk: "risk", attribution: "risk", tax: "risk",
@@ -339,16 +339,15 @@ function updateChrome(active: string) {
 
   // The sub-tab bar only exists for groups that fan out into multiple views.
   const subbar = $$("#subbar");
-  const groupHasSubtabs = group === "research" || group === "rebalance" ||
+  const groupHasSubtabs = group === "strategy" || group === "research" ||
     group === "portfolio" || group === "activity";
   if (subbar) subbar.hidden = !groupHasSubtabs;
   document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
   document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view ?? ""] === wantSub));
 
-  // The rebalance group carries the guided flow bar (current book → plan
-  // changes → target state → orders) so the sibling sub-tabs read as one
-  // pipeline rather than a row of unrelated destinations.
+  // Rebalance uses the workflow bar as its only local navigation. Target-model
+  // tools live under Plan, so execution steps are no longer duplicated as tabs.
   updateFlowBar(active, group);
 }
 
@@ -483,6 +482,13 @@ function initShell() {
   document.querySelectorAll<HTMLElement>(".tab, .subtab").forEach((btn) => {
     btn.addEventListener("click", () => { const v = btn.dataset.view; if (v) goToView(v); });
   });
+  // In-view workflow hand-offs use one delegated route instead of hunting for
+  // a matching tab (Rebalance intentionally has no duplicate subtab row).
+  document.addEventListener("click", (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-shell-view]");
+    const view = target?.dataset.shellView;
+    if (view) goToView(view);
+  });
 
   // Top-level group headers jump to wherever you last were in that group (or its
   // default on first visit), giving the three-item nav some memory.
@@ -493,6 +499,7 @@ function initShell() {
     });
   });
   $$("#brand-home")?.addEventListener("click", () => goToView("today"));
+  $$("#reb-open-exit")?.addEventListener("click", () => goToView("exit"));
 
   // Persistent header search with autocomplete over tickers we already have.
   const topTicker = $$<HTMLInputElement>("#top-ticker");

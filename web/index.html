@@ -31,21 +31,15 @@
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
     <div class="subbar" id="subbar" hidden>
+      <div class="subtabs" data-group="strategy" role="tablist" hidden>
+        <button class="subtab" data-view="strategy" type="button" role="tab">Guided plan</button>
+        <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
+        <button class="subtab" data-view="working-draft" type="button" role="tab">Pending model changes</button>
+      </div>
       <div class="subtabs" data-group="research" role="tablist" hidden>
         <button class="subtab" data-view="leaderboard" type="button" role="tab">Explore</button>
         <button class="subtab" data-view="deepdive" type="button" role="tab">Ticker</button>
         <button class="subtab" data-view="analyses" type="button" role="tab">Deep Research</button>
-      </div>
-      <!-- Grouped to mirror the flow bar: decide changes first, review the
-           projected book, then cross the divider into the order desk. -->
-      <div class="subtabs" data-group="rebalance" role="tablist" hidden>
-        <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
-        <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
-        <button class="subtab" data-view="working-draft" type="button" role="tab">Working draft</button>
-        <button class="subtab" data-view="exit" type="button" role="tab">Exit</button>
-        <button class="subtab" data-view="target-state" type="button" role="tab">Target state</button>
-        <span class="subtab-sep" role="separator" aria-hidden="true"></span>
-        <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
       </div>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
@@ -82,8 +76,8 @@
   </div>
 
   <main>
-    <!-- Rebalance-group flow bar: current book → plan changes → orders → target
-         state. Shown only for rebalance-group views; wired in flowbar.ts. -->
+    <!-- Execution workflow: build orders → review impact → preview and place.
+         Current holdings are shown as an input, not a numbered task. -->
     <nav class="flowbar" id="flowbar" aria-label="Rebalance pipeline" hidden></nav>
 
     <!-- STRATEGY (guided Direction -> Rebalance) -->
@@ -405,12 +399,14 @@
     <section class="view" id="view-rebalance">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Rebalance planner</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders. <span class="signpost">This is the <strong>manual</strong> path — you close drift one name at a time. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Optimizer</strong> resizes the whole book automatically.</span></p></details>
+          <h2>Build orders</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Start from positions outside their target bands, edit the proposed amount, then preview the portfolio impact. Choose shares or an eligible written-option route for each position. You can append the result to the existing queue or explicitly replace earlier Rebalance orders; separately planned Exit routes are retained. Use <strong>Clear amounts</strong> to start one additional trade from zero. Nothing is sent to IBKR here.</p></details>
         </div>
         <div class="reb-head-actions">
-          <button class="primary" id="reb-simulate" type="button" title="Preview the resulting portfolio, cash, and realized Czech tax without changing the order queue">Simulate trades</button>
-          <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset to suggested</button>
+          <button class="ghost" id="reb-open-exit" type="button" title="Open tax-aware tranches and covered-call choices for reductions">Advanced reductions &amp; exits</button>
+          <button class="primary" id="reb-simulate" type="button" title="Preview the resulting portfolio, cash, and realized Czech tax without changing the order queue">Preview impact</button>
+          <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset amounts</button>
+          <button class="ghost" id="reb-clear" type="button" title="Set every trade amount to zero so you can add one new order">Clear amounts</button>
         </div>
       </div>
       <div class="status" id="reb-status"></div>
@@ -424,13 +420,13 @@
     <section class="view" id="view-optimizer">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Portfolio optimizer</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your watchlist picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there. <span class="signpost">This is the <strong>automated</strong> path — it sizes everything at once. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Rebalance</strong> planner is manual, one name at a time.</span></p></details>
+          <h2>Target-model optimizer</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your watchlist picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a target-model proposal you review under <strong>Pending model changes</strong>; it never creates orders or changes holdings by itself.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and watchlist pick, feeding the convictions into the pool (runs in the Task Center)">Analyze the pool</button>
           <button class="primary" id="opt-run" type="button" title="Size the whole pool under the current constraints">Optimize</button>
-          <button class="ghost" id="opt-stage" type="button" title="Send the proposed bands to your working draft for review" disabled>Stage to working draft →</button>
+          <button class="ghost" id="opt-stage" type="button" title="Add the proposed bands to Pending model changes for review" disabled>Add model proposal →</button>
         </div>
       </div>
       <div class="status" id="opt-status"></div>
@@ -441,12 +437,12 @@
     <section class="view" id="view-working-draft">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Working draft</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">A safe scratchpad for changes to your plan. Proposals from strategy runs and manual edits collect here so you can review everything together and apply it in one step. <strong>Commit</strong> makes it live (a backup is kept, so it's reversible); <strong>Discard</strong> throws it away. Pinned names you've chosen are never dropped without flagging it.</p></details>
+          <h2>Pending model changes</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">A safe scratchpad for target-model changes. Proposals from guided planning and the Optimizer collect here so you can review everything together. Applying the model changes target bands; it does <strong>not</strong> trade or change current holdings. A backup is retained for reversal.</p></details>
         </div>
         <div class="reb-head-actions">
-          <button class="primary" id="stage-commit" type="button" title="Promote the working draft to the live target model">Commit to portfolio</button>
-          <button class="ghost" id="stage-discard" type="button" title="Throw away the working draft; the live model is unchanged">Discard draft</button>
+          <button class="primary" id="stage-commit" type="button" title="Promote the pending changes to the live target model; this does not trade">Apply target model</button>
+          <button class="ghost" id="stage-discard" type="button" title="Throw away the pending model changes; the live model is unchanged">Discard changes</button>
         </div>
       </div>
       <div class="status" id="stage-status"></div>
@@ -457,8 +453,8 @@
     <section class="view" id="view-target-state">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Target state</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Review this before opening the Trade desk: if you execute what's on the table, where does the book land? Every targeted name and sleeve is drawn on its band track — a ghost tick for now, a solid tick for after — with headline deltas (bands closed, cash vs its band, net cash, realized Czech tax) up top. Projects the staged order queue when one exists, else the plan's suggested amounts. Approving records this exact queue revision; it never places anything.</p></details>
+          <h2>Review projected portfolio</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Review the exact order queue before IBKR preview: if every queued order executes, where does the portfolio land? Every target and sleeve shows now versus after, together with cash, tax, funding, and position warnings. Suggestions are deliberately excluded here—only queued orders can pass this approval gate.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="tstate-refresh" type="button" title="Recompute the projection">Refresh</button>
@@ -468,14 +464,17 @@
       <div id="tstate-body"></div>
     </section>
 
-    <!-- EXIT (advisory graceful-exit planner) -->
+    <!-- EXIT (contextual reduction and graceful-exit tool) -->
     <section class="view" id="view-exit">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Exit planner</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">A graceful way out of the names the rebalance planner wants to shrink: tax-optimal lot sequencing (Czech 3-year rule), a liquidity-aware multi-day scale-out with a suggested GTC limit ladder, and an options overlay (covered call / protective-put collar). Everything is <strong>advisory</strong> — "Stage tranche" only adds a slice to the order queue, which you still review and place yourself. No option orders are ever placed.</p></details>
+          <h2>Advanced reductions &amp; exits</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">For positions being reduced, compare tax-aware share tranches with executable covered-call routes. Adding a tranche or contract only updates the shared order queue; the projected portfolio must still be approved before IBKR preview, and placement always requires explicit confirmation.</p></details>
         </div>
-        <div class="reb-head-actions" id="exit-controls"></div>
+        <div class="reb-head-actions">
+          <button class="ghost" type="button" data-shell-view="rebalance">← Back to build orders</button>
+          <div id="exit-controls"></div>
+        </div>
       </div>
       <div class="status" id="exit-status"></div>
       <div id="exit-gateway-notice"></div>
@@ -502,8 +501,8 @@
     <section class="view" id="view-trade">
       <div class="reb-head">
         <div class="reb-head-text">
-          <h2>Trade desk</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Review and place the staged order queue through Interactive Brokers via the local Client Portal Gateway. Every order is previewed for margin and commission, and every order needs your explicit confirmation before it is sent. This is the only part of Assay that can place real trades — it is disabled by default and paper-first. Not advice; you are responsible for every order.</p></details>
+          <h2>Preview &amp; place</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Reconcile the approved order queue with IBKR, inspect margin and commission estimates, then confirm placement. This is the only step that can send real orders; trading is disabled by default and should be paper-tested first.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="trade-refresh" type="button" title="Re-check the gateway connection and account">Refresh connection</button>

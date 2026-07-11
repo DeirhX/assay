@@ -168,7 +168,7 @@ describe("rebalance execution route choices", () => {
       .find((node) => node.textContent === "Use")!;
     use.click();
     const stage = [...document.querySelectorAll("button")]
-      .find((node) => node.textContent?.startsWith("Stage 1 order"))!;
+      .find((node) => node.textContent?.startsWith("Add 1 order to queue"))!;
     stage.click();
     await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith(
       "/api/rebalance/stage",
@@ -183,8 +183,40 @@ describe("rebalance execution route choices", () => {
           strike: 93,
           contracts: 1,
         }],
+        mode: "append",
       },
     ));
     expect(state.stagedBasket[0].type).toBe("cash_secured_put");
+  });
+
+  it("can explicitly replace prior rebalance orders instead of appending", async () => {
+    apiMock.mockResolvedValue({
+      trades: [{ type: "stock", symbol: "NVDA", delta_czk: 230_000 }],
+      revision: "replace-rev",
+      reviewed: false,
+    });
+    document.body.innerHTML = '<div id="reb-whatif"></div>';
+    renderWhatif({
+      currency: "CZK",
+      trades: [{ symbol: "NVDA", delta_czk: 230_000 }],
+      summary: {},
+      before_status: {},
+      after: { rows: [] },
+      caveats: [],
+    } as unknown as Whatif);
+
+    const replace = document.querySelector<HTMLInputElement>(
+      'input[name="reb-queue-mode"][value="replace"]',
+    )!;
+    replace.click();
+    const action = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent?.startsWith("Replace rebalance orders with 1 order"))!;
+    action.click();
+
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith(
+      "/api/rebalance/stage",
+      "POST",
+      expect.objectContaining({ mode: "replace" }),
+    ));
   });
 });

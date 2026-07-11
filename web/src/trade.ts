@@ -268,14 +268,14 @@ function updateTradeReviewAvailability(): void {
   btn.disabled = !(hasBasket && connected && _queueState.reviewed && _queueState.valid !== false);
   btn.textContent = "Order review";
   btn.title = !hasBasket
-    ? "Stage orders first"
+    ? "Add orders to the queue first"
     : _queueState.valid === false
       ? "Fix staged stock sells that exceed holdings in Target state"
     : !_queueState.reviewed
-      ? "Approve the current projection in Target state first"
+      ? "Approve the current portfolio projection in Review impact first"
       : !connected
         ? "Connect the IBKR gateway first"
-        : "Preview the staged orders through IBKR";
+        : "Preview the queued orders through IBKR";
 }
 
 async function loadTrade() {
@@ -335,8 +335,8 @@ async function loadTrade() {
       _queueState.valid === false
         ? "The staged queue contains a stock sell larger than the held position. Fix it in Target state before previewing orders."
         : state.stagedBasket.length && !_queueState.reviewed
-        ? "Review and approve the current projected portfolio in Target state before previewing orders."
-        : "Stage orders and connect the IBKR gateway before previewing them.",
+        ? "Review and approve the projected portfolio before previewing orders."
+        : "Add orders to the queue and connect the IBKR gateway before previewing them.",
     );
   } else {
     setTradeDeskTab(_tradeDeskTab);
@@ -445,6 +445,7 @@ async function persistQueue(
   try {
     const saved = await api<TradeQueueState>("/api/trade/basket", "POST", mutation);
     state.stagedBasket = Array.isArray(saved.trades) ? saved.trades : [];
+    window.dispatchEvent(new Event("assay:queue-changed"));
     _queueState = {
       trades: state.stagedBasket.slice(),
       revision: saved.revision || "",
@@ -479,7 +480,7 @@ function renderBasket() {
   if (basket.length) {
     const controls = el("div", "trade-queue-controls");
     if (!_queueState.reviewed) {
-      const review = el("button", "primary", "Review target state →");
+      const review = el("button", "primary", "Review projected portfolio →");
       review.type = "button";
       review.addEventListener("click", () => openWorkflowView("target-state"));
       controls.appendChild(review);
@@ -501,7 +502,7 @@ function renderBasket() {
     const clear = el("button", "ghost", "Clear queue");
     clear.type = "button";
     clear.addEventListener("click", () => {
-      if (window.confirm("Clear every staged order? Your rebalance plan is untouched.")) {
+      if (window.confirm("Clear every queued order? Your target model is untouched.")) {
         void persistQueue({ clear: true }, clear);
       }
     });
@@ -512,8 +513,8 @@ function renderBasket() {
 
   if (!basket.length) {
     card.appendChild(el("div", "hint",
-      "No orders staged. Go to Rebalance, edit the trade sizes, press “Simulate trades”, " +
-      "or stage a share/call route from Exit; then review the projection before opening Order review."));
+      "The order queue is empty. Build orders, preview their impact, and add the chosen share or option routes; " +
+      "then approve the projected portfolio before opening Order review."));
     wrap.appendChild(card);
     updateTradeReviewAvailability();
     return;
@@ -597,7 +598,7 @@ function renderBasket() {
   card.appendChild(el("div", "hint trade-preview-hint",
     _queueState.reviewed
       ? "Projection approved. Open Order review above to reconcile this queue with IBKR working orders."
-      : "IBKR preview is locked until you review and approve this exact queue in Target state."));
+      : "IBKR preview is locked until you review and approve this exact queue in Review impact."));
   card.appendChild(el("div", "status", "")).id = "trade-preview-status";
 
   wrap.appendChild(card);
@@ -1162,6 +1163,7 @@ async function doPlace(btn: HTMLButtonElement) {
     if (res.staged_basket_cleared) {
       state.stagedBasket = [];
       _queueState = { trades: [], revision: "", reviewed: false };
+      window.dispatchEvent(new Event("assay:queue-changed"));
     }
     renderBasket();
     renderPlaceResult(res);

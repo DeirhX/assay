@@ -4,8 +4,8 @@
 // tax-timed, liquidity-aware scale-out: which lots to sell now vs defer past the
 // Czech 3-year exemption, a suggested GTC limit ladder split into tranches, and
 // an options overlay (covered call / protective-put collar). Nothing here trades
-// — "Stage tranche" just adds one slice to the shared order queue. The projected
-// book is reviewed next; placement remains a separate explicit Trade-desk step.
+// — adding a route only updates the shared order queue. The projected book is
+// reviewed next; placement remains a separate explicit confirmation step.
 import {
   $, api, el, esc, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
   relAge,
@@ -435,8 +435,8 @@ function sellSharesReco(p: ExitPosition, elig: { eligible: boolean; reasons: str
     const cta = el("button", "primary exit-reco-cta");
     cta.type = "button";
     cta.textContent = s.tranches.length > 1
-      ? `Stage first slice (${fmtShares(first.shares)} sh) →`
-      : `Stage the sell (${fmtShares(first.shares)} sh) →`;
+      ? `Add first slice (${fmtShares(first.shares)} sh) →`
+      : `Add sell to queue (${fmtShares(first.shares)} sh) →`;
     cta.title = "Add this slice to the order queue, then review the projected portfolio";
     cta.addEventListener("click", () => stageTranche(p.symbol, first.index, cta));
     inner.appendChild(cta);
@@ -697,7 +697,7 @@ function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
     const btnCell = row.lastElementChild as HTMLElement;
     const btn = el("button", "ghost exit-stage-btn");
     btn.type = "button";
-    btn.textContent = "Stage →";
+    btn.textContent = "Add →";
     btn.title = "Add this tranche to the order queue, then review the projected portfolio";
     btn.addEventListener("click", () => stageTranche(p.symbol, tr.index, btn));
     btnCell.appendChild(btn);
@@ -711,13 +711,14 @@ function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
 async function stageTranche(symbol: string, index: number, btn: HTMLButtonElement): Promise<void> {
   const prev = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "Staging…";
+  btn.textContent = "Adding…";
   try {
     const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
       symbol, route: "sell_shares", index, cfg,
     });
     state.stagedBasket = resp.basket.slice() as typeof state.stagedBasket;
-    btn.textContent = "Staged ✓";
+    window.dispatchEvent(new Event("assay:queue-changed"));
+    btn.textContent = "Queued ✓";
     // Projection is a pre-trade safety gate: show where the accumulated order
     // queue lands before offering IBKR preview / placement.
     pushNav({ view: "target-state" });
@@ -737,7 +738,7 @@ async function stageCoveredCall(
 ): Promise<void> {
   const prev = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "Staging…";
+  btn.textContent = "Adding…";
   try {
     const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
       symbol,
@@ -749,7 +750,8 @@ async function stageCoveredCall(
       cfg,
     });
     state.stagedBasket = resp.basket.slice() as typeof state.stagedBasket;
-    btn.textContent = "Staged ✓";
+    window.dispatchEvent(new Event("assay:queue-changed"));
+    btn.textContent = "Queued ✓";
     pushNav({ view: "target-state" });
     setActiveView("target-state");
   } catch (e) {
@@ -786,7 +788,7 @@ function rungStageWarning(r: ExitCoveredCallRung): string | null {
   if (r.stageable !== true || !r.conid) return null;
   if (missingQuote) {
     return r.staging_warning
-      || "⚠ No live bid/ask. You may stage this contract, but preview and placement remain blocked until IBKR returns a fresh quote.";
+      || "⚠ No live bid/ask. You may add this contract to the queue, but preview and placement remain blocked until IBKR returns a fresh quote.";
   }
   if (rungQuoteIsStale(r)) {
     return r.staging_warning
@@ -938,9 +940,9 @@ function coveredCallLadderTable(
         const btn = el("button", "ghost exit-stage-cc-btn");
         btn.type = "button";
         btn.textContent = stagingWarning?.toLowerCase().includes("stale")
-          ? "Refresh & stage →"
-          : "Stage →";
-        btn.title = `Stage ${contracts}× ${fmtNum(r.strike)} call — assignment is conditional`;
+          ? "Refresh & add →"
+          : "Add to queue →";
+        btn.title = `Add ${contracts}× ${fmtNum(r.strike)} call to the order queue — assignment is conditional`;
         btn.addEventListener("click", () => stageCoveredCall(symbol, r, contracts, btn));
         actionCell.appendChild(btn);
         if (stagingWarning) {

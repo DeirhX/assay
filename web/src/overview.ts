@@ -208,10 +208,10 @@ export function planCard(p: PlanSum | null | undefined): string {
 
 export function draftCard(d: DraftSum): string {
   if (!d.pending) return "";
-  return card("warn", "Working draft",
+  return card("warn", "Pending model changes",
     `<span class="chip warn">${d.pending} pending</span>`,
-    `Uncommitted plan changes — the Rebalance planner is previewing the draft, not your live model.`,
-    goBtn("working-draft", "Review & commit →", "primary"));
+    `Proposed target-band changes — applying them updates the model, not current holdings.`,
+    goBtn("working-draft", "Review model changes →", "primary"));
 }
 
 export function stagedBasketCard(b: StagedBasketSum): string {
@@ -229,8 +229,8 @@ export function stagedBasketCard(b: StagedBasketSum): string {
     `${b.buys} share buy${b.buys === 1 ? "" : "s"}, ` +
     `${b.sells} share sell${b.sells === 1 ? "" : "s"}` +
     `${conditional ? ` · conditional: ${conditional}` : ""} · ` +
-    `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "staged direct-share size")} direct-share value — staged for review, not yet placed.`,
-    goBtn("trade", "Trade desk →", "primary"));
+    `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "queued direct-share size")} direct-share value — queued, not yet placed.`,
+    goBtn("target-state", "Review projected portfolio →", "primary"));
 }
 
 export function journalCard(j: JournalSum): string {
@@ -341,10 +341,10 @@ export function attentionItems(v: Overview): AttentionItem[] {
     rows.push({ id: "drift-resync", tone: "bad", title: "Trades postdate the snapshot",
       detail: `${v.drift.n_trades_after} execution${v.drift.n_trades_after === 1 ? "" : "s"} are missing from the current book.`, view: "holdings", action: "Resync" });
   }
-  if (v.draft.pending) rows.push({ id: "commit-draft", tone: "warn", title: "Working draft needs a decision",
-    detail: `${v.draft.pending} target change${v.draft.pending === 1 ? "" : "s"} remain uncommitted.`, view: "working-draft", action: "Review" });
-  if (v.staged_basket.count) rows.push({ id: "place-basket", tone: "warn", title: "Trades are staged",
-    detail: `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} are waiting in the Trade desk.`, view: "trade", action: "Open desk" });
+  if (v.draft.pending) rows.push({ id: "commit-draft", tone: "warn", title: "Target-model changes need a decision",
+    detail: `${v.draft.pending} target change${v.draft.pending === 1 ? "" : "s"} remain unapplied.`, view: "working-draft", action: "Review" });
+  if (v.staged_basket.count) rows.push({ id: "place-basket", tone: "warn", title: "Orders are queued",
+    detail: `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} need a projected-portfolio review.`, view: "target-state", action: "Review impact" });
   if (v.plan?.gates_open) rows.push({ id: "gates-open", tone: "warn", title: "Price levels have triggered",
     detail: `${v.plan.gates_open} locked level${v.plan.gates_open === 1 ? " is" : "s are"} actionable.`, view: "rebalance", action: "Review" });
   if (v.plan?.actionable) rows.push({ id: "rebalance", tone: "warn", title: "The portfolio is outside plan",

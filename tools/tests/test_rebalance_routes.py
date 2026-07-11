@@ -197,6 +197,74 @@ def test_stage_rejects_aggregate_put_collateral_above_cash(_basket):
             raise AssertionError("insufficient cash must reject staging")
 
 
+def test_append_mode_keeps_existing_queue_and_adds_new_stock_amounts():
+    existing = [
+        {
+            "type": "stock", "symbol": "AAPL", "delta_czk": 100_000,
+            "provenance": [{"source": "rebalance_routes"}],
+        },
+        {
+            "type": "stock", "symbol": "MSFT", "delta_czk": -40_000,
+            "provenance": [{"source": "exit_plan"}],
+        },
+    ]
+    with mock.patch.object(trade_service, "load_basket", return_value=existing), \
+            mock.patch.object(
+                trade_service, "save_basket",
+                side_effect=lambda rows: trade_service._normalize_basket(rows),
+            ), \
+            mock.patch.object(
+                trade_service, "cash_secured_put_capacity",
+                return_value={"available_cash_czk": 1_000_000},
+            ):
+        out = rebalance_routes.stage_routes(
+            _holdings(),
+            [{"symbol": "NVDA", "delta_czk": 230_000}],
+            [],
+            mode="append",
+        )
+    stocks = {
+        row["symbol"]: row["delta_czk"]
+        for row in out["basket"] if row["type"] == "stock"
+    }
+    assert stocks == {"AAPL": 100_000.0, "MSFT": -40_000.0, "NVDA": 230_000.0}
+    assert out["mode"] == "append"
+
+
+def test_replace_mode_removes_prior_rebalance_legs_but_keeps_exit_routes():
+    existing = [
+        {
+            "type": "stock", "symbol": "AAPL", "delta_czk": 100_000,
+            "provenance": [{"source": "rebalance_routes"}],
+        },
+        {
+            "type": "stock", "symbol": "MSFT", "delta_czk": -40_000,
+            "provenance": [{"source": "exit_plan"}],
+        },
+    ]
+    with mock.patch.object(trade_service, "load_basket", return_value=existing), \
+            mock.patch.object(
+                trade_service, "save_basket",
+                side_effect=lambda rows: trade_service._normalize_basket(rows),
+            ), \
+            mock.patch.object(
+                trade_service, "cash_secured_put_capacity",
+                return_value={"available_cash_czk": 1_000_000},
+            ):
+        out = rebalance_routes.stage_routes(
+            _holdings(),
+            [{"symbol": "NVDA", "delta_czk": 230_000}],
+            [],
+            mode="replace",
+        )
+    stocks = {
+        row["symbol"]: row["delta_czk"]
+        for row in out["basket"] if row["type"] == "stock"
+    }
+    assert stocks == {"MSFT": -40_000.0, "NVDA": 230_000.0}
+    assert out["mode"] == "replace"
+
+
 def _put_leg():
     return {
         "type": "cash_secured_put",
@@ -333,6 +401,12 @@ class RebalanceRouteUnittestCoverage(TestCase):
 
     def test_stage_cash_rejection(self):
         test_stage_rejects_aggregate_put_collateral_above_cash()
+
+    def test_append_mode(self):
+        test_append_mode_keeps_existing_queue_and_adds_new_stock_amounts()
+
+    def test_replace_mode(self):
+        test_replace_mode_removes_prior_rebalance_legs_but_keeps_exit_routes()
 
     def test_canonical_put(self):
         test_canonical_put_leg_preserves_explicit_right_and_type()

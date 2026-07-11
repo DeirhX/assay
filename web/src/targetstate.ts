@@ -11,7 +11,6 @@
 // Approving records only the exact queue revision shown; this view never trades.
 import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
 import type { PlanRow, RebalancePlan, TradeQueueState, Whatif, WhatifTrade } from "./api-types";
-import { ruleTone, ruleWord } from "./band-viz";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
@@ -70,6 +69,17 @@ export function compareRows(before: PlanRow[], after: PlanRow[] | null): Compare
 }
 
 const statusCls = (s: string) => (s === "ABOVE" ? "bad" : s === "BELOW" ? "warn" : "good");
+const ruleCls = (rule: string) => {
+  const normalized = rule.toLowerCase();
+  if (normalized.includes("reduce") || normalized.includes("trim")) return "bad";
+  if (
+    normalized.includes("wait")
+    || normalized.includes("don\u2019t add")
+    || normalized.includes("don't add")
+  ) return "warn";
+  if (normalized.includes("accumulate") || normalized.includes("add")) return "good";
+  return "muted";
+};
 
 export function scaleMaxOf(rows: CompareRow[]): number {
   const vals: number[] = [];
@@ -93,18 +103,32 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
   const arrow = r.changed
     ? `<span class="chip ${statusCls(r.statusBefore)} tstate-before">${esc(r.statusBefore)}</span><span class="tstate-arrow">→</span>${afterChip}`
     : afterChip;
-  return `<div class="tstate-row${r.changed ? " tstate-changed" : ""}">` +
-    `<div class="tstate-name"><strong>${esc(r.name)}</strong>` +
-      `<span class="tstate-scope">${r.kind === "sleeve" ? "sleeve total" : "target"}</span>` +
-      `<span class="reb-rule reb-rule-${ruleTone(r.rule)}">${esc(ruleWord(r.rule) || r.rule)}</span></div>` +
+  const outcome = (
+    r.statusBefore !== "IN" && r.statusAfter === "IN"
+      ? " tstate-resolved"
+      : r.statusBefore === "IN" && r.statusAfter !== "IN"
+        ? " tstate-regressed"
+        : r.statusAfter !== "IN"
+          ? " tstate-unresolved"
+          : ""
+  );
+  const kind = r.kind === "sleeve" ? "sleeve total" : "target";
+  return `<div class="tstate-row${r.changed ? " tstate-changed" : ""}${outcome}">` +
+    `<div class="tstate-name">` +
+      `<strong title="${esc(r.name)}">${esc(r.name)}</strong>` +
+      `<span class="tstate-name-meta"><span class="tstate-kind">${kind}</span>` +
+      `<span class="tstate-rule ${ruleCls(r.rule)}">${esc(r.rule)}</span></span>` +
+    `</div>` +
     `<div class="reb-track" role="img" aria-label="${esc(r.name)}: now ${r.cur.toFixed(1)}%, after ${r.proj.toFixed(1)}%, band ${r.low}–${r.high}%">` +
       `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
       conn +
       `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="now ${r.cur.toFixed(2)}%"></span>` +
       (r.changed ? `<span class="reb-proj-mark ${inAfter ? "in" : "out"}" style="left:${r1(projP)}%" title="after ${r.proj.toFixed(2)}%"></span>` : "") +
     `</div>` +
-    `<div class="tstate-nums">${r.cur.toFixed(2)}%` +
-    (r.changed ? ` <span class="tstate-arrow">→</span> <strong>${r.proj.toFixed(2)}%</strong>` : "") +
+    `<div class="tstate-nums"><span><small>now</small>${r.cur.toFixed(2)}%</span>` +
+    (r.changed
+      ? ` <span class="tstate-arrow">→</span> <strong><small>after</small>${r.proj.toFixed(2)}%</strong>`
+      : "") +
     `</div>` +
     `<div class="tstate-status">${arrow}</div>` +
     `</div>`;
@@ -168,7 +192,7 @@ export function sourceBanner(
       )
       .join(" · ");
     return `<div class="tstate-src"><span class="chip warn">order queue</span>` +
-      ` Projected from the <strong>${n} staged order${n === 1 ? "" : "s"}</strong> waiting in the Trade desk — review this outcome before placing them.` +
+      ` Projected from the <strong>${n} queued order${n === 1 ? "" : "s"}</strong> — review this exact outcome before IBKR preview.` +
       (optionCount
         ? ` ${optionCount} written option${optionCount === 1 ? " is" : "s are"} conditional and ` +
           `${optionCount === 1 ? "does" : "do"} not change share weights unless assigned.` +
@@ -178,8 +202,8 @@ export function sourceBanner(
         ? ` <button class="primary" type="button" disabled>Fix blocked sells first</button>`
         : reviewed
         ? ` <span class="chip good">projection approved</span>` +
-          ` <button class="primary" type="button" data-ts-goto="trade">Open Trade desk →</button>`
-        : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve this projection →</button>`) +
+          ` <button class="primary" type="button" data-ts-goto="trade">Preview &amp; place →</button>`
+        : ` <button class="primary" type="button" data-ts-review="${esc(queue?.revision || "")}">Approve order queue →</button>`) +
       `</div>`;
   }
   if (source === "suggestions") {
@@ -187,8 +211,9 @@ export function sourceBanner(
       ` Nothing is staged yet, so this projects the <strong>${n} suggested amount${n === 1 ? "" : "s"}</strong> from the Rebalance planner — the book if you simply took every suggestion.` +
       ` <button class="ghost" type="button" data-ts-goto="rebalance">Adjust the plan →</button></div>`;
   }
-  return `<div class="tstate-src"><span class="chip good">at rest</span>` +
-    ` No staged orders and no suggested trades — the projection equals the current book.</div>`;
+  return `<div class="tstate-src"><span class="chip muted">order queue empty</span>` +
+    ` Build and queue orders first. Plan suggestions are not treated as executable orders on this safety screen.` +
+    ` <button class="primary" type="button" data-ts-goto="rebalance">Build orders →</button></div>`;
 }
 
 function render(
@@ -205,9 +230,11 @@ function render(
   const changed = rows.filter((r) => r.changed);
   const same = rows.filter((r) => !r.changed);
 
-  const head = `<div class="tstate-head-row"><span class="tstate-col-name">Name</span>` +
-    `<span>0–${scaleMax}% of book · <span class="tstate-ghost-key">◦ now</span> · <span class="tstate-proj-key">● after</span></span>` +
-    `<span class="tstate-col-nums">now → after</span><span>status</span></div>`;
+  const head = `<div class="tstate-head-row"><span class="tstate-col-name">Position</span>` +
+    `<span class="tstate-col-track">Allocation path <small>0–${scaleMax}% of book · ` +
+    `<span class="tstate-band-key">target band</span> · ` +
+    `<span class="tstate-ghost-key">◆ now</span> · <span class="tstate-proj-key">● after</span></small></span>` +
+    `<span class="tstate-col-nums">Weight</span><span>Status</span></div>`;
 
   const changedBlock = changed.length
     ? `<div class="tstate-grid">${head}${changed.map((r) => compareRowHtml(r, scaleMax)).join("")}</div>`
@@ -227,7 +254,6 @@ function render(
       `</div></details>`
     : "";
 
-  const caveats = (wf && wf.caveats || []).map((c) => `<div class="hint">${esc(c)}</div>`).join("");
   const violations = (wf && wf.stock_sell_violations) || queue?.stock_sell_violations || [];
   const projectionValid = wf ? wf.valid !== false : queue?.valid !== false;
   const violationsBlock = violations.length
@@ -240,12 +266,18 @@ function render(
       ).join("") +
       `</div>`
     : "";
+  const caveats = (wf && wf.caveats || []).map((c) => {
+    const severe = /negative|blocked|exceed|cannot/i.test(c);
+    return `<div class="tstate-caveat${severe ? " bad" : ""}">` +
+      `<span aria-hidden="true">${severe ? "!" : "i"}</span><p>${esc(c)}</p></div>`;
+  }).join("");
 
   body.innerHTML =
     sourceBanner(source, nTrades, queue, projectionValid) +
     violationsBlock +
     summaryTiles(plan, wf, rows) +
-    changedBlock + sameBlock + tradesBlock + caveats;
+    changedBlock + sameBlock + tradesBlock +
+    (caveats ? `<div class="tstate-caveats">${caveats}</div>` : "");
 }
 
 // ---- load --------------------------------------------------------------------
@@ -263,12 +295,12 @@ async function loadTargetState(): Promise<void> {
     return;
   }
 
-  // Projection source: the staged basket wins (it's what will be placed);
-  // else the plan's suggested amounts; else nothing (projection = now).
+  // This is an execution gate, so only the exact order queue is projected.
+  // Suggestions remain visible in Build orders but never masquerade as orders.
   let trades: WhatifTrade[] = [];
   let stagedCount = 0;
   let source: "basket" | "suggestions" | "none" = "none";
-  let queue: TradeQueueState | null = null;
+  let queue: TradeQueueState;
   try {
     queue = await api<TradeQueueState>("/api/trade/basket");
     if (Array.isArray(queue.trades) && queue.trades.length) {
@@ -280,10 +312,12 @@ async function loadTargetState(): Promise<void> {
         .map((trade) => ({ symbol: trade.symbol, delta_czk: trade.delta_czk }));
       source = "basket";
     }
-  } catch { /* fall through to suggestions */ }
-  if (source !== "basket") {
-    trades = deriveSuggestionTrades(plan);
-    source = trades.length ? "suggestions" : "none";
+  } catch (e) {
+    if (status) {
+      status.textContent = "Could not load the order queue: " + (e as Error).message;
+      status.classList.add("err");
+    }
+    return;
   }
 
   let wf: Whatif | null = null;
@@ -317,7 +351,7 @@ function initTargetState(): void {
         .then(() => {
           review.className = "ghost";
           review.textContent = "Projection approved ✓";
-          const open = el("button", "primary", "Open Trade desk →");
+          const open = el("button", "primary", "Preview & place →");
           open.type = "button";
           open.dataset.tsGoto = "trade";
           review.insertAdjacentElement("afterend", open);
@@ -325,7 +359,7 @@ function initTargetState(): void {
         })
         .catch((err) => {
           review.disabled = false;
-          review.textContent = "Approve this projection →";
+          review.textContent = "Approve order queue →";
           if (status) {
             status.classList.add("err");
             status.textContent = (err as Error).message;
