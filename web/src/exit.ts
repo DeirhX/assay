@@ -4,8 +4,8 @@
 // tax-timed, liquidity-aware scale-out: which lots to sell now vs defer past the
 // Czech 3-year exemption, a suggested GTC limit ladder split into tranches, and
 // an options overlay (covered call / protective-put collar). Nothing here trades
-// — "Stage tranche" just drops one slice into the shared trade-desk basket, which
-// you still preview and place by hand on the Trade view.
+// — "Stage tranche" just adds one slice to the shared order queue. The projected
+// book is reviewed next; placement remains a separate explicit Trade-desk step.
 import {
   $, api, el, esc, fmtCZK, loadError, relAge, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
 } from "./core";
@@ -237,7 +237,7 @@ function recommendationBlock(p: ExitPosition): HTMLElement {
     cta.textContent = s.tranches.length > 1
       ? `Stage first slice (${fmtNum(first.shares)} sh) →`
       : `Stage the sell (${fmtNum(first.shares)} sh) →`;
-    cta.title = "Drop this slice into the Trade desk basket (you still preview & place it)";
+    cta.title = "Add this slice to the order queue, then review the projected portfolio";
     cta.addEventListener("click", () => stageTranche(p.symbol, first.index, cta));
     sharePanel.appendChild(cta);
   }
@@ -377,7 +377,7 @@ function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
     const btn = el("button", "ghost exit-stage-btn");
     btn.type = "button";
     btn.textContent = "Stage →";
-    btn.title = "Drop this tranche into the Trade desk basket (you still preview & place it)";
+    btn.title = "Add this tranche to the order queue, then review the projected portfolio";
     btn.addEventListener("click", () => stageTranche(p.symbol, tr.index, btn));
     btnCell.appendChild(btn);
     tbody.appendChild(row);
@@ -395,9 +395,10 @@ async function stageTranche(symbol: string, index: number, btn: HTMLButtonElemen
     const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", { symbol, index, cfg });
     state.stagedBasket = resp.basket.slice();
     btn.textContent = "Staged ✓";
-    // Jump to the trade desk so the human can preview/place the accumulated basket.
-    pushNav({ view: "trade" });
-    setActiveView("trade");
+    // Projection is a pre-trade safety gate: show where the accumulated order
+    // queue lands before offering IBKR preview / placement.
+    pushNav({ view: "target-state" });
+    setActiveView("target-state");
   } catch (e) {
     btn.textContent = "Failed";
     btn.title = (e as Error)?.message || "stage failed";
@@ -415,8 +416,8 @@ async function stageCoveredCall(symbol: string, rungIndex: number, btn: HTMLButt
     }, { timeoutMs: 60_000 });
     state.stagedBasket = resp.basket.slice();
     btn.textContent = "Staged ✓";
-    pushNav({ view: "trade", tab: "review" });
-    setActiveView("trade");
+    pushNav({ view: "target-state" });
+    setActiveView("target-state");
   } catch (e) {
     btn.textContent = "Unavailable";
     btn.title = (e as Error)?.message || "covered-call staging failed";

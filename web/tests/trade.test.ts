@@ -43,6 +43,11 @@ function order(over = {}) {
 async function previewWith(status: object, preview: object, place: object = {}) {
   apiMock.mockImplementation((path: string) => {
     if (path === "/api/trade/status") return Promise.resolve(status);
+    if (path === "/api/trade/basket") {
+      return Promise.resolve({
+        trades: state.stagedBasket, revision: "queue-rev", reviewed: true, reviewed_at: null,
+      });
+    }
     if (path === "/api/trade/preview") return Promise.resolve(preview);
     if (path === "/api/trade/place") return Promise.resolve(place);
     return Promise.resolve({ orders: [] });
@@ -64,7 +69,10 @@ beforeEach(() => {
   document.querySelectorAll(".modal-overlay").forEach((n) => n.remove());
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("trade desk placement gating", () => {
   it("keeps Place disabled until every order is confirmed, then unlocks on paper", async () => {
@@ -76,6 +84,11 @@ describe("trade desk placement gating", () => {
     const place = byText((t) => t.startsWith("Place"))!;
     expect(place).toBeTruthy();
     expect(place.disabled).toBe(true); // nothing ticked yet
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/preview", "POST",
+      expect.objectContaining({ queue_revision: "queue-rev" }),
+      { timeoutMs: 60_000 },
+    );
 
     // Marking one order ready still leaves placement blocked by the other.
     const ready = [...document.querySelectorAll<HTMLButtonElement>('#trade-result .trade-order-ready')];
@@ -269,7 +282,10 @@ describe("trade desk safety gates", () => {
       .getAttribute("aria-selected")).toBe("true");
     expect(document.querySelector(".trade-review-loading")!.textContent).toContain("Preparing order review");
 
-    resolveBasket({ trades: [{ symbol: "AAPL", delta_czk: 1000 }] });
+    resolveBasket({
+      trades: [{ symbol: "AAPL", delta_czk: 1000 }],
+      revision: "queue-rev", reviewed: true,
+    });
     await loading;
     await flush();
     expect(document.querySelector(".trade-preview-card")).toBeTruthy();
@@ -279,7 +295,9 @@ describe("trade desk safety gates", () => {
     const basket = [{ symbol: "NVDA", delta_czk: -1000 }, { symbol: "AAPL", delta_czk: 500 }];
     apiMock.mockImplementation((path: string) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
-      if (path === "/api/trade/basket") return Promise.resolve({ trades: basket });
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({ trades: basket, revision: "queue-rev", reviewed: true });
+      }
       if (path === "/api/trade/orders")
         return Promise.resolve({ orders: [{ orderId: "o-1", ticker: "NVDA", side: "SELL",
           orderType: "LMT", price: 180, tif: "GTC", status: "Submitted" }] });
@@ -398,7 +416,7 @@ async function loadWith(status: object, orders: object[], quotes: Record<string,
     if (path === "/api/trade/orders") return Promise.resolve({ orders });
     if (path.startsWith("/api/trade/quotes")) return Promise.resolve({ quotes });
     if (path === "/api/trade/cancel") return Promise.resolve({ ok: true });
-    return Promise.resolve({ trades: [] });  // /api/trade/basket
+    return Promise.resolve({ trades: [], revision: "", reviewed: false });  // /api/trade/basket
   });
   await loadTrade();
   await flush();
@@ -672,6 +690,69 @@ describe("trade desk order pegging", () => {
 });
 
 describe("trade desk staged basket", () => {
+  it("locks IBKR preview until the exact queue projection is approved", async () => {
+    const basket = [{ symbol: "NVDA", delta_czk: 1000 }];
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({ trades: basket, revision: "unreviewed-rev", reviewed: false });
+      }
+      return Promise.resolve({ orders: [] });
+    });
+    await loadTrade();
+    await flush();
+
+    const review = document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!;
+    expect(review.disabled).toBe(true);
+    expect(review.title).toContain("Target state");
+    expect(byText((text) => text === "Review target state →")).toBeTruthy();
+    expect(apiMock).not.toHaveBeenCalledWith("/api/trade/preview", expect.anything(), expect.anything());
+  });
+
+  it("removes individual orders, clears the queue, and invalidates review", async () => {
+    const basket = [
+      { symbol: "NVDA", delta_czk: 1000 },
+      { symbol: "ARM", delta_czk: -500 },
+    ];
+    apiMock.mockImplementation((
+      path: string, method?: string,
+      body?: { remove_leg_id?: string; clear?: boolean },
+    ) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket" && method === "POST") {
+        const trades = body?.clear
+          ? []
+          : basket.filter((trade) => `stock:${trade.symbol}` !== body?.remove_leg_id);
+        return Promise.resolve({
+          trades, revision: trades.length ? "changed-rev" : "", reviewed: false,
+        });
+      }
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({ trades: basket, revision: "reviewed-rev", reviewed: true });
+      }
+      if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
+      return Promise.resolve({ orders: [] });
+    });
+    await loadTrade();
+    await flush();
+    expect(document.querySelector(".chip.good")?.textContent).toContain("projection approved");
+
+    document.querySelector<HTMLButtonElement>('[data-queue-remove="stock:NVDA"]')!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket", "POST", { remove_leg_id: "stock:NVDA" },
+    );
+    expect(state.stagedBasket).toEqual([{ symbol: "ARM", delta_czk: -500 }]);
+    expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.disabled).toBe(true);
+
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    byText((text) => text === "Clear queue")!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith("/api/trade/basket", "POST", { clear: true });
+    expect(state.stagedBasket).toEqual([]);
+    expect(document.querySelector(".trade-basket-table")).toBeFalsy();
+  });
+
   it("renders side, coloured amounts, a diverging size bar, trend slots and totals", async () => {
     const basket = [
       { symbol: "NVDA", delta_czk: 1000 },   // largest -> full half-bar
@@ -679,7 +760,9 @@ describe("trade desk staged basket", () => {
     ];
     apiMock.mockImplementation((path: string) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
-      if (path === "/api/trade/basket") return Promise.resolve({ trades: basket });
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({ trades: basket, revision: "queue-rev", reviewed: false });
+      }
       if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
       return Promise.resolve({ orders: [] });
     });

@@ -126,8 +126,11 @@ from ticker_directory import (  # noqa: E402  -- known-symbol universe, recents 
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
-    _trade_tickle, load_basket as _load_basket,
+    _trade_tickle, basket_state as _basket_state, load_basket as _load_basket,
+    remove_basket_leg as _remove_basket_leg,
     replace_stock_basket as _replace_stock_basket,
+    review_basket as _review_basket,
+    save_basket as _save_basket,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -373,6 +376,7 @@ _POST_EXACT = {
     "/api/trade/peg": "_post_trade_peg",
     "/api/trade/peg/stop": "_post_trade_peg_stop",
     "/api/trade/basket": "_post_trade_basket",
+    "/api/trade/basket/review": "_post_trade_basket_review",
     "/api/journal": "_post_journal",
     "/api/journal/outcome": "_post_journal_outcome",
     "/api/symbol-alias": "_post_symbol_alias",
@@ -828,9 +832,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({"quotes": _trade_quotes(conids)})
 
     def _get_trade_basket(self, path, query):
-        # The basket the planner last staged, so the trade desk can rehydrate it
-        # after a reload instead of losing it to an in-browser-only hand-off.
-        return self._send_json({"trades": _load_basket()})
+        # Include the content revision and projection-review status so the Trade
+        # desk can fail closed when the queue changed after Target-state review.
+        return self._send_json(_basket_state())
 
     def _get_login_status(self, path, query):
         return self._send_json(_get_auth_state())
@@ -1446,7 +1450,17 @@ class Handler(BaseHTTPRequestHandler):
         # Rebalance owns stock legs only. Preserve option legs staged through the
         # server-validated Exit endpoint and reject client-invented option specs.
         body = self._read_body()
-        return self._send_json({"trades": _replace_stock_basket(body.get("trades"))})
+        if body.get("clear") is True:
+            _save_basket([])
+        elif body.get("remove_leg_id") is not None:
+            _remove_basket_leg(body.get("remove_leg_id"))
+        else:
+            _replace_stock_basket(body.get("trades"))
+        return self._send_json(_basket_state())
+
+    def _post_trade_basket_review(self, path):
+        body = self._read_body()
+        return self._send_json(_review_basket(body.get("revision")))
 
     def _post_journal(self, path):
         body = self._read_body()

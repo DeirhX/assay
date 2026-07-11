@@ -126,9 +126,9 @@ function poolTable(): string {
 // stops competing with the result for screen space.
 function poolDrawer(): string {
   if (!_pool.length) {
-    return `<div class="opt-card empty"><strong>Your pool is empty.</strong><br>Hold positions, or star tickers into your basket, then come back to size the whole book.</div>`;
+    return `<div class="opt-card empty"><strong>Your pool is empty.</strong><br>Hold positions, or star tickers into your watchlist, then come back to size the whole book.</div>`;
   }
-  return `<details class="opt-pool-details" id="opt-pool-details" open>` +
+  return `<details class="opt-pool-details" id="opt-pool-details">` +
     `<summary class="opt-pool-bar">` +
       `<span class="opt-pool-caret" aria-hidden="true"></span>` +
       `<span class="opt-pool-title">Candidate pool</span>` +

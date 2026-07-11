@@ -8,20 +8,21 @@
 </head>
 <body>
   <header class="topbar">
-    <h1><button class="brand-home active" id="brand-home" type="button" aria-label="Open Today dashboard" aria-current="page">Assay</button></h1>
+    <h1><button class="brand-home" id="brand-home" type="button" aria-label="Open Today dashboard">Assay</button></h1>
     <div class="groups" role="tablist" aria-label="Sections">
+      <button class="group" data-group="today" type="button" role="tab">Today</button>
       <button class="group" data-group="strategy" type="button" role="tab">Plan</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
       <button class="group" data-group="rebalance" type="button" role="tab">Rebalance</button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
-      <button class="group" data-group="basket" type="button" role="tab">Watchlist <span class="group-badge" id="basket-count" hidden></span></button>
-      <button class="group" data-group="activity" type="button" role="tab">Activity</button>
     </div>
     <div class="topsearch">
       <input id="top-ticker" placeholder="Search ticker…" autocomplete="off" spellcheck="false" aria-label="Search any ticker" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="top-ticker-menu">
       <div class="topsearch-menu" id="top-ticker-menu" role="listbox" hidden></div>
     </div>
     <div class="spacer"></div>
+    <button class="tab utility-tab" data-view="basket" type="button">Watchlist <span class="group-badge" id="basket-count" hidden></span></button>
+    <button class="tab utility-tab" data-view="activity" type="button">Activity</button>
     <button class="task-indicator" id="task-indicator" type="button" aria-expanded="false" aria-controls="task-panel" title="Background tasks">Tasks</button>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
@@ -30,30 +31,29 @@
     </button>
     <div class="subbar" id="subbar" hidden>
       <div class="subtabs" data-group="research" role="tablist" hidden>
-        <button class="subtab" data-view="leaderboard" type="button" role="tab">Leaderboard</button>
+        <button class="subtab" data-view="leaderboard" type="button" role="tab">Explore</button>
         <button class="subtab" data-view="deepdive" type="button" role="tab">Ticker</button>
-        <button class="subtab" data-view="analyses" type="button" role="tab">Reports</button>
-        <button class="subtab" data-view="segment" type="button" role="tab">Segments</button>
+        <button class="subtab" data-view="analyses" type="button" role="tab">Deep Research</button>
       </div>
-      <!-- Grouped to mirror the flow bar: the first four are all "Plan changes"
-           tools (stage 2); the divider fences off the outcome stages — Trade
-           ("Orders", stage 3) and Target state (the projected book, stage 4). -->
+      <!-- Grouped to mirror the flow bar: decide changes first, review the
+           projected book, then cross the divider into the order desk. -->
       <div class="subtabs" data-group="rebalance" role="tablist" hidden>
         <button class="subtab" data-view="rebalance" type="button" role="tab">Rebalance</button>
         <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
         <button class="subtab" data-view="working-draft" type="button" role="tab">Working draft</button>
         <button class="subtab" data-view="exit" type="button" role="tab">Exit</button>
+        <button class="subtab" data-view="target-state" type="button" role="tab">Target state</button>
         <span class="subtab-sep" role="separator" aria-hidden="true"></span>
         <button class="subtab" data-view="trade" type="button" role="tab">Trade</button>
-        <button class="subtab" data-view="target-state" type="button" role="tab">Target state</button>
       </div>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="history" type="button" role="tab">History</button>
-        <button class="subtab" data-view="risk" type="button" role="tab">Risk</button>
-        <button class="subtab" data-view="attribution" type="button" role="tab">Attribution</button>
-        <button class="subtab" data-view="tax" type="button" role="tab">Tax</button>
-        <button class="subtab" data-view="journal" type="button" role="tab">Journal</button>
+        <button class="subtab" data-view="risk" type="button" role="tab">Analytics</button>
+      </div>
+      <div class="subtabs" data-group="activity" role="tablist" hidden>
+        <button class="subtab" data-view="activity" type="button" role="tab">Activity</button>
+        <button class="subtab" data-view="journal" type="button" role="tab">Decisions</button>
       </div>
     </div>
   </header>
@@ -408,7 +408,7 @@
           <details class="view-help"><summary>How this works</summary><p class="hint">Drift of every targeted name vs its no-trade band, with the minimal band-closing trade sized in CZK. Edit any planned amount to simulate — the cash math and projected weights update live. Weights are % of the invested book (market value ÷ invested), matching <code>rebalance.py --check</code>. This is advice, not orders. <span class="signpost">This is the <strong>manual</strong> path — you close drift one name at a time. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Optimizer</strong> resizes the whole book automatically.</span></p></details>
         </div>
         <div class="reb-head-actions">
-          <button class="primary" id="reb-simulate" type="button" title="Recompute the resulting portfolio, cash, and realized Czech tax for the planned trades">Simulate basket</button>
+          <button class="primary" id="reb-simulate" type="button" title="Preview the resulting portfolio, cash, and realized Czech tax without changing the order queue">Simulate trades</button>
           <button class="ghost" id="reb-reset" type="button" title="Reset all planned amounts to the suggestions">Reset to suggested</button>
         </div>
       </div>
@@ -423,10 +423,10 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Portfolio optimizer</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your basket picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there. <span class="signpost">This is the <strong>automated</strong> path — it sizes everything at once. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Rebalance</strong> planner is manual, one name at a time.</span></p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your watchlist picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a proposal you preview and stage into the working draft; nothing changes your live model until you commit there. <span class="signpost">This is the <strong>automated</strong> path — it sizes everything at once. The <strong>Plan</strong> tab is the guided, research-first route; the <strong>Rebalance</strong> planner is manual, one name at a time.</span></p></details>
         </div>
         <div class="reb-head-actions">
-          <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and basket pick, feeding the convictions into the pool (runs in the Task Center)">Analyze the pool</button>
+          <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and watchlist pick, feeding the convictions into the pool (runs in the Task Center)">Analyze the pool</button>
           <button class="primary" id="opt-run" type="button" title="Size the whole pool under the current constraints">Optimize</button>
           <button class="ghost" id="opt-stage" type="button" title="Send the proposed bands to your working draft for review" disabled>Stage to working draft →</button>
         </div>
@@ -451,12 +451,12 @@
       <div id="stage-body"></div>
     </section>
 
-    <!-- TARGET STATE (flow-bar stage 4: current vs projected book) -->
+    <!-- TARGET STATE (flow-bar stage 3: pre-trade projection review) -->
     <section class="view" id="view-target-state">
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Target state</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">If you execute what's on the table, where does the book land? Every targeted name and sleeve drawn on its band track — a ghost tick for now, a solid tick for after — with the headline deltas (bands closed, cash vs its band, net cash, realized Czech tax) up top. Projects the staged basket when one exists, else the plan's suggested amounts. Read-only: nothing here stages or places anything.</p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Review this before opening the Trade desk: if you execute what's on the table, where does the book land? Every targeted name and sleeve is drawn on its band track — a ghost tick for now, a solid tick for after — with headline deltas (bands closed, cash vs its band, net cash, realized Czech tax) up top. Projects the staged order queue when one exists, else the plan's suggested amounts. Approving records this exact queue revision; it never places anything.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="tstate-refresh" type="button" title="Recompute the projection">Refresh</button>
@@ -471,7 +471,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Exit planner</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">A graceful way out of the names the rebalance planner wants to shrink: tax-optimal lot sequencing (Czech 3-year rule), a liquidity-aware multi-day scale-out, and a choice between selling shares or staging an exact, live-quoted covered call. Every route still goes through Trade preview and explicit confirmation. Protective puts and collars remain analysis-only.</p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">A graceful way out of names the rebalance planner wants to shrink: tax-aware lot sequencing, a liquidity-aware scale-out, and a choice between selling shares or staging an exact, live-quoted covered call. Staging adds the route to the order queue; you still review the projected book, approve that exact queue revision, and explicitly confirm it in Trade. Protective puts and collars remain analysis-only.</p></details>
         </div>
         <div class="reb-head-actions" id="exit-controls"></div>
       </div>
@@ -488,7 +488,7 @@
           <details class="view-help"><summary>How this works</summary><p class="hint">A shortlist of tickers you're interested in, starred from anywhere — a deep-dive, a rebalance row, a strategy proposal. It's just interest, not a decision: nothing here is sized or committed. The next step turns your picks into a drafted rebalance plan (with LLM suggestions for names that would round it out).</p></details>
         </div>
         <div class="reb-head-actions">
-          <button class="ghost" id="basket-clear" type="button" title="Remove all picks (your portfolio and plan are untouched)">Clear basket</button>
+          <button class="ghost" id="basket-clear" type="button" title="Remove all picks (your portfolio and plan are untouched)">Clear watchlist</button>
         </div>
       </div>
       <div class="status" id="basket-status"></div>
@@ -500,7 +500,7 @@
       <div class="reb-head">
         <div class="reb-head-text">
           <h2>Trade desk</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Place the staged rebalance basket through Interactive Brokers via the local Client Portal Gateway. Every basket is previewed for margin and commission, and every order needs your explicit confirmation before it is sent. This is the only part of Assay that can place real trades — it is disabled by default and paper-first. Not advice; you are responsible for every order.</p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Review and place the staged order queue through Interactive Brokers via the local Client Portal Gateway. Every order is previewed for margin and commission, and every order needs your explicit confirmation before it is sent. This is the only part of Assay that can place real trades — it is disabled by default and paper-first. Not advice; you are responsible for every order.</p></details>
         </div>
         <div class="reb-head-actions">
           <button class="ghost" id="trade-refresh" type="button" title="Re-check the gateway connection and account">Refresh connection</button>
@@ -518,6 +518,11 @@
           <h2>Portfolio risk lens</h2>
           <details class="view-help"><summary>How this works</summary><p class="hint">Single-name bands are blind to the real risk in a concentrated semis/AI book: the names move together. This shows correlation, effective number of independent bets, the share of variance that is pure co-movement, and a factor-shock stress test. It is a decision aid, not a risk oracle — read the caveats.</p></details>
         </div>
+        <nav class="analytics-lenses" aria-label="Portfolio analytics">
+          <button class="tab" data-view="risk" type="button">Risk</button>
+          <button class="tab" data-view="attribution" type="button">Attribution</button>
+          <button class="tab" data-view="tax" type="button">Tax</button>
+        </nav>
         <label class="risk-range-label">Window
           <select id="risk-range">
             <option value="3mo">3m</option>
@@ -539,6 +544,11 @@
           <h2>Process attribution</h2>
           <details class="view-help"><summary>How this works</summary><p class="hint">Every other lens measures a position; this measures the process. Over the window it compares your actual time-weighted return against two skill-free baselines: never rebalancing (freeze the book at the window start and let prices run) and the benchmark (put the same koruna into SPY/QQQ). Deposits are neutralized so a transfer never looks like alpha, and every foreign price is converted day-by-day so currency swings don't flatter or bury the result. Read the caveats — a thin ledger or a missing price makes a curve approximate.</p></details>
         </div>
+        <nav class="analytics-lenses" aria-label="Portfolio analytics">
+          <button class="tab" data-view="risk" type="button">Risk</button>
+          <button class="tab" data-view="attribution" type="button">Attribution</button>
+          <button class="tab" data-view="tax" type="button">Tax</button>
+        </nav>
         <label class="risk-range-label">Benchmark
           <select id="attr-benchmark">
             <option value="SPY" selected>SPY</option>
@@ -566,6 +576,11 @@
           <h2>Tax calendar</h2>
           <details class="view-help"><summary>How this works</summary><p class="hint">The Czech 3-year exemption is the one return with no market risk. This lays every lot on a forward calendar: taxable-gain lots approaching the mark (wait a few weeks and the gain is tax-free) and taxable-loss lots whose harvest window is closing (a realized loss stops offsetting gains once the lot turns exempt). Base currency; the clock is each lot's open date, never IBKR's ST/LT code. Analysis, not tax advice.</p></details>
         </div>
+        <nav class="analytics-lenses" aria-label="Portfolio analytics">
+          <button class="tab" data-view="risk" type="button">Risk</button>
+          <button class="tab" data-view="attribution" type="button">Attribution</button>
+          <button class="tab" data-view="tax" type="button">Tax</button>
+        </nav>
         <label class="risk-range-label">Soon window
           <select id="tax-soon">
             <option value="30">30d</option>

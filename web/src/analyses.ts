@@ -174,6 +174,12 @@ function fmtConfidence(c: unknown) {
   return String(c);
 }
 
+// Ticker runs use a synthetic `ticker-XYZ` grouping key for list organization;
+// it is not a segment definition and must never be sent to /api/deep-prompt.
+export function promptSegmentFor(meta: Partial<AnalysisRun>): string | null {
+  return meta.segment && meta.kind !== "ticker" ? meta.segment : null;
+}
+
 // Some reports are a structured segment document (title/comment/sleeves/members)
 // saved as JSON rather than narrative markdown. Rendering that through mdToHtml
 // is an unreadable JSON wall, so detect and lay it out as a table. Returns null
@@ -336,7 +342,7 @@ async function loadAnalyses() {
     orphanRuns.forEach((r) => list.appendChild(runRow(r)));
   }
   if (!runs.length && !segments.length) {
-    list.innerHTML = '<div class="hint">No analyses or segments yet. Use “+ New analysis” to start one.</div>';
+    list.innerHTML = '<div class="hint">No analyses or segments yet. Use “+ New run” to start one.</div>';
     $$("#analyses-reader").innerHTML = '<div class="hint">Nothing to read yet.</div>';
     return;
   }
@@ -344,14 +350,17 @@ async function loadAnalyses() {
   if (runs.length) {
     const urlRun = navFromUrl().run;
     const toOpen = (urlRun && runs.some((r) => r.stem === urlRun)) ? urlRun : runs[0].stem;
-    await loadAnalysis(toOpen, { push: false });
+    await loadAnalysis(toOpen, { push: false, openReport: !!urlRun });
   } else {
     $$("#analyses-reader").innerHTML =
-      '<div class="hint">No Deep Research runs yet — pick a segment to run one, choose a written report, or hit “+ New analysis”.</div>';
+      '<div class="hint">No Deep Research runs yet — pick a segment to run one, choose a written report, or hit “+ New run”.</div>';
   }
 }
 
-async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = {}) {
+async function loadAnalysis(
+  stem: string,
+  { push = true, openReport = push }: { push?: boolean; openReport?: boolean } = {},
+) {
   const reader = $$("#analyses-reader");
   if (!reader) return;
   await ensureTickerSet();
@@ -372,9 +381,10 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
   const age = relAge(meta.generated_at);
 
   let prompt = "";
-  if (meta.segment) {
+  const promptSegment = promptSegmentFor(meta);
+  if (promptSegment) {
     try {
-      prompt = (await api("/api/deep-prompt?segment=" + encodeURIComponent(meta.segment))).prompt || "";
+      prompt = (await api("/api/deep-prompt?segment=" + encodeURIComponent(promptSegment))).prompt || "";
     } catch (_e) { /* prompt is best-effort context */ }
   }
 
@@ -401,7 +411,10 @@ async function loadAnalysis(stem: string, { push = true }: { push?: boolean } = 
   // document so a long report can be folded away while reading the Q&A below.
   if (rec.report) {
     const doc = el("details", "report-doc");
-    doc.open = true;
+    // Keep the automatically selected newest report folded so the Reports
+    // landing page is a useful index, not a 14,000px wall. Explicit selections
+    // and deep links still open the document immediately.
+    doc.open = openReport;
     const sum = el("summary", "report-doc-head");
     sum.innerHTML =
       `<span class="report-doc-caret" aria-hidden="true">\u203a</span>` +

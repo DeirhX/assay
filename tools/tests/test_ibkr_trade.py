@@ -457,6 +457,50 @@ class TradeServiceGuards(unittest.TestCase):
         self.assertEqual(t1, t2)
         self.assertNotEqual(t1, t3)
 
+    def test_projection_review_is_bound_to_exact_queue_revision(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(trade_service, "STAGED_BASKET_JSON",
+                                  Path(tmp) / "staged-basket.json"):
+            first = [{"symbol": "AMD", "delta_czk": 1000}]
+            trade_service.save_basket(first)
+            state = trade_service.basket_state()
+            self.assertFalse(state["reviewed"])
+            reviewed = trade_service.review_basket(state["revision"])
+            self.assertTrue(reviewed["reviewed"])
+
+            # Re-saving identical content is not a mutation; changing even one
+            # amount invalidates review and any already-issued IBKR preview.
+            trade_service._preview_issued["old"] = {"issued_at": time.time()}
+            trade_service.save_basket(first)
+            self.assertTrue(trade_service.basket_state()["reviewed"])
+            self.assertIn("old", trade_service._preview_issued)
+            trade_service.save_basket([{"symbol": "AMD", "delta_czk": 2000}])
+            self.assertFalse(trade_service.basket_state()["reviewed"])
+            self.assertFalse(trade_service._preview_issued)
+            with self.assertRaises(apierror.Conflict):
+                trade_service.review_basket(state["revision"])
+
+    def test_preview_gate_rejects_unreviewed_or_changed_queue(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(trade_service, "STAGED_BASKET_JSON",
+                                  Path(tmp) / "staged-basket.json"):
+            trades = [{"symbol": "AMD", "delta_czk": 1000}]
+            trade_service.save_basket(trades)
+            state = trade_service.basket_state()
+            body = {"trades": trades, "queue_revision": state["revision"]}
+            with self.assertRaises(apierror.Conflict):
+                trade_service._reviewed_preview_basket(body)
+            trade_service.review_basket(state["revision"])
+            self.assertEqual(trade_service._reviewed_preview_basket(body),
+                             trade_service._normalize_basket(trades))
+            with self.assertRaises(apierror.Conflict):
+                trade_service._reviewed_preview_basket(
+                    {"trades": trades, "queue_revision": "stale"})
+
     def test_place_refused_when_disabled(self):
         with mock.patch.object(ibt, "trading_enabled", return_value=False):
             with self.assertRaises(apierror.Forbidden):
@@ -564,6 +608,8 @@ class TradeServiceGuards(unittest.TestCase):
         stale = {"generated_at": "2020-01-01T00:00:00+00:00", "positions": []}
         with mock.patch.object(ibt, "trading_enabled", return_value=True), \
                 mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_reviewed_preview_basket",
+                                  return_value=[{"symbol": "AMD", "delta_czk": 1000.0}]), \
                 mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
                 mock.patch.object(ibt, "live_orders", return_value=[]), \
                 mock.patch.object(ibt, "preview_orders", return_value={}), \
@@ -579,6 +625,8 @@ class TradeServiceGuards(unittest.TestCase):
                  "orderType": "MKT", "tif": "DAY"}
         with mock.patch.object(ibt, "trading_enabled", return_value=True), \
                 mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_reviewed_preview_basket",
+                                  return_value=[{"symbol": "AMD", "delta_czk": 1000.0}]), \
                 mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
                 mock.patch.object(ibt, "live_orders",
                                   side_effect=ibt.CPAPIError("orders bridge unavailable")), \
@@ -600,6 +648,8 @@ class TradeServiceGuards(unittest.TestCase):
         model = {"targets": {}}
         with mock.patch.object(ibt, "trading_enabled", return_value=True), \
                 mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(trade_service, "_reviewed_preview_basket",
+                                  return_value=[{"symbol": "AMD", "delta_czk": 10000.0}]), \
                 mock.patch.object(trade_service, "_prepare_trade_orders",
                                   return_value=([proposed], [])), \
                 mock.patch.object(ibt, "live_orders", return_value=working), \

@@ -200,6 +200,22 @@ class TypedBasket(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be staged from the Exit plan"):
             trade_service.replace_stock_basket([option])
 
+    def test_remove_basket_leg_deletes_server_known_option(self):
+        stock = trade_service._canonical_stock_leg("NVDA", 1000)
+        option = trade_service._canonical_covered_call_leg(
+            symbol="AMD", contracts=1, conid=999, expiry="2026-08-21",
+            strike=105, right="C", limit_price=2.5, quote={}, underlying_quote={})
+        with mock.patch.object(trade_service, "load_basket", return_value=[stock, option]), \
+                mock.patch.object(trade_service, "save_basket", side_effect=lambda rows: rows):
+            out = trade_service.remove_basket_leg(option["leg_id"])
+        self.assertEqual(out, [stock])
+
+    def test_remove_basket_leg_rejects_stale_identifier(self):
+        stock = trade_service._canonical_stock_leg("NVDA", 1000)
+        with mock.patch.object(trade_service, "load_basket", return_value=[stock]):
+            with self.assertRaises(apierror.Conflict):
+                trade_service.remove_basket_leg("covered_call:AMD:2026-08-21:105:C")
+
     def test_preview_option_must_exactly_match_server_staged_leg(self):
         option = trade_service._canonical_covered_call_leg(
             symbol="AMD", contracts=1, conid=999, expiry="2026-08-21",

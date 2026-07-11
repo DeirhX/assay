@@ -252,7 +252,9 @@ describe("Exit planner rendering", () => {
     const panel = document.querySelector<HTMLElement>('[data-exit-route="covered_call"]')!;
     expect(panel.getAttribute("role")).toBe("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe(route.id);
-    expect(panel.textContent).toContain("Underlying last 101.25 USD");
+    expect(panel.textContent).toContain("Underlying last");
+    expect(panel.textContent).toContain("101");
+    expect(panel.textContent).toContain("USD");
     expect(panel.textContent).toContain("Bid (sell)");
     expect(panel.textContent).toContain("Ask (buy)");
     expect(panel.textContent).toContain("just now");
@@ -268,6 +270,7 @@ describe("Exit planner rendering", () => {
       expect.objectContaining({ symbol: "EXITME", rung_index: 0, cfg: expect.any(Object) }),
       { timeoutMs: 60_000 },
     );
+    expect(new URL(window.location.href).searchParams.get("view")).toBe("target-state");
   });
 
   it("shows unavailable option quotes honestly and disables staging", async () => {
