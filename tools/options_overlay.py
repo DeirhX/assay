@@ -164,12 +164,20 @@ def _underlying_quote(chain: dict[str, Any] | None) -> dict[str, Any] | None:
     return out or None
 
 
+def _stageable(*, chain_source: str, contract: dict[str, Any] | None) -> bool:
+    """True when the exact IBKR contract is known, even if its quote is not."""
+    return (
+        chain_source == "ibkr"
+        and isinstance(contract, dict)
+        and _conid(contract) is not None
+    )
+
+
 def _executable(*, chain_source: str, contract: dict[str, Any] | None, estimate: bool) -> bool:
-    """True only for a live IBKR contract with a usable two-sided quote."""
-    if estimate or chain_source != "ibkr" or not isinstance(contract, dict):
+    """True only for a stageable IBKR contract with a usable two-sided quote."""
+    if estimate or not _stageable(chain_source=chain_source, contract=contract):
         return False
-    if _conid(contract) is None:
-        return False
+    assert isinstance(contract, dict)
     return ibkr_trade.quotes_are_valid(contract.get("bid"), contract.get("ask"))
 
 
@@ -197,6 +205,7 @@ def _attach_executable_metadata(
         underlying = _underlying_quote(chain)
         if underlying:
             out["underlying_quote"] = underlying
+    out["stageable"] = _stageable(chain_source=chain_source, contract=contract)
     out["executable"] = _executable(chain_source=chain_source, contract=contract, estimate=estimate)
 
 

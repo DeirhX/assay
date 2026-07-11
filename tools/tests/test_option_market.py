@@ -22,6 +22,7 @@ def _chain(source: str) -> dict:
     return {
         "source": source,
         "symbol": "NVDA",
+        "quote_timestamp": timeutil.now_iso(),
         "expiries": [{"expiry": "2026-08-21", "calls": [], "puts": []}],
     }
 
@@ -94,13 +95,15 @@ class ChainSelection(unittest.TestCase):
             out = option_market.fetch_option_chain("NVDA")
         self.assertEqual(out["source"], "yahoo")
 
-    def test_ibkr_budget_timeout_does_not_block_fallback(self):
-        def slow_chain(_symbol):
-            time.sleep(5.0)
-            return _chain("ibkr")
+    def test_ibkr_budget_is_passed_as_cooperative_deadline(self):
+        seen: dict[str, float] = {}
+
+        def bounded_chain(_symbol, *, deadline_monotonic):
+            seen["deadline"] = deadline_monotonic
+            return None
 
         with mock.patch.object(option_market, "session_ready", return_value=True), \
-                mock.patch.object(ibkr_trade, "option_chain", side_effect=slow_chain), \
+                mock.patch.object(ibkr_trade, "option_chain", side_effect=bounded_chain), \
                 mock.patch.object(alpaca, "enabled", return_value=False), \
                 mock.patch.object(yahoo, "option_chain", return_value=_chain("yahoo")), \
                 mock.patch.object(option_market, "IBKR_CHAIN_BUDGET_SECONDS", 0.05):
@@ -109,6 +112,7 @@ class ChainSelection(unittest.TestCase):
             elapsed = time.perf_counter() - started
         self.assertEqual(out["source"], "yahoo")
         self.assertLess(elapsed, 1.0)
+        self.assertGreaterEqual(seen["deadline"], started + 0.04)
 
 
 class MarketCaches(unittest.TestCase):
@@ -123,6 +127,47 @@ class MarketCaches(unittest.TestCase):
         self.assertEqual(first["source"], "ibkr")
         self.assertEqual(second["source"], "ibkr")
         fetch.assert_called_once_with("NVDA")
+
+    def test_fallback_chain_uses_short_cache_before_retrying_ibkr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            store.write_json(cache_dir / "NVDA.json", {
+                "symbol": "NVDA",
+                "fetched_at": timeutil.now_iso(),
+                "chain": _chain("yahoo"),
+            })
+            with mock.patch.object(option_market, "FALLBACK_CACHE_TTL_SECONDS", -1), \
+                    mock.patch.object(
+                        option_market, "fetch_option_chain", return_value=_chain("ibkr"),
+                    ) as fetch:
+                out = option_market.cached_option_chain("NVDA", cache_dir=cache_dir)
+        self.assertEqual(out["source"], "ibkr")
+        fetch.assert_called_once_with("NVDA")
+
+    def test_stale_ibkr_quotes_refresh_without_rebuilding_contracts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            chain = _chain("ibkr")
+            chain["quote_timestamp"] = "2000-01-01T00:00:00+00:00"
+            now = timeutil.now_iso()
+            store.write_json(cache_dir / "NVDA.json", {
+                "symbol": "NVDA",
+                "fetched_at": now,
+                "reference_fetched_at": now,
+                "chain": chain,
+            })
+            refreshed = {**chain, "quote_timestamp": now}
+            with mock.patch.object(option_market, "session_ready", return_value=True), \
+                    mock.patch.object(
+                        ibkr_trade,
+                        "refresh_option_chain_quotes",
+                        return_value=refreshed,
+                    ) as refresh, \
+                    mock.patch.object(option_market, "fetch_option_chain") as fetch:
+                out = option_market.cached_option_chain("NVDA", cache_dir=cache_dir)
+        self.assertEqual(out["quote_timestamp"], now)
+        refresh.assert_called_once()
+        fetch.assert_not_called()
 
     def test_risk_free_rate_uses_fresh_cache(self):
         with tempfile.TemporaryDirectory() as tmp:

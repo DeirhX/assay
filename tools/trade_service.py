@@ -140,6 +140,7 @@ def _normalize_basket(trades: Any) -> list[dict]:
             "multiplier": OPTION_MULTIPLIER,
             "limit_price": round(limit_price, 6) if limit_price and limit_price > 0 else None,
             "quote_timestamp": str(raw.get("quote_timestamp") or "") or None,
+            "staging_warning": str(raw.get("staging_warning") or "") or None,
             "provenance": provenance,
         }
 

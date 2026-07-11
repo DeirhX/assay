@@ -575,6 +575,8 @@ export interface ExitQuoteFields {
   quote_timestamp?: string | null;
   quote_age_seconds?: number | null;
   quote_fresh?: boolean;
+  stageable?: boolean;
+  staging_warning?: string | null;
   executable?: boolean;
 }
 
@@ -665,6 +667,10 @@ export interface ExitRouteEligibility {
 export interface ExitCoveredCallRoute extends ExitRouteEligibility {
   capacity_contracts?: number;
   stageable?: boolean;
+  planned_exit_shares?: number;
+  assignment_shares?: number;
+  share_deviation?: number;
+  rounded_up?: boolean;
 }
 
 export interface ExitRoutes {
@@ -748,6 +754,7 @@ export interface CoveredCallTradeLeg {
   delta_czk?: number;
   limit_price?: number | null;
   quote_timestamp?: string | null;
+  staging_warning?: string | null;
   multiplier?: 100;
   provenance?: TradeLegProvenance[];
 }

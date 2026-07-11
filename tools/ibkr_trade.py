@@ -32,6 +32,7 @@ import json
 import math
 import re
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -256,14 +257,23 @@ def _pick_stock_conid(rows: list[dict], symbol: str) -> int | None:
     return best
 
 
-def market_snapshot(conids: list[int], fields: tuple[str, ...] = ("31", "84", "86")) -> dict[int, dict]:
+def market_snapshot(
+    conids: list[int],
+    fields: tuple[str, ...] = ("31", "84", "86"),
+    *,
+    timeout: float = 30.0,
+) -> dict[int, dict]:
     """Last/bid/ask snapshot per conid (field 31 = last price). Best-effort:
     CPAPI sometimes needs two calls to warm up the feed, but for a one-shot
     share-sizing estimate one call is enough; missing prices are simply absent."""
     if not conids:
         return {}
     params = {"conids": ",".join(str(c) for c in conids), "fields": ",".join(fields)}
-    res = _request("GET", "/iserver/marketdata/snapshot?" + urllib.parse.urlencode(params))
+    res = _request(
+        "GET",
+        "/iserver/marketdata/snapshot?" + urllib.parse.urlencode(params),
+        timeout=timeout,
+    )
     out: dict[int, dict] = {}
     for row in (res if isinstance(res, list) else []):
         cid = row.get("conid")
@@ -291,6 +301,8 @@ _OPTION_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK, _MD_IV, _MD_VOLUME, _MD_DELTA, 
 _STOCK_MD_FIELDS = (_MD_LAST, _MD_BID, _MD_ASK)
 _COUNT_MULT = {"K": 1e3, "M": 1e6, "B": 1e9}
 OPTION_MULTIPLIER = 100
+OPTION_SNAPSHOT_WARMUP_SECONDS = 0.6
+_CHAIN_QUOTE_RESERVE_SECONDS = 1.5
 _MONTH_TOKENS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
@@ -374,14 +386,18 @@ def _months_by_date(months: list[str], as_of: dt.date | None = None) -> list[str
     return [m for _, m in keyed]
 
 
-def option_months(symbol: str) -> tuple[int | None, list[str]]:
+def option_months(symbol: str, *, timeout: float = 30.0) -> tuple[int | None, list[str]]:
     """``(underlying_conid, ["AUG26", ...])`` for a symbol's listed options, from
     the same ``secdef/search`` the equity resolver uses. Empty month list when the
     name has no OPT section (common for non-US names)."""
     sym = str(symbol or "").strip().upper()
     if not sym:
         return None, []
-    res = _request("GET", "/iserver/secdef/search?" + urllib.parse.urlencode({"symbol": sym}))
+    res = _request(
+        "GET",
+        "/iserver/secdef/search?" + urllib.parse.urlencode({"symbol": sym}),
+        timeout=timeout,
+    )
     rows = res if isinstance(res, list) else []
     conid = _pick_stock_conid(rows, sym)
     months: list[str] = []
@@ -396,13 +412,23 @@ def option_months(symbol: str) -> tuple[int | None, list[str]]:
     return conid, months
 
 
-def option_strikes(conid: int, month: str, *, exchange: str = "SMART") -> dict[str, list[float]]:
+def option_strikes(
+    conid: int,
+    month: str,
+    *,
+    exchange: str = "SMART",
+    timeout: float = 30.0,
+) -> dict[str, list[float]]:
     """``{"call": [strike, ...], "put": [strike, ...]}`` for one expiry month, from
     ``/iserver/secdef/strikes``. Reference data -- no market-data subscription
     needed. Empty lists on a miss."""
     params = {"conid": str(int(conid)), "sectype": "OPT",
               "month": month.upper(), "exchange": exchange}
-    res = _request("GET", "/iserver/secdef/strikes?" + urllib.parse.urlencode(params))
+    res = _request(
+        "GET",
+        "/iserver/secdef/strikes?" + urllib.parse.urlencode(params),
+        timeout=timeout,
+    )
     if not isinstance(res, dict):
         return {"call": [], "put": []}
 
@@ -412,54 +438,161 @@ def option_strikes(conid: int, month: str, *, exchange: str = "SMART") -> dict[s
     return {"call": _nums("call"), "put": _nums("put")}
 
 
-def option_info(conid: int, month: str, strike: float, right: str,
-                *, exchange: str = "SMART") -> dict[str, Any] | None:
-    """The specific option contract as ``{"conid", "expiry", "strike", "right"}``
-    from ``/iserver/secdef/info``, or None if that strike/right doesn't list.
-    ``right`` is ``"C"`` or ``"P"``."""
+def option_infos(
+    conid: int,
+    month: str,
+    strike: float,
+    right: str,
+    *,
+    exchange: str = "SMART",
+    timeout: float = 30.0,
+) -> list[dict[str, Any]]:
+    """Every listed contract for one month/strike/right combination.
+
+    CPAPI returns one row per weekly/monthly expiry in the requested month. Keep
+    the entire array: taking only its first row silently discarded later weekly
+    expiries and could select an already-expired contract.
+    """
     r = right.upper()[:1]
     params = {"conid": str(int(conid)), "sectype": "OPT", "month": month.upper(),
               "strike": _fmt_strike(strike), "right": r, "exchange": exchange}
-    res = _request("GET", "/iserver/secdef/info?" + urllib.parse.urlencode(params))
+    res = _request(
+        "GET",
+        "/iserver/secdef/info?" + urllib.parse.urlencode(params),
+        timeout=timeout,
+    )
     rows = res if isinstance(res, list) else ([res] if isinstance(res, dict) else [])
+    contracts: list[dict[str, Any]] = []
     for row in rows:
         ocid = row.get("conid")
         if ocid is None or ocid == "":
             continue
-        return {"conid": int(ocid), "expiry": _parse_maturity(row.get("maturityDate")),
-                "strike": float(strike), "right": r}
-    return None
+        expiry = _parse_maturity(row.get("maturityDate"))
+        if expiry is None:
+            continue
+        contracts.append({
+            "conid": int(ocid),
+            "expiry": expiry,
+            "strike": float(strike),
+            "right": r,
+        })
+    return contracts
 
 
-def _window_strikes(strikes: list[float], spot: float | None,
-                    window_pct: float, per_side: int) -> list[float]:
-    """The listed strikes worth resolving: up to ``per_side`` each side of spot,
-    within +/-``window_pct``. Without a spot, just a bounded slice off the low end
-    (the overlay still finds its nearest-OTM among them)."""
+def option_info(conid: int, month: str, strike: float, right: str,
+                *, exchange: str = "SMART", timeout: float = 30.0) -> dict[str, Any] | None:
+    """First contract returned for compatibility; prefer :func:`option_infos`."""
+    rows = option_infos(
+        conid,
+        month,
+        strike,
+        right,
+        exchange=exchange,
+        timeout=timeout,
+    )
+    return rows[0] if rows else None
+
+
+def _targeted_strikes(
+    strikes: list[float],
+    spot: float | None,
+    window_pct: float,
+    count: int,
+    right: str,
+) -> list[float]:
+    """A small decision-useful set of OTM strikes.
+
+    Covered calls need strikes above spot and protective puts need strikes below
+    it. Sampling targets across the configured window avoids resolving the
+    previous ``count`` strikes on *both* sides, which multiplied CPAPI's required
+    per-strike ``/secdef/info`` calls without improving either decision.
+    """
     vals = sorted({float(s) for s in strikes if isinstance(s, (int, float))})
-    if not vals:
+    if not vals or count <= 0:
         return []
     if spot is None or spot <= 0:
-        return vals[:per_side * 2]
+        return vals[:count] if right == "C" else list(reversed(vals[-count:]))
     lo, hi = spot * (1.0 - window_pct), spot * (1.0 + window_pct)
-    below = [s for s in vals if lo <= s <= spot][-per_side:]
-    above = [s for s in vals if spot < s <= hi][:per_side]
-    return below + above
+    eligible = [s for s in vals if spot < s <= hi] if right == "C" else [
+        s for s in vals if lo <= s < spot
+    ]
+    if not eligible:
+        return []
+    start_pct = min(0.05, window_pct)
+    if count == 1:
+        target_pcts = [start_pct]
+    else:
+        step = max(0.0, window_pct - start_pct) / (count - 1)
+        target_pcts = [start_pct + i * step for i in range(count)]
+    targets = [
+        spot * (1.0 + pct if right == "C" else 1.0 - pct)
+        for pct in target_pcts
+    ]
+    picked: list[float] = []
+    for target in targets:
+        nearest = min(eligible, key=lambda strike: (abs(strike - target), strike))
+        if nearest not in picked:
+            picked.append(nearest)
+    for strike in (eligible if right == "C" else reversed(eligible)):
+        if strike not in picked:
+            picked.append(strike)
+        if len(picked) >= count:
+            break
+    return picked[:count]
 
 
-def _resolve_side(conid: int, month: str, strikes: list[float],
-                  right: str) -> tuple[list[dict[str, Any]], str | None]:
-    """Resolve each windowed strike to its option contract (conid + expiry).
-    Returns the contracts and the expiry ISO date recovered from the first hit."""
-    contracts: list[dict[str, Any]] = []
-    expiry: str | None = None
-    for k in strikes:
-        info = option_info(conid, month, k, right)
-        if not info:
-            continue
-        expiry = expiry or info.get("expiry")
-        contracts.append(info)
-    return contracts, expiry
+def _deadline_timeout(deadline_monotonic: float | None) -> float:
+    if deadline_monotonic is None:
+        return 30.0
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("IBKR option-chain deadline exhausted")
+    return max(0.05, min(30.0, remaining))
+
+
+def _has_chain_budget(deadline_monotonic: float | None, reserve: float = 0.0) -> bool:
+    return deadline_monotonic is None or time.monotonic() + reserve < deadline_monotonic
+
+
+def _snapshot_has_fields(
+    snapshot: dict[int, dict],
+    conids: list[int],
+    fields: tuple[str, ...],
+) -> bool:
+    return all(
+        any((snapshot.get(conid) or {}).get(field) not in (None, "") for field in fields)
+        for conid in conids
+    )
+
+
+def _warmed_market_snapshot(
+    conids: list[int],
+    fields: tuple[str, ...],
+    *,
+    deadline_monotonic: float | None = None,
+) -> dict[int, dict]:
+    """Run CPAPI's required snapshot pre-flight, then poll once when still bare."""
+    if not conids:
+        return {}
+    first = market_snapshot(
+        conids,
+        fields=fields,
+        timeout=_deadline_timeout(deadline_monotonic),
+    )
+    if _snapshot_has_fields(first, conids, fields):
+        return first
+    if not _has_chain_budget(deadline_monotonic, OPTION_SNAPSHOT_WARMUP_SECONDS + 0.05):
+        return first
+    time.sleep(OPTION_SNAPSHOT_WARMUP_SECONDS)
+    second = market_snapshot(
+        conids,
+        fields=fields,
+        timeout=_deadline_timeout(deadline_monotonic),
+    )
+    merged = dict(first)
+    for conid, row in second.items():
+        merged[conid] = {**merged.get(conid, {}), **row}
+    return merged
 
 
 def _utc_now_iso() -> str:
@@ -523,52 +656,94 @@ def _quote_contract(info: dict[str, Any], quotes: dict[int, dict]) -> dict[str, 
     }
 
 
-def _build_expiry(conid: int, month: str, spot: float | None,
-                  window_pct: float, per_side: int) -> dict[str, Any] | None:
-    """One expiry's ``{expiry, calls, puts}`` block: window the strikes, resolve
-    their conids, then one snapshot for the lot. None when nothing resolves."""
-    strikes = option_strikes(conid, month)
-    call_k = _window_strikes(strikes.get("call") or [], spot, window_pct, per_side)
-    put_k = _window_strikes(strikes.get("put") or [], spot, window_pct, per_side)
-    if not call_k and not put_k:
-        return None
-    call_contracts, exp_c = _resolve_side(conid, month, call_k, "C")
-    put_contracts, exp_p = _resolve_side(conid, month, put_k, "P")
-    expiry = exp_c or exp_p
-    if expiry is None:
-        return None
-    all_conids = [c["conid"] for c in call_contracts + put_contracts]
-    quotes = market_snapshot(all_conids, fields=_OPTION_MD_FIELDS) if all_conids else {}
-    calls = [_quote_contract(c, quotes) for c in call_contracts]
-    puts = [_quote_contract(c, quotes) for c in put_contracts]
-    return {
-        "expiry": expiry,
-        "calls": sorted(calls, key=lambda c: c["strike"]),
-        "puts": sorted(puts, key=lambda p: p["strike"]),
-    }
+def _quote_contracts(
+    infos: list[dict[str, Any]],
+    quotes: dict[int, dict],
+) -> list[dict[str, Any]]:
+    contracts = [_quote_contract(info, quotes) for info in infos]
+    contracts.sort(key=lambda contract: float(contract["strike"]))
+    return contracts
 
 
-def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float = 0.25,
-                 strikes_per_side: int = 6, as_of: dt.date | None = None) -> dict[str, Any] | None:
+def _prioritized_months(months: list[str], as_of: dt.date) -> list[str]:
+    """Listed months nearest the covered-call target date, rather than merely now."""
+    target = as_of + dt.timedelta(days=37)
+    target_index = target.year * 12 + target.month
+
+    def distance(token: str) -> tuple[int, int]:
+        key = _month_key(token)
+        if key is None:
+            return (10**9, 10**9)
+        index = key[0] * 12 + key[1]
+        return (abs(index - target_index), index)
+
+    return sorted(_months_by_date(months, as_of), key=distance)
+
+
+def _collect_option_infos(
+    groups: dict[str, dict[str, list[dict[str, Any]]]],
+    conid: int,
+    month: str,
+    strikes: list[float],
+    right: str,
+    as_of: dt.date,
+    deadline_monotonic: float | None,
+) -> None:
+    key = "calls" if right == "C" else "puts"
+    for strike in strikes:
+        if not _has_chain_budget(deadline_monotonic, _CHAIN_QUOTE_RESERVE_SECONDS):
+            return
+        rows = option_infos(
+            conid,
+            month,
+            strike,
+            right,
+            timeout=_deadline_timeout(deadline_monotonic),
+        )
+        for info in rows:
+            try:
+                expiry = dt.date.fromisoformat(str(info["expiry"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if expiry <= as_of:
+                continue
+            group = groups.setdefault(info["expiry"], {"calls": [], "puts": []})
+            if not any(existing["conid"] == info["conid"] for existing in group[key]):
+                group[key].append(info)
+
+
+def option_chain(
+    symbol: str,
+    *,
+    max_expiries: int = 4,
+    strike_window_pct: float = 0.25,
+    strikes_per_side: int = 6,
+    as_of: dt.date | None = None,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any] | None:
     """Yahoo-shaped option chain sourced from IBKR CPAPI, or None when the name
     lists no options / the gateway can't resolve it.
 
-    Deliberately targeted, not the full ladder: the nearest ``max_expiries``
-    expiries, and only strikes within ``strike_window_pct`` of spot
-    (``strikes_per_side`` each way), so the request fan-out stays bounded -- enough
-    for the exit overlay's nearest-OTM pick. Reference data (months/strikes/conids)
-    needs only a logged-in session; the bid/ask/last/IV quote needs an options
-    market-data subscription and is simply absent without one (the overlay then
-    estimates the premium off Black-Scholes)."""
+    Deliberately targeted, not the full ladder. CPAPI requires one ``/info`` call
+    per strike/right but returns every weekly expiry in that month from each call.
+    We therefore resolve a sampled OTM call ladder first, preserve all returned
+    expiries, and reserve enough of the optional deadline for one bulk quote
+    snapshot. This produces executable contracts instead of timing out while
+    exhaustively resolving irrelevant ITM strikes."""
     sym = str(symbol or "").strip().upper()
     if not sym:
         return None
-    conid, months = option_months(sym)
+    today = as_of or dt.datetime.now(dt.timezone.utc).date()
+    conid, months = option_months(sym, timeout=_deadline_timeout(deadline_monotonic))
     if conid is None or not months:
         return None
 
     # Spot centers the strike window. Underlying last, or bid/ask midpoint.
-    snap = market_snapshot([conid], fields=_STOCK_MD_FIELDS)
+    snap = _warmed_market_snapshot(
+        [conid],
+        fields=_STOCK_MD_FIELDS,
+        deadline_monotonic=deadline_monotonic,
+    )
     urow = snap.get(conid) or {}
     u_last = _snap_num(urow.get(_MD_LAST))
     u_bid = _snap_num(urow.get(_MD_BID))
@@ -577,14 +752,90 @@ def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float
     if spot is None and u_bid is not None and u_ask is not None and quotes_are_valid(u_bid, u_ask):
         spot = (u_bid + u_ask) / 2.0
 
-    expiries: list[dict[str, Any]] = []
-    for month in _months_by_date(months, as_of)[:max_expiries]:
-        block = _build_expiry(conid, month, spot, strike_window_pct, strikes_per_side)
-        if block:
-            expiries.append(block)
-    if not expiries:
+    groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for month in _prioritized_months(months, today):
+        if not _has_chain_budget(deadline_monotonic, _CHAIN_QUOTE_RESERVE_SECONDS):
+            break
+        strikes = option_strikes(
+            conid,
+            month,
+            timeout=_deadline_timeout(deadline_monotonic),
+        )
+        call_strikes = _targeted_strikes(
+            strikes.get("call") or [],
+            spot,
+            strike_window_pct,
+            strikes_per_side,
+            "C",
+        )
+        _collect_option_infos(
+            groups,
+            conid,
+            month,
+            call_strikes,
+            "C",
+            today,
+            deadline_monotonic,
+        )
+        # One protective put is enough for the tax-deferral route; sample a few
+        # downside strikes only after preserving the covered-call ladder.
+        put_count = max(1, min(3, strikes_per_side // 2))
+        put_strikes = _targeted_strikes(
+            strikes.get("put") or [],
+            spot,
+            strike_window_pct,
+            put_count,
+            "P",
+        )
+        _collect_option_infos(
+            groups,
+            conid,
+            month,
+            put_strikes,
+            "P",
+            today,
+            deadline_monotonic,
+        )
+        if len(groups) >= max_expiries:
+            break
+    if not groups:
         return None
-    expiries.sort(key=lambda e: e["expiry"])
+
+    target_expiry = today + dt.timedelta(days=37)
+    selected_expiries = sorted(
+        groups,
+        key=lambda expiry: (
+            abs((dt.date.fromisoformat(expiry) - target_expiry).days),
+            expiry,
+        ),
+    )[:max_expiries]
+    selected_expiries.sort()
+    all_contracts = [
+        contract
+        for expiry in selected_expiries
+        for side in ("calls", "puts")
+        for contract in groups[expiry][side]
+    ]
+    quotes: dict[int, dict] = {}
+    if all_contracts and _has_chain_budget(deadline_monotonic):
+        try:
+            quotes = _warmed_market_snapshot(
+                [int(contract["conid"]) for contract in all_contracts],
+                fields=_OPTION_MD_FIELDS,
+                deadline_monotonic=deadline_monotonic,
+            )
+        except (CPAPIError, TimeoutError):
+            # Reference contracts remain useful for display and exact resolution;
+            # a quote miss must not throw away the chain.
+            quotes = {}
+    expiries = [
+        {
+            "expiry": expiry,
+            "calls": _quote_contracts(groups[expiry]["calls"], quotes),
+            "puts": _quote_contracts(groups[expiry]["puts"], quotes),
+        }
+        for expiry in selected_expiries
+    ]
     return {
         "source": "ibkr",
         "symbol": sym,
@@ -599,6 +850,84 @@ def option_chain(symbol: str, *, max_expiries: int = 4, strike_window_pct: float
         "quote_timestamp": _utc_now_iso(),
         "expiries": expiries,
     }
+
+
+def refresh_option_chain_quotes(
+    chain: dict[str, Any],
+    *,
+    deadline_monotonic: float | None = None,
+) -> dict[str, Any]:
+    """Refresh an IBKR chain's quotes without rebuilding its security definitions."""
+    if chain.get("source") != "ibkr":
+        return chain
+    option_conids = list(dict.fromkeys(
+        int(contract["conid"])
+        for expiry in chain.get("expiries") or []
+        for side in ("calls", "puts")
+        for contract in expiry.get(side) or []
+        if contract.get("conid") is not None
+    ))
+    underlying_conid = chain.get("underlying_conid")
+    all_conids = option_conids + (
+        [int(underlying_conid)] if underlying_conid is not None else []
+    )
+    if not all_conids:
+        return chain
+    snapshot = _warmed_market_snapshot(
+        all_conids,
+        fields=_OPTION_MD_FIELDS + _STOCK_MD_FIELDS,
+        deadline_monotonic=deadline_monotonic,
+    )
+    has_option_data = any(
+        _snapshot_has_fields(snapshot, [conid], _OPTION_MD_FIELDS)
+        for conid in option_conids
+    )
+    has_underlying_data = (
+        underlying_conid is not None
+        and _snapshot_has_fields(snapshot, [int(underlying_conid)], _STOCK_MD_FIELDS)
+    )
+    if not has_option_data and not has_underlying_data:
+        return chain
+
+    refreshed = dict(chain)
+    refreshed_expiries: list[dict[str, Any]] = []
+    for expiry in chain.get("expiries") or []:
+        refreshed_expiry = dict(expiry)
+        for side in ("calls", "puts"):
+            refreshed_contracts: list[dict[str, Any]] = []
+            for contract in expiry.get(side) or []:
+                conid = contract.get("conid")
+                if conid is not None and _snapshot_has_fields(
+                    snapshot,
+                    [int(conid)],
+                    _OPTION_MD_FIELDS,
+                ):
+                    refreshed_contracts.append({
+                        **contract,
+                        **_quote_contract(contract, snapshot),
+                    })
+                else:
+                    refreshed_contracts.append(dict(contract))
+            refreshed_expiry[side] = refreshed_contracts
+        refreshed_expiries.append(refreshed_expiry)
+    refreshed["expiries"] = refreshed_expiries
+
+    if underlying_conid is not None and has_underlying_data:
+        urow = snapshot.get(int(underlying_conid)) or {}
+        u_last = _snap_num(urow.get(_MD_LAST))
+        u_bid = _snap_num(urow.get(_MD_BID))
+        u_ask = _snap_num(urow.get(_MD_ASK))
+        refreshed["underlying_last"] = u_last
+        refreshed["underlying_bid"] = u_bid
+        refreshed["underlying_ask"] = u_ask
+        spot = u_last
+        if spot is None and u_bid is not None and u_ask is not None and quotes_are_valid(u_bid, u_ask):
+            spot = (u_bid + u_ask) / 2.0
+        if spot is not None:
+            refreshed["underlying_price"] = round(spot, 4)
+    if has_option_data:
+        refreshed["quote_timestamp"] = _utc_now_iso()
+    return refreshed
 
 
 def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any] | None:
@@ -621,11 +950,16 @@ def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any
     if u_conid is None or not months:
         return None
 
+    try:
+        expiry_date = dt.date.fromisoformat(exp)
+    except ValueError:
+        return None
+    target_month = f"{_MONTH_TOKENS[expiry_date.month - 1]}{expiry_date.year % 100:02d}"
+    if target_month not in months:
+        return None
+
     info: dict[str, Any] | None = None
-    for month in months:
-        cand = option_info(u_conid, month, strike_f, "C")
-        if not cand:
-            continue
+    for cand in option_infos(u_conid, target_month, strike_f, "C"):
         if cand.get("expiry") != exp:
             continue
         if not _exact_strike_match(float(cand.get("strike", 0)), strike_f):
@@ -636,7 +970,10 @@ def resolve_exact_call(symbol: str, expiry: str, strike: float) -> dict[str, Any
         return None
 
     o_conid = int(info["conid"])
-    snap = market_snapshot([o_conid, u_conid], fields=_OPTION_MD_FIELDS + _STOCK_MD_FIELDS)
+    snap = _warmed_market_snapshot(
+        [o_conid, u_conid],
+        fields=_OPTION_MD_FIELDS + _STOCK_MD_FIELDS,
+    )
     orow = snap.get(o_conid) or {}
     urow = snap.get(u_conid) or {}
     bid = _snap_num(orow.get(_MD_BID))
@@ -742,13 +1079,15 @@ def resolve_executable_call(
     expected_conid: int | None = None,
     max_quote_age_seconds: float | None = OPTION_QUOTE_MAX_AGE_SECONDS,
     now: dt.datetime | None = None,
+    allow_missing_quote: bool = False,
 ) -> dict[str, Any]:
     """Resolve and validate one exact call for a supervised SELL order.
 
     This is the single executable-call boundary used by Exit staging and both
     trade-preview/place validation. It returns the full resolver payload plus
-    normalized numeric quotes and ``limit_price``. Callers translate ``reason``
-    into context-appropriate user messages without reimplementing the gates.
+    normalized numeric quotes and ``limit_price``. Staging may explicitly allow a
+    missing quote; preview/place keep the strict default and therefore cannot
+    submit an unpriced order.
     """
     resolved = resolve_exact_call(symbol, expiry, strike)
     if not resolved:
@@ -761,11 +1100,29 @@ def resolve_executable_call(
         raise ExecutableCallError("contract_changed")
 
     bid_raw, ask_raw = resolved.get("bid"), resolved.get("ask")
-    if (
+    quote_missing = (
         not isinstance(bid_raw, (int, float))
         or not isinstance(ask_raw, (int, float))
-        or not quotes_are_valid(bid_raw, ask_raw)
-    ):
+        or bid_raw <= 0
+        or ask_raw <= 0
+    )
+    if quote_missing:
+        if allow_missing_quote:
+            out = dict(resolved)
+            out.update({
+                "conid": conid,
+                "limit_price": None,
+                "quote_status": "missing",
+                "staging_warning": (
+                    "No live bid/ask right now. This contract is staged but cannot be "
+                    "previewed or placed until IBKR returns a fresh two-sided quote."
+                ),
+            })
+            return out
+        raise ExecutableCallError("quote_invalid")
+    assert isinstance(bid_raw, (int, float))
+    assert isinstance(ask_raw, (int, float))
+    if not quotes_are_valid(bid_raw, ask_raw):
         raise ExecutableCallError("quote_invalid")
     bid, ask = float(bid_raw), float(ask_raw)
 

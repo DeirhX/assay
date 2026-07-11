@@ -419,6 +419,7 @@ class NormalizeBasket(unittest.TestCase):
             symbol="nvda",
             limit_price=2.55,
             quote_timestamp="2026-07-10T12:00:00+00:00",
+            staging_warning="Awaiting live bid/ask.",
             client_only="must-not-survive",
         )])
         row = out[0]
@@ -428,6 +429,7 @@ class NormalizeBasket(unittest.TestCase):
         self.assertEqual(row["right"], "C")
         self.assertEqual(row["multiplier"], 100)
         self.assertEqual(row["limit_price"], 2.55)
+        self.assertEqual(row["staging_warning"], "Awaiting live bid/ask.")
         self.assertNotIn("client_only", row)
 
     def test_covered_call_custom_leg_id_is_preserved(self):

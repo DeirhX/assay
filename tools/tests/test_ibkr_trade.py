@@ -771,15 +771,17 @@ class _FakeGateway:
 
     def __init__(self, *, months="AUG26", strikes=None, spot="100.0",
                  quotes=None, has_opt=True, underlying=500, maturity="20260821",
-                 rules=None):
+                 maturities=None, rules=None, warm_snapshots=False):
         self.months = months
         self.strikes = strikes or {"call": [95, 100, 105, 110], "put": [90, 95, 100, 105]}
         self.spot = spot
         self.quotes = quotes or {}
         self.has_opt = has_opt
         self.underlying = underlying
-        self.maturity = maturity
+        self.maturities = maturities or [maturity]
         self.rules = rules or {"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]}
+        self.warm_snapshots = warm_snapshots
+        self.snapshot_calls: dict[str, int] = {}
         self.calls: list[tuple[str, str]] = []
 
     @staticmethod
@@ -787,7 +789,7 @@ class _FakeGateway:
         """Deterministic synthetic option conid so a test can address a quote."""
         return int(round(float(strike) * 100)) * 10 + (1 if str(right).upper().startswith("C") else 2)
 
-    def __call__(self, method, endpoint, body=None):
+    def __call__(self, method, endpoint, body=None, **_kwargs):
         self.calls.append((method, endpoint))
         path, _, qs = endpoint.partition("?")
         q = {k: v[0] for k, v in urllib.parse.parse_qs(qs).items()}
@@ -800,12 +802,21 @@ class _FakeGateway:
             return {"call": list(self.strikes["call"]), "put": list(self.strikes["put"])}
         if path == "/iserver/secdef/info":
             ocid = self.opt_conid(float(q["strike"]), q["right"])
-            return [{"conid": ocid, "maturityDate": self.maturity}]
+            return [
+                {"conid": ocid + index, "maturityDate": maturity}
+                for index, maturity in enumerate(self.maturities)
+            ]
         if path.startswith("/iserver/contract/") and path.endswith("/info-and-rules"):
             return {"rules": self.rules}
         if path == "/iserver/marketdata/snapshot":
+            snapshot_key = q["conids"]
+            self.snapshot_calls[snapshot_key] = self.snapshot_calls.get(snapshot_key, 0) + 1
+            warming = self.warm_snapshots and self.snapshot_calls[snapshot_key] == 1
             rows = []
             for c in (int(x) for x in q["conids"].split(",")):
+                if warming:
+                    rows.append({"conid": c})
+                    continue
                 if c == self.underlying:
                     if isinstance(self.spot, dict):
                         rows.append({"conid": c, **self.spot})
@@ -916,7 +927,7 @@ class OptionChain(unittest.TestCase):
             self.assertIsNone(ibt.option_chain("KO", as_of=self.AS_OF))
 
     def test_strike_window_bounds_resolution(self):
-        # Strikes span far outside +/-25% of a 100 spot; only in-window ones resolve.
+        # Calls are targeted above spot and remain within the configured window.
         gw = _FakeGateway(spot="100.0", strikes={
             "call": [40, 60, 90, 100, 110, 140, 200],
             "put": [40, 60, 90, 100, 110, 140, 200],
@@ -925,10 +936,37 @@ class OptionChain(unittest.TestCase):
             chain = ibt.option_chain("NVDA", as_of=self.AS_OF, strike_window_pct=0.25)
         strikes = [c["strike"] for c in chain["expiries"][0]["calls"]]
         self.assertTrue(all(75.0 <= s <= 125.0 for s in strikes))
-        self.assertIn(90.0, strikes)
         self.assertIn(110.0, strikes)
+        self.assertNotIn(90.0, strikes)
         self.assertNotIn(40.0, strikes)
         self.assertNotIn(200.0, strikes)
+
+    def test_preserves_weekly_expiries_and_drops_expired_rows(self):
+        gw = _FakeGateway(
+            months="JUL26",
+            maturities=["20260710", "20260717", "20260724", "20260731"],
+        )
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain("NVDA", as_of=dt.date(2026, 7, 11))
+        self.assertEqual(
+            [expiry["expiry"] for expiry in chain["expiries"]],
+            ["2026-07-17", "2026-07-24", "2026-07-31"],
+        )
+
+    def test_repeats_bare_market_snapshot_after_preflight(self):
+        gw = _FakeGateway(
+            spot="100.0",
+            quotes={_FakeGateway.opt_conid(105, "C"): {
+                "84": "2.40", "86": "2.60",
+            }},
+            warm_snapshots=True,
+        )
+        with mock.patch.object(ibt, "_request", gw), \
+                mock.patch.object(ibt, "OPTION_SNAPSHOT_WARMUP_SECONDS", 0):
+            chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
+        call = next(c for c in chain["expiries"][0]["calls"] if c["strike"] == 105.0)
+        self.assertEqual((call["bid"], call["ask"]), (2.4, 2.6))
+        self.assertTrue(any(count == 2 for count in gw.snapshot_calls.values()))
 
 
 class QuotesAreValid(unittest.TestCase):
@@ -984,6 +1022,41 @@ class ResolveExecutableCall(unittest.TestCase):
         self.assertEqual(out["limit_price"], 2.50)
         self.assertEqual(out["tick"], 0.05)
         self.assertIsInstance(out["bid"], float)
+
+    def test_allows_staging_exact_contract_while_quote_is_missing(self):
+        with mock.patch.object(
+            ibt,
+            "resolve_exact_call",
+            return_value=self._resolved(bid=None, ask=None),
+        ):
+            out = ibt.resolve_executable_call(
+                "NVDA",
+                "2026-08-21",
+                105,
+                expected_conid=555,
+                now=self.NOW,
+                allow_missing_quote=True,
+            )
+        self.assertIsNone(out["limit_price"])
+        self.assertEqual(out["quote_status"], "missing")
+        self.assertIn("cannot be previewed or placed", out["staging_warning"])
+
+    def test_allow_missing_quote_does_not_allow_crossed_market(self):
+        with mock.patch.object(
+            ibt,
+            "resolve_exact_call",
+            return_value=self._resolved(bid=2.80, ask=2.60),
+        ):
+            with self.assertRaises(ibt.ExecutableCallError) as ctx:
+                ibt.resolve_executable_call(
+                    "NVDA",
+                    "2026-08-21",
+                    105,
+                    expected_conid=555,
+                    now=self.NOW,
+                    allow_missing_quote=True,
+                )
+        self.assertEqual(ctx.exception.reason, "quote_invalid")
 
     def test_reports_stable_failure_reasons(self):
         cases = [
@@ -1050,7 +1123,7 @@ class ResolveExactCall(unittest.TestCase):
             self.assertIsNone(ibt.resolve_exact_call("NVDA", self.EXPIRY, 105))
 
     def test_rejects_unlisted_strike(self):
-        def _no_info(method, endpoint, body=None):
+        def _no_info(method, endpoint, body=None, **_kwargs):
             path, _, _ = endpoint.partition("?")
             if path == "/iserver/secdef/search":
                 return [{"conid": 500, "symbol": "NVDA",
@@ -1060,6 +1133,14 @@ class ResolveExactCall(unittest.TestCase):
             return {}
         with mock.patch.object(ibt, "_request", side_effect=_no_info):
             self.assertIsNone(ibt.resolve_exact_call("NVDA", self.EXPIRY, 999))
+
+    def test_resolves_later_weekly_expiry_from_info_array(self):
+        gw = _FakeGateway(maturities=["20260807", "20260814", "20260828"])
+        with mock.patch.object(ibt, "_request", gw):
+            out = ibt.resolve_exact_call("NVDA", "2026-08-28", 105)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["expiry"], "2026-08-28")
+        self.assertEqual(out["conid"], gw.opt_conid(105, "C") + 2)
 
 
 class OptionChainMetadata(unittest.TestCase):
@@ -1079,6 +1160,35 @@ class OptionChainMetadata(unittest.TestCase):
         self.assertAlmostEqual(chain["underlying_ask"], 100.5)
         self.assertAlmostEqual(chain["underlying_last"], 100.0)
         self.assertEqual(chain["quote_timestamp"], fixed)
+
+    def test_refreshes_quotes_without_repeating_secdef_discovery(self):
+        option_conid = _FakeGateway.opt_conid(105, "C")
+        gw = _FakeGateway(
+            spot={"31": "101.0", "84": "100.5", "86": "101.5"},
+            quotes={option_conid: {"31": "2.50", "84": "2.40", "86": "2.60"}},
+            warm_snapshots=True,
+        )
+        chain = {
+            "source": "ibkr",
+            "symbol": "NVDA",
+            "underlying_conid": gw.underlying,
+            "quote_timestamp": "2000-01-01T00:00:00+00:00",
+            "expiries": [{
+                "expiry": "2026-08-21",
+                "calls": [{"conid": option_conid, "strike": 105.0}],
+                "puts": [],
+            }],
+        }
+        fixed = "2026-07-09T10:15:00+00:00"
+        with mock.patch.object(ibt, "_request", gw), \
+                mock.patch.object(ibt, "OPTION_SNAPSHOT_WARMUP_SECONDS", 0), \
+                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+            refreshed = ibt.refresh_option_chain_quotes(chain)
+        call = refreshed["expiries"][0]["calls"][0]
+        self.assertEqual((call["bid"], call["ask"]), (2.4, 2.6))
+        self.assertEqual(refreshed["underlying_price"], 101.0)
+        self.assertEqual(refreshed["quote_timestamp"], fixed)
+        self.assertFalse(any("/secdef/" in endpoint for _, endpoint in gw.calls))
 
 
 if __name__ == "__main__":
