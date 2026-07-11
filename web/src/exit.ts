@@ -323,12 +323,15 @@ function underlyingQuoteBar(o: NonNullable<ExitPosition["options"]>, ccy: string
   const q = o.underlying_quote;
   const last = q?.last != null ? `<strong class="exit-underlying-last">${fmtNum(q.last)} ${esc(ccy)}</strong>` : dash;
   const src = q?.source ? esc(q.source) : "source unknown";
-  const age = q?.quote_timestamp
-    ? `<span class="muted">${esc(relAge(q.quote_timestamp))}</span>`
-    : "";
+  const age = q?.quote_timestamp ? esc(relAge(q.quote_timestamp)) : "age unavailable";
   bar.innerHTML =
-    `<span class="exit-underlying-label">Underlying last</span> ${last}` +
-    `<span class="muted"> · ${src}${age ? ` · ${age}` : ""}</span>`;
+    `<div class="exit-underlying-price">` +
+      `<span class="exit-underlying-label">Underlying last</span>${last}` +
+    `</div>` +
+    `<div class="exit-underlying-meta">` +
+      `<span class="exit-quote-chip">${src}</span>` +
+      `<span class="exit-quote-chip">${age}</span>` +
+    `</div>`;
   return bar;
 }
 
@@ -438,10 +441,11 @@ function coveredCallReco(
   const ladder = o?.covered_call_ladder ?? [];
   const contracts = elig.capacity_contracts ?? o?.covered_call?.contracts ?? 0;
 
-  const disclaimer = el("div", "exit-reco-sub hint");
+  const disclaimer = el("div", "exit-cc-callout");
   disclaimer.innerHTML =
-    `Covered-call exit is <strong>conditional</strong>: you collect premium now, but the position shrinks only if the calls are assigned. ` +
-    `Assignment is not guaranteed — you may need to buy back the calls or roll.`;
+    `<span class="exit-cc-callout-icon" aria-hidden="true">↪</span>` +
+    `<div><strong>Conditional exit</strong>` +
+    `<span>Premium is collected now; shares leave only on assignment. You may need to buy back or roll.</span></div>`;
   inner.appendChild(disclaimer);
 
   if (!elig.eligible) {
@@ -452,15 +456,45 @@ function coveredCallReco(
     routeBlocked(inner, elig.reasons);
   }
 
-  const cap = el("div", "exit-reco-sub");
-  cap.textContent = contracts > 0
-    ? `Up to ${contracts} contract${contracts === 1 ? "" : "s"} (${fmtShares(contracts * 100)} sh if assigned).`
-    : "No whole contracts available to write.";
-  inner.appendChild(cap);
-  inner.appendChild(el(
-    "div", "hint",
-    "Live positions, working orders, and quote freshness are rechecked when you stage and place.",
-  ));
+  const facts = el("div", "exit-cc-facts");
+  const fact = (label: string, value: string, note: string, className = "") => {
+    const card = el("div", `exit-cc-fact${className ? ` ${className}` : ""}`);
+    card.innerHTML =
+      `<span class="exit-cc-fact-label">${esc(label)}</span>` +
+      `<strong>${esc(value)}</strong>` +
+      `<span>${esc(note)}</span>`;
+    facts.appendChild(card);
+  };
+  fact(
+    "Assignment size",
+    contracts > 0
+      ? `${contracts} contract${contracts === 1 ? "" : "s"} · ${fmtShares(contracts * 100)} shares`
+      : "No whole contract",
+    contracts > 0 ? "Maximum shares sold if assigned" : "Insufficient covered capacity",
+  );
+  if (
+    elig.rounded_up
+    && elig.planned_exit_shares != null
+    && elig.assignment_shares != null
+  ) {
+    const deviation = elig.share_deviation ?? elig.assignment_shares - elig.planned_exit_shares;
+    const deviationPct = elig.planned_exit_shares > 0
+      ? (100 * deviation / elig.planned_exit_shares).toFixed(1)
+      : "0.0";
+    fact(
+      "Plan fit",
+      `${fmtShares(elig.planned_exit_shares)} → ${fmtShares(elig.assignment_shares)} shares`,
+      `+${fmtShares(deviation)} shares (${deviationPct}%) · within 15% guardrail`,
+      "rounded",
+    );
+  }
+  fact(
+    "Safety checks",
+    "Revalidated twice",
+    "Positions, working orders & quotes at stage and place",
+    "safety",
+  );
+  inner.appendChild(facts);
 
   if (!ladder.length) {
     inner.appendChild(el("div", "hint", "No covered-call rungs available for this name."));
@@ -645,6 +679,11 @@ function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
   const quoteOk = typeof r.bid === "number" && typeof r.ask === "number"
     && r.bid > 0 && r.ask > 0 && r.bid <= r.ask;
   if (r.executable === true && r.conid && r.quote_fresh === true && locallyFresh && quoteOk) return [];
+  const missingQuote = r.bid == null || r.ask == null || r.bid <= 0 || r.ask <= 0;
+  const crossedQuote = typeof r.bid === "number" && typeof r.ask === "number"
+    && r.bid > 0 && r.ask > 0 && r.bid > r.ask;
+  const staleQuote = r.quote_fresh === false || !locallyFresh;
+  if (r.stageable === true && r.conid && !crossedQuote && (missingQuote || staleQuote)) return [];
   const reasons: string[] = [];
   if (r.executable === false) reasons.push("Not executable");
   if (r.estimate) reasons.push("Modeled premium — no live IBKR quote");
@@ -655,6 +694,26 @@ function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
   if (r.quote_fresh === false || !locallyFresh) reasons.push("Quote is stale");
   if (!reasons.length) reasons.push("Quote not executable");
   return reasons;
+}
+
+function rungStageWarning(r: ExitCoveredCallRung): string | null {
+  const missingQuote = r.bid == null || r.ask == null || r.bid <= 0 || r.ask <= 0;
+  if (r.stageable !== true || !r.conid) return null;
+  if (missingQuote) {
+    return r.staging_warning
+      || "⚠ No live bid/ask. You may stage this contract, but preview and placement remain blocked until IBKR returns a fresh quote.";
+  }
+  const quoteTime = r.quote_timestamp ? new Date(r.quote_timestamp).getTime() : NaN;
+  const localAge = Date.now() - quoteTime;
+  const staleQuote = r.quote_fresh === false
+    || !Number.isFinite(quoteTime)
+    || localAge < -10_000
+    || localAge > EXECUTION_QUOTE_MAX_AGE_MS;
+  if (staleQuote) {
+    return r.staging_warning
+      || "⚠ Displayed quote is stale. Staging will refresh it from IBKR before calculating the limit.";
+  }
+  return null;
 }
 
 // ---- options overlay (analysis-only: puts/collars; covered calls live in route UI) ----
@@ -792,16 +851,22 @@ function coveredCallLadderTable(
     visible.forEach((r) => {
       const row = el("tr", r.recommended ? "exit-ladder-rec" : "");
       const blocked = rungBlockedReasons(r);
+      const stagingWarning = rungStageWarning(r);
       const canStage = blocked.length === 0 && contracts > 0;
 
       const actionCell = el("td");
       if (canStage) {
         const btn = el("button", "ghost exit-stage-cc-btn");
         btn.type = "button";
-        btn.textContent = "Stage →";
+        btn.textContent = stagingWarning?.toLowerCase().includes("stale")
+          ? "Refresh & stage →"
+          : "Stage →";
         btn.title = `Stage ${contracts}× ${fmtNum(r.strike)} call — assignment is conditional`;
         btn.addEventListener("click", () => stageCoveredCall(symbol, r, contracts, btn));
         actionCell.appendChild(btn);
+        if (stagingWarning) {
+          actionCell.appendChild(el("div", "exit-rung-warning", stagingWarning));
+        }
       } else {
         const span = el("span", "muted exit-rung-blocked");
         span.textContent = blocked.length ? blocked.join("; ") : dash;

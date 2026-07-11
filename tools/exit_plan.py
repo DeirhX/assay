@@ -58,6 +58,8 @@ CZ_TAX_RATE = 0.15          # Czech personal income tax on securities gains
 STUB_PCT = 0.5              # residual weight left when end-state is "stub"
 LADDER_RUNGS_PCT = (0.0, 0.02, 0.04)  # default GTC limit rungs above the mark
 FETCH_WORKERS = market_data.FETCH_WORKERS  # shared fan-out width (warms series + chains)
+OPTION_MULTIPLIER = ibkr_trade.OPTION_MULTIPLIER
+COVERED_CALL_ROUND_UP_MAX_DEVIATION_PCT = 0.15
 
 EPS = 1e-6
 
@@ -71,6 +73,30 @@ def _quote_age_seconds(raw: Any, *, now: dt.datetime | None = None) -> float | N
     return timeutil.age_seconds(raw, now=current)
 
 
+def _covered_call_exit_contracts(exit_shares: Any, current_shares: Any) -> int:
+    """Whole calls matching the planned exit, with a tightly bounded round-up.
+
+    A call may cover slightly more shares than the exact plan when the deviation
+    is at most 15%. It may never cover more shares than are currently held.
+    """
+    try:
+        planned = max(0, int(float(exit_shares or 0)))
+        held = max(0, int(float(current_shares or 0)))
+    except (TypeError, ValueError):
+        return 0
+    contracts = planned // OPTION_MULTIPLIER
+    rounded_contracts = contracts + 1
+    rounded_shares = rounded_contracts * OPTION_MULTIPLIER
+    if (
+        planned > 0
+        and rounded_shares <= held
+        and (rounded_shares - planned) / planned
+        <= COVERED_CALL_ROUND_UP_MAX_DEVIATION_PCT + EPS
+    ):
+        contracts = rounded_contracts
+    return min(contracts, held // OPTION_MULTIPLIER)
+
+
 def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) -> dict[str, Any]:
     """Server-computed route availability; staging repeats every safety check."""
     import trade_service
@@ -81,14 +107,22 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
     options = entry.get("options") or {}
     ladder = options.get("covered_call_ladder") or []
     capacity = trade_service.covered_call_capacity(entry["symbol"])
-    intended = max(0, int(float(entry.get("exit_shares") or 0) // 100))
+    exit_shares = max(0, int(float(entry.get("exit_shares") or 0)))
+    intended = _covered_call_exit_contracts(
+        exit_shares,
+        capacity.get("current_shares"),
+    )
     capacity_contracts = min(int(capacity.get("capacity_contracts") or 0), intended)
     executable: list[dict] = []
+    stageable_contracts: list[dict] = []
     for rung in ladder:
         age = _quote_age_seconds(rung.get("quote_timestamp"), now=now)
         rung["quote_age_seconds"] = round(age, 1) if age is not None else None
         rung["quote_fresh"] = age is not None and age <= EXECUTION_QUOTE_MAX_AGE_SECONDS
         bid, ask = rung.get("bid"), rung.get("ask")
+        contract_stageable = bool(rung.get("stageable") and rung.get("conid"))
+        if contract_stageable:
+            stageable_contracts.append(rung)
         if rung.get("executable") and rung["quote_fresh"] and bid and ask:
             # Display estimate only. stage_covered_call obtains the exact tick and
             # recomputes this from a fresh quote.
@@ -96,16 +130,32 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
             executable.append(rung)
         else:
             rung["limit_price"] = None
+            if contract_stageable and (bid is None or ask is None):
+                rung["staging_warning"] = (
+                    "No live bid/ask right now. Staging is allowed, but preview and placement "
+                    "remain blocked until IBKR returns a fresh two-sided quote."
+                )
+            elif contract_stageable and not rung["quote_fresh"]:
+                rung["staging_warning"] = (
+                    "The displayed quote is stale. Staging will refresh it from IBKR "
+                    "before calculating a limit price."
+                )
 
     reasons: list[str] = []
     if capacity_contracts < 1:
-        reasons.append(
-            f"No uncovered capacity for this exit ({capacity.get('current_shares', 0)} shares; "
-            f"{capacity.get('held_short_calls', 0)} held short call(s))."
-        )
+        if int(capacity.get("capacity_contracts") or 0) > 0 and exit_shares < OPTION_MULTIPLIER:
+            reasons.append(
+                f"The planned {exit_shares}-share exit is too far from one "
+                f"{OPTION_MULTIPLIER}-share option contract."
+            )
+        else:
+            reasons.append(
+                f"No uncovered capacity for this exit ({capacity.get('current_shares', 0)} shares; "
+                f"{capacity.get('held_short_calls', 0)} held short call(s))."
+            )
     if not ladder:
         reasons.append("No covered-call strike ladder is available for this exit.")
-    elif not executable:
+    elif not executable and not stageable_contracts:
         if any(r.get("executable") and not r.get("quote_fresh") for r in ladder):
             reasons.append(
                 "Covered-call levels are available, but the IBKR quote is stale; "
@@ -118,7 +168,7 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
                 "exact IBKR contract with a live two-sided quote."
             )
     covered_ok = capacity_contracts > 0 and bool(ladder)
-    stageable = capacity_contracts > 0 and bool(executable)
+    stageable = capacity_contracts > 0 and bool(stageable_contracts)
     return {
         "sell_shares": {"eligible": sell_ok, "reasons": sell_reasons},
         "covered_call": {
@@ -126,6 +176,10 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
             "stageable": stageable,
             "reasons": reasons,
             "capacity_contracts": capacity_contracts,
+            "planned_exit_shares": exit_shares,
+            "assignment_shares": capacity_contracts * OPTION_MULTIPLIER,
+            "share_deviation": capacity_contracts * OPTION_MULTIPLIER - exit_shares,
+            "rounded_up": capacity_contracts * OPTION_MULTIPLIER > exit_shares,
         },
         "recommended": "covered_call" if not sell_ok and covered_ok else "sell_shares",
     }
@@ -740,9 +794,8 @@ def stage_covered_call(
     ), None)
     if not rung:
         raise ValueError(f"{sym}: selected call is not in the current server-built Exit ladder")
-    age = _quote_age_seconds(rung.get("quote_timestamp"))
-    if not rung.get("executable") or age is None or age > EXECUTION_QUOTE_MAX_AGE_SECONDS:
-        raise ValueError(f"{sym}: selected call does not have a fresh executable IBKR quote")
+    if not rung.get("stageable") or not rung.get("conid"):
+        raise ValueError(f"{sym}: selected call is not an exact stageable IBKR contract")
 
     try:
         raw_working = ibkr_trade.live_orders()
@@ -758,7 +811,10 @@ def stage_covered_call(
     leg_id = f"covered_call:{sym}:{int(conid)}"
     existing = trade_service.load_basket()
     staged_stock_sells = _staged_exit_share_sales(existing, sym)
-    intended = max(0, int(float(pos.get("exit_shares") or 0) // 100))
+    intended = _covered_call_exit_contracts(
+        pos.get("exit_shares"),
+        capacity.get("current_shares"),
+    )
     post_sell_capacity = max(
         0,
         max(0, int(capacity.get("current_shares") or 0) - staged_stock_sells) // 100
@@ -786,6 +842,7 @@ def stage_covered_call(
             strike,
             expected_conid=int(conid),
             max_quote_age_seconds=EXECUTION_QUOTE_MAX_AGE_SECONDS,
+            allow_missing_quote=True,
         )
     except ibkr_trade.ExecutableCallError as exc:
         if exc.reason in {"contract_missing", "contract_changed"}:
@@ -797,7 +854,7 @@ def stage_covered_call(
         else:
             message = f"{sym}: no valid tick-rounded sell limit"
         raise ValueError(message) from exc
-    limit = exact["limit_price"]
+    limit = exact.get("limit_price")
 
     fingerprint = _plan_fingerprint(plan, pos)
     provenance = {
@@ -824,6 +881,7 @@ def stage_covered_call(
         "multiplier": 100,
         "limit_price": limit,
         "quote_timestamp": exact.get("quote_timestamp"),
+        "staging_warning": exact.get("staging_warning"),
         "provenance": [provenance],
     }
     basket = trade_service.save_basket(existing + [leg])

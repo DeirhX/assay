@@ -318,6 +318,122 @@ def test_indicative_ladder_keeps_covered_call_route_selectable(monkeypatch):
     assert routes["recommended"] == "covered_call"
 
 
+def test_covered_call_route_rounds_89_planned_shares_to_one_contract(monkeypatch):
+    import trade_service
+
+    monkeypatch.setattr(
+        trade_service,
+        "covered_call_capacity",
+        lambda _symbol: {
+            "capacity_contracts": 3,
+            "current_shares": 300,
+            "held_short_calls": 0,
+        },
+    )
+    routes = exit_plan._execution_routes({
+        "symbol": "ARM",
+        "exit_shares": 89,
+        "schedule": {"tranches": []},
+        "options": {
+            "covered_call_ladder": [{
+                "conid": 555,
+                "strike": 340,
+                "bid": 30.3,
+                "ask": 33.95,
+                "stageable": True,
+                "executable": True,
+                "quote_timestamp": AS_OF.isoformat(),
+            }],
+        },
+    }, now=AS_OF)
+
+    route = routes["covered_call"]
+    assert route["eligible"] is True
+    assert route["stageable"] is True
+    assert route["capacity_contracts"] == 1
+    assert route["assignment_shares"] == 100
+    assert route["share_deviation"] == 11
+    assert route["rounded_up"] is True
+
+
+def test_covered_call_round_up_rejects_large_deviation_or_negative_position():
+    assert exit_plan._covered_call_exit_contracts(80, 300) == 0
+    assert exit_plan._covered_call_exit_contracts(89, 95) == 0
+    assert exit_plan._covered_call_exit_contracts(89, 300) == 1
+
+
+def test_missing_bid_ask_warns_but_remains_stageable(monkeypatch):
+    import trade_service
+
+    monkeypatch.setattr(
+        trade_service,
+        "covered_call_capacity",
+        lambda _symbol: {
+            "capacity_contracts": 1,
+            "current_shares": 100,
+            "held_short_calls": 0,
+        },
+    )
+    entry = {
+        "symbol": "EXITME",
+        "exit_shares": 100,
+        "schedule": {"tranches": []},
+        "options": {
+            "covered_call_ladder": [{
+                "conid": 555,
+                "strike": 105,
+                "bid": None,
+                "ask": None,
+                "stageable": True,
+                "executable": False,
+                "quote_timestamp": AS_OF.isoformat(),
+            }],
+        },
+    }
+    routes = exit_plan._execution_routes(entry, now=AS_OF)
+    rung = entry["options"]["covered_call_ladder"][0]
+    assert routes["covered_call"]["eligible"] is True
+    assert routes["covered_call"]["stageable"] is True
+    assert routes["covered_call"]["reasons"] == []
+    assert rung["limit_price"] is None
+    assert "Staging is allowed" in rung["staging_warning"]
+
+
+def test_stale_quote_warns_and_refreshes_during_staging(monkeypatch):
+    import trade_service
+
+    monkeypatch.setattr(
+        trade_service,
+        "covered_call_capacity",
+        lambda _symbol: {
+            "capacity_contracts": 1,
+            "current_shares": 100,
+            "held_short_calls": 0,
+        },
+    )
+    entry = {
+        "symbol": "EXITME",
+        "exit_shares": 100,
+        "schedule": {"tranches": []},
+        "options": {
+            "covered_call_ladder": [{
+                "conid": 555,
+                "strike": 105,
+                "bid": 2.40,
+                "ask": 2.60,
+                "stageable": True,
+                "executable": True,
+                "quote_timestamp": "2020-01-01T00:00:00+00:00",
+            }],
+        },
+    }
+    routes = exit_plan._execution_routes(entry, now=AS_OF)
+    rung = entry["options"]["covered_call_ladder"][0]
+    assert routes["covered_call"]["stageable"] is True
+    assert rung["limit_price"] is None
+    assert "Staging will refresh it from IBKR" in rung["staging_warning"]
+
+
 def _fresh_quote_ts():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -330,6 +446,7 @@ def _exit_plan_with_cc(*, eligible=True, exit_shares=400, capacity_contracts=4,
         "strike": 105.0,
         "bid": 2.40,
         "ask": 2.60,
+        "stageable": True,
         "executable": True,
         "quote_timestamp": _fresh_quote_ts(),
     }
@@ -440,6 +557,63 @@ def test_stage_covered_call_validates_and_stages_with_provenance(tmp_path, monke
     assert trade_service.load_basket() == out["basket"]
 
 
+def test_stage_covered_call_accepts_bounded_round_up(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(exit_shares=89, capacity_contracts=1)
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=300)
+    out = exit_plan.stage_covered_call(
+        plan,
+        "EXITME",
+        conid=555,
+        expiry=rung["expiry"],
+        strike=rung["strike"],
+        contracts=1,
+    )
+    assert out["leg"]["contracts"] == 1
+    assert out["leg"]["provenance"][0]["intended_assigned_shares"] == 100
+
+
+def test_stage_covered_call_allows_missing_quote_with_warning(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(rung_overrides={
+        "bid": None,
+        "ask": None,
+        "executable": False,
+        "staging_warning": "No live bid/ask right now.",
+    })
+    _stage_mocks(monkeypatch, tmp_path, exact={
+        "conid": 555,
+        "expiry": rung["expiry"],
+        "strike": rung["strike"],
+        "bid": None,
+        "ask": None,
+        "quote_timestamp": _fresh_quote_ts(),
+        "rules": {"increment": 0.05},
+    })
+    out = exit_plan.stage_covered_call(
+        plan,
+        "EXITME",
+        conid=555,
+        expiry=rung["expiry"],
+        strike=rung["strike"],
+        contracts=1,
+    )
+    assert out["leg"]["limit_price"] is None
+    assert "cannot be previewed or placed" in out["leg"]["staging_warning"]
+
+
+def test_stage_covered_call_round_up_cannot_exceed_live_shares(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc(exit_shares=89, capacity_contracts=1)
+    _stage_mocks(monkeypatch, tmp_path, holdings_shares=95)
+    with pytest.raises(ValueError, match="only 0 covered-call contract"):
+        exit_plan.stage_covered_call(
+            plan,
+            "EXITME",
+            conid=555,
+            expiry=rung["expiry"],
+            strike=rung["strike"],
+            contracts=1,
+        )
+
+
 def test_stage_covered_call_idempotent_by_leg_id(tmp_path, monkeypatch):
     import trade_service
 
@@ -479,12 +653,30 @@ def test_stage_covered_call_rejects_rung_not_in_ladder(tmp_path, monkeypatch):
         )
 
 
-def test_stage_covered_call_rejects_stale_quote(tmp_path, monkeypatch):
+def test_stage_covered_call_revalidates_stale_ladder_quote(tmp_path, monkeypatch):
     plan, rung = _exit_plan_with_cc(rung_overrides={
         "quote_timestamp": "2020-01-01T00:00:00+00:00",
     })
     _stage_mocks(monkeypatch, tmp_path)
-    with pytest.raises(ValueError, match="fresh executable IBKR quote"):
+    out = exit_plan.stage_covered_call(
+        plan, "EXITME", conid=555, expiry=rung["expiry"],
+        strike=rung["strike"], contracts=1,
+    )
+    assert out["leg"]["limit_price"] == 2.50
+
+
+def test_stage_covered_call_rejects_stale_revalidated_quote(tmp_path, monkeypatch):
+    plan, rung = _exit_plan_with_cc()
+    _stage_mocks(monkeypatch, tmp_path, exact={
+        "conid": 555,
+        "expiry": rung["expiry"],
+        "strike": rung["strike"],
+        "bid": 2.40,
+        "ask": 2.60,
+        "quote_timestamp": "2020-01-01T00:00:00+00:00",
+        "rules": {"increment": 0.05},
+    })
+    with pytest.raises(ValueError, match="option quote is stale"):
         exit_plan.stage_covered_call(
             plan, "EXITME", conid=555, expiry=rung["expiry"],
             strike=rung["strike"], contracts=1,

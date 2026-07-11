@@ -346,8 +346,11 @@ describe("Exit execution routes", () => {
     await flush();
 
     const body = document.querySelector("#exit-body")!.textContent || "";
-    expect(body).toContain("conditional");
+    expect(body).toContain("Conditional exit");
     expect(body).toContain("if assigned");
+    expect(body).toContain("Assignment size");
+    expect(body).toContain("Safety checks");
+    expect(body).toContain("Revalidated twice");
 
     const headers = document.querySelector("#exit-body table.exit-ladder-exec thead")!.textContent || "";
     expect(headers).toContain("Bid (sell)");
@@ -366,6 +369,31 @@ describe("Exit execution routes", () => {
     expect(rows[0].textContent).toMatch(/2[,.]4/);
     expect(rows[0].textContent).toMatch(/2[,.]6/);
     expect(rows[0].textContent).toContain("18.2%");
+  });
+
+  it("explains bounded whole-contract rounding", async () => {
+    const data = routeFixture();
+    data.positions[0].routes!.covered_call = {
+      ...data.positions[0].routes!.covered_call,
+      capacity_contracts: 1,
+      planned_exit_shares: 89,
+      assignment_shares: 100,
+      share_deviation: 11,
+      rounded_up: true,
+    };
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const body = document.querySelector("#exit-body")!.textContent || "";
+    expect(body).toContain("89 → 100 shares");
+    expect(body).toContain("+11 shares");
+    expect(body).toContain("within 15% guardrail");
   });
 
   it("sorts the covered-call ladder by any decision column", async () => {
@@ -488,10 +516,42 @@ describe("Exit execution routes", () => {
     expect(stageBtns.length).toBe(2);
   });
 
-  it("expires executable rung actions locally after the two-minute quote window", async () => {
+  it("warns but allows staging a known contract with no current bid/ask", async () => {
     const data = routeFixture();
-    data.positions[0].options!.covered_call_ladder![0].quote_timestamp =
-      new Date(Date.now() - 121_000).toISOString();
+    const rung = data.positions[0].options!.covered_call_ladder[2];
+    rung.conid = 99988877;
+    rung.stageable = true;
+    rung.executable = false;
+    rung.bid = null;
+    rung.ask = null;
+    rung.staging_warning =
+      "No live bid/ask right now. Staging is allowed, but placement remains blocked.";
+    apiMock.mockResolvedValue(data);
+    await loadExit();
+    await flush();
+
+    const ccBtn = [...document.querySelectorAll<HTMLButtonElement>("#exit-body .exit-route-btn")]
+      .find((b) => b.textContent?.includes("Covered-call"))!;
+    ccBtn.click();
+    await flush();
+
+    const rows = document.querySelectorAll("#exit-body table.exit-ladder-exec tbody tr");
+    const warningRow = [...rows].find((row) => row.textContent?.includes("No live bid/ask"))!;
+    expect(warningRow).toBeTruthy();
+    expect(warningRow.querySelector(".exit-rung-warning")!.textContent).toContain(
+      "placement remains blocked",
+    );
+    expect(warningRow.querySelector(".exit-stage-cc-btn")).toBeTruthy();
+  });
+
+  it("offers automatic refresh when a displayed quote ages out", async () => {
+    const data = routeFixture();
+    const rung = data.positions[0].options!.covered_call_ladder![0];
+    rung.stageable = true;
+    rung.quote_fresh = false;
+    rung.quote_timestamp = new Date(Date.now() - 121_000).toISOString();
+    rung.staging_warning =
+      "The displayed quote is stale. Staging will refresh it from IBKR before calculating a limit price.";
     apiMock.mockResolvedValue(data);
     await loadExit();
     await flush();
@@ -502,8 +562,9 @@ describe("Exit execution routes", () => {
     await flush();
 
     const firstRow = document.querySelector("#exit-body table.exit-ladder-exec tbody tr")!;
-    expect(firstRow.textContent).toContain("Quote is stale");
-    expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeNull();
+    expect(firstRow.textContent).toContain("displayed quote is stale");
+    expect(firstRow.textContent).toContain("Refresh & stage");
+    expect(firstRow.querySelector(".exit-stage-cc-btn")).toBeTruthy();
   });
 
   it("labels protective puts as analysis-only in details", async () => {

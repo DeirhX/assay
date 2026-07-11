@@ -21,9 +21,11 @@ from config import REPO_ROOT
 
 OPT_CACHE_DIR = REPO_ROOT / "data" / "cache" / "options"
 OPT_CACHE_TTL_SECONDS = 3 * 3600
+IBKR_QUOTE_CACHE_TTL_SECONDS = 60
+FALLBACK_CACHE_TTL_SECONDS = 60
 RATE_CACHE_PATH = OPT_CACHE_DIR / "risk-free-rate.json"
 RATE_CACHE_TTL_SECONDS = 6 * 3600
-IBKR_CHAIN_BUDGET_SECONDS = 5.0
+IBKR_CHAIN_BUDGET_SECONDS = 8.0
 SESSION_READY_TTL_SECONDS = 20.0
 
 _session_ready_cache: tuple[float, bool] | None = None
@@ -84,19 +86,17 @@ def reset_session_cache() -> None:
 
 
 def chain_within_budget(symbol: str, budget: float) -> dict[str, Any] | None:
-    """Fetch an IBKR chain on a daemon thread, waiting at most ``budget`` seconds."""
-    box: dict[str, Any] = {}
+    """Fetch a cooperative, deadline-bounded IBKR chain.
 
-    def run() -> None:
-        try:
-            box["chain"] = ibkr_trade.option_chain(symbol)
-        except Exception:  # noqa: BLE001 -- caller falls through to other providers
-            box["chain"] = None
-
-    thread = threading.Thread(target=run, name=f"ibkr-chain-{symbol}", daemon=True)
-    thread.start()
-    thread.join(budget)
-    return None if thread.is_alive() else box.get("chain")
+    The old daemon-thread timeout returned after five seconds but left the worker
+    issuing dozens of CPAPI requests in the background. Passing the deadline into
+    the request pipeline stops new work and bounds each in-flight HTTP timeout.
+    """
+    deadline = time.monotonic() + max(0.05, budget)
+    try:
+        return ibkr_trade.option_chain(symbol, deadline_monotonic=deadline)
+    except Exception:  # noqa: BLE001 -- caller falls through to other providers
+        return None
 
 
 def fetch_option_chain(symbol: str) -> dict[str, Any] | None:
@@ -132,16 +132,41 @@ def cached_option_chain(
     safe = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in "-._=")
     path = directory / f"{safe}.json"
     cached = store.load(path)
-    if (
-        isinstance(cached, dict)
-        and "chain" in cached
-        and timeutil.cache_fresh(cached.get("fetched_at"), OPT_CACHE_TTL_SECONDS)
-    ):
-        return cached.get("chain")
+    if isinstance(cached, dict) and "chain" in cached:
+        cached_chain = cached.get("chain")
+        if isinstance(cached_chain, dict) and cached_chain.get("source") == "ibkr":
+            reference_at = cached.get("reference_fetched_at") or cached.get("fetched_at")
+            if timeutil.cache_fresh(reference_at, OPT_CACHE_TTL_SECONDS):
+                if timeutil.cache_fresh(
+                    cached_chain.get("quote_timestamp"),
+                    IBKR_QUOTE_CACHE_TTL_SECONDS,
+                ):
+                    return cached_chain
+                if session_ready():
+                    try:
+                        refreshed = ibkr_trade.refresh_option_chain_quotes(
+                            cached_chain,
+                            deadline_monotonic=time.monotonic() + IBKR_CHAIN_BUDGET_SECONDS,
+                        )
+                    except Exception:  # noqa: BLE001 -- stale references still beat a total miss
+                        refreshed = cached_chain
+                    if refreshed is not cached_chain:
+                        store.write_json(path, {
+                            "symbol": symbol.upper(),
+                            "fetched_at": timeutil.now_iso(),
+                            "reference_fetched_at": reference_at,
+                            "chain": refreshed,
+                        })
+                    return refreshed
+                return cached_chain
+        elif timeutil.cache_fresh(cached.get("fetched_at"), FALLBACK_CACHE_TTL_SECONDS):
+            return cached_chain
     chain = fetch_option_chain(symbol)
+    fetched_at = timeutil.now_iso()
     store.write_json(path, {
         "symbol": symbol.upper(),
-        "fetched_at": timeutil.now_iso(),
+        "fetched_at": fetched_at,
+        "reference_fetched_at": fetched_at if chain and chain.get("source") == "ibkr" else None,
         "chain": chain,
     })
     return chain

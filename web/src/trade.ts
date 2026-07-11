@@ -531,7 +531,8 @@ function renderBasket() {
           `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
           `<td>${sideTag("SELL")} <span class="muted">to open</span></td>` +
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
-          `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}</td>` +
+          `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}` +
+          `${t.staging_warning ? `<div class="warn">${esc(t.staging_warning)}</div>` : ""}</td>` +
           `<td class="tb-weight muted">conditional assignment</td>` +
           `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove this covered call from the order queue">Remove</button></td>` +
         `</tr>`;
