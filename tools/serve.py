@@ -132,6 +132,7 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
     remove_basket_leg as _remove_basket_leg,
     replace_stock_basket as _replace_stock_basket,
     review_basket as _review_basket, save_basket as _save_basket,
+    set_basket_leg_included as _set_basket_leg_included,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -1513,6 +1514,11 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body.get("clear") is True:
             _save_basket([])
+        elif body.get("toggle_leg_id") is not None:
+            _set_basket_leg_included(
+                body.get("toggle_leg_id"),
+                body.get("included"),
+            )
         elif body.get("remove_leg_id") is not None:
             _remove_basket_leg(body.get("remove_leg_id"))
         else:

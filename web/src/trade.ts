@@ -6,7 +6,9 @@ import {
 } from "./gateway";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
 import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
-import type { GatewayStatus, TradeLeg, TradeLegProvenance, TradeQueueState } from "./api-types";
+import type {
+  GatewayStatus, QueuedTradeLeg, TradeLeg, TradeLegProvenance, TradeQueueState,
+} from "./api-types";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
   gatewayOrigin, orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
@@ -150,6 +152,23 @@ const PEG_POLL_MS = 5000;
 type TradeDeskTab = "basket" | "review" | "orders";
 let _tradeDeskTab: TradeDeskTab = "basket";
 let _gatewaySubscribed = false;
+
+function applyQueueState(saved: TradeQueueState): void {
+  const trades = Array.isArray(saved.trades) ? saved.trades : [];
+  const queueTrades: QueuedTradeLeg[] = Array.isArray(saved.queue_trades)
+    ? saved.queue_trades
+    : trades.map((trade) => ({ ...trade, included: true }));
+  state.stagedBasket = trades;
+  _queueState = {
+    ...saved,
+    trades,
+    queue_trades: queueTrades,
+    excluded_leg_ids: saved.excluded_leg_ids || [],
+    revision: saved.revision || "",
+    reviewed: !!saved.reviewed,
+    reviewed_at: saved.reviewed_at || null,
+  };
+}
 
 function ensureGatewaySubscription(): void {
   if (_gatewaySubscribed) return;
@@ -315,13 +334,7 @@ async function loadTrade() {
     const res = await api<TradeQueueState>("/api/trade/basket");
     if (isStaleToken("trade", token)) return;
     if (Array.isArray(res.trades)) {
-      state.stagedBasket = res.trades;
-      _queueState = {
-        trades: res.trades,
-        revision: res.revision || "",
-        reviewed: !!res.reviewed,
-        reviewed_at: res.reviewed_at || null,
-      };
+      applyQueueState(res);
     }
   } catch (_e) {
     if (isStaleToken("trade", token)) return;  // else: keep whatever's in memory
@@ -444,14 +457,8 @@ async function persistQueue(
   trigger.textContent = "Updating…";
   try {
     const saved = await api<TradeQueueState>("/api/trade/basket", "POST", mutation);
-    state.stagedBasket = Array.isArray(saved.trades) ? saved.trades : [];
+    applyQueueState(saved);
     window.dispatchEvent(new Event("assay:queue-changed"));
-    _queueState = {
-      trades: state.stagedBasket.slice(),
-      revision: saved.revision || "",
-      reviewed: !!saved.reviewed,
-      reviewed_at: saved.reviewed_at || null,
-    };
     _preview = null;
     stopPreviewCountdown();
     renderBasket();
@@ -471,24 +478,29 @@ function renderBasket() {
   if (!wrap) return;
   wrap.innerHTML = "";
   const basket = state.stagedBasket || [];
+  const queue = (_queueState.queue_trades || []).length
+    ? _queueState.queue_trades!
+    : basket.map((trade): QueuedTradeLeg => ({ ...trade, included: true }));
+  const excludedCount = queue.filter((trade) => !trade.included).length;
 
   const card = el("div", "trade-card");
   const head = el("div", "trade-card-head");
   head.innerHTML = `<span class="trade-card-title">Order queue</span>` +
-    `<span class="muted">${basket.length} trade${basket.length === 1 ? "" : "s"} from Rebalance or Exit</span>` +
+    `<span class="muted">${basket.length} included trade${basket.length === 1 ? "" : "s"}` +
+    `${excludedCount ? ` · ${excludedCount} excluded` : ""} from Rebalance or Exit</span>` +
     (_queueState.reviewed ? `<span class="chip good">projection approved</span>` : "");
-  if (basket.length) {
+  if (queue.length) {
     const controls = el("div", "trade-queue-controls");
-    if (!_queueState.reviewed) {
+    if (basket.length && !_queueState.reviewed) {
       const review = el("button", "primary", "Review projected portfolio →");
       review.type = "button";
       review.addEventListener("click", () => openWorkflowView("target-state"));
       controls.appendChild(review);
     }
-    const hasExitCalls = basket.some((trade) =>
+    const hasExitCalls = queue.some((trade) =>
       trade.type === "covered_call"
       && !(trade.provenance || []).some((prov) => prov.source === "rebalance_routes"));
-    const hasRebalanceRoutes = basket.some((trade) =>
+    const hasRebalanceRoutes = queue.some((trade) =>
       trade.type === "cash_secured_put"
       || (trade.provenance || []).some((prov) => prov.source === "rebalance_routes"));
     const edit = el(
@@ -511,7 +523,7 @@ function renderBasket() {
   }
   card.appendChild(head);
 
-  if (!basket.length) {
+  if (!queue.length) {
     card.appendChild(el("div", "hint",
       "The order queue is empty. Build orders, preview their impact, and add the chosen share or option routes; " +
       "then approve the projected portfolio before opening Order review."));
@@ -545,32 +557,41 @@ function renderBasket() {
       `<th class="tb-weight">Relative size</th>` +
       `<th><span class="sr-only">Actions</span></th>` +
     `</tr></thead>` +
-    `<tbody>${basket.map((t) => {
+    `<tbody>${queue.map((t) => {
+      const included = t.included !== false;
+      const rowClass = included ? "" : " trade-basket-excluded";
+      const excludedChip = included ? "" : ` <span class="chip muted trade-excluded-chip">excluded</span>`;
       if (t.type === "covered_call" || t.type === "cash_secured_put") {
         const isPut = t.type === "cash_secured_put";
         const legId = t.leg_id || `${t.type}:${t.symbol}:${t.conid}`;
-        return `<tr class="trade-basket-option">` +
-          `<td>${tickerLink(t.symbol)}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
+        return `<tr class="trade-basket-option${rowClass}">` +
+          `<td>${tickerLink(t.symbol)}${excludedChip}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
           `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
           `<td>${sideTag("SELL")} <span class="muted">to open</span></td>` +
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
           `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}` +
           `${t.staging_warning ? `<div class="warn">${esc(t.staging_warning)}</div>` : ""}</td>` +
           `<td class="tb-weight muted">conditional assignment · ${isPut ? "entry" : "reduction"} · ${isPut ? "+" : "−"}${t.contracts * (t.multiplier || 100)} shares</td>` +
-          `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove this written option from the order queue">Remove</button></td>` +
+          `<td><button class="ghost trade-queue-toggle${included ? "" : " is-excluded"}" type="button" ` +
+          `data-queue-toggle-leg="${esc(legId)}" data-queue-include="${included ? "false" : "true"}" ` +
+          `aria-pressed="${included ? "true" : "false"}" title="${included ? "Exclude this option from projection and placement" : "Include this option again"}">` +
+          `${included ? "Exclude" : "Include"}</button></td>` +
         `</tr>`;
       }
       const delta = Number(t.delta_czk) || 0;
       const buy = delta >= 0;
       const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(delta))} CZK`;
       const legId = t.leg_id || `stock:${t.symbol}`;
-      return `<tr>` +
-        `<td>${tickerLink(t.symbol)}</td>` +
+      return `<tr class="${rowClass.trim()}">` +
+        `<td>${tickerLink(t.symbol)}${excludedChip}</td>` +
         `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
         `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
         `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
         `<td class="tb-weight">${sensitive(basketBar(delta, maxAbs), "relative trade size")}</td>` +
-        `<td><button class="ghost trade-queue-remove" type="button" data-queue-remove-leg="${esc(legId)}" title="Remove ${esc(t.symbol)} from the order queue">Remove</button></td>` +
+        `<td><button class="ghost trade-queue-toggle${included ? "" : " is-excluded"}" type="button" ` +
+        `data-queue-toggle-leg="${esc(legId)}" data-queue-include="${included ? "false" : "true"}" ` +
+        `aria-pressed="${included ? "true" : "false"}" title="${included ? `Exclude ${esc(t.symbol)} from projection and placement` : `Include ${esc(t.symbol)} again`}">` +
+        `${included ? "Exclude" : "Include"}</button></td>` +
       `</tr>`;
     }).join("")}</tbody>` +
     `<tfoot><tr>` +
@@ -579,15 +600,19 @@ function renderBasket() {
         `<span class="trade-side sell">${sells} stock sell${sells === 1 ? "" : "s"}</span>` +
         (calls.length ? ` · <span class="trade-side sell">${calls.length} covered call${calls.length === 1 ? "" : "s"}</span>` : "") +
         (puts.length ? ` · <span class="trade-side sell">${puts.length} cash-secured put${puts.length === 1 ? "" : "s"}</span>` : "") +
+        (excludedCount ? ` · <span class="muted">${excludedCount} excluded</span>` : "") +
       `</td>` +
       `<td class="num" title="net cash impact — buys minus sells">` +
         `<span class="muted">net</span> ${sensitive(`${net >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(net))}`, "net basket cash")}` +
       `</td>` +
       `<td class="tb-weight muted" title="gross traded value — buys plus sells">gross ${sensitive(fmtCZK(gross), "gross basket value")}</td><td></td>` +
     `</tr></tfoot>`;
-  table.querySelectorAll<HTMLButtonElement>("[data-queue-remove-leg]").forEach((button) => {
+  table.querySelectorAll<HTMLButtonElement>("[data-queue-toggle-leg]").forEach((button) => {
     button.addEventListener("click", () => {
-      void persistQueue({ remove_leg_id: button.dataset.queueRemoveLeg || "" }, button);
+      void persistQueue({
+        toggle_leg_id: button.dataset.queueToggleLeg || "",
+        included: button.dataset.queueInclude === "true",
+      }, button);
     });
   });
   card.appendChild(table);
@@ -596,7 +621,9 @@ function renderBasket() {
   void hydrateSparks(table);
 
   card.appendChild(el("div", "hint trade-preview-hint",
-    _queueState.reviewed
+    !basket.length
+      ? "All queued trades are excluded. Include at least one trade, then review the projected portfolio."
+      : _queueState.reviewed
       ? "Projection approved. Open Order review above to reconcile this queue with IBKR working orders."
       : "IBKR preview is locked until you review and approve this exact queue in Review impact."));
   card.appendChild(el("div", "status", "")).id = "trade-preview-status";

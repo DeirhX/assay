@@ -671,26 +671,44 @@ describe("trade desk staged basket", () => {
     expect(apiMock).not.toHaveBeenCalledWith("/api/trade/preview", expect.anything(), expect.anything());
   });
 
-  it("removes individual orders, clears the queue, and invalidates review", async () => {
+  it("excludes and restores individual orders, clears the queue, and invalidates review", async () => {
     const basket = [
       { symbol: "NVDA", delta_czk: 1000 },
       { symbol: "ARM", delta_czk: -500 },
     ];
+    const excluded = new Set<string>();
+    const queueState = () => ({
+      trades: basket.filter((trade) => !excluded.has(`stock:${trade.symbol}`)),
+      queue_trades: basket.map((trade) => ({
+        ...trade,
+        included: !excluded.has(`stock:${trade.symbol}`),
+      })),
+      excluded_leg_ids: [...excluded],
+      revision: excluded.size ? "changed-rev" : "reviewed-rev",
+      reviewed: false,
+    });
     apiMock.mockImplementation((
       path: string, method?: string,
-      body?: { remove_leg_id?: string; clear?: boolean },
+      body?: { toggle_leg_id?: string; included?: boolean; clear?: boolean },
     ) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
       if (path === "/api/trade/basket" && method === "POST") {
-        const trades = body?.clear
-          ? []
-          : basket.filter((trade) => `stock:${trade.symbol}` !== body?.remove_leg_id);
-        return Promise.resolve({
-          trades, revision: trades.length ? "changed-rev" : "", reviewed: false,
-        });
+        if (body?.clear) {
+          excluded.clear();
+          return Promise.resolve({
+            trades: [], queue_trades: [], excluded_leg_ids: [], revision: "", reviewed: false,
+          });
+        }
+        if (body?.toggle_leg_id) {
+          if (body.included) excluded.delete(body.toggle_leg_id);
+          else excluded.add(body.toggle_leg_id);
+        }
+        return Promise.resolve(queueState());
       }
       if (path === "/api/trade/basket") {
-        return Promise.resolve({ trades: basket, revision: "reviewed-rev", reviewed: true });
+        return Promise.resolve({
+          ...queueState(), revision: "reviewed-rev", reviewed: true,
+        });
       }
       if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
       return Promise.resolve({ orders: [] });
@@ -699,13 +717,26 @@ describe("trade desk staged basket", () => {
     await flush();
     expect(document.querySelector(".chip.good")?.textContent).toContain("projection approved");
 
-    document.querySelector<HTMLButtonElement>('[data-queue-remove-leg="stock:NVDA"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-queue-toggle-leg="stock:NVDA"]')!.click();
     await flush();
     expect(apiMock).toHaveBeenCalledWith(
-      "/api/trade/basket", "POST", { remove_leg_id: "stock:NVDA" },
+      "/api/trade/basket", "POST", { toggle_leg_id: "stock:NVDA", included: false },
     );
     expect(state.stagedBasket).toEqual([{ symbol: "ARM", delta_czk: -500 }]);
+    const excludedRow = document.querySelector(".trade-basket-excluded")!;
+    expect(excludedRow.textContent).toContain("NVDA");
+    expect(excludedRow.textContent).toContain("excluded");
+    const include = excludedRow.querySelector<HTMLButtonElement>('[data-queue-toggle-leg="stock:NVDA"]')!;
+    expect(include.textContent).toBe("Include");
     expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.disabled).toBe(true);
+
+    include.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket", "POST", { toggle_leg_id: "stock:NVDA", included: true },
+    );
+    expect(state.stagedBasket).toEqual(basket);
+    expect(document.querySelector(".trade-basket-excluded")).toBeFalsy();
 
     vi.stubGlobal("confirm", vi.fn(() => true));
     byText((text) => text === "Clear queue")!.click();
@@ -871,19 +902,32 @@ describe("trade desk mixed stock + covered call", () => {
     expect(document.querySelector(".trade-queue-controls")!.textContent).toContain("Edit in Rebalance");
   });
 
-  it("removes the exact server-known covered-call leg", async () => {
+  it("excludes and restores the exact server-known covered-call leg", async () => {
+    let callIncluded = true;
+    const queueState = () => ({
+      trades: callIncluded
+        ? MIXED_BASKET
+        : MIXED_BASKET.filter((trade) => trade.type !== "covered_call"),
+      queue_trades: MIXED_BASKET.map((trade) => ({
+        ...trade,
+        included: trade.type !== "covered_call" || callIncluded,
+      })),
+      excluded_leg_ids: callIncluded ? [] : ["cc-nvda-1"],
+      revision: callIncluded ? "rev-mixed" : "rev-stock-only",
+      reviewed: false,
+    });
     apiMock.mockImplementation((
       path: string,
       method?: string,
-      body?: { remove_leg_id?: string },
+      body?: { toggle_leg_id?: string; included?: boolean },
     ) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
       if (path === "/api/trade/basket" && method === "POST") {
-        const trades = MIXED_BASKET.filter((trade) => trade.leg_id !== body?.remove_leg_id);
-        return Promise.resolve({ trades, revision: "rev-stock-only", reviewed: false });
+        if (body?.toggle_leg_id === "cc-nvda-1") callIncluded = body.included === true;
+        return Promise.resolve(queueState());
       }
       if (path === "/api/trade/basket") {
-        return Promise.resolve({ trades: MIXED_BASKET, revision: "rev-mixed", reviewed: true });
+        return Promise.resolve({ ...queueState(), reviewed: true });
       }
       if (path.startsWith("/api/spark")) return Promise.resolve({ spark: {} });
       return Promise.resolve({ orders: [] });
@@ -892,15 +936,24 @@ describe("trade desk mixed stock + covered call", () => {
     await flush();
 
     document.querySelector<HTMLButtonElement>(
-      '[data-queue-remove-leg="cc-nvda-1"]',
+      '[data-queue-toggle-leg="cc-nvda-1"]',
     )!.click();
     await flush();
 
     expect(apiMock).toHaveBeenCalledWith(
-      "/api/trade/basket", "POST", { remove_leg_id: "cc-nvda-1" },
+      "/api/trade/basket", "POST", { toggle_leg_id: "cc-nvda-1", included: false },
     );
     expect(state.stagedBasket.every((trade) => trade.type !== "covered_call")).toBe(true);
+    const excludedCall = document.querySelector(".trade-basket-option.trade-basket-excluded")!;
+    expect(excludedCall.textContent).toContain("Include");
     expect(document.querySelector<HTMLButtonElement>('[data-trade-tab="review"]')!.disabled).toBe(true);
+
+    excludedCall.querySelector<HTMLButtonElement>('[data-queue-toggle-leg="cc-nvda-1"]')!.click();
+    await flush();
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket", "POST", { toggle_leg_id: "cc-nvda-1", included: true },
+    );
+    expect(state.stagedBasket.some((trade) => trade.type === "covered_call")).toBe(true);
   });
 
   it("renders option order card with contract, expiry, strike, coverage, premium, and provenance", async () => {

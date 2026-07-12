@@ -479,6 +479,47 @@ class TradeServiceGuards(unittest.TestCase):
             with self.assertRaises(apierror.Conflict):
                 trade_service.review_basket(state["revision"])
 
+    def test_queue_leg_can_be_excluded_and_included_without_deletion(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(trade_service, "STAGED_BASKET_JSON",
+                                  Path(tmp) / "staged-basket.json"):
+            trades = [
+                {"symbol": "AMD", "delta_czk": 1000},
+                {"symbol": "ARM", "delta_czk": -500},
+            ]
+            trade_service.save_basket(trades)
+            initial = trade_service.basket_state()
+            trade_service.review_basket(initial["revision"])
+
+            trade_service.set_basket_leg_included("stock:AMD", False)
+            excluded = trade_service.basket_state()
+            self.assertEqual([leg["symbol"] for leg in excluded["trades"]], ["ARM"])
+            self.assertEqual(
+                {leg["symbol"]: leg["included"] for leg in excluded["queue_trades"]},
+                {"AMD": False, "ARM": True},
+            )
+            self.assertEqual(excluded["excluded_leg_ids"], ["stock:AMD"])
+            self.assertFalse(excluded["reviewed"])
+            self.assertEqual(
+                [leg["symbol"] for leg in trade_service.load_basket()],
+                ["ARM"],
+            )
+
+            reviewed = trade_service.review_basket(excluded["revision"])
+            self.assertTrue(reviewed["reviewed"])
+            self.assertEqual(len(reviewed["queue_trades"]), 2)
+
+            trade_service.set_basket_leg_included("stock:AMD", True)
+            restored = trade_service.basket_state()
+            self.assertEqual(
+                [leg["symbol"] for leg in restored["trades"]],
+                ["AMD", "ARM"],
+            )
+            self.assertEqual(restored["excluded_leg_ids"], [])
+            self.assertFalse(restored["reviewed"])
+
     def test_basket_state_reads_persisted_queue_once(self):
         raw = {"trades": [{"symbol": "AMD", "delta_czk": 1000}]}
         with mock.patch.object(trade_service, "_load", return_value=raw) as load:

@@ -299,6 +299,8 @@ export interface WhatifTrade {
 
 export interface TradeQueueState {
   trades: TradeLeg[];
+  queue_trades?: QueuedTradeLeg[];
+  excluded_leg_ids?: string[];
   revision: string;
   reviewed: boolean;
   reviewed_at?: string | null;
@@ -855,6 +857,7 @@ export interface CashSecuredPutTradeLeg {
 }
 
 export type TradeLeg = StockTradeLeg | CoveredCallTradeLeg | CashSecuredPutTradeLeg;
+export type QueuedTradeLeg = TradeLeg & { included: boolean };
 
 export interface ExitStageResponse {
   staged: boolean;

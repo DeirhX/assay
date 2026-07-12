@@ -2882,7 +2882,7 @@ a.strat-mem.dup:hover { color: var(--warn); border-color: rgba(245,199,107,.7); 
 .trade-card-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .trade-card-title { font-weight: 700; font-size: 15px; }
 .trade-queue-controls { display: flex; gap: 7px; flex-wrap: wrap; margin-left: auto; }
-.trade-queue-controls button, .trade-queue-remove { padding: 4px 8px; font-size: 12px; }
+.trade-queue-controls button, .trade-queue-toggle { padding: 4px 8px; font-size: 12px; }
 .trade-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 
 .trade-workspace { margin-top: 12px; }
@@ -3035,6 +3035,24 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
 .trade-basket-table td.tb-buy { color: var(--good); font-variant-numeric: tabular-nums; }
 .trade-basket-table td.tb-sell { color: var(--bad); font-variant-numeric: tabular-nums; }
 .trade-basket-table tr.trade-basket-option td:first-child { border-left: 3px solid #b58cff; }
+.trade-basket-table tr.trade-basket-excluded {
+  background: repeating-linear-gradient(
+    -45deg, rgba(255,255,255,.014), rgba(255,255,255,.014) 6px,
+    rgba(255,255,255,.032) 6px, rgba(255,255,255,.032) 12px
+  );
+}
+.trade-basket-table tr.trade-basket-excluded td:not(:last-child) { opacity: .45; }
+.trade-basket-table tr.trade-basket-option.trade-basket-excluded td:first-child {
+  border-left-color: var(--muted);
+}
+.trade-excluded-chip {
+  margin-left: 7px; font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+}
+.trade-queue-toggle.is-excluded {
+  border-color: color-mix(in srgb, var(--good) 55%, var(--border));
+  background: color-mix(in srgb, var(--good) 10%, transparent);
+  color: var(--good);
+}
 .trade-basket-table .tb-trend { width: 108px; color: var(--muted); }
 .trade-basket-table .tb-trend .spark { vertical-align: middle; }
 .trade-basket-table .tb-weight { width: 30%; min-width: 150px; }
