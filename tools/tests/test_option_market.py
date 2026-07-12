@@ -128,6 +128,28 @@ class MarketCaches(unittest.TestCase):
         self.assertEqual(second["source"], "ibkr")
         fetch.assert_called_once_with("NVDA")
 
+    def test_directional_route_chain_has_a_small_separate_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            with mock.patch.object(
+                option_market, "fetch_option_chain", return_value=_chain("ibkr"),
+            ) as fetch:
+                first = option_market.cached_option_chain(
+                    "NVDA", cache_dir=cache_dir, right="P",
+                )
+                second = option_market.cached_option_chain(
+                    "NVDA", cache_dir=cache_dir, right="P",
+                )
+                cache_exists = (cache_dir / "NVDA-route-p.json").exists()
+        self.assertEqual(first, second)
+        self.assertTrue(cache_exists)
+        fetch.assert_called_once_with(
+            "NVDA",
+            max_expiries=option_market.ROUTE_CHAIN_MAX_EXPIRIES,
+            strikes_per_side=option_market.ROUTE_CHAIN_STRIKES_PER_SIDE,
+            rights=("P",),
+        )
+
     def test_fallback_chain_uses_short_cache_before_retrying_ibkr(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)

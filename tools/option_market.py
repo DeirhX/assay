@@ -27,6 +27,8 @@ RATE_CACHE_PATH = OPT_CACHE_DIR / "risk-free-rate.json"
 RATE_CACHE_TTL_SECONDS = 6 * 3600
 IBKR_CHAIN_BUDGET_SECONDS = 8.0
 SESSION_READY_TTL_SECONDS = 20.0
+ROUTE_CHAIN_MAX_EXPIRIES = 2
+ROUTE_CHAIN_STRIKES_PER_SIDE = 4
 
 _session_ready_cache: tuple[float, bool] | None = None
 _session_ready_lock = threading.Lock()
@@ -85,7 +87,14 @@ def reset_session_cache() -> None:
         _session_ready_cache = None
 
 
-def chain_within_budget(symbol: str, budget: float) -> dict[str, Any] | None:
+def chain_within_budget(
+    symbol: str,
+    budget: float,
+    *,
+    max_expiries: int = 4,
+    strikes_per_side: int = 6,
+    rights: tuple[str, ...] = ("C", "P"),
+) -> dict[str, Any] | None:
     """Fetch a cooperative, deadline-bounded IBKR chain.
 
     The old daemon-thread timeout returned after five seconds but left the worker
@@ -94,22 +103,45 @@ def chain_within_budget(symbol: str, budget: float) -> dict[str, Any] | None:
     """
     deadline = time.monotonic() + max(0.05, budget)
     try:
-        return ibkr_trade.option_chain(symbol, deadline_monotonic=deadline)
+        if max_expiries == 4 and strikes_per_side == 6 and rights == ("C", "P"):
+            return ibkr_trade.option_chain(symbol, deadline_monotonic=deadline)
+        return ibkr_trade.option_chain(
+            symbol,
+            max_expiries=max_expiries,
+            strikes_per_side=strikes_per_side,
+            rights=rights,
+            deadline_monotonic=deadline,
+        )
     except Exception:  # noqa: BLE001 -- caller falls through to other providers
         return None
 
 
-def fetch_option_chain(symbol: str) -> dict[str, Any] | None:
+def fetch_option_chain(
+    symbol: str,
+    *,
+    max_expiries: int = 4,
+    strikes_per_side: int = 6,
+    rights: tuple[str, ...] = ("C", "P"),
+) -> dict[str, Any] | None:
     """Live chain from IBKR, then Alpaca, then Yahoo; ``None`` on total miss."""
     if session_ready():
-        chain = chain_within_budget(symbol, IBKR_CHAIN_BUDGET_SECONDS)
+        chain = chain_within_budget(
+            symbol,
+            IBKR_CHAIN_BUDGET_SECONDS,
+            max_expiries=max_expiries,
+            strikes_per_side=strikes_per_side,
+            rights=rights,
+        )
         if chain and chain.get("expiries"):
             return chain
     try:
         from providers import alpaca
 
         if alpaca.enabled():
-            chain = alpaca.option_chain(portfolio.provider_symbol_for(symbol))
+            chain = alpaca.option_chain(
+                portfolio.provider_symbol_for(symbol),
+                max_expiries=max_expiries,
+            )
             if chain and chain.get("expiries"):
                 return chain
     except Exception:  # noqa: BLE001 -- provider hiccup falls through
@@ -117,7 +149,10 @@ def fetch_option_chain(symbol: str) -> dict[str, Any] | None:
     try:
         from providers import yahoo
 
-        return yahoo.option_chain(portfolio.provider_symbol_for(symbol))
+        return yahoo.option_chain(
+            portfolio.provider_symbol_for(symbol),
+            max_expiries=max_expiries,
+        )
     except Exception:  # noqa: BLE001 -- Black-Scholes fallback is downstream
         return None
 
@@ -127,6 +162,7 @@ def cached_option_chain(
     *,
     cache_dir: Path | None = None,
     force_quotes: bool = False,
+    right: str | None = None,
 ) -> dict[str, Any] | None:
     """Cached provider-selected option chain for a canonical ticker.
 
@@ -134,9 +170,13 @@ def cached_option_chain(
     definitions are retained, so an instrument-level refresh updates every
     contract snapshot without repeating the expensive secdef discovery.
     """
+    requested_right = str(right or "").strip().upper()
+    if requested_right not in {"", "C", "P"}:
+        raise ValueError("right must be C or P")
     directory = cache_dir or OPT_CACHE_DIR
     safe = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in "-._=")
-    path = directory / f"{safe}.json"
+    suffix = f"-route-{requested_right.lower()}" if requested_right else ""
+    path = directory / f"{safe}{suffix}.json"
     cached = store.load(path)
     if isinstance(cached, dict) and "chain" in cached:
         cached_chain = cached.get("chain")
@@ -167,7 +207,16 @@ def cached_option_chain(
                 return cached_chain
         elif timeutil.cache_fresh(cached.get("fetched_at"), FALLBACK_CACHE_TTL_SECONDS):
             return cached_chain
-    chain = fetch_option_chain(symbol)
+    chain = (
+        fetch_option_chain(
+            symbol,
+            max_expiries=ROUTE_CHAIN_MAX_EXPIRIES,
+            strikes_per_side=ROUTE_CHAIN_STRIKES_PER_SIDE,
+            rights=(requested_right,),
+        )
+        if requested_right
+        else fetch_option_chain(symbol)
+    )
     fetched_at = timeutil.now_iso()
     store.write_json(path, {
         "symbol": symbol.upper(),

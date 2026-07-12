@@ -6,6 +6,7 @@ const row = {
   current_pct: 2, current_czk: 20_000, low: 3, high: 5, mid: 4, status: "BELOW",
   drift_pct: -1, action: "buy", suggest_delta_pct: 1, suggest_delta_czk: 10_000,
   mark_price: 190, mark_currency: "USD",
+  last_quote: { price: 191.25, currency: "USD", source: "quote cache" },
   note: null, members: null, interactive: true,
 };
 
@@ -155,6 +156,54 @@ test.describe("rebalance review safety", () => {
     expect(Number(await marker.getAttribute("aria-valuenow"))).toBeCloseTo(desiredProjected, 1);
   });
 
+  test("dragging a sleeve marker proportionally updates its member trades", async ({ page }) => {
+    const sleeve = {
+      key: "[analog]", name: "analog", kind: "sleeve", rule: "accumulate", held: true,
+      current_pct: 2, current_czk: 20_000, low: 5, high: 6, mid: 5.5, status: "BELOW",
+      drift_pct: -3, action: "buy", suggest_delta_pct: 4, suggest_delta_czk: 40_000,
+      note: null, interactive: false,
+      members: [
+        {
+          symbol: "TXN", current_pct: 1, current_czk: 10_000, target_pct: 3,
+          suggest_delta_pct: 3, suggest_delta_czk: 30_000, member_action: "buy", order: 1,
+        },
+        {
+          symbol: "ADI", current_pct: 1, current_czk: 10_000, target_pct: 3,
+          suggest_delta_pct: 1, suggest_delta_czk: 10_000, member_action: "buy", order: 2,
+        },
+      ],
+    };
+    await installApi(page, {
+      "/api/rebalance": { ...plan, rows: [sleeve] },
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+    });
+    await page.goto("/?view=rebalance");
+
+    const group = page.locator(".reb-sleeve-group").filter({ hasText: "analog" });
+    const marker = group.getByRole("slider", { name: "Projected analog sleeve weight" });
+    const track = group.locator(".reb-data-row .reb-track");
+    const inputs = group.locator(".reb-mem-row:not(.reb-mem-head) .reb-plan-input");
+    await expect(inputs).toHaveCount(2);
+    await marker.scrollIntoViewIfNeeded();
+
+    const trackBox = await track.boundingBox();
+    expect(trackBox).not.toBeNull();
+    const scaleMax = Number(await marker.getAttribute("aria-valuemax"));
+    const desiredProjected = Math.round(scaleMax * 0.4 * 10) / 10;
+    await page.mouse.move(trackBox!.x + trackBox!.width * 0.65, trackBox!.y + trackBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(trackBox!.x + trackBox!.width * 0.4, trackBox!.y + trackBox!.height / 2);
+    await page.mouse.up();
+
+    const values = await inputs.evaluateAll((nodes) =>
+      nodes.map((node) => Number((node as HTMLInputElement).value)));
+    const expectedTotal = (desiredProjected - sleeve.current_pct) / (1 - desiredProjected / 100);
+    expect(values[0] / (values[0] + values[1])).toBeCloseTo(0.75, 1);
+    expect(values[0] + values[1]).toBeCloseTo(expectedTotal, 1);
+    await expect(group.locator("details.reb-members")).toHaveAttribute("open", "");
+    await expect(marker).toHaveAttribute("aria-valuenow", String(desiredProjected));
+  });
+
   test("Current book opens in a drawer without discarding edited amounts", async ({ page }) => {
     await installApi(page, {
       "/api/rebalance": plan,
@@ -242,13 +291,13 @@ test.describe("rebalance review safety", () => {
     await expect.poll(
       () => aapl.evaluate((node) => getComputedStyle(node).backgroundImage),
     ).not.toBe(idleBackground);
-    await expect(aapl.locator(".reb-limit-input")).toHaveValue("190");
+    await expect(aapl.locator(".reb-limit-input")).toHaveValue("191.25");
     await expect(aapl.locator(".reb-limit-field")).toContainText("recommended");
     await expect.poll(() => requests.length).toBeGreaterThanOrEqual(2);
     expect(requests).toEqual(expect.arrayContaining([
       expect.objectContaining({ changes: expect.objectContaining({ status: "selected" }) }),
       expect.objectContaining({
-        changes: expect.objectContaining({ route_policy: "buy_shares", limit_price: 190 }),
+        changes: expect.objectContaining({ route_policy: "buy_shares", limit_price: 191.25 }),
       }),
     ]));
     expect(routeRequests).toBe(0);
@@ -266,6 +315,22 @@ test.describe("rebalance review safety", () => {
     await expect(aapl.locator(".reb-limit-field")).toContainText("market");
     await expect.poll(() => requests.some(
       (request) => (request.changes as Record<string, unknown>)?.limit_price === null,
+    )).toBe(true);
+
+    await limit.press("ArrowUp");
+    await expect(limit).toHaveValue("191.26");
+    await expect(aapl.locator(".reb-limit-field")).toContainText("custom");
+    await expect.poll(() => requests.some(
+      (request) => (request.changes as Record<string, unknown>)?.limit_price === 191.26,
+    )).toBe(true);
+
+    await limit.fill("");
+    await limit.press("Tab");
+    await expect(aapl.locator(".reb-limit-field")).toContainText("market");
+    await limit.press("ArrowDown");
+    await expect(limit).toHaveValue("191.24");
+    await expect.poll(() => requests.some(
+      (request) => (request.changes as Record<string, unknown>)?.limit_price === 191.24,
     )).toBe(true);
 
     await aapl.getByRole("button", { name: "Exclude" }).click();
@@ -323,6 +388,7 @@ test.describe("rebalance review safety", () => {
     const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
     await aapl.locator("select.reb-route-select").selectOption("option");
 
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("option");
     await expect(aapl.getByText("Conditional entry")).toBeVisible();
     await expect(aapl.locator(".reb-option-contract")).toHaveCount(2);
     await expect(aapl).toContainText("Bid / ask");
@@ -333,6 +399,7 @@ test.describe("rebalance review safety", () => {
 
     await aapl.getByRole("button", { name: "Close" }).click();
     await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("direct");
     await aapl.locator("select.reb-route-select").selectOption("option");
 
     const use = aapl.getByRole("button", { name: "Use contract" });
@@ -368,10 +435,12 @@ test.describe("rebalance review safety", () => {
     const select = aapl.locator("select.reb-route-select");
     await select.selectOption("option");
 
+    await expect(select).toHaveValue("option");
     await expect(aapl).toContainText("Cash-secured put unavailable");
     await expect(aapl).toContainText("choose Buy shares");
     await aapl.getByRole("button", { name: "Close" }).click();
     await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+    await expect(select).toHaveValue("direct");
 
     response = putRoute({
       stageable: false,
@@ -401,11 +470,13 @@ test.describe("rebalance review safety", () => {
     const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
     await aapl.locator("select.reb-route-select").selectOption("option");
 
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("option");
     await expect(aapl).toContainText("loading strikes and quotes");
     await expect(aapl).toContainText("Could not load option routes");
     await expect(aapl).toContainText("IBKR option service unavailable");
     await aapl.getByRole("button", { name: "Close" }).click();
     await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("direct");
   });
 
   test("editing one ticker flips routes and exit navigation preserves its symbol", async ({ page }) => {

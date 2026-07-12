@@ -55,6 +55,54 @@ def test_contract_sizing_matches_exit_bounded_round_up():
     assert rebalance_routes.contracts_for_shares(290, capacity=2) == 2
 
 
+def test_sub_contract_trade_skips_chain_session_and_rate_fetches():
+    with mock.patch.object(
+        rebalance_routes.option_market, "cached_option_chain",
+    ) as chain, mock.patch.object(
+        rebalance_routes.option_market, "session_ready",
+    ) as session, mock.patch.object(
+        rebalance_routes.option_market, "cached_risk_free_rate",
+    ) as rate, mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={
+            "cash_czk": 1_000_000,
+            "held_short_put_collateral_czk": 0,
+            "available_cash_czk": 1_000_000,
+        },
+    ), mock.patch.object(trade_service, "margin_account_enabled") as margin:
+        route = rebalance_routes.build_route(
+            _holdings(), "NVDA", 100_000, now=NOW,
+        )
+
+    assert route["planned_shares"] == 43
+    assert route["option"]["contracts"] == 0
+    assert "43-share trade" in route["option"]["reasons"][0]
+    chain.assert_not_called()
+    session.assert_not_called()
+    rate.assert_not_called()
+    margin.assert_not_called()
+
+
+def test_route_fetches_only_the_option_side_needed_for_its_direction():
+    with mock.patch.object(
+        rebalance_routes.option_market, "cached_option_chain", return_value=_chain(),
+    ) as chain, mock.patch.object(
+        rebalance_routes.option_market, "session_ready", return_value=False,
+    ), mock.patch.object(
+        rebalance_routes.option_market, "cached_risk_free_rate", return_value=0.04,
+    ), mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={"available_cash_czk": 1_000_000},
+    ), mock.patch.object(
+        trade_service, "margin_account_enabled", return_value=False,
+    ), mock.patch.object(trade_service, "load_basket", return_value=[]):
+        rebalance_routes.build_route(_holdings(), "NVDA", 230_000, now=NOW)
+
+    chain.assert_called_once_with("NVDA", right="P")
+
+
 @mock.patch.object(trade_service, "load_basket", return_value=[])
 def test_increase_offers_exact_cash_secured_put_route(_basket):
     with mock.patch.object(

@@ -202,11 +202,37 @@ class PriceGate(unittest.TestCase):
 
     def test_dossier_price_fallback_when_unheld_in_map(self):
         self.price_levels.lock("AMD", buy_below=92, currency="USD")
-        (self.tmp / "AMD.json").write_text(json.dumps({"price": {"value": 100.0}}), encoding="utf-8")
+        (self.tmp / "AMD.json").write_text(json.dumps({
+            "price": {"value": 100.0},
+            "currency": "USD",
+            "as_of": "2026-07-01T12:00:00+00:00",
+        }), encoding="utf-8")
         plan = {"rows": [{"kind": "target", "held": True, "name": "AMD", "action": "buy"}]}
         rebalance_overlay.attach_research_overlay(plan, {"positions": []})  # not in mark map
         self.assertEqual(plan["rows"][0]["action"], "wait")
         self.assertEqual(plan["rows"][0]["price_gate"]["current"], 100.0)
+        self.assertEqual(plan["rows"][0]["last_quote"], {
+            "price": 100.0,
+            "currency": "USD",
+            "source": "cached dossier",
+            "at": "2026-07-01T12:00:00+00:00",
+        })
+
+    def test_unheld_target_and_sleeve_member_receive_cached_dossier_quotes(self):
+        for symbol, price in (("AMD", 100.0), ("ADI", 200.0)):
+            (self.tmp / f"{symbol}.json").write_text(json.dumps({
+                "price": {"value": price},
+                "currency": "USD",
+            }), encoding="utf-8")
+        plan = {"rows": [
+            {"kind": "target", "held": False, "name": "AMD", "action": "buy"},
+            {"kind": "sleeve", "name": "analog", "members": [{"symbol": "ADI"}]},
+        ]}
+
+        rebalance_overlay.attach_research_overlay(plan, {"positions": []})
+
+        self.assertEqual(plan["rows"][0]["last_quote"]["price"], 100.0)
+        self.assertEqual(plan["rows"][1]["members"][0]["last_quote"]["price"], 200.0)
 
     def test_unknown_price_does_not_block(self):
         self.price_levels.lock("AMD", buy_below=92, currency="USD")
@@ -280,6 +306,8 @@ class PriceGate(unittest.TestCase):
         row = plan["rows"][0]
         self.assertEqual(row["action"], "buy")             # fresh quote unblocks
         self.assertEqual(row["price_gate"]["current"], 90.0)
+        self.assertEqual(row["last_quote"]["price"], 90.0)
+        self.assertEqual(row["last_quote"]["source"], "quote cache")
 
     def test_stale_quote_loses_to_the_holdings_mark(self):
         # A 10h-old quote is past the 4h freshness window, so the mark wins.
@@ -291,6 +319,8 @@ class PriceGate(unittest.TestCase):
         row = plan["rows"][0]
         self.assertEqual(row["action"], "wait")            # mark 100 still blocks
         self.assertEqual(row["price_gate"]["current"], 100.0)
+        self.assertEqual(row["last_quote"]["price"], 100.0)
+        self.assertEqual(row["last_quote"]["source"], "holdings snapshot")
 
 
 class OptionsOverlay(unittest.TestCase):

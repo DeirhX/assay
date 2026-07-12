@@ -223,6 +223,38 @@ def test_ladder_ranked_by_yield_and_otm_only():
     assert _rung(ladder, 105.0).get("recommended") is True
 
 
+def test_ladder_prefers_nearby_expiry_with_several_contracts():
+    chain = {
+        "source": "ibkr",
+        "underlying_price": 100.0,
+        "expiries": [
+            {
+                "expiry": "2026-08-07",
+                "calls": [{"strike": 115.0, "bid": 0.5, "ask": 0.6}],
+                "puts": [],
+            },
+            {
+                "expiry": "2026-08-10",
+                "calls": [
+                    {"strike": 105.0, "bid": 2.0, "ask": 2.2},
+                    {"strike": 110.0, "bid": 1.2, "ask": 1.4},
+                    {"strike": 115.0, "bid": 0.5, "ask": 0.6},
+                    {"strike": 120.0, "bid": 0.3, "ask": 0.4},
+                ],
+                "puts": [],
+            },
+        ],
+    }
+
+    ladder = ov.covered_call_ladder(
+        100.0, 0.30, 0.04, AS_OF.date(), chain,
+        contracts=1, fx=23.0, guard_after=None,
+    )
+
+    assert len(ladder) == 4
+    assert {rung["expiry"] for rung in ladder} == {"2026-08-10"}
+
+
 def test_ladder_liquidity_gating():
     ladder = ov.suggest_for_position("TEST", _pos(), _no_defer(), as_of=AS_OF,
                                      chain=_ladder_chain(), rate=0.04)["covered_call_ladder"]

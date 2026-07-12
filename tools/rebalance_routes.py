@@ -119,26 +119,54 @@ def build_route(
         raise ValueError("symbol and a non-zero delta_czk are required")
 
     current = now or dt.datetime.now(dt.timezone.utc)
-    chain_data = option_market.cached_option_chain(sym) if chain is _UNSET else chain
     position = _position(holdings, sym)
-    spot = _chain_spot(chain_data)
-    if spot <= 0 and position:
+    position_spot = 0.0
+    if position:
         try:
-            spot = float(position.get("mark_price") or 0)
+            position_spot = float(position.get("mark_price") or 0)
         except (TypeError, ValueError):
-            spot = 0.0
+            position_spot = 0.0
+    position_currency = str(position.get("currency") or "") if position else ""
+    position_fx = _fx_for_currency(holdings, position_currency, position)
+    preflight_shares = (
+        int(round(abs(delta) / (position_spot * position_fx)))
+        if position_spot > 0 and position_fx > 0 else 0
+    )
+    direction = "increase" if delta > 0 else "reduce"
+    preflight_contracts = contracts_for_shares(preflight_shares)
+    # A bounded option contract needs at least ~87 planned shares. When the
+    # holdings mark proves the trade is smaller, no expiry or strike can change
+    # that answer, so avoid the entire option-chain request.
+    skip_chain = (
+        chain is _UNSET
+        and position_spot > 0
+        and position_fx > 0
+        and preflight_contracts < 1
+    )
+    chain_data = (
+        None
+        if skip_chain
+        else option_market.cached_option_chain(
+            sym,
+            right="P" if direction == "increase" else "C",
+        ) if chain is _UNSET
+        else chain
+    )
+    spot = _chain_spot(chain_data)
+    if spot <= 0:
+        spot = position_spot
     currency = (
         str((chain_data or {}).get("currency") or position.get("currency") or "")
         if position else str((chain_data or {}).get("currency") or "")
     )
     fx = _fx_for_currency(holdings, currency, position)
     planned_shares = int(round(abs(delta) / (spot * fx))) if spot > 0 and fx > 0 else 0
-    direction = "increase" if delta > 0 else "reduce"
+    theoretical_contracts = contracts_for_shares(planned_shares)
 
     capacity = 0
     capacity_notes: list[str] = []
     raw_working: list[dict[str, Any]] = []
-    if option_market.session_ready():
+    if theoretical_contracts > 0 and option_market.session_ready():
         try:
             raw_working = ibkr_trade.live_orders()
         except ibkr_trade.CPAPIError:
@@ -148,12 +176,16 @@ def build_route(
     import trade_service
 
     cash_capacity = trade_service.cash_secured_put_capacity(holdings)
-    margin_enabled = direction == "increase" and trade_service.margin_account_enabled()
+    margin_enabled = (
+        direction == "increase"
+        and theoretical_contracts > 0
+        and trade_service.margin_account_enabled()
+    )
     available_cash = float(cash_capacity["available_cash_czk"])
-    if direction == "reduce":
+    if direction == "reduce" and theoretical_contracts > 0:
         covered = trade_service.covered_call_capacity(sym, raw_working)
         capacity = int(covered.get("capacity_contracts") or 0)
-    elif spot > 0 and fx > 0 and not margin_enabled:
+    elif theoretical_contracts > 0 and spot > 0 and fx > 0 and not margin_enabled:
         # A previous rebalance alternative will be replaced atomically. Unrelated
         # queue commitments and every resting short put remain real obligations.
         staged = [
@@ -177,10 +209,19 @@ def build_route(
         capacity=None if margin_enabled else capacity,
     )
 
-    rate = option_market.cached_risk_free_rate()
-    use_rate = float(rate) if isinstance(rate, (int, float)) else 0.04
     as_of = current.date()
-    if direction == "reduce":
+    if contracts < 1:
+        ladder = []
+        option_kind = "covered_call" if direction == "reduce" else "cash_secured_put"
+        option_label = (
+            "Sell covered call"
+            if direction == "reduce"
+            else "Sell put (margin)" if margin_enabled
+            else "Sell cash-secured put"
+        )
+    elif direction == "reduce":
+        rate = option_market.cached_risk_free_rate()
+        use_rate = float(rate) if isinstance(rate, (int, float)) else 0.04
         ladder = options_overlay.covered_call_ladder(
             spot, options_overlay.DEFAULT_VOL, use_rate, as_of, chain_data,
             contracts=contracts, fx=fx, guard_after=None,
@@ -188,6 +229,8 @@ def build_route(
         option_kind = "covered_call"
         option_label = "Sell covered call"
     else:
+        rate = option_market.cached_risk_free_rate()
+        use_rate = float(rate) if isinstance(rate, (int, float)) else 0.04
         ladder = options_overlay.cash_secured_put_ladder(
             spot, options_overlay.DEFAULT_VOL, use_rate, as_of, chain_data,
             contracts=contracts, fx=fx,
@@ -202,7 +245,12 @@ def build_route(
     if planned_shares < 1:
         reasons.append("The planned amount cannot be converted to shares from the available mark.")
     elif contracts < 1:
-        if direction == "increase" and not margin_enabled and available_cash <= 0:
+        if theoretical_contracts < 1:
+            reasons.append(
+                f"The planned {planned_shares}-share trade is too far from one "
+                f"{OPTION_MULTIPLIER}-share option contract."
+            )
+        elif direction == "increase" and not margin_enabled and available_cash <= 0:
             cash = float(cash_capacity.get("cash_czk") or 0)
             held = float(cash_capacity.get("held_short_put_collateral_czk") or 0)
             reasons.append(
@@ -225,10 +273,7 @@ def build_route(
                 "No uncovered 100-share lot is available after held and working calls."
             )
         else:
-            reasons.append(
-                f"The planned {planned_shares}-share trade is too far from one "
-                f"{OPTION_MULTIPLIER}-share option contract or exceeds capacity."
-            )
+            reasons.append("The option contract exceeds the available capacity.")
     if contracts > 0:
         if not ladder:
             reasons.append("No suitable option strike ladder is available.")
