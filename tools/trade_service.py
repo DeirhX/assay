@@ -187,11 +187,60 @@ def _basket_from_raw(raw: Any) -> list[dict]:
         return []
 
 
+def _basket_record(raw: Any) -> tuple[list[dict], set[str], list[dict]]:
+    """Return every queued leg, excluded ids, and the executable subset."""
+    all_legs = _basket_from_raw(raw)
+    known_ids = {str(leg.get("leg_id") or "") for leg in all_legs}
+    raw_excluded = raw.get("excluded_leg_ids") if isinstance(raw, dict) else None
+    excluded = {
+        str(leg_id) for leg_id in raw_excluded or []
+        if str(leg_id) in known_ids
+    } if isinstance(raw_excluded, list) else set()
+    active = [
+        leg for leg in all_legs
+        if str(leg.get("leg_id") or "") not in excluded
+    ]
+    return all_legs, excluded, active
+
+
+def _persist_basket_record(
+    all_legs: list[dict],
+    excluded: set[str] | None = None,
+    *,
+    reviewed_revision: str = "",
+    reviewed_at: Any = None,
+) -> list[dict]:
+    """Write a queue record and return only its currently included legs."""
+    excluded_ids = {
+        str(leg_id) for leg_id in excluded or set()
+        if any(str(leg.get("leg_id") or "") == str(leg_id) for leg in all_legs)
+    }
+    active = [
+        leg for leg in all_legs
+        if str(leg.get("leg_id") or "") not in excluded_ids
+    ]
+    revision = _basket_revision(active)
+    if not all_legs:
+        try:
+            STAGED_BASKET_JSON.unlink()
+        except OSError:
+            pass
+        return []
+    payload: dict[str, Any] = {"trades": all_legs, "revision": revision}
+    if excluded_ids:
+        payload["excluded_leg_ids"] = sorted(excluded_ids)
+    if revision and reviewed_revision == revision:
+        payload["reviewed_revision"] = revision
+        payload["reviewed_at"] = reviewed_at
+    _write_json(STAGED_BASKET_JSON, payload)
+    return active
+
+
 def load_basket() -> list[dict]:
     """The last basket staged from the planner, or [] when nothing is staged. A
     corrupt/foreign file reads as empty rather than raising."""
     with _basket_lock:
-        return _basket_from_raw(_load(STAGED_BASKET_JSON))
+        return _basket_record(_load(STAGED_BASKET_JSON))[2]
 
 
 def _basket_revision(basket: list[dict]) -> str:
@@ -246,13 +295,21 @@ def basket_state() -> dict:
     """Current queue plus whether that exact revision was projection-reviewed."""
     with _basket_lock:
         raw = _load(STAGED_BASKET_JSON)
-        basket = _basket_from_raw(raw)
+        all_legs, excluded, basket = _basket_record(raw)
         revision = _basket_revision(basket)
         reviewed_revision = str(raw.get("reviewed_revision") or "") if isinstance(raw, dict) else ""
         violations = _basket_sell_violations(basket)
         reviewed = bool(revision and reviewed_revision == revision and not violations)
         return {
             "trades": basket,
+            "queue_trades": [
+                {
+                    **leg,
+                    "included": str(leg.get("leg_id") or "") not in excluded,
+                }
+                for leg in all_legs
+            ],
+            "excluded_leg_ids": sorted(excluded),
             "revision": revision,
             "reviewed": reviewed,
             "reviewed_at": raw.get("reviewed_at") if isinstance(raw, dict) and reviewed else None,
@@ -269,22 +326,14 @@ def save_basket(trades: Any) -> list[dict]:
         basket = _normalize_basket(trades) if trades else []
         previous = basket_state()
         revision = _basket_revision(basket)
-        changed = revision != previous["revision"]
+        changed = revision != previous["revision"] or bool(previous["excluded_leg_ids"])
         if changed:
             _preview_issued.clear()
-        if basket:
-            payload: dict[str, Any] = {"trades": basket, "revision": revision}
-            # Saving an identical queue is not a mutation; retain its review.
-            if not changed and previous["reviewed"]:
-                payload["reviewed_revision"] = revision
-                payload["reviewed_at"] = previous["reviewed_at"]
-            _write_json(STAGED_BASKET_JSON, payload)
-        else:
-            try:
-                STAGED_BASKET_JSON.unlink()
-            except OSError:
-                pass
-        return basket
+        return _persist_basket_record(
+            basket,
+            reviewed_revision=revision if not changed and previous["reviewed"] else "",
+            reviewed_at=previous["reviewed_at"],
+        )
 
 
 def replace_stock_basket(trades: Any) -> list[dict]:
@@ -320,13 +369,38 @@ def remove_basket_leg(leg_id: Any) -> list[dict]:
     if not requested:
         raise ValueError("remove_leg_id is required")
     with _basket_lock:
-        current = load_basket()
+        current, excluded, _active = _basket_record(_load(STAGED_BASKET_JSON))
         remaining = [
             leg for leg in current if str(leg.get("leg_id") or "") != requested
         ]
         if len(remaining) == len(current):
             raise _Conflict("order queue changed — reload it before removing that leg")
-        return save_basket(remaining)
+        _preview_issued.clear()
+        excluded.discard(requested)
+        return _persist_basket_record(remaining, excluded)
+
+
+def set_basket_leg_included(leg_id: Any, included: Any) -> list[dict]:
+    """Include or exclude one persisted leg without deleting its definition."""
+    requested = str(leg_id or "").strip()
+    if not requested:
+        raise ValueError("toggle_leg_id is required")
+    if not isinstance(included, bool):
+        raise ValueError("included must be true or false")
+    with _basket_lock:
+        raw = _load(STAGED_BASKET_JSON)
+        all_legs, excluded, active = _basket_record(raw)
+        if not any(str(leg.get("leg_id") or "") == requested for leg in all_legs):
+            raise _Conflict("order queue changed — reload it before toggling that leg")
+        currently_included = requested not in excluded
+        if currently_included == included:
+            return active
+        if included:
+            excluded.discard(requested)
+        else:
+            excluded.add(requested)
+        _preview_issued.clear()
+        return _persist_basket_record(all_legs, excluded)
 
 
 def review_basket(revision: Any) -> dict:
@@ -346,12 +420,14 @@ def review_basket(revision: Any) -> dict:
                 )
             )
         reviewed_at = datetime.now(UTC).isoformat()
-        _write_json(STAGED_BASKET_JSON, {
-            "trades": state["trades"],
-            "revision": state["revision"],
-            "reviewed_revision": state["revision"],
-            "reviewed_at": reviewed_at,
-        })
+        raw = _load(STAGED_BASKET_JSON)
+        all_legs, excluded, _active = _basket_record(raw)
+        _persist_basket_record(
+            all_legs,
+            excluded,
+            reviewed_revision=state["revision"],
+            reviewed_at=reviewed_at,
+        )
         return basket_state()
 
 
