@@ -787,6 +787,24 @@ class SessionLifecycle(unittest.TestCase):
     available when order execution is disabled and never turn a gateway hiccup
     into a 5xx."""
 
+    def test_margin_account_requires_explicit_ibkr_trading_type(self):
+        self.assertTrue(ibt.is_margin_account({"tradingType": "MRGN"}))
+        self.assertTrue(ibt.is_margin_account({"tradingType": "PMRGN"}))
+        self.assertFalse(ibt.is_margin_account({"tradingType": "CASH"}))
+        self.assertFalse(ibt.is_margin_account({"accountId": "DU1"}))
+
+    def test_margin_summary_detects_buying_power_above_available_funds(self):
+        summary = {
+            "buyingpower": {"amount": 164_963_616},
+            "availablefunds": {"amount": 24_744_544},
+        }
+        self.assertTrue(ibt.margin_from_account_summary(summary))
+        self.assertIsNone(ibt.margin_from_account_summary({
+            "buyingpower": {"amount": 1_000_000},
+            "availablefunds": {"amount": 1_000_000},
+        }))
+        self.assertIsNone(ibt.margin_from_account_summary({}))
+
     def test_reconnect_available_when_trading_disabled(self):
         with mock.patch.object(ibt, "trading_enabled", return_value=False), \
                 mock.patch.object(ibt, "reauthenticate",
@@ -810,7 +828,12 @@ class SessionLifecycle(unittest.TestCase):
         accounts.assert_called_once()  # display + default selection share one response
         self.assertTrue(res["authenticated"])
         self.assertIsNone(res["reconnect_error"])
-        self.assertEqual(res["accounts"], [{"id": "DU1", "kind": "paper"}])
+        self.assertEqual(res["accounts"], [{
+            "id": "DU1",
+            "kind": "paper",
+            "trading_type": None,
+            "margin": False,
+        }])
 
     def test_reconnect_reports_failure_in_band(self):
         # A gateway that can't re-init (expired SSO) must surface as a clean

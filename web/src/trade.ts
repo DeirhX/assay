@@ -45,6 +45,7 @@ interface TradeOrder {
   if_assigned_shares?: number;
   premium_credit?: number;
   cash_secured_czk?: number;
+  collateral_mode?: "cash" | "margin";
   currency?: string | null;
   provenance?: TradeLegProvenance[];
 }
@@ -571,7 +572,9 @@ function renderBasket() {
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
           `${t.limit_price != null ? `<div class="muted">limit ${esc(t.limit_price)}</div>` : ""}` +
           `${t.staging_warning ? `<div class="warn">${esc(t.staging_warning)}</div>` : ""}</td>` +
-          `<td class="tb-weight muted">conditional assignment · ${isPut ? "entry" : "reduction"} · ${isPut ? "+" : "−"}${t.contracts * (t.multiplier || 100)} shares</td>` +
+          `<td class="tb-weight muted">conditional assignment · ` +
+          `${isPut ? (t.collateral_mode === "margin" ? "margin-backed entry" : "cash-secured entry") : "reduction"} · ` +
+          `${isPut ? "+" : "−"}${t.contracts * (t.multiplier || 100)} shares</td>` +
           `<td><button class="ghost trade-queue-toggle${included ? "" : " is-excluded"}" type="button" ` +
           `data-queue-toggle-leg="${esc(legId)}" data-queue-include="${included ? "false" : "true"}" ` +
           `aria-pressed="${included ? "true" : "false"}" title="${included ? "Exclude this option from projection and placement" : "Include this option again"}">` +
@@ -599,7 +602,7 @@ function renderBasket() {
         `<span class="trade-side buy">${buys} buy${buys === 1 ? "" : "s"}</span> · ` +
         `<span class="trade-side sell">${sells} stock sell${sells === 1 ? "" : "s"}</span>` +
         (calls.length ? ` · <span class="trade-side sell">${calls.length} covered call${calls.length === 1 ? "" : "s"}</span>` : "") +
-        (puts.length ? ` · <span class="trade-side sell">${puts.length} cash-secured put${puts.length === 1 ? "" : "s"}</span>` : "") +
+        (puts.length ? ` · <span class="trade-side sell">${puts.length} short put${puts.length === 1 ? "" : "s"}</span>` : "") +
         (excludedCount ? ` · <span class="muted">${excludedCount} excluded</span>` : "") +
       `</td>` +
       `<td class="num" title="net cash impact — buys minus sells">` +
@@ -691,6 +694,7 @@ function renderPreview() {
     contracts: o.contracts, current_shares: o.current_shares,
     coverage_shares: o.coverage_shares, if_assigned_shares: o.if_assigned_shares,
     premium_credit: o.premium_credit, cash_secured_czk: o.cash_secured_czk,
+    collateral_mode: o.collateral_mode,
     provenance: o.provenance,
     placeable: true, next_step: "Review and confirm this new order.",
   }));
@@ -908,7 +912,9 @@ function renderPreview() {
     item.appendChild(primary);
     if (isOption) {
       const coverage = isPut
-        ? `Cash secured · ${fmtCZK(Number(c.cash_secured_czk) || 0)} CZK reserved`
+        ? c.collateral_mode === "margin"
+          ? `Margin-backed · ${fmtCZK(Number(c.cash_secured_czk) || 0)} CZK assignment notional`
+          : `Cash secured · ${fmtCZK(Number(c.cash_secured_czk) || 0)} CZK reserved`
         : c.coverage_ok === false
           ? `Coverage blocked · ${esc(c.coverage_capacity_contracts)} contract(s) available`
           : `Coverage verified · ${esc(c.coverage_shares ?? 0)} shares reserved for this order`;
@@ -1106,7 +1112,8 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
           `<div>${tickerLink(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
           `${esc(o.expiry || "")} ${esc(o.strike)}${o.instrument_type === "cash_secured_put" ? "P" : "C"} · limit ${esc(o.price)} ${esc(o.currency || "")}` +
           (o.instrument_type === "cash_secured_put"
-            ? `<span>Cash secured: ${fmtCZK(Number(o.cash_secured_czk) || 0)} CZK · +${esc(o.if_assigned_shares)} shares if assigned</span>`
+            ? `<span>${o.collateral_mode === "margin" ? "Assignment notional" : "Cash secured"}: ` +
+              `${fmtCZK(Number(o.cash_secured_czk) || 0)} CZK · +${esc(o.if_assigned_shares)} shares if assigned</span>`
             : `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span>`) +
           `</div>`
         ).join("") +

@@ -59,7 +59,16 @@ export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[
 // than reading three numeric columns.
 
 // Refs into a row's track that recompute() nudges live as the plan changes.
-interface PosRefs { track: HTMLElement; proj: HTMLElement; conn: HTMLElement; curP: number; }
+interface PosRefs {
+  track: HTMLElement;
+  proj: HTMLElement;
+  conn: HTMLElement;
+  plannedReadout: HTMLElement;
+  movementReadout: HTMLElement;
+  landingReadout: HTMLElement;
+  curP: number;
+  curWeight: number;
+}
 
 export function projectedWeightFromPointer(
   clientX: number,
@@ -143,49 +152,52 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
   const high = typeof r.high === "number" ? r.high : low;
   const zL = toP(low);
   const zW = Math.max(1.5, toP(high) - zL);
-  const zR = toP(high);
   const curP = toP(r.current_pct);
   const defDelta = r.interactive ? rebDefaultDelta(r) : (r.suggest_delta_pct || 0);
   const projInit = (r.current_pct || 0) + defDelta;
   const projP = toP(projInit);
   const inBand0 = inBandAfter(projInit, low, high);
+  const moveClass = defDelta > DELTA_EPS ? "buy" : defDelta < -DELTA_EPS ? "sell" : "";
 
   const bandText = `${low.toFixed(1)}–${high.toFixed(1)}%`;
-  const direction = r.status === "BELOW"
-    ? `<span class="reb-band-cue buy">add <b>→</b> ${bandText}</span>`
-    : r.status === "ABOVE"
-      ? `<span class="reb-band-cue trim"><b>←</b> reduce to ${bandText}</span>`
-      : `<span class="reb-band-cue in">in ${bandText} band</span>`;
-  const gapStart = r.status === "BELOW" ? curP : zR;
-  const gapWidth = r.status === "BELOW"
-    ? Math.max(0, zL - curP)
-    : r.status === "ABOVE"
-      ? Math.max(0, curP - zR)
-      : 0;
-  const gap = gapWidth > 0.1
-    ? `<span class="reb-band-gap ${r.status === "BELOW" ? "buy" : "trim"}" ` +
-      `style="left:${r1(gapStart)}%;width:${r1(gapWidth)}%"></span>`
-    : "";
+  const movementHtml = (delta: number) => delta > DELTA_EPS
+    ? `<b>→</b> Increase <strong>${Math.abs(delta).toFixed(2)} pp</strong>`
+    : delta < -DELTA_EPS
+      ? `<b>←</b> Reduce <strong>${Math.abs(delta).toFixed(2)} pp</strong>`
+      : `<b>·</b> No move needed`;
   const meta =
-    `<span class="reb-pos-cur">${r.current_pct.toFixed(2)}%</span>` +
+    `<span class="reb-pos-cur"><i>Current</i><b>${r.current_pct.toFixed(2)}%</b></span>` +
     `<small>${sensitive(`${fmtCZK(r.current_czk)} CZK`, "position value")}</small>` +
-    direction;
+    `<span class="reb-band-cue">Target band <b>${bandText}</b></span>`;
   const aria = `${esc(r.name)}: current ${r.current_pct.toFixed(1)}%, target band ${low.toFixed(1)} to ${high.toFixed(1)}%, ${r.status === "BELOW" ? "move right by adding" : r.status === "ABOVE" ? "move left by reducing" : "currently in band"}`;
   cell.innerHTML =
     `<div class="reb-pos-meta">${meta}</div>` +
     `<div class="reb-track" role="${r.interactive ? "group" : "img"}" aria-label="${aria}">` +
-      `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
-      gap +
-      `<span class="reb-conn" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>` +
+      `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%" title="Target band ${bandText}"></span>` +
+      `<span class="reb-conn ${moveClass}" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>` +
       `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="current ${r.current_pct.toFixed(2)}%"></span>` +
       `<span class="reb-proj-mark ${inBand0 ? "in" : "out"}" style="left:${r1(projP)}%" title="projected ${projInit.toFixed(2)}%"></span>` +
+    `</div>` +
+    `<div class="reb-track-readout">` +
+      `<span class="reb-track-movement ${moveClass}">${movementHtml(defDelta)}</span>` +
+      `<span class="reb-track-planned"><i></i>Planned <b>${projInit.toFixed(2)}%</b></span>` +
+      `<span class="reb-track-landing ${inBand0 ? "in" : "out"}">${inBand0 ? "Inside target" : "Outside target"}</span>` +
     `</div>` +
     `<div class="reb-axis"><span>0%</span><span>${scaleMax}%</span></div>`;
 
   const track = cell.querySelector(".reb-track") as HTMLElement;
   const proj = cell.querySelector(".reb-proj-mark") as HTMLElement;
   const conn = cell.querySelector(".reb-conn") as HTMLElement;
-  return { cell, refs: { track, proj, conn, curP } };
+  const plannedReadout = cell.querySelector(".reb-track-planned b") as HTMLElement;
+  const movementReadout = cell.querySelector(".reb-track-movement") as HTMLElement;
+  const landingReadout = cell.querySelector(".reb-track-landing") as HTMLElement;
+  return {
+    cell,
+    refs: {
+      track, proj, conn, plannedReadout, movementReadout, landingReadout,
+      curP, curWeight: r.current_pct,
+    },
+  };
 }
 
 // Server-classified thesis lean -> chip color. The add/trim vocabulary lives in
@@ -514,10 +526,22 @@ function renderRebalance(plan: RebPlan) {
   const sleeveUnits: SleeveUnit[] = [];
   const scaleMax = rebScaleMax(plan.rows || []);
 
+  const recommendedLimit = (
+    subject: Pick<RebRow, "price_gate" | "mark_price"> | Pick<PlanMember, "mark_price">,
+    deltaCzk: number,
+  ): number | null => {
+    const gate = "price_gate" in subject ? subject.price_gate : null;
+    const gated = deltaCzk >= 0 ? gate?.buy_below : gate?.trim_above;
+    const value = Number(gated ?? subject.mark_price);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+
   const executionCell = (
     symbol: string,
     input: HTMLInputElement,
     route: ExecutionRouteControl,
+    suggestedLimit: number | null,
+    limitCurrency = "",
   ): HTMLElement => {
     const host = el("div", "reb-execution-cell");
     const item = executionItems.get(cleanSymbol(symbol));
@@ -545,6 +569,10 @@ function renderRebalance(plan: RebPlan) {
     execute.title = "Include this amount in Preview impact and the order queue";
     execute.append(checkbox, label);
     const stateNote = el("span", "reb-execution-state");
+    const exclude = el("button", "ghost reb-execution-exclude", "Exclude");
+    exclude.type = "button";
+    exclude.title = "Keep this recommendation, but remove it from Preview impact and the order queue";
+    exclude.disabled = checkbox.disabled;
     const more = document.createElement("details");
     more.className = "reb-execution-more";
     const moreSummary = el("summary", "", "…");
@@ -577,6 +605,7 @@ function renderRebalance(plan: RebPlan) {
         : item.status === "dismissed"
           ? "dismissed"
           : "";
+      exclude.hidden = item.status !== "selected" || checkbox.disabled;
       more.classList.toggle(
         "has-state",
         item.status === "deferred" || item.status === "dismissed",
@@ -594,11 +623,16 @@ function renderRebalance(plan: RebPlan) {
         return;
       }
       await setStatus("selected");
-      route.selectDirect();
+      route.selectDirect(Number(limit.value) || undefined);
     });
     later.addEventListener("click", () => {
       more.open = false;
       void setStatus("deferred");
+    });
+    exclude.addEventListener("click", async () => {
+      await setStatus("deferred");
+      route.detail.hidden = true;
+      route.detail.innerHTML = "";
     });
     dismiss.addEventListener("click", () => {
       more.open = false;
@@ -616,16 +650,26 @@ function renderRebalance(plan: RebPlan) {
         status: "selected",
       });
       paintStatus();
-      route.selectDirect();
+      route.selectDirect(Number(limit.value) || undefined);
     });
     const limit = document.createElement("input");
     limit.className = "reb-limit-input";
     limit.type = "number";
     limit.min = "0.01";
     limit.step = "0.01";
-    limit.placeholder = "Auto limit";
+    limit.placeholder = "Market";
     limit.title = "Editable order limit; option values are minimum credits";
-    if (item.limit_price) limit.value = String(item.limit_price);
+    const initialLimit = item.limit_price || suggestedLimit;
+    if (initialLimit) limit.value = String(initialLimit);
+    const limitLabel = el("span", "", "");
+    const paintLimitLabel = () => {
+      const value = Number(limit.value);
+      const recommended = Boolean(
+        suggestedLimit && value > 0 && Math.abs(value - suggestedLimit) < 0.000001
+      );
+      limitLabel.textContent = `Limit${limitCurrency ? ` (${limitCurrency})` : ""} · ` +
+        (recommended ? "recommended" : value > 0 ? "custom" : "market");
+    };
     limit.addEventListener("change", () => {
       const value = Number(limit.value);
       void patchExecutionItem(item, { limit_price: value > 0 ? value : null });
@@ -634,13 +678,14 @@ function renderRebalance(plan: RebPlan) {
         if (value > 0) selection.limit_price = value;
         else delete selection.limit_price;
       }
+      paintLimitLabel();
     });
     const limitField = document.createElement("label");
     limitField.className = "reb-limit-field";
-    limitField.append(el("span", "", "Limit price"), limit);
-    menu.prepend(limitField);
+    limitField.append(limitLabel, limit);
+    paintLimitLabel();
     const routeLine = el("div", "reb-execution-route-line");
-    routeLine.append(route.compact);
+    routeLine.append(route.compact, exclude, limitField);
     paintStatus();
     host.append(lifecycle, routeLine);
     if (checkbox.disabled) {
@@ -713,9 +758,10 @@ function renderRebalance(plan: RebPlan) {
     const czk = el("small", "reb-plan-czk");
     planCell.appendChild(czk);
     const executionItem = executionItems.get(cleanSymbol(m.symbol));
+    const initialDeltaCzk = pctToCzk(def, base) || 0;
     const routeChoice = executionRouteControl(
       m.symbol,
-      pctToCzk(def, base) || 0,
+      initialDeltaCzk,
       routeSelections,
       (selection) => {
         if (!executionItem) return;
@@ -732,7 +778,13 @@ function renderRebalance(plan: RebPlan) {
       initialSelection.execution_item_id = executionItem.id;
       if (executionItem.limit_price) initialSelection.limit_price = executionItem.limit_price;
     }
-    const execution = executionCell(m.symbol, input, routeChoice);
+    const execution = executionCell(
+      m.symbol,
+      input,
+      routeChoice,
+      recommendedLimit(m, initialDeltaCzk),
+      m.mark_currency,
+    );
 
     const proj = el("span", "reb-mem-proj");
 
@@ -832,9 +884,10 @@ function renderRebalance(plan: RebPlan) {
       const czk = el("small", "reb-plan-czk");
       planCell.appendChild(czk);
       const executionItem = executionItems.get(cleanSymbol(r.name));
+      const initialDeltaCzk = pctToCzk(parseDelta(input.value), base) || 0;
       const routeChoice = executionRouteControl(
         r.name,
-        pctToCzk(parseDelta(input.value), base) || 0,
+        initialDeltaCzk,
         routeSelections,
         (selection) => {
           if (!executionItem) return;
@@ -852,7 +905,13 @@ function renderRebalance(plan: RebPlan) {
         if (executionItem.limit_price) initialSelection.limit_price = executionItem.limit_price;
       }
       row.appendChild(planCell);
-      row.appendChild(executionCell(r.name, input, routeChoice));
+      row.appendChild(executionCell(
+        r.name,
+        input,
+        routeChoice,
+        recommendedLimit(r, initialDeltaCzk),
+        r.price_gate?.currency || r.mark_currency,
+      ));
 
       const projCell = el("div", "reb-c reb-proj");
       const projPct = el("span", "reb-proj-pct");
@@ -1189,9 +1248,10 @@ function renderRebalance(plan: RebPlan) {
   applyFilter();
 
   // Slide a track's projected tick + redraw the current→projected connector.
-  const paintTrack = (pos: PosRefs, proj: number, inBand: boolean, delta: number) => {
+  const paintTrack = (pos: PosRefs, proj: number, inBand: boolean) => {
     const projP = scalePct(proj, scaleMax);
     const geom = connectorGeom(pos.curP, projP);
+    const movement = proj - pos.curWeight;
     pos.proj.style.left = `${r1(projP)}%`;
     pos.proj.title = pos.proj.classList.contains("draggable")
       ? `projected ${proj.toFixed(2)}% — drag to change`
@@ -1202,8 +1262,19 @@ function renderRebalance(plan: RebPlan) {
     pos.proj.classList.toggle("out", !inBand);
     pos.conn.style.left = `${r1(geom.left)}%`;
     pos.conn.style.width = `${r1(geom.width)}%`;
-    pos.conn.classList.toggle("buy", delta > DELTA_EPS);
-    pos.conn.classList.toggle("sell", delta < -DELTA_EPS);
+    pos.conn.classList.toggle("buy", movement > DELTA_EPS);
+    pos.conn.classList.toggle("sell", movement < -DELTA_EPS);
+    pos.plannedReadout.textContent = `${proj.toFixed(2)}%`;
+    pos.movementReadout.className =
+      `reb-track-movement ${movement > DELTA_EPS ? "buy" : movement < -DELTA_EPS ? "sell" : ""}`;
+    pos.movementReadout.innerHTML = movement > DELTA_EPS
+      ? `<b>→</b> Increase <strong>${Math.abs(movement).toFixed(2)} pp</strong>`
+      : movement < -DELTA_EPS
+        ? `<b>←</b> Reduce <strong>${Math.abs(movement).toFixed(2)} pp</strong>`
+        : `<b>·</b> No move needed`;
+    pos.landingReadout.textContent = inBand ? "Inside target" : "Outside target";
+    pos.landingReadout.classList.toggle("in", inBand);
+    pos.landingReadout.classList.toggle("out", !inBand);
   };
 
   const plannedCzkHtml = (delta: number, czkAmount: number | null, empty: string) =>
@@ -1232,7 +1303,7 @@ function renderRebalance(plan: RebPlan) {
       projBand.className = "chip reb-proj-band " + (res.inBand ? "good" : "warn");
       row.classList.toggle("planned-sell", res.delta < -DELTA_EPS);
       row.classList.toggle("planned-buy", res.delta > DELTA_EPS);
-      paintTrack(pos, res.proj, res.inBand, res.delta);
+      paintTrack(pos, res.proj, res.inBand);
     });
 
     // Sleeve members are editable too, so the headline sums the per-member
@@ -1248,7 +1319,7 @@ function renderRebalance(plan: RebPlan) {
           (mres.overCap ? ` <span class="chip warn" title="over its member cap">cap</span>` : "");
         mc.proj.classList.toggle("good", mres.atTarget);
       });
-      paintTrack(unit.pos, sres.proj, sres.inBand, sres.sum);
+      paintTrack(unit.pos, sres.proj, sres.inBand);
     });
 
     // Untargeted names have no band to project against; their edited amounts
@@ -1449,7 +1520,7 @@ interface ExecutionRouteControl {
   compact: HTMLSelectElement;
   detail: HTMLElement;
   sync: (deltaCzk: number) => void;
-  selectDirect: () => void;
+  selectDirect: (limitPrice?: number) => void;
 }
 
 const directRouteFor = (deltaCzk: number) => deltaCzk >= 0 ? "buy_shares" : "sell_shares";
@@ -1512,21 +1583,24 @@ function executionRouteControl(
   };
   const paintLabels = () => {
     direct.textContent = "Shares";
-    option.textContent = deltaCzk >= 0 ? "Cash-secured put" : "Covered call";
+    option.textContent = deltaCzk >= 0 ? "Put option" : "Covered call";
     directChoice.textContent = deltaCzk >= 0 ? "Buy shares" : "Sell shares";
-    optionChoice.textContent = deltaCzk >= 0 ? "Cash-secured put (cash only)…" : "Covered call…";
+    optionChoice.textContent = deltaCzk >= 0 ? "Put option…" : "Covered call…";
   };
   const paintCompactSelection = () => {
     const selected = selections.get(symbol);
     compact.value = selected?.route === optionRouteFor(deltaCzk) ? "option" : "direct";
   };
 
-  direct.addEventListener("click", () => {
+  const selectDirect = (limitPrice?: number) => {
     resetToStock();
-    onSelection?.(selections.get(symbol)!);
+    const selection = selections.get(symbol)!;
+    if (limitPrice && limitPrice > 0) selection.limit_price = limitPrice;
+    onSelection?.(selection);
     detail.innerHTML = "";
     detail.hidden = true;
-  });
+  };
+  direct.addEventListener("click", () => selectDirect());
 
   const loadOption = async (autoSelect = false): Promise<boolean> => {
     option.disabled = true;
@@ -1551,51 +1625,79 @@ function executionRouteControl(
         const rawLabel = route.option.label.replace(/^Sell\s+/i, "");
         const unavailableLabel = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
         detail.innerHTML =
-          `<div class="ibkr-data-notice"><strong>${esc(unavailableLabel)} unavailable.</strong> ` +
-          `${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</div>` +
-          (route.direction === "increase"
-            ? `<div class="hint">Margin-backed short puts are not enabled here. This route requires full cash collateral; choose Buy shares, or use IBKR directly for a margin-backed strategy.</div>`
-            : "");
+          `<div class="reb-route-unavailable">` +
+            `<span class="reb-route-eyebrow">Option route unavailable</span>` +
+            `<strong>${esc(unavailableLabel)} unavailable</strong>` +
+            `<p>${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</p>` +
+          (route.direction === "increase" && route.option.collateral_mode !== "margin"
+            ? `<div class="reb-route-unavailable-next"><b>Next:</b> choose Buy shares, ` +
+              `or use IBKR directly for a margin-backed short put.</div>`
+            : "") +
+          `</div>`;
         addDetailClose();
         return false;
       }
       const intro = el("div", "reb-route-option-summary");
+      const routeName = route.direction === "increase" ? "Put entry" : "Covered-call reduction";
       intro.innerHTML =
-        `<strong>Conditional ${route.direction === "increase" ? "entry" : "reduction"}</strong> · ` +
-        `${route.option.contracts} contract${route.option.contracts === 1 ? "" : "s"} / ` +
-        `${route.option.assignment_shares} shares if assigned` +
+        `<div class="reb-route-option-heading">` +
+          `<span class="reb-route-eyebrow">${routeName}</span>` +
+          `<strong>Conditional ${route.direction === "increase" ? "entry" : "reduction"}</strong>` +
+        `</div>` +
+        `<div class="reb-route-option-facts">` +
+          `<span><b>${route.option.contracts}</b> contract${route.option.contracts === 1 ? "" : "s"}</span>` +
+          `<span><b>${route.option.assignment_shares}</b> shares if assigned</span>` +
         (route.option.share_deviation
-          ? ` · ${route.option.share_deviation > 0 ? "+" : ""}${route.option.share_deviation} shares vs plan`
-          : "");
+          ? `<span class="${route.option.share_deviation > 0 ? "warn" : ""}">` +
+            `<b>${route.option.share_deviation > 0 ? "+" : ""}${route.option.share_deviation}</b> shares vs plan</span>`
+          : "") +
+        (route.option.collateral_mode === "margin"
+          ? `<span class="margin"><b>Margin</b> account</span>`
+          : "") +
+        `</div>`;
       detail.innerHTML = "";
       detail.appendChild(intro);
-      const table = el("div", "table-wrap");
-      table.innerHTML =
-        `<table class="whatif-table reb-route-ladder"><thead><tr>` +
-        `<th>Expiry / strike</th><th class="num">Bid / ask</th>` +
-        `<th class="num">Yield p.a.</th><th class="num">Effective</th>` +
-        `<th class="num">Assign.</th><th>Source / quote</th><th>Liquidity</th><th></th>` +
-        `</tr></thead><tbody></tbody></table>`;
-      const tbody = table.querySelector("tbody")!;
+      const contracts = el("div", "reb-option-contracts");
       let firstStageable: HTMLButtonElement | null = null;
       route.ladder.forEach((rung: RebalanceOptionRung) => {
-        const tr = document.createElement("tr");
+        const card = el("article", "reb-option-contract");
         const effective = route.direction === "increase" ? rung.effective_entry : rung.effective_exit;
-        tr.innerHTML =
-          `<td>${esc(rung.expiry)} · ${rung.strike}${route.direction === "increase" ? "P" : "C"}</td>` +
-          `<td class="num">${rung.bid ?? "—"} / ${rung.ask ?? "—"}</td>` +
-          `<td class="num">${rung.premium_yield_annual_pct.toFixed(1)}%</td>` +
-          `<td class="num">${effective != null ? effective.toFixed(2) : "—"} ${esc(route.currency || "")}` +
-          (rung.cash_secured_czk
-            ? `<small class="muted">${fmtCZK(rung.cash_secured_czk)} CZK secured</small>`
-            : `<small class="muted">${route.option.assignment_shares} shares covered</small>`) +
-          `</td>` +
-          `<td class="num">${rung.assignment_prob_pct != null ? rung.assignment_prob_pct.toFixed(0) + "%" : "—"}</td>` +
-          `<td><span class="chip ${rung.source === "ibkr" ? "good" : "muted"}">${esc(rung.source.replace(/_/g, " "))}</span>` +
-          `<small class="muted">${rung.quote_fresh ? "fresh" : rung.stageable ? "stale / no quote" : "indicative"}</small></td>` +
-          `<td><span class="chip ${rung.liquidity === "ok" ? "good" : rung.liquidity === "thin" ? "warn" : "muted"}">${esc(rung.liquidity)}</span></td>`;
-        const action = document.createElement("td");
-        const use = el("button", "ghost", rung.stageable ? "Use" : "Indicative");
+        const right = route.direction === "increase" ? "Put" : "Call";
+        const quoteState = rung.quote_fresh ? "Fresh quote" : rung.stageable ? "Quote needed at preview" : "Indicative only";
+        const top = el("div", "reb-option-contract-top");
+        top.innerHTML =
+          `<div class="reb-option-contract-name">` +
+            `<span>${esc(rung.expiry)}</span>` +
+            `<strong>${rung.strike} ${right}</strong>` +
+          `</div>` +
+          `<div class="reb-option-metric"><span>Bid / ask</span><strong>${rung.bid ?? "—"} / ${rung.ask ?? "—"}</strong></div>` +
+          `<div class="reb-option-metric"><span>Yield p.a.</span><strong>${rung.premium_yield_annual_pct.toFixed(1)}%</strong></div>` +
+          `<div class="reb-option-metric"><span>Effective ${route.direction === "increase" ? "entry" : "exit"}</span>` +
+            `<strong>${effective != null ? effective.toFixed(2) : "—"} <small>${esc(route.currency || "")}</small></strong></div>` +
+          `<div class="reb-option-metric"><span>Assignment chance</span>` +
+            `<strong>${rung.assignment_prob_pct != null ? rung.assignment_prob_pct.toFixed(0) + "%" : "—"}</strong></div>`;
+        const footer = el("div", "reb-option-contract-footer");
+        const backing = rung.cash_secured_czk
+          ? `<div class="reb-option-backing">` +
+              `<span>${route.option.collateral_mode === "margin" ? "Assignment notional" : "Cash reserved"}</span>` +
+              `<strong>${fmtCZK(rung.cash_secured_czk)} CZK</strong>` +
+              `<small>${route.option.collateral_mode === "margin"
+                ? "IBKR validates margin at preview"
+                : "Fully cash-secured"}</small>` +
+            `</div>`
+          : `<div class="reb-option-backing">` +
+              `<span>Share coverage</span><strong>${route.option.assignment_shares} shares</strong>` +
+              `<small>Coverage rechecked before placement</small>` +
+            `</div>`;
+        footer.innerHTML =
+          `<div class="reb-option-market-state">` +
+            `<span class="chip ${rung.source === "ibkr" ? "good" : "muted"}">${esc(rung.source.replace(/_/g, " "))}</span>` +
+            `<span class="chip ${rung.quote_fresh ? "good" : rung.stageable ? "warn" : "muted"}">${quoteState}</span>` +
+            `<span class="chip ${rung.liquidity === "ok" ? "good" : rung.liquidity === "thin" ? "warn" : "muted"}">` +
+              `${esc(rung.liquidity)} liquidity</span>` +
+          `</div>` +
+          backing;
+        const use = el("button", "reb-option-use", rung.stageable ? "Use contract" : "Indicative only");
         use.type = "button";
         use.disabled = !rung.stageable || !rung.conid;
         use.title = rung.stageable
@@ -1605,6 +1707,9 @@ function executionRouteControl(
           const selection: RebalanceRouteSelection = {
             symbol,
             route: optionRouteFor(deltaCzk),
+            ...(route.option.collateral_mode
+              ? { collateral_mode: route.option.collateral_mode }
+              : {}),
             conid: Number(rung.conid),
             expiry: rung.expiry,
             strike: rung.strike,
@@ -1616,19 +1721,19 @@ function executionRouteControl(
           direct.classList.remove("active");
           option.classList.add("active");
           compact.value = "option";
-          table.querySelectorAll("button").forEach((button) => {
+          contracts.querySelectorAll("button").forEach((button) => {
             button.classList.remove("active");
-            if (button !== use && !button.textContent?.includes("Indicative")) button.textContent = "Use";
+            if (button !== use && !button.textContent?.includes("Indicative")) button.textContent = "Use contract";
           });
           use.classList.add("active");
           use.textContent = "Selected ✓";
         });
-        action.appendChild(use);
+        footer.appendChild(use);
         if (!firstStageable && !use.disabled) firstStageable = use;
-        tr.appendChild(action);
-        tbody.appendChild(tr);
+        card.append(top, footer);
+        contracts.appendChild(card);
       });
-      detail.appendChild(table);
+      detail.appendChild(contracts);
       if (route.option.reasons.length) {
         detail.appendChild(el("div", "hint", route.option.reasons.join(" · ")));
       }
@@ -1638,7 +1743,11 @@ function executionRouteControl(
       return Boolean(selectedButton);
     } catch (error) {
       detail.innerHTML =
-        `<div class="status err">Could not load option routes: ${esc((error as Error).message)}</div>`;
+        `<div class="reb-route-unavailable error">` +
+          `<span class="reb-route-eyebrow">Option route error</span>` +
+          `<strong>Could not load option routes</strong>` +
+          `<p>${esc((error as Error).message)}</p>` +
+        `</div>`;
       addDetailClose();
       return false;
     } finally {
@@ -1691,7 +1800,7 @@ function executionRouteControl(
     detail.hidden = Math.abs(next) < 1 || !detail.innerHTML;
   };
   sync(initialDeltaCzk);
-  return { controls, compact, detail, sync, selectDirect: () => direct.click() };
+  return { controls, compact, detail, sync, selectDirect };
 }
 
 export function executionRouteChoices(
@@ -1811,7 +1920,11 @@ export function renderWhatif(
   const routeLabel = (trade: WhatifTrade) => {
     const route = selectionFor(trade).route;
     if (route === "covered_call") return "Covered call";
-    if (route === "cash_secured_put") return "Cash-secured put";
+    if (route === "cash_secured_put") {
+      return selectionFor(trade).collateral_mode === "margin"
+        ? "Short put (margin)"
+        : "Cash-secured put";
+    }
     return route === "buy_shares" ? "Buy shares" : "Sell shares";
   };
   card.appendChild(simpleTable({

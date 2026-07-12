@@ -85,12 +85,12 @@ describe("rebalance execution route choices", () => {
 
     expect(selected.get("NVDA")?.route).toBe("buy_shares");
     expect(selected.get("AMD")?.route).toBe("sell_shares");
-    expect(host.textContent).toContain("Cash-secured put");
+    expect(host.textContent).toContain("Put option");
     expect(host.textContent).toContain("Covered call");
     expect(host.querySelectorAll(".reb-route-row-detail:not([hidden])")).toHaveLength(0);
 
     const button = [...host.querySelectorAll("button")]
-      .find((node) => node.textContent === "Cash-secured put")!;
+      .find((node) => node.textContent === "Put option")!;
     button.click();
     await vi.waitFor(() => expect(host.textContent).toContain("Sell cash-secured put"));
     expect(apiMock).toHaveBeenCalledWith(
@@ -100,7 +100,7 @@ describe("rebalance execution route choices", () => {
       { timeoutMs: 60_000 },
     );
     const use = [...host.querySelectorAll("button")]
-      .find((node) => node.textContent === "Use")!;
+      .find((node) => node.textContent === "Use contract")!;
     use.click();
     expect(selected.get("NVDA")).toMatchObject({
       route: "cash_secured_put",
@@ -123,7 +123,7 @@ describe("rebalance execution route choices", () => {
     host.querySelector<HTMLButtonElement>("button:nth-of-type(2)")!.click();
     await vi.waitFor(() => expect(host.textContent).toContain("Indicative"));
     const indicative = [...host.querySelectorAll("button")]
-      .find((node) => node.textContent === "Indicative") as HTMLButtonElement;
+      .find((node) => node.textContent === "Indicative only") as HTMLButtonElement;
     expect(indicative.disabled).toBe(true);
     expect(selected.get("NVDA")?.route).toBe("sell_shares");
     expect(host.textContent).toContain("exact IBKR contract required");

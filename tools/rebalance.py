@@ -608,6 +608,14 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
     weights = current_weights(holdings)
     positions = holdings.get("positions", []) if isinstance(holdings, dict) else []
     invested = portfolio.invested_value(positions)
+    marks: dict[str, tuple[float, str]] = {}
+    for position in positions:
+        if not isinstance(position, dict) or str(position.get("asset_class") or "STK").upper() == "OPT":
+            continue
+        symbol = portfolio.clean_symbol(position.get("symbol"))
+        mark = position.get("mark_price")
+        if symbol and isinstance(mark, (int, float)) and mark > 0:
+            marks[symbol] = (float(mark), str(position.get("currency") or "").upper())
     nav = holdings.get("net_asset_value") if isinstance(holdings, dict) else None
     targets: dict[str, Any] = model.get("targets", {})
     sleeves: dict[str, Any] = model.get("sleeves", {})
@@ -639,6 +647,13 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
             "action": action,
             "suggest_delta_pct": round(delta, 2), "suggest_delta_czk": czk(delta),
             "note": note, "members": members, "interactive": interactive,
+            **(
+                {
+                    "mark_price": marks[name][0],
+                    "mark_currency": marks[name][1],
+                }
+                if kind == "target" and name in marks else {}
+            ),
         })
 
     for sym, t in targets.items():
@@ -660,6 +675,10 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
             _suggest(rule, _status(cur, low, high), cur, low, high),
         )
         member_rows = _allocate_sleeve_members(sl, members, weights, czk, action, delta, provenance)
+        for member in member_rows:
+            mark = marks.get(portfolio.clean_symbol(member.get("symbol")))
+            if mark:
+                member["mark_price"], member["mark_currency"] = mark
         add_row(f"[{name}]", name, "sleeve", rule, cur, low, high, sl.get("note"),
                 members=member_rows, interactive=False)
 

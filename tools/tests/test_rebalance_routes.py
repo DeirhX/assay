@@ -112,7 +112,7 @@ def test_zero_cash_explains_held_put_collateral_without_ladder_cascade(_basket):
             "held_short_put_collateral_czk": 1_200_000,
             "available_cash_czk": 0,
         },
-    ):
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
         route = rebalance_routes.build_route(
             _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
         )
@@ -134,13 +134,34 @@ def test_partial_cash_reports_cost_of_one_put_contract(_basket):
             "held_short_put_collateral_czk": 400_000,
             "available_cash_czk": 100_000,
         },
-    ):
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
         route = rebalance_routes.build_route(
             _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
         )
     assert route["option"]["contracts"] == 0
     assert "needs about 230,000 CZK" in route["option"]["reasons"][0]
     assert "100,000 CZK remains" in route["option"]["reasons"][0]
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_margin_account_put_route_is_not_capped_by_snapshot_cash(_basket):
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={
+            "cash_czk": 0,
+            "held_short_put_collateral_czk": 0,
+            "available_cash_czk": 0,
+        },
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+        route = rebalance_routes.build_route(
+            _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
+        )
+    assert route["option"]["contracts"] == 1
+    assert route["option"]["eligible"] is True
+    assert route["option"]["collateral_mode"] == "margin"
+    assert route["option"]["label"] == "Sell put (margin)"
+    assert route["option"]["available_cash_czk"] is None
 
 
 def test_route_capacity_reserves_working_puts_and_unrelated_staged_buys():
@@ -159,7 +180,8 @@ def test_route_capacity_reserves_working_puts_and_unrelated_staged_buys():
                 trade_service, "load_basket",
                 return_value=[{"type": "stock", "symbol": "MSFT", "delta_czk": 100_000}],
             ), \
-            mock.patch.object(trade_service, "_fx_by_currency", return_value={"USD": 23.0}):
+            mock.patch.object(trade_service, "_fx_by_currency", return_value={"USD": 23.0}), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
         route = rebalance_routes.build_route(
             _holdings(), "NVDA", 690_000, chain=_chain(), now=NOW,
         )
@@ -188,7 +210,8 @@ def test_stage_put_replaces_stock_leg_and_records_conditional_provenance(_basket
             mock.patch.object(
                 trade_service, "cash_secured_put_capacity",
                 return_value={"available_cash_czk": 1_000_000},
-            ):
+            ), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
         out = rebalance_routes.stage_routes(
             _holdings(),
             [{"symbol": "NVDA", "delta_czk": 230_000}],
@@ -224,7 +247,8 @@ def test_stage_rejects_aggregate_put_collateral_above_cash(_basket):
             mock.patch.object(
                 trade_service, "cash_secured_put_capacity",
                 return_value={"available_cash_czk": 100_000},
-            ):
+            ), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
         try:
             rebalance_routes.stage_routes(
                 _holdings(),
@@ -238,6 +262,40 @@ def test_stage_rejects_aggregate_put_collateral_above_cash(_basket):
             assert "only 100,000 CZK" in str(exc)
         else:
             raise AssertionError("insufficient cash must reject staging")
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_stage_margin_put_does_not_require_assignment_cash(_basket):
+    route = rebalance_routes.build_route(
+        _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
+    )
+    route["option"]["collateral_mode"] = "margin"
+    route["option"]["label"] = "Sell put (margin)"
+    exact = {
+        "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
+        "right": "P", "bid": 1.8, "ask": 2.0, "limit_price": 1.9,
+        "quote_timestamp": NOW.isoformat(),
+    }
+    with tempfile.TemporaryDirectory() as tmp, \
+            mock.patch.object(trade_service, "STAGED_BASKET_JSON", Path(tmp) / "basket.json"), \
+            mock.patch.object(rebalance_routes, "build_route", return_value=route), \
+            mock.patch("ibkr_trade.resolve_executable_put", return_value=exact), \
+            mock.patch("ibkr_trade.live_orders", return_value=[]), \
+            mock.patch.object(
+                trade_service, "cash_secured_put_capacity",
+                return_value={"available_cash_czk": 0},
+            ), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+        out = rebalance_routes.stage_routes(
+            _holdings(),
+            [{"symbol": "NVDA", "delta_czk": 230_000}],
+            [{
+                "symbol": "NVDA", "route": "cash_secured_put", "conid": 556,
+                "expiry": "2026-08-07", "strike": 93.0, "contracts": 1,
+            }],
+        )
+    assert out["collateral_mode"] == "margin"
+    assert out["basket"][0]["collateral_mode"] == "margin"
 
 
 def test_append_mode_keeps_existing_queue_and_adds_new_stock_amounts():
@@ -308,7 +366,7 @@ def test_replace_mode_removes_prior_rebalance_legs_but_keeps_exit_routes():
     assert out["mode"] == "replace"
 
 
-def _put_leg():
+def _put_leg(**overrides):
     return {
         "type": "cash_secured_put",
         "symbol": "NVDA",
@@ -318,6 +376,7 @@ def _put_leg():
         "contracts": 1,
         "multiplier": 100,
         "fx_to_base": 23.0,
+        **overrides,
     }
 
 
@@ -344,6 +403,7 @@ def test_prepare_put_builds_exact_sell_limit_and_secured_cash():
                 trade_service, "cash_secured_put_capacity",
                 return_value={"available_cash_czk": 1_000_000},
             ), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=False), \
             mock.patch("ibkr_trade.resolve_executable_put", return_value=exact):
         orders, warnings = trade_service._prepare_trade_orders("DU1", basket)
     assert warnings == []
@@ -354,6 +414,27 @@ def test_prepare_put_builds_exact_sell_limit_and_secured_cash():
     assert order["right"] == "P"
     assert order["price"] == 1.9
     assert order["cash_secured_czk"] == 213_900
+
+
+def test_prepare_put_on_margin_account_defers_capacity_to_ibkr_preview():
+    exact = {
+        "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
+        "right": "P", "bid": 1.8, "ask": 2.0, "last": 1.9,
+        "limit_price": 1.9, "quote_timestamp": NOW.isoformat(),
+    }
+    basket = trade_service._normalize_basket([_put_leg(collateral_mode="margin")])
+    with mock.patch.object(trade_service, "_trade_price_map", return_value={}), \
+            mock.patch.object(trade_service, "_position_quantity_map", return_value={}), \
+            mock.patch.object(trade_service, "_held_call_capacity", return_value={}), \
+            mock.patch.object(trade_service, "_fx_by_currency", return_value={"USD": 23.0}), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=True), \
+            mock.patch.object(trade_service, "cash_secured_put_capacity") as cash_capacity, \
+            mock.patch("ibkr_trade.resolve_executable_put", return_value=exact):
+        orders, warnings = trade_service._prepare_trade_orders("DU1", basket)
+    assert warnings == []
+    assert orders[0]["collateral_mode"] == "margin"
+    assert orders[0]["cash_secured_czk"] == 213_900
+    cash_capacity.assert_not_called()
 
 
 def test_working_short_put_is_not_mislabeled_as_covered_call():
@@ -402,13 +483,38 @@ def test_place_time_put_revalidation_counts_working_put_collateral():
                 trade_service, "cash_secured_put_capacity",
                 return_value={"available_cash_czk": 300_000},
             ), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=False), \
             mock.patch.object(trade_service, "_fx_by_currency", return_value={"USD": 23.0}):
         try:
-            trade_service._revalidate_cash_secured_put_orders([order], working)
+            trade_service._revalidate_cash_secured_put_orders("DU1", [order], working)
         except Exception as exc:
             assert "cash coverage changed" in str(exc)
         else:
             raise AssertionError("working and proposed puts must share the cash-capacity gate")
+
+
+def test_place_time_margin_put_revalidation_skips_local_cash_gate():
+    order = {
+        "instrument_type": "cash_secured_put",
+        "symbol": "NVDA",
+        "conid": 556,
+        "expiry": "2026-08-07",
+        "strike": 93.0,
+        "side": "SELL",
+        "quantity": 1,
+        "price": 1.9,
+        "_estimate_fx_to_base": 23.0,
+    }
+    exact = {
+        "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
+        "bid": 1.8, "ask": 2.0, "last": 1.9, "limit_price": 1.9,
+        "tick": 0.05, "quote_timestamp": NOW.isoformat(),
+    }
+    with mock.patch("ibkr_trade.resolve_executable_put", return_value=exact), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=True), \
+            mock.patch.object(trade_service, "cash_secured_put_capacity") as cash_capacity:
+        trade_service._revalidate_cash_secured_put_orders("DU1", [order], [])
+    cash_capacity.assert_not_called()
 
 
 class RebalanceRouteUnittestCoverage(TestCase):

@@ -896,10 +896,28 @@ describe("trade desk mixed stock + covered call", () => {
     const table = document.querySelector(".trade-basket-table")!;
     expect(table.textContent).toContain("95 put");
     expect(table.textContent).toContain("conditional assignment");
-    expect(table.textContent).toContain("entry");
+    expect(table.textContent).toContain("cash-secured entry");
     expect(table.textContent).toContain("+200 shares");
-    expect(table.querySelector("tfoot")!.textContent).toContain("1 cash-secured put");
+    expect(table.querySelector("tfoot")!.textContent).toContain("1 short put");
     expect(document.querySelector(".trade-queue-controls")!.textContent).toContain("Edit in Rebalance");
+  });
+
+  it("marks a short put as margin-backed when IBKR reports a margin account", async () => {
+    const basket: TradeLeg[] = [{
+      type: "cash_secured_put",
+      route: "cash_secured_put",
+      leg_id: "margin-put-nvda-1",
+      symbol: "NVDA",
+      conid: 556,
+      expiry: "20260815",
+      strike: 95,
+      contracts: 1,
+      multiplier: 100,
+      collateral_mode: "margin",
+    }];
+    await loadBasket(PAPER_STATUS, basket);
+    expect(document.querySelector(".trade-basket-table")!.textContent)
+      .toContain("margin-backed entry");
   });
 
   it("excludes and restores the exact server-known covered-call leg", async () => {

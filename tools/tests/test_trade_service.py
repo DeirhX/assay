@@ -759,6 +759,29 @@ class CoveredCallCapacity(unittest.TestCase):
 
 
 class CashSecuredPutCapacity(unittest.TestCase):
+    def test_margin_profile_uses_explicit_trading_type_and_caches_it(self):
+        with mock.patch.dict(trade_service._account_margin_cache, {}, clear=True):
+            self.assertTrue(trade_service.margin_account_enabled(
+                "DU1", [{"accountId": "DU1", "tradingType": "MRGN"}],
+            ))
+            self.assertTrue(trade_service.margin_account_enabled("DU1", []))
+            self.assertFalse(trade_service.margin_account_enabled(
+                "U2", [{"accountId": "U2", "tradingType": "CASH"}],
+            ))
+
+    def test_product_trading_type_uses_account_summary_margin_evidence(self):
+        summary = {
+            "buyingpower": {"amount": 164_963_616},
+            "availablefunds": {"amount": 24_744_544},
+        }
+        with mock.patch.dict(trade_service._account_margin_cache, {}, clear=True), \
+                mock.patch.object(ibkr_trade, "account_summary", return_value=summary) as fetch:
+            self.assertTrue(trade_service.margin_account_enabled(
+                "U1", [{"accountId": "U1", "tradingType": "STKNOPT"}],
+            ))
+            self.assertTrue(trade_service.margin_account_enabled("U1", []))
+        fetch.assert_called_once_with("U1")
+
     def test_expired_snapshot_put_does_not_reserve_cash(self):
         holdings = {
             "positions": [

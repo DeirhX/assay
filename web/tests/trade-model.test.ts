@@ -157,7 +157,7 @@ describe("working-order preview model", () => {
     expect(reconciliationTitle({
       symbol: "NVDA", side: "SELL", instrument_type: "cash_secured_put",
       classification: "none", proposed_qty: 1, residual_qty: 1,
-    })).toBe("New cash-secured put");
+    })).toBe("New short put");
     expect(reconciliationTitle({
       symbol: "NVDA", side: "SELL", instrument_type: "covered_call",
       classification: "fully_covered", proposed_qty: 1, residual_qty: 0,

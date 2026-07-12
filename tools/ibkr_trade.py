@@ -219,6 +219,58 @@ def accounts() -> list[dict]:
     return res if isinstance(res, list) else []
 
 
+def account_trading_type(account: dict[str, Any] | None) -> str:
+    """Normalized CPAPI account trading structure (CASH, MRGN, or PMRGN)."""
+    if not isinstance(account, dict):
+        return ""
+    return str(
+        account.get("tradingType")
+        or account.get("trading_type")
+        or ""
+    ).strip().upper()
+
+
+def is_margin_account(account: dict[str, Any] | None) -> bool:
+    """True only when CPAPI explicitly identifies Reg-T or portfolio margin."""
+    return account_trading_type(account) in {"MRGN", "PMRGN"}
+
+
+def account_summary(account_id: str) -> dict[str, Any]:
+    """Portfolio account balances and margin metrics for one visible account."""
+    res = _request(
+        "GET",
+        f"/portfolio/{urllib.parse.quote(account_id)}/summary",
+    )
+    return res if isinstance(res, dict) else {}
+
+
+def _summary_amount(summary: dict[str, Any], key: str) -> float | None:
+    field = summary.get(key)
+    if not isinstance(field, dict):
+        return None
+    amount = field.get("amount")
+    if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+        return None
+    return float(amount)
+
+
+def margin_from_account_summary(summary: dict[str, Any]) -> bool | None:
+    """Infer margin capability from IBKR buying power, or return unknown.
+
+    Some live Client Portal accounts report product capabilities such as
+    ``STKNOPT`` in ``tradingType`` instead of CASH/MRGN. Buying power materially
+    above available funds is direct evidence that the account has margin credit.
+    """
+    buying_power = _summary_amount(summary, "buyingpower")
+    available_funds = _summary_amount(summary, "availablefunds")
+    if buying_power is None or available_funds is None:
+        return None
+    tolerance = max(1.0, abs(available_funds) * 0.05)
+    if buying_power > available_funds + tolerance:
+        return True
+    return None
+
+
 def positions(account_id: str, page: int = 0) -> list[dict]:
     res = _request("GET", f"/portfolio/{urllib.parse.quote(account_id)}/positions/{page}")
     return res if isinstance(res, list) else []

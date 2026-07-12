@@ -136,6 +136,13 @@ def _normalize_basket(trades: Any) -> list[dict]:
             raise ValueError(f"{sym}: provenance must be an object or list of objects")
         fx_raw = raw.get("fx_to_base")
         fx_value = float(fx_raw) if isinstance(fx_raw, (int, float)) else None
+        collateral_mode = (
+            str(raw.get("collateral_mode") or "cash").lower()
+            if leg_type == "cash_secured_put"
+            else None
+        )
+        if collateral_mode not in {None, "cash", "margin"}:
+            raise ValueError(f"{sym}: invalid short-put collateral mode")
         option_rows[leg_id] = {
             "type": leg_type,
             "leg_id": leg_id,
@@ -152,6 +159,7 @@ def _normalize_basket(trades: Any) -> list[dict]:
             "staging_warning": str(raw.get("staging_warning") or "") or None,
             "currency": str(raw.get("currency") or "") or None,
             "fx_to_base": round(fx_value, 8) if fx_value and fx_value > 0 else None,
+            **({"collateral_mode": collateral_mode} if collateral_mode else {}),
             "provenance": provenance,
         }
 
@@ -757,6 +765,13 @@ def _resolve_trade_account(requested: str | None, accts: list[dict] | None = Non
     # list avoids a second identical gateway round-trip merely to choose one.
     if accts is None:
         accts = ibkr_trade.accounts()
+    for account in accts:
+        if not isinstance(account, dict):
+            continue
+        aid = str(account.get("accountId") or account.get("id") or "")
+        trading_type = ibkr_trade.account_trading_type(account)
+        if aid and trading_type in {"CASH", "MRGN", "PMRGN"}:
+            _account_margin_cache[aid] = ibkr_trade.is_margin_account(account)
     ids = [str(a.get("accountId") or a.get("id") or "") for a in accts if isinstance(a, dict)]
     ids = [i for i in ids if i]
     if not ids:
@@ -771,6 +786,84 @@ def _resolve_trade_account(requested: str | None, accts: list[dict] | None = Non
         return configured
     paper = [i for i in ids if ibkr_trade.is_paper_account(i)]
     return paper[0] if paper else ids[0]
+
+
+_account_margin_cache: dict[str, bool] = {}
+_account_margin_lock = threading.Lock()
+
+
+def margin_account_enabled(
+    account_id: str | None = None,
+    accts: list[dict] | None = None,
+) -> bool:
+    """Whether the selected account has explicit or summary-proven margin.
+
+    Client Portal sometimes returns product capabilities (for example
+    ``STKNOPT``) as ``tradingType``. In that case, materially higher buying
+    power than available funds in the account summary proves margin capability.
+    Unknown metadata remains conservative.
+    """
+    visible = accts
+    if visible is None:
+        if account_id and account_id in _account_margin_cache:
+            return _account_margin_cache[account_id]
+        configured = ibkr_trade._config_value("IBKR_TRADE_ACCOUNT_ID")
+        if configured and configured in _account_margin_cache:
+            return _account_margin_cache[configured]
+        if not account_id and len(_account_margin_cache) == 1:
+            return next(iter(_account_margin_cache.values()))
+        try:
+            visible = ibkr_trade.accounts()
+        except ibkr_trade.CPAPIError:
+            visible = []
+    for account in visible or []:
+        if not isinstance(account, dict):
+            continue
+        aid = str(account.get("accountId") or account.get("id") or "")
+        trading_type = ibkr_trade.account_trading_type(account)
+        if aid and trading_type in {"CASH", "MRGN", "PMRGN"}:
+            _account_margin_cache[aid] = ibkr_trade.is_margin_account(account)
+
+    selected = str(account_id or "")
+    if not selected and visible:
+        try:
+            selected = _resolve_trade_account(None, visible)
+        except ValueError:
+            selected = ""
+    if not selected:
+        configured = ibkr_trade._config_value("IBKR_TRADE_ACCOUNT_ID")
+        if configured:
+            selected = configured
+    if selected:
+        cached = _account_margin_cache.get(selected)
+        if cached is not None:
+            return cached
+        record = next(
+            (
+                account for account in visible or []
+                if isinstance(account, dict)
+                and str(account.get("accountId") or account.get("id") or "") == selected
+            ),
+            None,
+        )
+        if record is not None and ibkr_trade.account_trading_type(record):
+            with _account_margin_lock:
+                cached = _account_margin_cache.get(selected)
+                if cached is not None:
+                    return cached
+                try:
+                    inferred = ibkr_trade.margin_from_account_summary(
+                        ibkr_trade.account_summary(selected),
+                    )
+                except ibkr_trade.CPAPIError:
+                    inferred = None
+                if inferred is not None:
+                    _account_margin_cache[selected] = inferred
+                    return inferred
+        return False
+    if len(_account_margin_cache) == 1:
+        return next(iter(_account_margin_cache.values()))
+    return False
 
 
 def _parse_snapshot_price(raw: Any) -> float | None:
@@ -1027,14 +1120,18 @@ def _prepare_trade_orders(
         }
         orders.append(order)
 
-    # Cash-secured puts are exact-contract SELL LIMIT orders. Their assignment
-    # notional plus immediate stock buys must fit snapshot cash conservatively;
-    # IBKR preview still performs the authoritative margin check.
+    # Short puts are exact-contract SELL LIMIT orders. Cash accounts must cover
+    # assignment notional locally; explicit MRGN/PMRGN accounts defer capacity
+    # to IBKR's authoritative margin what-if preview.
     put_legs = [t for t in basket if t.get("type") == "cash_secured_put"]
-    put_cash = cash_secured_put_capacity()
-    remaining_cash = float(put_cash["available_cash_czk"]) - sum(
-        max(0.0, _number(t.get("delta_czk")))
-        for t in basket if t.get("type") == "stock"
+    margin_enabled = margin_account_enabled(account_id)
+    put_cash = cash_secured_put_capacity() if not margin_enabled else {}
+    remaining_cash = (
+        float(put_cash["available_cash_czk"]) - sum(
+            max(0.0, _number(t.get("delta_czk")))
+            for t in basket if t.get("type") == "stock"
+        )
+        if not margin_enabled else float("inf")
     )
     total_put_collateral = 0.0
     for leg in put_legs:
@@ -1073,6 +1170,7 @@ def _prepare_trade_orders(
             "instrument_type": "cash_secured_put",
             "leg_id": leg["leg_id"],
             "route": "cash_secured_put",
+            "collateral_mode": "margin" if margin_enabled else "cash",
             "symbol": sym,
             "conid": int(resolved_put["conid"]),
             "orderType": "LMT",
@@ -1156,7 +1254,12 @@ def _trade_status() -> dict:
             for a in accts:
                 aid = str(a.get("accountId") or a.get("id") or "")
                 if aid:
-                    out.append({"id": aid, "kind": ibkr_trade.account_kind(aid)})
+                    out.append({
+                        "id": aid,
+                        "kind": ibkr_trade.account_kind(aid),
+                        "trading_type": ibkr_trade.account_trading_type(a) or None,
+                        "margin": margin_account_enabled(aid, [a]),
+                    })
             status["accounts"] = out
             if out:
                 try:
@@ -1490,6 +1593,7 @@ def _reconcile_working_orders(
                     )
                     if not is_call else None
                 ),
+                "collateral_mode": order.get("collateral_mode") if not is_call else None,
                 "if_assigned_shares": if_assigned_shares,
                 "premium_credit": round(
                     residual_qty * _number(order.get("price")) * OPTION_MULTIPLIER, 2
@@ -1699,7 +1803,7 @@ def _trade_preview(body: dict) -> dict:
     if any(
         order.get("instrument_type") == "cash_secured_put"
         for order in proposed_orders
-    ) and working_available:
+    ) and working_available and not margin_account_enabled(account_id):
         required_cash, available_cash = _put_cash_requirement(proposed_orders, raw_working)
         if required_cash > available_cash + 0.01:
             raise ValueError(
@@ -1914,9 +2018,13 @@ def _revalidate_covered_call_orders(
 
 
 def _revalidate_cash_secured_put_orders(
-    orders: list[dict], working: list[dict], *, raw_working: list[dict] | None = None,
+    account_id: str,
+    orders: list[dict],
+    working: list[dict],
+    *,
+    raw_working: list[dict] | None = None,
 ) -> None:
-    """Refresh short-put contracts and fail closed if aggregate cash is insufficient."""
+    """Refresh short puts and recheck cash collateral for non-margin accounts."""
     put_orders = [
         order for order in orders
         if order.get("instrument_type") == "cash_secured_put"
@@ -1966,6 +2074,9 @@ def _revalidate_cash_secured_put_orders(
             ),
             "premium_credit": round(fresh_limit * OPTION_MULTIPLIER * contracts, 2),
         })
+
+    if margin_account_enabled(account_id):
+        return
 
     capacity = cash_secured_put_capacity()
     available = float(capacity["available_cash_czk"])
@@ -2052,7 +2163,7 @@ def _trade_place(body: dict) -> dict:
         raise ValueError("no residual orders remain to place — preview the updated basket")
     _revalidate_covered_call_orders(account_id, orders, fresh_working)
     _revalidate_cash_secured_put_orders(
-        orders, fresh_working, raw_working=fresh_raw_working,
+        account_id, orders, fresh_working, raw_working=fresh_raw_working,
     )
     # Calls go first so a partial gateway failure cannot sell the covering
     # shares and then fail before submitting their short call. If a later stock
