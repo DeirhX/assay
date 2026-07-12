@@ -96,6 +96,7 @@ beforeEach(() => {
   apiMock.mockReset();
   resetGatewayState();
   state.stagedBasket = [];
+  window.history.replaceState({}, "", "/?view=exit");
   ["#exit-summary", "#exit-body", "#exit-status"].forEach((s) => {
     const n = document.querySelector(s);
     if (n) n.innerHTML = "";
@@ -107,6 +108,29 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Exit planner rendering", () => {
+  it("focuses the ticker supplied by a Rebalance exit-plan link", async () => {
+    const plan = planFixture();
+    plan.positions.push({ ...plan.positions[0], symbol: "OTHER" });
+    window.history.replaceState({}, "", "/?view=exit&ticker=EXITME");
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith("/api/exit-plan?")) return Promise.resolve(plan);
+      return Promise.resolve({ trading_enabled: false, authenticated: false, connected: false });
+    });
+
+    await loadExit();
+    await flush();
+
+    const cards = document.querySelectorAll<HTMLElement>("#exit-body .exit-card");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].dataset.exitSymbol).toBe("EXITME");
+    expect(cards[0].classList.contains("exit-card-focused")).toBe(true);
+    expect(document.querySelector(".exit-focus-bar")!.textContent).toContain("Opened from its Rebalance recommendation");
+
+    document.querySelector<HTMLButtonElement>(".exit-focus-bar button")!.click();
+    expect(window.location.search).not.toContain("ticker=");
+    expect(document.querySelectorAll("#exit-body .exit-card")).toHaveLength(2);
+  });
+
   it("explains when fallback option levels are caused by a disconnected gateway", async () => {
     const fallback = routeFixture();
     fallback.positions[0].options!.source = "yahoo";

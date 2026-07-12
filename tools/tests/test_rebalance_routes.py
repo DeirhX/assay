@@ -117,7 +117,7 @@ def test_zero_cash_explains_held_put_collateral_without_ladder_cascade(_basket):
             _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
         )
     reasons = route["option"]["reasons"]
-    assert any("reserved by held short puts" in reason for reason in reasons)
+    assert any("held short puts" in reason and "working or queued obligations" in reason for reason in reasons)
     assert not any("strike ladder" in reason for reason in reasons)
     assert not any("Indicative" in reason for reason in reasons)
     assert route["option"]["snapshot_cash_czk"] == 1_000_000
