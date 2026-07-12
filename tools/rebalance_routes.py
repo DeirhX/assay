@@ -147,9 +147,8 @@ def build_route(
             )
     import trade_service
 
-    available_cash = float(
-        trade_service.cash_secured_put_capacity(holdings)["available_cash_czk"],
-    )
+    cash_capacity = trade_service.cash_secured_put_capacity(holdings)
+    available_cash = float(cash_capacity["available_cash_czk"])
     if direction == "reduce":
         covered = trade_service.covered_call_capacity(sym, raw_working)
         capacity = int(covered.get("capacity_contracts") or 0)
@@ -200,19 +199,39 @@ def build_route(
         reasons.append("The planned amount cannot be converted to shares from the available mark.")
     elif contracts < 1:
         if direction == "increase" and available_cash <= 0:
-            reasons.append("No uncommitted snapshot cash is available to secure a put.")
+            cash = float(cash_capacity.get("cash_czk") or 0)
+            held = float(cash_capacity.get("held_short_put_collateral_czk") or 0)
+            reasons.append(
+                (
+                    "Snapshot cash is already reserved by held short puts "
+                    f"({held:,.0f} CZK collateral against {cash:,.0f} CZK cash)."
+                )
+                if held > 0
+                else "No uncommitted snapshot cash is available to secure a put."
+            )
+        elif direction == "increase" and capacity < 1:
+            required = spot * fx * OPTION_MULTIPLIER
+            reasons.append(
+                f"One cash-secured put needs about {required:,.0f} CZK; "
+                f"{available_cash:,.0f} CZK remains after held, working, and queued obligations."
+            )
+        elif direction == "reduce" and capacity < 1:
+            reasons.append(
+                "No uncovered 100-share lot is available after held and working calls."
+            )
         else:
             reasons.append(
                 f"The planned {planned_shares}-share trade is too far from one "
                 f"{OPTION_MULTIPLIER}-share option contract or exceeds capacity."
             )
-    if not ladder:
-        reasons.append("No suitable option strike ladder is available.")
-    elif not exact:
-        source = str((chain_data or {}).get("source") or "modeled").replace("_", " ")
-        reasons.append(
-            f"Indicative {source} levels are available; staging needs an exact IBKR contract."
-        )
+    if contracts > 0:
+        if not ladder:
+            reasons.append("No suitable option strike ladder is available.")
+        elif not exact:
+            source = str((chain_data or {}).get("source") or "modeled").replace("_", " ")
+            reasons.append(
+                f"Indicative {source} levels are available; staging needs an exact IBKR contract."
+            )
 
     direct_kind = "buy_shares" if direction == "increase" else "sell_shares"
     direct_eligible = not (
@@ -248,6 +267,14 @@ def build_route(
             "share_deviation": contracts * OPTION_MULTIPLIER - planned_shares,
             "rounded_up": contracts * OPTION_MULTIPLIER > planned_shares,
             "available_cash_czk": round(available_cash, 2) if direction == "increase" else None,
+            "snapshot_cash_czk": (
+                round(float(cash_capacity.get("cash_czk") or 0), 2)
+                if direction == "increase" else None
+            ),
+            "held_short_put_collateral_czk": (
+                round(float(cash_capacity.get("held_short_put_collateral_czk") or 0), 2)
+                if direction == "increase" else None
+            ),
         },
         "recommended": option_kind if not direct_eligible and option_eligible else direct_kind,
         "ladder": ladder,
@@ -267,6 +294,7 @@ def stage_routes(
     trades: Any,
     selections: Any,
     mode: str = "replace",
+    source: str = "rebalance_routes",
 ) -> dict[str, Any]:
     """Validate mixed routes, then append them or replace prior rebalance legs."""
     import trade_service
@@ -274,6 +302,9 @@ def stage_routes(
     mode = str(mode or "replace").strip().lower()
     if mode not in {"append", "replace"}:
         raise ValueError("mode must be 'append' or 'replace'")
+    source = str(source or "rebalance_routes")
+    if source not in {"rebalance_routes", "ticker", "execution_plan"}:
+        raise ValueError("invalid rebalance route source")
     netted = portfolio.normalize_basket(trades)
     if not netted:
         raise ValueError("nothing to stage")
@@ -294,6 +325,24 @@ def stage_routes(
 
     for sym, delta in sorted(netted.items()):
         choice = selected.get(sym) or {}
+        execution_item_id = str(choice.get("execution_item_id") or "") or None
+        execution_item_ids = [
+            str(item_id) for item_id in choice.get("execution_item_ids") or []
+            if str(item_id)
+        ]
+        if execution_item_id:
+            execution_item_ids.append(execution_item_id)
+        execution_item_ids = list(dict.fromkeys(execution_item_ids))
+        provenance_ids: list[str | None] = list(execution_item_ids)
+        if not provenance_ids:
+            provenance_ids.append(None)
+        limit_raw = choice.get("limit_price")
+        try:
+            limit_price = float(limit_raw) if limit_raw is not None else None
+        except (TypeError, ValueError):
+            raise ValueError(f"{sym}: limit_price must be numeric") from None
+        if limit_price is not None and limit_price <= 0:
+            raise ValueError(f"{sym}: limit_price must be positive")
         default_route = "buy_shares" if delta > 0 else "sell_shares"
         route_kind = str(choice.get("route") or default_route)
         option_kind = "cash_secured_put" if delta > 0 else "covered_call"
@@ -302,11 +351,16 @@ def stage_routes(
                 "type": "stock",
                 "symbol": sym,
                 "delta_czk": delta,
-                "provenance": [{
-                    "source": "rebalance_routes",
-                    "route": default_route,
-                    "plan_fingerprint": fingerprint,
-                }],
+                "limit_price": limit_price,
+                "provenance": [
+                    {
+                        "source": source,
+                        "route": default_route,
+                        "plan_fingerprint": fingerprint,
+                        "execution_item_id": item_id,
+                    }
+                    for item_id in provenance_ids
+                ],
             })
             selected_routes.append({"symbol": sym, "route": default_route})
             continue
@@ -359,14 +413,25 @@ def stage_routes(
             raise ValueError(
                 f"{sym}: exact option contract or quote could not be refreshed ({exc.reason})"
             ) from exc
-        provenance = [{
-            "source": "rebalance_routes",
-            "route": option_kind,
-            "plan_fingerprint": fingerprint,
-            "intended_shares": route.get("planned_shares"),
-            "intended_assigned_shares": contracts * OPTION_MULTIPLIER,
-            "rung": {"conid": conid, "expiry": expiry, "strike": strike},
-        }]
+        provenance = [
+            {
+                "source": source,
+                "route": option_kind,
+                "plan_fingerprint": fingerprint,
+                "execution_item_id": item_id,
+                "intended_shares": route.get("planned_shares"),
+                "intended_assigned_shares": contracts * OPTION_MULTIPLIER,
+                "rung": {"conid": conid, "expiry": expiry, "strike": strike},
+            }
+            for item_id in provenance_ids
+        ]
+        selected_limit = limit_price
+        if selected_limit is not None:
+            bid = float(exact.get("bid") or 0)
+            if bid > 0 and selected_limit + 1e-9 < bid:
+                raise ValueError(
+                    f"{sym}: minimum option credit cannot be below the current {bid:g} bid"
+                )
         leg = {
             "type": option_kind,
             "leg_id": f"{option_kind}:{sym}:{conid}",
@@ -378,7 +443,7 @@ def stage_routes(
             "right": "P" if option_kind == "cash_secured_put" else "C",
             "contracts": contracts,
             "multiplier": OPTION_MULTIPLIER,
-            "limit_price": exact.get("limit_price"),
+            "limit_price": selected_limit or exact.get("limit_price"),
             "quote_timestamp": exact.get("quote_timestamp"),
             "staging_warning": exact.get("staging_warning"),
             "currency": route.get("currency"),
@@ -442,7 +507,7 @@ def stage_routes(
                 raise ValueError(f"{sym}: selected calls and stock sales exceed live share coverage")
 
     # Aggregate cash-secured puts, working puts, and immediate stock buys.
-    cash_capacity = trade_service.cash_secured_put_capacity()
+    cash_capacity = trade_service.cash_secured_put_capacity(holdings)
     available_cash = float(cash_capacity["available_cash_czk"])
     stock_buys = sum(
         max(0.0, float(leg.get("delta_czk") or 0))

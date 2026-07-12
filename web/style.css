@@ -1923,8 +1923,8 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-row-group { display: flex; flex-direction: column; }
 .reb-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.5fr) minmax(190px, 2.4fr) minmax(118px, 1fr) minmax(90px, 0.9fr);
-  /* Top-align the four columns so the ticker, current %, plan input and
+  grid-template-columns: minmax(155px, 1.2fr) minmax(220px, 1.8fr) minmax(96px, .65fr) minmax(275px, 1.55fr) minmax(90px, .55fr);
+  /* Top-align the columns so the ticker, current %, plan input and
      projected % share one baseline instead of floating at each column's own
      vertical centre (the name column is much taller than the rest). */
   align-items: start; gap: 14px;
@@ -2062,6 +2062,34 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-plan-czk { font-size: 11.5px; color: var(--muted); }
 .reb-plan-ro { gap: 3px; }
 .reb-plan-ro small { font-size: 11px; color: var(--muted); }
+.reb-execution { min-width: 0; }
+.reb-execution-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.reb-execution-life { display: flex; align-items: center; gap: 4px; }
+.reb-execute-toggle {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 27px;
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 7px;
+  font-size: 11.5px; font-weight: 700; cursor: pointer; background: var(--panel-2);
+}
+.reb-execute-toggle:has(input:checked) {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background: var(--accent-soft);
+}
+.reb-execute-toggle input { margin: 0; accent-color: var(--accent); }
+.reb-execution-life button { padding: 3px 7px; font-size: 10.5px; min-height: 27px; }
+.reb-dismiss { font-size: 15px !important; line-height: 1; }
+.reb-execution-route-line {
+  display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap;
+}
+.reb-execution-route-line .reb-route-inline { margin: 0; }
+.reb-execution-cell[data-status="dismissed"] .reb-route-inline,
+.reb-execution-cell[data-status="dismissed"] .reb-limit-input,
+.reb-execution-cell[data-status="deferred"] .reb-route-inline { opacity: .45; }
+.reb-limit-input {
+  width: 82px; height: 27px; padding: 3px 7px; text-align: right;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2);
+  color: var(--text); font: inherit; font-size: 11.5px;
+}
+.reb-limit-input:focus { outline: none; border-color: var(--accent); }
 
 .reb-proj { display: flex; align-items: center; gap: 8px; }
 .reb-proj-pct { font-weight: 700; }
@@ -2100,8 +2128,31 @@ a.tlink:hover { border-bottom-style: solid; }
 
 .reb-mem-row {
   display: grid;
-  grid-template-columns: 24px minmax(96px, 1.1fr) minmax(128px, 1.2fr) minmax(120px, auto) 78px;
+  grid-template-columns: 24px minmax(96px, 1.1fr) minmax(128px, 1.2fr) minmax(100px, auto) minmax(230px, 1.4fr) 78px;
   gap: 10px; align-items: center; font-size: 13px; padding: 3px 4px; border-radius: 5px;
+}
+
+/* At laptop widths, keep allocation and sizing readable and move the execution
+   controls onto their own compact line instead of crushing five columns. */
+@media (max-width: 1150px) and (min-width: 721px) {
+  .reb-row {
+    grid-template-columns: minmax(150px, 1fr) minmax(250px, 2fr) 105px 100px;
+    grid-template-areas:
+      "name pos plan proj"
+      "name exec exec exec";
+    row-gap: 8px;
+  }
+  .reb-head-row { display: none; }
+  .reb-name { grid-area: name; }
+  .reb-pos { grid-area: pos; }
+  .reb-plan { grid-area: plan; }
+  .reb-proj { grid-area: proj; justify-self: end; }
+  .reb-execution, .reb-execution-cell { grid-area: exec; }
+  .reb-execution-cell {
+    flex-direction: row; align-items: center; flex-wrap: wrap;
+    padding-top: 7px; border-top: 1px solid var(--border);
+  }
+  .reb-route-row-detail { grid-column: 1 / -1; }
 }
 .reb-mem-head {
   font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
@@ -2125,7 +2176,7 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-mem-arrow { opacity: .6; }
 .reb-mem-tgt { color: var(--text); font-weight: 600; }
 .reb-mem-tgt small { color: var(--muted); font-weight: 400; }
-.reb-mem-plan { display: flex; align-items: center; gap: 8px; }
+.reb-mem-plan { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .reb-mem-plan .reb-plan-input { width: 60px; }
 .reb-mem-plan .reb-plan-czk { color: var(--muted); white-space: nowrap; }
 .reb-mem-proj { justify-self: end; font-weight: 700; white-space: nowrap; }
@@ -2135,7 +2186,7 @@ a.tlink:hover { border-bottom-style: solid; }
 @media (max-width: 720px) {
   .reb-mem-row {
     grid-template-columns: 22px 1fr auto;
-    grid-template-areas: "ord sym proj" "ord cur cur" "ord plan plan";
+    grid-template-areas: "ord sym proj" "ord cur cur" "ord plan plan" "ord exec exec";
     row-gap: 4px;
   }
   .reb-mem-head { display: none; }
@@ -2143,6 +2194,7 @@ a.tlink:hover { border-bottom-style: solid; }
   .reb-mem-sym { grid-area: sym; }
   .reb-mem-cur { grid-area: cur; }
   .reb-mem-plan { grid-area: plan; }
+  .reb-execution-cell { grid-area: exec; }
   .reb-mem-proj { grid-area: proj; }
 }
 .reb-untargeted { border: 1px solid var(--border); border-radius: var(--radius-soft); background: var(--panel); margin-top: 16px; }
@@ -2169,13 +2221,15 @@ a.tlink:hover { border-bottom-style: solid; }
     grid-template-areas:
       "name name"
       "pos  pos"
-      "plan proj";
+      "plan proj"
+      "exec exec";
     gap: 8px 10px;
   }
   .reb-head-row { display: none; }
   .reb-name { grid-area: name; }
   .reb-pos { grid-area: pos; }
   .reb-plan { grid-area: plan; }
+  .reb-execution, .reb-execution-cell { grid-area: exec; }
   .reb-proj { grid-area: proj; justify-self: end; align-self: center; }
 }
 
@@ -2483,6 +2537,20 @@ a.tlink:hover { border-bottom-style: solid; }
   border-color: var(--accent); color: var(--accent); background: var(--accent-soft);
 }
 .reb-route-detail { margin-top: 8px; }
+.reb-route-inline {
+  gap: 4px; margin-top: 4px;
+}
+.reb-route-inline button {
+  padding: 3px 7px; font-size: 10.5px; white-space: nowrap;
+}
+.reb-route-row-detail {
+  grid-column: 1 / -1; width: 100%; margin: 6px 0 0;
+  padding: 10px 12px 12px; border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+}
+.reb-route-row-detail[hidden] { display: none; }
+.reb-mem-plan .reb-route-inline { flex: 1 1 100%; }
+.reb-mem-row > .reb-route-row-detail { grid-column: 1 / -1; }
 .reb-route-option-summary { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
 .reb-route-option-summary strong { color: var(--text); }
 .reb-route-ladder { min-width: 760px; }
@@ -2502,6 +2570,34 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-queue-mode span { display: flex; flex-direction: column; gap: 2px; }
 .reb-queue-mode strong { font-size: 12.5px; color: var(--text); }
 .reb-queue-mode small { font-size: 10.5px; color: var(--muted); }
+
+/* Ticker dossier order composer: deliberately collapsed until requested. */
+.ticker-order-composer {
+  margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-soft);
+  background: color-mix(in srgb, var(--panel-2) 75%, transparent);
+}
+.ticker-order-composer > summary {
+  display: flex; align-items: baseline; gap: 10px; cursor: pointer;
+  padding: 9px 11px; list-style-position: inside; font-size: 12.5px; font-weight: 700;
+}
+.ticker-order-composer > summary small { color: var(--muted); font-weight: 400; }
+.ticker-order-body { padding: 2px 11px 11px; }
+.ticker-order-fields {
+  display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px;
+}
+.ticker-order-fields label { display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 10.5px; }
+.ticker-order-fields input, .ticker-order-fields select { height: 32px; min-width: 0; }
+.ticker-order-route {
+  min-height: 28px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-top: 8px; padding: 7px 9px; border-radius: 7px; background: var(--panel);
+  font-size: 12px;
+}
+.ticker-order-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
+.ticker-order-actions button { font-size: 11.5px; padding: 5px 9px; }
+@media (max-width: 720px) {
+  .ticker-order-fields { grid-template-columns: 1fr 1fr; }
+  .ticker-order-composer > summary { align-items: flex-start; flex-direction: column; gap: 2px; }
+}
 
 /* ---- decision journal --------------------------------------------------- */
 .jrnl-form {
@@ -4297,6 +4393,24 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
   border-color: rgba(255,122,122,.45); background: rgba(255,122,122,.08); color: var(--bad);
 }
 .tstate-caveat p { margin: 0; }
+.exec-review {
+  margin-bottom: 14px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-card); background: var(--panel); overflow: hidden;
+}
+.exec-review-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  padding: 13px 15px; background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+}
+.exec-review-head h3 { margin: 0 0 2px; font-size: 15px; }
+.exec-review-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.exec-review-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+.exec-review .table-wrap { margin: 0; border: 0; border-radius: 0; }
+.exec-review-table td:first-child small { display: block; margin-top: 2px; color: var(--muted); font-size: 10.5px; }
+.exec-review-table td { vertical-align: middle; }
+@media (max-width: 720px) {
+  .exec-review-head { align-items: flex-start; flex-direction: column; }
+  .exec-review-actions { justify-content: flex-start; }
+}
 
 @media (max-width: 1100px) {
   .tstate-head-row, .tstate-row {

@@ -40,6 +40,7 @@ from portfolio import (
     clean_symbol,
     normalize_basket,
     option_root,
+    parse_occ_expiry,
     parse_occ_symbol,
     position_fx_to_base,
     provider_symbol_for,
@@ -156,16 +157,27 @@ def _normalize_basket(trades: Any) -> list[dict]:
 
     netted = normalize_basket(stock_rows)
     stock_provenance: dict[str, list[dict]] = {}
+    stock_limits: dict[str, float] = {}
     for row in stock_rows:
         sym = clean_symbol(row.get("symbol"))
         prov = row.get("provenance")
         vals = [prov] if isinstance(prov, dict) else prov if isinstance(prov, list) else []
         stock_provenance.setdefault(sym, []).extend(p for p in vals if isinstance(p, dict))
+        limit_raw = row.get("limit_price")
+        if limit_raw is not None:
+            try:
+                limit_price = float(limit_raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"{sym}: stock limit_price must be numeric") from None
+            if limit_price <= 0:
+                raise ValueError(f"{sym}: stock limit_price must be positive")
+            stock_limits[sym] = limit_price
     stocks = [{
         "type": "stock",
         "leg_id": f"stock:{sym}",
         "symbol": sym,
         "delta_czk": round(delta, 2),
+        **({"limit_price": round(stock_limits[sym], 6)} if sym in stock_limits else {}),
         **({"provenance": stock_provenance[sym]} if stock_provenance.get(sym) else {}),
     } for sym, delta in sorted(netted.items()) if abs(delta) >= 0.01]
     return stocks + [option_rows[k] for k in sorted(option_rows)]
@@ -173,7 +185,11 @@ def _normalize_basket(trades: Any) -> list[dict]:
 
 def _stock_legs(basket: list[dict]) -> list[dict]:
     """Legacy what-if/build-order shape for the stock subset of a typed basket."""
-    return [{"symbol": t["symbol"], "delta_czk": t["delta_czk"]}
+    return [{
+        "symbol": t["symbol"],
+        "delta_czk": t["delta_czk"],
+        **({"limit_price": t["limit_price"]} if t.get("limit_price") else {}),
+    }
             for t in basket if t.get("type") == "stock"]
 
 
@@ -490,8 +506,12 @@ def _held_short_call_contracts() -> dict[str, int]:
     """Existing short-call assignment obligations by underlying."""
     holdings = _load(HOLDINGS_JSON) or {}
     out: dict[str, int] = {}
+    today = datetime.now(UTC).date()
     for p in holdings.get("positions") or []:
         if p.get("asset_class") != "OPT":
+            continue
+        expiry = parse_occ_expiry(p.get("symbol"))
+        if expiry is not None and expiry < today:
             continue
         parsed = parse_occ_symbol(p.get("symbol"))
         qty = _number(p.get("quantity"))
@@ -605,7 +625,11 @@ def _held_short_put_collateral(holdings: dict[str, Any] | None = None) -> float:
     """Conservative strike notional already pledged by held short puts."""
     holdings = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
     total = 0.0
+    today = datetime.now(UTC).date()
     for row in holdings.get("positions") or []:
+        expiry = parse_occ_expiry(row.get("symbol"))
+        if expiry is not None and expiry < today:
+            continue
         parsed = parse_occ_symbol(row.get("symbol"))
         if not parsed or parsed[0] != "P":
             continue
@@ -836,6 +860,10 @@ def _prepare_trade_orders(
     # "Previewing…" hang -- so resolve them in parallel. Writes into the shared
     # conid cache are idempotent and GIL-safe.
     stock_basket = _stock_legs(basket)
+    explicit_limits = {
+        str(leg.get("symbol") or ""): float(leg["limit_price"])
+        for leg in stock_basket if isinstance(leg.get("limit_price"), (int, float))
+    }
     symbols = [t["symbol"] for t in stock_basket]
     workers = min(_PREPARE_MAX_WORKERS, len(symbols) or 1)
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -868,7 +896,7 @@ def _prepare_trade_orders(
         conid_lookup=lambda s: conids.get(s),
         account_id=account_id,
         coid_prefix="assay-" + _basket_token(account_id, basket),
-        limit_lookup=_locked_limit,
+        limit_lookup=lambda sym, side: explicit_limits.get(sym) or _locked_limit(sym, side),
     )
     # Internal estimate metadata is stripped by ibkr_trade._cpapi_order before
     # any gateway call. Reconciliation uses a locked limit when present,

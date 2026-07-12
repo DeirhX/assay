@@ -4,14 +4,14 @@
 // same band tracks the planner uses, with the headline deltas (bands in, cash
 // vs its band, net cash, realized Czech tax) up top.
 //
-// The projection source is the staged basket when one exists (that's what will
-// actually be placed), else the plan's own suggested amounts (what the book
-// would look like if you simply took every suggestion). With nothing on the
-// table it degrades to "current book vs its bands" — every tick single.
+// The projection source is only the staged basket (that's what can actually be
+// placed). The durable execution plan is shown separately as desired intent;
+// unqueued suggestions never masquerade as an executable projection.
 // Approving records only the exact queue revision shown; this view never trades.
 import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
 import type {
-  PlanRow, RebalancePlan, StockSellViolation, TradeQueueState, Whatif, WhatifTrade,
+  ExecutionPlanItem, ExecutionPlanState, PlanRow, RebalancePlan,
+  StockSellViolation, TradeQueueState, Whatif, WhatifTrade,
 } from "./api-types";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
@@ -142,6 +142,51 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
 // re-implementing its markup (same `reb-stat` family, so the output is identical).
 const tile = (label: string, valueHtml: string, cls = ""): string =>
   statTile(label, valueHtml, { html: true, cls }).outerHTML;
+
+export function executionPlanHtml(state: ExecutionPlanState | null | undefined): string {
+  const allItems = state?.items || [];
+  const submitted = allItems.filter((item) => item.status === "submitted").length;
+  const items = allItems.filter(
+    (item) => !["dismissed", "superseded", "submitted"].includes(item.status),
+  );
+  if (!items.length) {
+    return `<section class="exec-review"><div class="exec-review-head"><div>` +
+      `<h3>Execution plan</h3><p>No active actions${submitted ? ` · ${submitted} submitted` : ""}.</p></div>` +
+      `<button class="ghost" data-ts-goto="rebalance" type="button">Build actions →</button></div></section>`;
+  }
+  const grouped = new Map<string, ExecutionPlanItem[]>();
+  items.forEach((item) => {
+    const rows = grouped.get(item.symbol) || [];
+    rows.push(item);
+    grouped.set(item.symbol, rows);
+  });
+  const selected = items.filter((item) => item.status === "selected").length;
+  const queued = items.filter((item) => item.status === "queued").length;
+  const deferred = items.filter((item) => item.status === "deferred").length;
+  const rows = [...grouped.entries()].map(([symbol, symbolItems]) => {
+    const delta = symbolItems.reduce((sum, item) => sum + Number(item.delta_czk || 0), 0);
+    const latest = symbolItems[symbolItems.length - 1];
+    const statuses = [...new Set(symbolItems.map((item) => item.status))];
+    const sources = [...new Set(symbolItems.map((item) => item.source))];
+    const routes = [...new Set(symbolItems.map((item) =>
+      item.route_selection?.route || item.route_policy).filter(Boolean))];
+    return `<tr><td><strong>${esc(symbol)}</strong><small>${esc(sources.join(" + "))}</small></td>` +
+      `<td>${latest.desired_weight_pct != null ? `${latest.desired_weight_pct.toFixed(2)}% target` : "custom action"}</td>` +
+      `<td class="num ${delta >= 0 ? "good" : "bad"}">${sensitive(`${delta >= 0 ? "+" : "−"}${fmtCZK(Math.abs(delta))} CZK`, "planned execution")}</td>` +
+      `<td>${esc(routes.map((route) => String(route).replace(/_/g, " ")).join(" + "))}</td>` +
+      `<td>${statuses.map((status) => `<span class="chip ${status === "queued" ? "good" : status === "deferred" ? "warn" : "muted"}">${esc(status)}</span>`).join(" ")}</td></tr>`;
+  }).join("");
+  return `<section class="exec-review"><div class="exec-review-head"><div>` +
+    `<h3>Execution plan</h3><p>Desired position changes consolidated across Rebalance, ticker dossiers, and Exit.</p></div>` +
+    `<div class="exec-review-actions">` +
+      `<span>${selected} selected · ${deferred} later · ${queued} queued${submitted ? ` · ${submitted} submitted` : ""}</span>` +
+      (selected
+        ? `<button class="primary" data-ts-queue-selected type="button">Add ${selected} selected to queue</button>`
+        : `<button class="ghost" data-ts-goto="rebalance" type="button">Select actions →</button>`) +
+    `</div></div><div class="table-wrap"><table class="whatif-table exec-review-table">` +
+    `<thead><tr><th>Position</th><th>Desired target</th><th class="num">Net action</th><th>Route</th><th>Lifecycle</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table></div></section>`;
+}
 
 function summaryTiles(plan: RebalancePlan, wf: Whatif | null, rows: CompareRow[]): string {
   const total = rows.length;
@@ -280,6 +325,7 @@ function render(
   }).join("");
 
   body.innerHTML =
+    executionPlanHtml(plan.execution_plan) +
     sourceBanner(source, nTrades, queue, projectionValid) +
     violationsBlock +
     summaryTiles(plan, wf, rows) +
@@ -347,6 +393,26 @@ function initTargetState(): void {
   const host = $("#view-target-state");
   if (!host) return;
   host.addEventListener("click", (e) => {
+    const queueSelected = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-queue-selected]");
+    if (queueSelected) {
+      const status = $("#tstate-status");
+      queueSelected.disabled = true;
+      queueSelected.textContent = "Resolving routes…";
+      void api("/api/execution-plan", "POST", { action: "queue_selected" }, { timeoutMs: 120_000 })
+        .then(() => {
+          window.dispatchEvent(new Event("assay:queue-changed"));
+          return loadTargetState();
+        })
+        .catch((err) => {
+          queueSelected.disabled = false;
+          queueSelected.textContent = "Add selected to queue";
+          if (status) {
+            status.classList.add("err");
+            status.textContent = (err as Error).message;
+          }
+        });
+      return;
+    }
     const remove = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-remove-leg]");
     if (remove) {
       const legId = remove.dataset.tsRemoveLeg || "";
