@@ -885,7 +885,8 @@ class _FakeGateway:
 
     def __init__(self, *, months="AUG26", strikes=None, spot="100.0",
                  quotes=None, has_opt=True, underlying=500, maturity="20260821",
-                 maturities=None, rules=None, warm_snapshots=False):
+                 maturities=None, maturities_by_strike=None, rules=None,
+                 warm_snapshots=False):
         self.months = months
         self.strikes = strikes or {"call": [95, 100, 105, 110], "put": [90, 95, 100, 105]}
         self.spot = spot
@@ -893,6 +894,7 @@ class _FakeGateway:
         self.has_opt = has_opt
         self.underlying = underlying
         self.maturities = maturities or [maturity]
+        self.maturities_by_strike = maturities_by_strike or {}
         self.rules = rules or {"incrementRules": [{"lowerEdge": "0", "increment": "0.05"}]}
         self.warm_snapshots = warm_snapshots
         self.snapshot_calls: dict[str, int] = {}
@@ -915,10 +917,12 @@ class _FakeGateway:
         if path == "/iserver/secdef/strikes":
             return {"call": list(self.strikes["call"]), "put": list(self.strikes["put"])}
         if path == "/iserver/secdef/info":
-            ocid = self.opt_conid(float(q["strike"]), q["right"])
+            strike = float(q["strike"])
+            ocid = self.opt_conid(strike, q["right"])
+            maturities = self.maturities_by_strike.get(strike, self.maturities)
             return [
                 {"conid": ocid + index, "maturityDate": maturity}
-                for index, maturity in enumerate(self.maturities)
+                for index, maturity in enumerate(maturities)
             ]
         if path.startswith("/iserver/contract/") and path.endswith("/info-and-rules"):
             return {"rules": self.rules}
@@ -1054,6 +1058,67 @@ class OptionChain(unittest.TestCase):
         self.assertNotIn(90.0, strikes)
         self.assertNotIn(40.0, strikes)
         self.assertNotIn(200.0, strikes)
+
+    def test_directional_chain_skips_the_unused_option_right(self):
+        gw = _FakeGateway(spot="100.0")
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain(
+                "NVDA",
+                as_of=self.AS_OF,
+                max_expiries=2,
+                strikes_per_side=3,
+                rights=("C",),
+            )
+
+        self.assertTrue(any(expiry["calls"] for expiry in chain["expiries"]))
+        self.assertTrue(all(not expiry["puts"] for expiry in chain["expiries"]))
+        info_calls = [
+            endpoint for method, endpoint in gw.calls
+            if method == "GET" and "/iserver/secdef/info" in endpoint
+        ]
+        self.assertTrue(info_calls)
+        self.assertTrue(all("right=C" in endpoint for endpoint in info_calls))
+
+    def test_directional_chain_backfills_sparse_primary_expiry(self):
+        aug14 = "20260814"
+        aug21 = "20260821"
+        gw = _FakeGateway(
+            spot="100.0",
+            strikes={
+                "call": [105, 106, 107, 108, 110, 112, 115, 120, 125],
+                "put": [90, 95],
+            },
+            maturities=[aug14],
+            maturities_by_strike={
+                125.0: [aug14, aug21],
+                106.0: [aug21],
+                107.0: [aug21],
+                108.0: [aug21],
+            },
+        )
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain(
+                "NVDA",
+                as_of=dt.date(2026, 7, 12),
+                max_expiries=2,
+                strikes_per_side=4,
+                rights=("C",),
+            )
+
+        primary = next(
+            expiry for expiry in chain["expiries"]
+            if expiry["expiry"] == "2026-08-21"
+        )
+        self.assertEqual(len(primary["calls"]), 4)
+        self.assertEqual(
+            [contract["strike"] for contract in primary["calls"]],
+            [106.0, 107.0, 108.0, 125.0],
+        )
+        info_endpoints = [
+            endpoint for method, endpoint in gw.calls
+            if method == "GET" and "/iserver/secdef/info" in endpoint
+        ]
+        self.assertGreater(len(info_endpoints), 4)
 
     def test_preserves_weekly_expiries_and_drops_expired_rows(self):
         gw = _FakeGateway(

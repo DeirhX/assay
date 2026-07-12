@@ -299,7 +299,7 @@ def covered_call_ladder(
     calls: list[dict[str, Any]] = []
     if chain and chain.get("expiries"):
         exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
-                           dte_max=COVERED_CALL_DTE[1], after=guard_after)
+                           dte_max=COVERED_CALL_DTE[1], after=guard_after, side="calls")
         if exp:
             expiry_iso = exp["expiry"]
             edate = dt.date.fromisoformat(expiry_iso)
@@ -394,6 +394,7 @@ def cash_secured_put_ladder(
         exp = _pick_expiry(
             chain["expiries"], as_of,
             dte_min=COVERED_CALL_DTE[0], dte_max=COVERED_CALL_DTE[1],
+            side="puts",
         )
         if exp:
             expiry_iso = exp["expiry"]
@@ -426,13 +427,19 @@ def cash_secured_put_ladder(
 
 
 def _pick_expiry(
-    expiries: list[dict[str, Any]], as_of: dt.date, *, dte_min: int, dte_max: int, after: dt.date | None = None
+    expiries: list[dict[str, Any]],
+    as_of: dt.date,
+    *,
+    dte_min: int,
+    dte_max: int,
+    after: dt.date | None = None,
+    side: str | None = None,
+    min_contracts: int = 4,
 ) -> dict[str, Any] | None:
-    """Nearest expiry to the middle of the DTE window (and after ``after`` when a
-    tax deferral demands it). Falls back to the first expiry past ``after``."""
+    """Nearest useful expiry, preferring a real ladder over a sparse exact date."""
     target_dte = (dte_min + dte_max) / 2.0
-    scored: list[tuple[float, dict[str, Any]]] = []
-    fallback: list[tuple[int, dict[str, Any]]] = []
+    scored: list[tuple[int, float, dict[str, Any]]] = []
+    fallback: list[tuple[int, int, dict[str, Any]]] = []
     for e in expiries:
         try:
             edate = dt.date.fromisoformat(e["expiry"])
@@ -443,13 +450,15 @@ def _pick_expiry(
             continue
         if after and edate <= after:
             continue
-        fallback.append((dte, e))
+        contracts = e.get(side) if side else []
+        sparse = int(bool(side) and len(contracts or []) < min_contracts)
+        fallback.append((sparse, dte, e))
         if dte_min <= dte <= dte_max:
-            scored.append((abs(dte - target_dte), e))
+            scored.append((sparse, abs(dte - target_dte), e))
     if scored:
-        return min(scored, key=lambda t: t[0])[1]
+        return min(scored, key=lambda item: (item[0], item[1]))[2]
     if fallback:
-        return min(fallback, key=lambda t: t[0])[1]  # soonest valid expiry
+        return min(fallback, key=lambda item: (item[0], item[1]))[2]
     return None
 
 

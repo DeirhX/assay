@@ -83,9 +83,10 @@ export function projectedWeightFromPointer(
 
 function wireProjectedMarker(
   refs: PosRefs,
-  input: HTMLInputElement,
   scaleMax: number,
-  deltaForTarget: (projected: number) => number,
+  applyProjected: (projected: number) => void,
+  commit: () => void,
+  ariaLabel = "Projected portfolio weight",
 ): void {
   const { proj, track } = refs;
   let dragging = false;
@@ -93,14 +94,13 @@ function wireProjectedMarker(
   proj.classList.add("draggable");
   proj.setAttribute("role", "slider");
   proj.setAttribute("tabindex", "0");
-  proj.setAttribute("aria-label", "Projected portfolio weight");
+  proj.setAttribute("aria-label", ariaLabel);
   proj.setAttribute("aria-valuemin", "0");
   proj.setAttribute("aria-valuemax", String(scaleMax));
 
   const setProjected = (projected: number) => {
     const clamped = r1(Math.min(scaleMax, Math.max(0, projected)));
-    input.value = String(r1(deltaForTarget(clamped)));
-    input.dispatchEvent(new Event("input", { bubbles: true }));
+    applyProjected(clamped);
   };
   const setFromPointer = (event: PointerEvent) => {
     const rect = track.getBoundingClientRect();
@@ -123,7 +123,7 @@ function wireProjectedMarker(
     dragging = false;
     proj.classList.remove("dragging");
     if (track.hasPointerCapture?.(event.pointerId)) track.releasePointerCapture(event.pointerId);
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+    commit();
   };
   track.addEventListener("pointerup", stop);
   track.addEventListener("pointercancel", stop);
@@ -138,13 +138,35 @@ function wireProjectedMarker(
     if (next == null) return;
     event.preventDefault();
     setProjected(next);
-    input.dispatchEvent(new Event("change", { bubbles: true }));
+    commit();
   });
 }
 
+export function distributeSleeveDelta(
+  current: number[],
+  defaults: number[],
+  desiredTotal: number,
+): number[] {
+  if (!current.length) return [];
+  const currentTotal = current.reduce((sum, value) => sum + value, 0);
+  const defaultTotal = defaults.reduce((sum, value) => sum + value, 0);
+  const seed = Math.abs(currentTotal) > DELTA_EPS
+    ? current
+    : Math.abs(defaultTotal) > DELTA_EPS
+      ? defaults
+      : current.map(() => 1);
+  const seedTotal = seed.reduce((sum, value) => sum + value, 0);
+  const raw = Math.abs(seedTotal) > DELTA_EPS
+    ? seed.map((value) => value * desiredTotal / seedTotal)
+    : seed.map(() => desiredTotal / seed.length);
+  const rounded = raw.map((value) => r1(value));
+  const remainder = r1(desiredTotal - rounded.reduce((sum, value) => sum + value, 0));
+  rounded[rounded.length - 1] = r1(rounded[rounded.length - 1] + remainder);
+  return rounded;
+}
+
 // Build the Position cell. Returns the cell plus the live-updatable bits (for
-// interactive rows); sleeve rows render a static projected tick at the
-// suggested amount.
+// target and sleeve rows.
 function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRefs } {
   const cell = el("div", "reb-c reb-pos");
   const toP = (v: number) => scalePct(v, scaleMax);
@@ -154,6 +176,7 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
   const zW = Math.max(1.5, toP(high) - zL);
   const curP = toP(r.current_pct);
   const defDelta = r.interactive ? rebDefaultDelta(r) : (r.suggest_delta_pct || 0);
+  const draggable = r.interactive || r.kind === "sleeve";
   const projInit = (r.current_pct || 0) + defDelta;
   const projP = toP(projInit);
   const inBand0 = inBandAfter(projInit, low, high);
@@ -172,7 +195,7 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
   const aria = `${esc(r.name)}: current ${r.current_pct.toFixed(1)}%, target band ${low.toFixed(1)} to ${high.toFixed(1)}%, ${r.status === "BELOW" ? "move right by adding" : r.status === "ABOVE" ? "move left by reducing" : "currently in band"}`;
   cell.innerHTML =
     `<div class="reb-pos-meta">${meta}</div>` +
-    `<div class="reb-track" role="${r.interactive ? "group" : "img"}" aria-label="${aria}">` +
+    `<div class="reb-track" role="${draggable ? "group" : "img"}" aria-label="${aria}">` +
       `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%" title="Target band ${bandText}"></span>` +
       `<span class="reb-conn ${moveClass}" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>` +
       `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="current ${r.current_pct.toFixed(2)}%"></span>` +
@@ -182,8 +205,7 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
       `<span class="reb-track-movement ${moveClass}">${movementHtml(defDelta)}</span>` +
       `<span class="reb-track-planned"><i></i>Planned <b>${projInit.toFixed(2)}%</b></span>` +
       `<span class="reb-track-landing ${inBand0 ? "in" : "out"}">${inBand0 ? "Inside target" : "Outside target"}</span>` +
-    `</div>` +
-    `<div class="reb-axis"><span>0%</span><span>${scaleMax}%</span></div>`;
+    `</div>`;
 
   const track = cell.querySelector(".reb-track") as HTMLElement;
   const proj = cell.querySelector(".reb-proj-mark") as HTMLElement;
@@ -526,13 +548,20 @@ function renderRebalance(plan: RebPlan) {
   const sleeveUnits: SleeveUnit[] = [];
   const scaleMax = rebScaleMax(plan.rows || []);
 
+  type LimitSubject =
+    | Pick<RebRow, "price_gate" | "mark_price" | "last_quote">
+    | Pick<PlanMember, "mark_price" | "last_quote">;
+  const lastQuotePrice = (subject: LimitSubject): number | null => {
+    const value = Number(subject.last_quote?.price ?? subject.mark_price);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
   const recommendedLimit = (
-    subject: Pick<RebRow, "price_gate" | "mark_price"> | Pick<PlanMember, "mark_price">,
+    subject: LimitSubject,
     deltaCzk: number,
   ): number | null => {
     const gate = "price_gate" in subject ? subject.price_gate : null;
     const gated = deltaCzk >= 0 ? gate?.buy_below : gate?.trim_above;
-    const value = Number(gated ?? subject.mark_price);
+    const value = Number(gated ?? lastQuotePrice(subject));
     return Number.isFinite(value) && value > 0 ? value : null;
   };
 
@@ -541,6 +570,7 @@ function renderRebalance(plan: RebPlan) {
     input: HTMLInputElement,
     route: ExecutionRouteControl,
     suggestedLimit: number | null,
+    marketReference: number | null,
     limitCurrency = "",
   ): HTMLElement => {
     const host = el("div", "reb-execution-cell");
@@ -550,7 +580,7 @@ function renderRebalance(plan: RebPlan) {
       const note = el("span", "reb-execution-na");
       const paintManual = () => {
         const hasAmount = Math.abs(parseDelta(input.value)) > DELTA_EPS;
-        note.textContent = hasAmount ? "Manual trade" : "No trade suggested";
+        note.textContent = hasAmount ? "Manual trade" : "No new trade";
         route.compact.hidden = !hasAmount;
       };
       input.addEventListener("input", paintManual);
@@ -658,7 +688,9 @@ function renderRebalance(plan: RebPlan) {
     limit.min = "0.01";
     limit.step = "0.01";
     limit.placeholder = "Market";
-    limit.title = "Editable order limit; option values are minimum credits";
+    limit.title = marketReference
+      ? `Editable order limit; an empty market value ticks from the last ${marketReference}`
+      : "Editable order limit; option values are minimum credits";
     const initialLimit = item.limit_price || suggestedLimit;
     if (initialLimit) limit.value = String(initialLimit);
     const limitLabel = el("span", "", "");
@@ -678,6 +710,27 @@ function renderRebalance(plan: RebPlan) {
         if (value > 0) selection.limit_price = value;
         else delete selection.limit_price;
       }
+      paintLimitLabel();
+    });
+    limit.addEventListener("keydown", (event) => {
+      if (
+        limit.value.trim()
+        || marketReference == null
+        || (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+      ) return;
+      event.preventDefault();
+      const direction = event.key === "ArrowUp" ? 1 : -1;
+      limit.value = String(Math.max(0.01, Math.round(
+        (marketReference + direction * Number(limit.step || 0.01)) * 100,
+      ) / 100));
+      limit.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    limit.addEventListener("pointerdown", (event) => {
+      if (limit.value.trim() || marketReference == null) return;
+      const rect = limit.getBoundingClientRect();
+      if (event.clientX < rect.right - 20) return;
+      // Seed the native number spinner before it applies its up/down step.
+      limit.value = String(marketReference);
       paintLimitLabel();
     });
     const limitField = document.createElement("label");
@@ -783,7 +836,8 @@ function renderRebalance(plan: RebPlan) {
       input,
       routeChoice,
       recommendedLimit(m, initialDeltaCzk),
-      m.mark_currency,
+      lastQuotePrice(m),
+      m.last_quote?.currency || m.mark_currency,
     );
 
     const proj = el("span", "reb-mem-proj");
@@ -808,11 +862,10 @@ function renderRebalance(plan: RebPlan) {
   const headRow = (title: string) => {
     const h = el("div", "reb-row reb-head-row");
     h.innerHTML =
-      `<div class="reb-c reb-name">${esc(title)}</div>` +
-      `<div class="reb-c reb-pos">Position · move to band</div>` +
+      `<div class="reb-c reb-name">${esc(title)} · stance</div>` +
+      `<div class="reb-c reb-pos">Current → planned</div>` +
       `<div class="reb-c reb-plan">Trade size</div>` +
-      `<div class="reb-c reb-execution">Include · route</div>` +
-      `<div class="reb-c reb-proj">Projected</div>`;
+      `<div class="reb-c reb-execution">Execution · limit</div>`;
     return h;
   };
 
@@ -838,7 +891,31 @@ function renderRebalance(plan: RebPlan) {
     const prov = provBadge(provenance[r.kind === "sleeve" ? `[${r.name}]` : r.name]);
     if (prov) nameHead.appendChild(prov);
     nameCell.appendChild(nameHead);
-    nameCell.appendChild(el("span", `reb-rule reb-rule-${ruleTone(r.rule)}`, esc(ruleWord(r.rule) || r.rule)));
+    const nameMeta = el("div", "reb-name-meta");
+    nameMeta.appendChild(el(
+      "span",
+      `reb-rule reb-rule-${ruleTone(r.rule)}`,
+      esc(ruleWord(r.rule) || r.rule),
+    ));
+    if (r.kind === "target") {
+      const quote = r.last_quote;
+      const mark = Number(quote?.price ?? r.mark_price);
+      const currency = quote?.currency || r.mark_currency || "";
+      const lastQuote = el("span", "reb-last-quote");
+      lastQuote.title = Number.isFinite(mark) && mark > 0
+        ? `Latest cached price${quote?.source ? ` from ${quote.source}` : " from the holdings snapshot"}` +
+          (quote?.at ? ` · ${fmtStamp(quote.at)}` : "")
+        : "No cached quote is available";
+      lastQuote.innerHTML = Number.isFinite(mark) && mark > 0
+        ? `<span>Last</span> <strong>${esc(mark.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }))}</strong>` +
+          (currency ? ` <small>${esc(currency)}</small>` : "")
+        : `<span>Last</span> <strong>—</strong>`;
+      nameMeta.appendChild(lastQuote);
+    }
+    nameCell.appendChild(nameMeta);
     // A single-name row gets a cached-only trend cue; sleeves are baskets, no
     // one price to spark. Filled by the batch hydrateSparks() call after render.
     if (r.kind === "target") nameCell.insertAdjacentHTML("beforeend", sparkPlaceholder(r.name));
@@ -910,7 +987,8 @@ function renderRebalance(plan: RebPlan) {
         input,
         routeChoice,
         recommendedLimit(r, initialDeltaCzk),
-        r.price_gate?.currency || r.mark_currency,
+        lastQuotePrice(r),
+        r.price_gate?.currency || r.last_quote?.currency || r.mark_currency,
       ));
 
       const projCell = el("div", "reb-c reb-proj");
@@ -927,12 +1005,19 @@ function renderRebalance(plan: RebPlan) {
         routeChoice.sync(pctToCzk(parseDelta(input.value), base) || 0);
         setImpactPreviewOpen(false);
       });
-      wireProjectedMarker(posRefs, input, scaleMax, (projected) =>
-        deltaForProjectedWeight(
-          projected,
-          r.current_pct,
-          totalEditedDelta() - parseDelta(input.value),
-        ));
+      wireProjectedMarker(
+        posRefs,
+        scaleMax,
+        (projected) => {
+          input.value = String(r1(deltaForProjectedWeight(
+            projected,
+            r.current_pct,
+            totalEditedDelta() - parseDelta(input.value),
+          )));
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        },
+        () => input.dispatchEvent(new Event("change", { bubbles: true })),
+      );
     } else {
       // Sleeve: combined band sized across members. The per-member breakdown +
       // editable amounts live in the expandable drawer below this row.
@@ -942,7 +1027,11 @@ function renderRebalance(plan: RebPlan) {
           : `<span class="muted">in band</span>`) +
         `<small>across members ↓</small>`);
       row.appendChild(planCell);
-      row.appendChild(el("div", "reb-c reb-execution", "<span class=\"muted\">per member</span>"));
+      row.appendChild(el(
+        "div",
+        "reb-c reb-execution",
+        "<span class=\"reb-sleeve-route\">Set member routes below ↓</span>",
+      ));
       row.appendChild(el("div", "reb-c reb-proj", "<span class=\"muted\">—</span>"));
     }
     return { row, pos: posRefs };
@@ -1018,6 +1107,40 @@ function renderRebalance(plan: RebPlan) {
           unit.members.push(built2.ref);
         });
         sleeveUnits.push(unit);
+        const changedBySleeveDrag = new Set<HTMLInputElement>();
+        wireProjectedMarker(
+          built.pos,
+          scaleMax,
+          (projected) => {
+            const currentDeltas = unit.members.map((member) => parseDelta(member.input.value));
+            const currentTotal = currentDeltas.reduce((sum, value) => sum + value, 0);
+            const desiredTotal = deltaForProjectedWeight(
+              projected,
+              r.current_pct,
+              totalEditedDelta() - currentTotal,
+            );
+            const distributed = distributeSleeveDelta(
+              currentDeltas,
+              unit.members.map((member) => member.def),
+              desiredTotal,
+            );
+            unit.members.forEach((member, index) => {
+              const next = distributed[index] ?? 0;
+              if (Math.abs(parseDelta(member.input.value) - next) <= DELTA_EPS) return;
+              member.input.value = String(next);
+              changedBySleeveDrag.add(member.input);
+            });
+            changedBySleeveDrag.forEach((input) =>
+              input.dispatchEvent(new Event("input", { bubbles: true })));
+            det.open = true;
+          },
+          () => {
+            changedBySleeveDrag.forEach((input) =>
+              input.dispatchEvent(new Event("change", { bubbles: true })));
+            changedBySleeveDrag.clear();
+          },
+          `Projected ${r.name} sleeve weight`,
+        );
         det.appendChild(ml);
         group.appendChild(det);
       }
@@ -1755,7 +1878,10 @@ function executionRouteControl(
       if (option.textContent === "Loading live option routes…") paintLabels();
     }
   };
-  option.addEventListener("click", () => { void loadOption(false); });
+  option.addEventListener("click", () => {
+    compact.value = "option";
+    void loadOption(false);
+  });
   compact.addEventListener("change", () => {
     const choice = compact.value;
     if (choice === "direct") {
@@ -1767,8 +1893,11 @@ function executionRouteControl(
       paintCompactSelection();
       return;
     }
-    paintCompactSelection();
-    void loadOption(false).finally(paintCompactSelection);
+    // "Option…" is both a route choice and the trigger for its contract chooser.
+    // Keep that visible while the panel is open; closing without selecting a
+    // contract repaints the persisted (usually direct-share) route.
+    compact.value = "option";
+    void loadOption(false);
   });
 
   const sync = (nextDeltaCzk: number) => {

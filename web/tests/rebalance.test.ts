@@ -9,6 +9,7 @@ import {
   optionsLine,
   projectedCash,
   projectedWeightFromPointer,
+  distributeSleeveDelta,
   rebActionClass,
   rebDefaultDelta,
 } from "../src/rebalance";
@@ -41,6 +42,22 @@ describe("projectedWeightFromPointer", () => {
   it("clamps drags to the visible scale", () => {
     expect(projectedWeightFromPointer(50, 100, 200, 8)).toBe(0);
     expect(projectedWeightFromPointer(350, 100, 200, 8)).toBe(8);
+  });
+});
+
+describe("distributeSleeveDelta", () => {
+  it("rescales the member mix to the dragged sleeve total", () => {
+    expect(distributeSleeveDelta([3, 1], [3, 1], 6)).toEqual([4.5, 1.5]);
+  });
+
+  it("uses recommendation weights from a zeroed sleeve and preserves the total", () => {
+    const values = distributeSleeveDelta([0, 0, 0], [2, 1, 1], 3.7);
+    expect(values).toEqual([1.9, 0.9, 0.9]);
+    expect(values.reduce((sum, value) => sum + value, 0)).toBeCloseTo(3.7);
+  });
+
+  it("splits evenly when the sleeve has no existing or recommended mix", () => {
+    expect(distributeSleeveDelta([0, 0], [0, 0], -2)).toEqual([-1, -1]);
   });
 });
 

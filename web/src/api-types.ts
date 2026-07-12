@@ -114,12 +114,20 @@ export interface PendingOptionExposure {
   full_suggest_delta_czk?: number | null;
 }
 
+export interface LastQuote {
+  price: number;
+  currency?: string | null;
+  source?: string;
+  at?: string | null;
+}
+
 export interface PlanMember {
   symbol: string;
   current_pct: number;
   current_czk: number | null;
   mark_price?: number;
   mark_currency?: string;
+  last_quote?: LastQuote | null;
   // Per-member sleeve advice (sleeve members only; absent on the untargeted bucket):
   // an even split of the sleeve midpoint capped by member_caps, the share of the
   // sleeve's suggested buy/trim allocated to this name, and a 1-based order.
@@ -220,6 +228,7 @@ export interface PlanRow {
   current_czk: number | null;
   mark_price?: number;
   mark_currency?: string;
+  last_quote?: LastQuote | null;
   low: number;
   high: number;
   mid: number;

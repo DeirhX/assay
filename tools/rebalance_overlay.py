@@ -138,6 +138,48 @@ def gate_current_price(
     return None
 
 
+def last_quote_snapshot(
+    name: str,
+    provider_sym: str,
+    price_map: dict[str, dict],
+    *,
+    quotes: dict[str, dict] | None = None,
+) -> dict | None:
+    """Best available display quote without doing network I/O.
+
+    Prefer a fresh intraday cache entry, then the holdings mark used by the
+    planner, then the last cached dossier price. The source metadata lets the UI
+    describe what "Last" actually means instead of implying every value is live.
+    """
+    fresh = quote_cache.fresh_price(provider_sym, quotes=quotes)
+    if fresh:
+        return {
+            "price": fresh["price"],
+            "currency": fresh.get("currency"),
+            "source": "quote cache",
+            "at": fresh.get("at"),
+        }
+    held = price_map.get((name or "").upper())
+    if held and isinstance(held.get("price"), (int, float)):
+        return {
+            "price": float(held["price"]),
+            "currency": held.get("currency"),
+            "source": "holdings snapshot",
+            "at": None,
+        }
+    rec = load(RESEARCH_DIR / f"{provider_sym}.json")
+    if isinstance(rec, dict):
+        price = rec.get("price")
+        if isinstance(price, dict) and isinstance(price.get("value"), (int, float)):
+            return {
+                "price": float(price["value"]),
+                "currency": rec.get("currency") or price.get("currency"),
+                "source": "cached dossier",
+                "at": rec.get("as_of"),
+            }
+    return None
+
+
 def apply_price_gate(
     row: dict,
     provider_sym: str,
@@ -261,7 +303,9 @@ def attach_options_overlay(plan: dict, opt_map: dict[str, dict]) -> None:
 
 
 def attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
-    """Enrich each held target row of a rebalance plan, in place, with a compact
+    """Enrich each rebalance-plan ticker, in place, with its best cached quote.
+
+    Held target rows also receive a compact
     ``research`` object + a ``research_conflict`` flag, and a ``price_gate`` from
     any locked price level (downgrading the action to ``"wait"`` when the price
     isn't favorable yet), and -- across all rows/sleeve members -- an ``options``
@@ -277,11 +321,40 @@ def attach_research_overlay(plan: dict, holdings: dict | None = None) -> None:
     except Exception:  # noqa: BLE001 - options context is optional, never fatal
         opt_map = {}
     for row in plan.get("rows") or []:
-        if row.get("kind") != "target" or not row.get("held"):
+        kind = row.get("kind")
+        if kind == "sleeve":
+            for member in row.get("members") or []:
+                try:
+                    provider_sym = resolve_symbol(member.get("symbol") or "")
+                    quote = last_quote_snapshot(
+                        member.get("symbol") or "",
+                        provider_sym,
+                        price_map,
+                        quotes=quotes,
+                    )
+                    if quote:
+                        member["last_quote"] = quote
+                except Exception:  # noqa: BLE001 - display metadata is optional
+                    pass
+            continue
+        if kind != "target":
             continue
         try:
             provider_sym = resolve_symbol(row.get("name") or "")
         except Exception:  # noqa: BLE001 - a bad symbol shouldn't break the plan
+            continue
+        try:
+            quote = last_quote_snapshot(
+                row.get("name") or "",
+                provider_sym,
+                price_map,
+                quotes=quotes,
+            )
+            if quote:
+                row["last_quote"] = quote
+        except Exception:  # noqa: BLE001 - display metadata is optional
+            pass
+        if not row.get("held"):
             continue
         try:
             overlay = research_overlay(provider_sym)

@@ -772,12 +772,32 @@ def _collect_option_infos(
                 group[key].append(info)
 
 
+def _ladder_fill_strikes(
+    strikes: list[float],
+    spot: float | None,
+    window_pct: float,
+    right: str,
+) -> list[float]:
+    """Every decision-useful OTM strike, nearest first, for adaptive backfill."""
+    if spot is None or spot <= 0:
+        return []
+    vals = sorted({float(strike) for strike in strikes if isinstance(strike, (int, float))})
+    start_pct = min(0.05, window_pct)
+    lo, hi = spot * (1.0 - window_pct), spot * (1.0 + window_pct)
+    if right == "C":
+        floor = spot * (1.0 + start_pct)
+        return [strike for strike in vals if floor <= strike <= hi]
+    ceiling = spot * (1.0 - start_pct)
+    return [strike for strike in reversed(vals) if lo <= strike <= ceiling]
+
+
 def option_chain(
     symbol: str,
     *,
     max_expiries: int = 4,
     strike_window_pct: float = 0.25,
     strikes_per_side: int = 6,
+    rights: tuple[str, ...] = ("C", "P"),
     as_of: dt.date | None = None,
     deadline_monotonic: float | None = None,
 ) -> dict[str, Any] | None:
@@ -788,10 +808,18 @@ def option_chain(
     per strike/right but returns every weekly expiry in that month from each call.
     We therefore resolve a sampled OTM call ladder first, preserve all returned
     expiries, and reserve enough of the optional deadline for one bulk quote
-    snapshot. This produces executable contracts instead of timing out while
-    exhaustively resolving irrelevant ITM strikes."""
+    snapshot. ``rights`` lets direction-specific callers avoid resolving the
+    unused half of the chain. This produces executable contracts instead of
+    timing out while exhaustively resolving irrelevant contracts."""
     sym = str(symbol or "").strip().upper()
     if not sym:
+        return None
+    wanted_rights = {
+        str(right or "").strip().upper()
+        for right in rights
+        if str(right or "").strip().upper() in {"C", "P"}
+    }
+    if not wanted_rights:
         return None
     today = as_of or dt.datetime.now(dt.timezone.utc).date()
     conid, months = option_months(sym, timeout=_deadline_timeout(deadline_monotonic))
@@ -813,6 +841,8 @@ def option_chain(
         spot = (u_bid + u_ask) / 2.0
 
     groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    strike_catalogs: dict[str, dict[str, list[float]]] = {}
+    attempted: dict[tuple[str, str], set[float]] = {}
     for month in _prioritized_months(months, today):
         if not _has_chain_budget(deadline_monotonic, _CHAIN_QUOTE_RESERVE_SECONDS):
             break
@@ -821,54 +851,117 @@ def option_chain(
             month,
             timeout=_deadline_timeout(deadline_monotonic),
         )
-        call_strikes = _targeted_strikes(
-            strikes.get("call") or [],
-            spot,
-            strike_window_pct,
-            strikes_per_side,
-            "C",
-        )
-        _collect_option_infos(
-            groups,
-            conid,
-            month,
-            call_strikes,
-            "C",
-            today,
-            deadline_monotonic,
-        )
+        strike_catalogs[month] = strikes
+        if "C" in wanted_rights:
+            call_strikes = _targeted_strikes(
+                strikes.get("call") or [],
+                spot,
+                strike_window_pct,
+                strikes_per_side,
+                "C",
+            )
+            attempted[(month, "C")] = set(call_strikes)
+            _collect_option_infos(
+                groups,
+                conid,
+                month,
+                call_strikes,
+                "C",
+                today,
+                deadline_monotonic,
+            )
         # Rebalance can write cash-secured puts, so preserve a real downside
         # ladder rather than the old protective-put-only sample of 1–3 strikes.
-        put_count = max(1, strikes_per_side)
-        put_strikes = _targeted_strikes(
-            strikes.get("put") or [],
-            spot,
-            strike_window_pct,
-            put_count,
-            "P",
-        )
-        _collect_option_infos(
-            groups,
-            conid,
-            month,
-            put_strikes,
-            "P",
-            today,
-            deadline_monotonic,
-        )
+        if "P" in wanted_rights:
+            put_count = max(1, strikes_per_side)
+            put_strikes = _targeted_strikes(
+                strikes.get("put") or [],
+                spot,
+                strike_window_pct,
+                put_count,
+                "P",
+            )
+            attempted[(month, "P")] = set(put_strikes)
+            _collect_option_infos(
+                groups,
+                conid,
+                month,
+                put_strikes,
+                "P",
+                today,
+                deadline_monotonic,
+            )
         if len(groups) >= max_expiries:
             break
     if not groups:
         return None
 
     target_expiry = today + dt.timedelta(days=37)
-    selected_expiries = sorted(
+    ranked_expiries = sorted(
         groups,
         key=lambda expiry: (
             abs((dt.date.fromisoformat(expiry) - target_expiry).days),
             expiry,
         ),
-    )[:max_expiries]
+    )
+    selected_expiries = ranked_expiries[:max_expiries]
+    # CPAPI's strikes endpoint returns a month-wide union. Weekly and monthly
+    # expiries often use different grids (e.g. integer vs 2.5-point strikes), so
+    # a sparse sample can accidentally leave the best expiry with one contract.
+    # Directional route chains adaptively probe nearby, untried strikes until
+    # that chosen expiry has the requested ladder depth.
+    if len(wanted_rights) == 1 and selected_expiries:
+        primary_expiry = selected_expiries[0]
+        primary_date = dt.date.fromisoformat(primary_expiry)
+        right = next(iter(wanted_rights))
+        side = "calls" if right == "C" else "puts"
+        primary_month = next((
+            month
+            for month in strike_catalogs
+            if _month_key(month) == (primary_date.year, primary_date.month)
+        ), None)
+        if primary_month:
+            catalog = strike_catalogs[primary_month].get(
+                "call" if right == "C" else "put",
+            ) or []
+            tried = attempted.get((primary_month, right), set())
+            for strike in _ladder_fill_strikes(catalog, spot, strike_window_pct, right):
+                if len(groups[primary_expiry][side]) >= strikes_per_side:
+                    break
+                if strike in tried:
+                    continue
+                if not _has_chain_budget(deadline_monotonic, _CHAIN_QUOTE_RESERVE_SECONDS):
+                    break
+                tried.add(strike)
+                _collect_option_infos(
+                    groups,
+                    conid,
+                    primary_month,
+                    [strike],
+                    right,
+                    today,
+                    deadline_monotonic,
+                )
+        for expiry in selected_expiries:
+            contracts = groups[expiry][side]
+            if right == "C" and spot is not None and spot > 0:
+                contracts = sorted(
+                    (
+                        contract for contract in contracts
+                        if float(contract["strike"]) >= spot * (1.0 + min(0.05, strike_window_pct))
+                    ),
+                    key=lambda contract: float(contract["strike"]),
+                )
+            elif right == "P" and spot is not None and spot > 0:
+                contracts = sorted(
+                    (
+                        contract for contract in contracts
+                        if float(contract["strike"]) <= spot * (1.0 - min(0.05, strike_window_pct))
+                    ),
+                    key=lambda contract: float(contract["strike"]),
+                    reverse=True,
+                )
+            groups[expiry][side] = contracts[:strikes_per_side]
     selected_expiries.sort()
     all_contracts = [
         contract
