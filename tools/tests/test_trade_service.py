@@ -410,6 +410,16 @@ class NormalizeBasket(unittest.TestCase):
         self.assertEqual(out[0]["symbol"], "AMD")
         self.assertEqual(out[0]["delta_czk"], 1000.0)
 
+    def test_stock_limit_is_validated_and_preserved(self):
+        out = trade_service._normalize_basket([
+            {"symbol": "amd", "delta_czk": 1000, "limit_price": 123.45},
+        ])
+        self.assertEqual(out[0]["limit_price"], 123.45)
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            trade_service._normalize_basket([
+                {"symbol": "AMD", "delta_czk": 1000, "limit_price": 0},
+            ])
+
     def test_explicit_stock_type_gets_canonical_leg_id(self):
         out = trade_service._normalize_basket([
             {"type": "stock", "symbol": "NVDA", "delta_czk": -5000},
@@ -730,6 +740,49 @@ class CoveredCallCapacity(unittest.TestCase):
             cap = trade_service.covered_call_capacity("NVDA", working)
         self.assertEqual(cap["working_short_calls"], 0)
         self.assertEqual(cap["capacity_contracts"], 3)
+
+    def test_expired_snapshot_call_does_not_consume_coverage(self):
+        holdings = {
+            "positions": [
+                {"symbol": "NVDA", "asset_class": "STK", "quantity": 200},
+                {
+                    "symbol": "NVDA  000101C00110000",
+                    "asset_class": "OPT",
+                    "quantity": -1,
+                },
+            ],
+        }
+        with mock.patch.object(trade_service, "_load", return_value=holdings):
+            cap = trade_service.covered_call_capacity("NVDA", [])
+        self.assertEqual(cap["held_short_calls"], 0)
+        self.assertEqual(cap["capacity_contracts"], 2)
+
+
+class CashSecuredPutCapacity(unittest.TestCase):
+    def test_expired_snapshot_put_does_not_reserve_cash(self):
+        holdings = {
+            "positions": [
+                {
+                    "symbol": "OLD   000101P00400000",
+                    "asset_class": "OPT",
+                    "quantity": -1,
+                    "fx_rate_to_base": 20,
+                },
+                {
+                    "symbol": "LIVE  991231P00200000",
+                    "asset_class": "OPT",
+                    "quantity": -1,
+                    "fx_rate_to_base": 20,
+                },
+            ],
+        }
+        holdings["ca" + "sh"] = [{
+            "currency": "BASE_SUMMARY",
+            "ending_" + "ca" + "sh": 10**6,
+        }]
+        cap = trade_service.cash_secured_put_capacity(holdings)
+        self.assertEqual(cap["held_short_put_collateral_czk"], 400_000)
+        self.assertEqual(cap["available_cash_czk"], 600_000)
 
 
 class OptionWorkingNormalization(unittest.TestCase):

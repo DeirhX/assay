@@ -4,7 +4,8 @@
 // rendering with change highlighting.
 import { describe, expect, it } from "vitest";
 import {
-  compareRowHtml, compareRows, deriveSuggestionTrades, scaleMaxOf, sourceBanner,
+  compareRowHtml, compareRows, deriveSuggestionTrades, executionPlanHtml,
+  scaleMaxOf, sourceBanner,
   violationsHtml,
 } from "../src/targetstate";
 import type { PlanRow, RebalancePlan } from "../src/api-types";
@@ -43,6 +44,29 @@ describe("deriveSuggestionTrades", () => {
 });
 
 describe("projection review gate", () => {
+  it("consolidates execution sources by desired position", () => {
+    const html = executionPlanHtml({
+      schema_version: 1,
+      version: 3,
+      items: [
+        {
+          id: "a", symbol: "NVDA", source: "rebalance", direction: "increase",
+          delta_czk: 100_000, desired_weight_pct: 5, route_policy: "auto_put",
+          status: "selected",
+        },
+        {
+          id: "b", symbol: "NVDA", source: "ticker", direction: "increase",
+          delta_czk: 50_000, desired_weight_pct: 5.5, route_policy: "buy_shares",
+          status: "selected",
+        },
+      ],
+    });
+    expect(html.match(/<tr>/g)?.length).toBe(2); // one header + one net NVDA row
+    expect(html).toContain("rebalance + ticker");
+    expect(html).toContain("150");
+    expect(html).toContain("Add 2 selected to queue");
+  });
+
   it("offers approval for an unreviewed queue and Trade only after approval", () => {
     const unreviewed = sourceBanner("basket", 2, {
       trades: [], revision: "rev-1", reviewed: false,

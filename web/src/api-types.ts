@@ -263,6 +263,51 @@ export interface RebalancePlan {
   // Per-key lineage and the working-draft banner state (serve._get_rebalance).
   provenance?: Record<string, Provenance | null | undefined>;
   staged?: { has_draft?: boolean; pending?: number; previewing_draft?: boolean } | null;
+  execution_plan?: ExecutionPlanState;
+}
+
+export type ExecutionPlanStatus =
+  | "suggested" | "selected" | "deferred" | "dismissed"
+  | "queued" | "submitted" | "superseded";
+
+export interface ExecutionPlanItem {
+  id: string;
+  symbol: string;
+  source: "rebalance" | "ticker" | "exit" | string;
+  origin_key?: string;
+  plan_fingerprint?: string | null;
+  direction: "increase" | "reduce";
+  delta_czk: number;
+  delta_pct?: number | null;
+  desired_weight_pct?: number | null;
+  route_policy: "auto_put" | RebalanceExecutionRoute;
+  route_selection?: RebalanceRouteSelection | null;
+  limit_price?: number | null;
+  status: ExecutionPlanStatus;
+  defer_until?: string | null;
+  dismiss_reason?: string | null;
+  queued_leg_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExecutionPlanState {
+  schema_version: number;
+  version: number;
+  plan_binding?: {
+    fingerprint: string;
+    as_of?: string | null;
+    snapshot?: string | null;
+  } | null;
+  items: ExecutionPlanItem[];
+  stale?: boolean;
+  pending_count?: number;
+  pending_binding?: {
+    fingerprint: string;
+    as_of?: string | null;
+    snapshot?: string | null;
+  } | null;
+  updated_at?: string | null;
 }
 
 // ---- funding assistant (POST /api/rebalance/funding) -----------------------
@@ -784,6 +829,8 @@ export interface RebalanceRouteResponse {
     share_deviation: number;
     rounded_up: boolean;
     available_cash_czk?: number | null;
+    snapshot_cash_czk?: number | null;
+    held_short_put_collateral_czk?: number | null;
   };
   recommended: RebalanceExecutionRoute;
   ladder: RebalanceOptionRung[];
@@ -796,6 +843,8 @@ export interface RebalanceRouteSelection {
   expiry?: string;
   strike?: number;
   contracts?: number;
+  limit_price?: number;
+  execution_item_id?: string;
 }
 
 // Canonical staged trade-desk legs (GET/POST basket and Exit staging).

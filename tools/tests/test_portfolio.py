@@ -6,6 +6,7 @@ so they get exhaustive branch coverage."""
 
 from __future__ import annotations
 
+import datetime as dt
 import unittest
 
 import _support  # noqa: F401
@@ -90,6 +91,14 @@ class OptionExposure(unittest.TestCase):
     def test_parse_occ_rejects_non_option(self):
         self.assertIsNone(pf.parse_occ_symbol("AMD"))
         self.assertIsNone(pf.parse_occ_symbol(None))
+
+    def test_parse_occ_expiry(self):
+        self.assertEqual(
+            pf.parse_occ_expiry("SPY   260618P00655000"),
+            dt.date(2026, 6, 18),
+        )
+        self.assertIsNone(pf.parse_occ_expiry("AMD"))
+        self.assertIsNone(pf.parse_occ_expiry("SPY   269918P00655000"))
 
     def test_long_put_is_negative_exposure(self):
         o = pf.option_exposure(self.PUT, 29_536_352.0)

@@ -7,6 +7,7 @@ rule imply?" That is how portfolios become haunted by tiny inconsistent lies.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 from store import load as load_json  # forgiving JSON read shared with the server
@@ -247,6 +248,24 @@ def parse_occ_symbol(symbol: str | None) -> tuple[str, float] | None:
         return None
     try:
         return right, int(core[7:]) / 1000.0
+    except ValueError:
+        return None
+
+
+def parse_occ_expiry(symbol: str | None) -> dt.date | None:
+    """OCC option symbol -> expiry date, or None for a non-option/malformed row."""
+    compact = (symbol or "").replace(" ", "")
+    if len(compact) < 15:
+        return None
+    core = compact[-15:]
+    if core[6] not in ("C", "P"):
+        return None
+    try:
+        return dt.date(
+            2000 + int(core[0:2]),
+            int(core[2:4]),
+            int(core[4:6]),
+        )
     except ValueError:
         return None
 

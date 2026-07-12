@@ -10,6 +10,7 @@ import { renderAnalysisCard, renderDeepResearchCard } from "./deepdive/analysis-
 import { renderHistory } from "./deepdive/history-card";
 import { renderThesis } from "./deepdive/thesis";
 import { copyPortfolioPrompt } from "./holdings";
+import { renderOrderComposer } from "./order-composer";
 import type { HoldingsPayload } from "./api-types";
 
 // The deep-dive dossier record returned by /api/research, /api/pull, etc. Only
@@ -537,6 +538,12 @@ function renderDeepDive(rec: Rec, { anchorChart = false }: { anchorChart?: boole
   // A compact "what do I do" strip directly under the header: price, weight vs
   // target band, verdict, and (once loaded) fair value + buy/trim levels.
   card.appendChild(decisionStrip(rec, { price, owned, quantity, decision, target, portfolio }));
+  card.appendChild(renderOrderComposer({
+    symbol: rec.symbol,
+    currentPrice: typeof price === "number" ? price : null,
+    currency: rec.currency,
+    held: owned != null && Number(owned) > 0,
+  }));
 
   const biz = renderBusiness(rec);
   const chart = renderPriceChart(rec);

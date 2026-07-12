@@ -154,7 +154,7 @@ test.describe("rebalance review safety", () => {
     await expect(page.getByRole("button", { name: "Review projected portfolio →" })).toBeVisible();
   });
 
-  test("simulate → choose CSP → stage → approve → unlock Trade preview", async ({ page }) => {
+  test("choose CSP in the plan → simulate → stage → approve → unlock Trade preview", async ({ page }) => {
     const csp = {
       type: "cash_secured_put",
       route: "cash_secured_put",
@@ -230,10 +230,12 @@ test.describe("rebalance review safety", () => {
     });
     await installApi(page, responses);
     await page.goto("/?view=rebalance");
-    await page.getByRole("button", { name: "Preview impact" }).click();
-    await page.getByRole("button", { name: "Check cash-secured puts" }).click();
+    const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    await aapl.getByRole("button", { name: "Cash-secured put" }).click();
     await expect(page.getByText("Sell cash-secured put", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Use" }).click();
+    await page.getByRole("button", { name: "Preview impact" }).click();
+    await expect(page.locator("#reb-whatif")).toContainText("Cash-secured put");
     await page.getByRole("button", { name: "Add 1 order to queue →" }).click();
     await page.getByRole("button", { name: "Review projected portfolio →" }).click();
 

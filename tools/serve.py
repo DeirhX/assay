@@ -50,6 +50,7 @@ import review_deep_research  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import rebalance_routes  # noqa: E402
+import execution_plan  # noqa: E402
 import risk  # noqa: E402
 import attribution  # noqa: E402  -- process attribution: actual TWR vs never-rebalanced / benchmark
 import regime  # noqa: E402  -- descriptive macro strip over the segment leaderboard
@@ -280,6 +281,7 @@ _GET_EXACT = {
     "/api/ibkr/status": "_get_ibkr_status",
     "/api/rebalance": "_get_rebalance",
     "/api/rebalance/route": "_get_rebalance_route",
+    "/api/execution-plan": "_get_execution_plan",
     "/api/exit-plan": "_get_exit_plan",
     "/api/risk": "_get_risk",
     "/api/attribution": "_get_attribution",
@@ -369,6 +371,7 @@ _POST_EXACT = {
     "/api/history/delete": "_post_history_delete",
     "/api/rebalance/funding": "_post_rebalance_funding",
     "/api/rebalance/stage": "_post_rebalance_stage_routes",
+    "/api/execution-plan": "_post_execution_plan",
     "/api/tax-plan": "_post_tax_plan",
     "/api/exit-plan/refresh-options": "_post_exit_plan_refresh_options",
     "/api/exit-plan/stage": "_post_exit_plan_stage",
@@ -588,7 +591,18 @@ class Handler(BaseHTTPRequestHandler):
             "previewing_draft": has_draft,
             "pending": target_staging.diff_staged_vs_live()["counts"]["total"] if has_draft else 0,
         }
+        execution_plan.reconcile_queue(_basket_state().get("trades") or [])
+        plan["execution_plan"] = execution_plan.state_for_plan(plan)
         return self._send_json(plan)
+
+    def _get_execution_plan(self, path, query):
+        execution_plan.reconcile_queue(_basket_state().get("trades") or [])
+        model = target_staging.active_model()
+        holdings = _load(HOLDINGS_JSON)
+        if model and holdings:
+            plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
+            return self._send_json(execution_plan.state_for_plan(plan))
+        return self._send_json(execution_plan.load_plan())
 
     def _get_rebalance_route(self, path, query):
         holdings = _load(HOLDINGS_JSON)
@@ -1375,6 +1389,33 @@ class Handler(BaseHTTPRequestHandler):
                 c["tax"] = None
         return self._send_json(out)
 
+    def _post_execution_plan(self, path):
+        body = self._read_body()
+        action = str(body.get("action") or "patch")
+        if action == "patch":
+            return self._send_json(execution_plan.patch_item(
+                str(body.get("item_id") or ""),
+                body.get("changes") if isinstance(body.get("changes"), dict) else {},
+                expected_version=body.get("version"),
+            ))
+        if action == "manual":
+            state, item = execution_plan.add_manual(body.get("item") or {})
+            return self._send_json({"state": state, "item": item})
+        if action == "replace_rebalance":
+            model = target_staging.active_model()
+            holdings = _load(HOLDINGS_JSON)
+            if not model or not holdings:
+                raise ValueError("target model and holdings snapshot are required")
+            plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
+            _attach_research_overlay(plan, holdings)
+            return self._send_json(execution_plan.replace_rebalance(plan))
+        if action == "queue_selected":
+            holdings = _load(HOLDINGS_JSON)
+            if not holdings:
+                raise ValueError("holdings snapshot is required")
+            return self._send_json(execution_plan.queue_selected(holdings))
+        raise ValueError("unsupported execution plan action")
+
     def _post_tax_plan(self, path):
         body = self._read_body()
         holdings = _load(HOLDINGS_JSON)
@@ -1482,9 +1523,17 @@ class Handler(BaseHTTPRequestHandler):
             result = rebalance_routes.stage_routes(
                 holdings, body.get("trades"), body.get("selections"),
                 mode=body.get("mode") or "replace",
+                source=body.get("source") or "rebalance_routes",
             )
         except (TypeError, ValueError) as exc:
             return self._send_error_json(400, str(exc))
+        item_ids = [
+            str(selection.get("execution_item_id") or "")
+            for selection in body.get("selections") or []
+            if isinstance(selection, dict) and selection.get("execution_item_id")
+        ]
+        if item_ids:
+            execution_plan.mark_queued(item_ids, result.get("basket") or [])
         return self._send_json({**result, **_basket_state()})
 
     def _post_trade_reconnect(self, path):
@@ -1496,7 +1545,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_preview(self._read_body()))
 
     def _post_trade_place(self, path):
-        return self._send_json(_trade_place(self._read_body()))
+        result = _trade_place(self._read_body())
+        execution_plan.mark_submitted()
+        return self._send_json(result)
 
     def _post_trade_cancel(self, path):
         return self._send_json(_trade_cancel(self._read_body()))

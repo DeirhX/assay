@@ -102,6 +102,47 @@ def test_fallback_ladder_is_visible_but_not_stageable(_basket):
     assert "exact IBKR" in route["option"]["reasons"][0]
 
 
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_zero_cash_explains_held_put_collateral_without_ladder_cascade(_basket):
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={
+            "cash_czk": 1_000_000,
+            "held_short_put_collateral_czk": 1_200_000,
+            "available_cash_czk": 0,
+        },
+    ):
+        route = rebalance_routes.build_route(
+            _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
+        )
+    reasons = route["option"]["reasons"]
+    assert any("reserved by held short puts" in reason for reason in reasons)
+    assert not any("strike ladder" in reason for reason in reasons)
+    assert not any("Indicative" in reason for reason in reasons)
+    assert route["option"]["snapshot_cash_czk"] == 1_000_000
+    assert route["option"]["held_short_put_collateral_czk"] == 1_200_000
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_partial_cash_reports_cost_of_one_put_contract(_basket):
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={
+            "cash_czk": 500_000,
+            "held_short_put_collateral_czk": 400_000,
+            "available_cash_czk": 100_000,
+        },
+    ):
+        route = rebalance_routes.build_route(
+            _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
+        )
+    assert route["option"]["contracts"] == 0
+    assert "needs about 230,000 CZK" in route["option"]["reasons"][0]
+    assert "100,000 CZK remains" in route["option"]["reasons"][0]
+
+
 def test_route_capacity_reserves_working_puts_and_unrelated_staged_buys():
     working = [{
         "orderId": "p-other",
@@ -154,11 +195,13 @@ def test_stage_put_replaces_stock_leg_and_records_conditional_provenance(_basket
             [{
                 "symbol": "NVDA", "route": "cash_secured_put", "conid": 556,
                 "expiry": "2026-08-07", "strike": 93.0, "contracts": 1,
+                "limit_price": 1.85,
             }],
         )
     assert [leg["type"] for leg in out["basket"]] == ["cash_secured_put"]
     leg = out["basket"][0]
     assert leg["right"] == "P"
+    assert leg["limit_price"] == 1.85
     assert leg["provenance"][0]["source"] == "rebalance_routes"
     assert leg["provenance"][0]["intended_assigned_shares"] == 100
 
@@ -392,6 +435,12 @@ class RebalanceRouteUnittestCoverage(TestCase):
 
     def test_fallback_route(self):
         test_fallback_ladder_is_visible_but_not_stageable()
+
+    def test_zero_cash_reason(self):
+        test_zero_cash_explains_held_put_collateral_without_ladder_cascade()
+
+    def test_partial_cash_reason(self):
+        test_partial_cash_reports_cost_of_one_put_contract()
 
     def test_aggregate_route_capacity(self):
         test_route_capacity_reserves_working_puts_and_unrelated_staged_buys()

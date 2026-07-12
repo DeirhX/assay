@@ -85,11 +85,12 @@ describe("rebalance execution route choices", () => {
 
     expect(selected.get("NVDA")?.route).toBe("buy_shares");
     expect(selected.get("AMD")?.route).toBe("sell_shares");
-    expect(host.textContent).toContain("Check cash-secured puts");
-    expect(host.textContent).toContain("Check covered calls");
+    expect(host.textContent).toContain("Cash-secured put");
+    expect(host.textContent).toContain("Covered call");
+    expect(host.querySelectorAll(".reb-route-row-detail:not([hidden])")).toHaveLength(0);
 
     const button = [...host.querySelectorAll("button")]
-      .find((node) => node.textContent === "Check cash-secured puts")!;
+      .find((node) => node.textContent === "Cash-secured put")!;
     button.click();
     await vi.waitFor(() => expect(host.textContent).toContain("Sell cash-secured put"));
     expect(apiMock).toHaveBeenCalledWith(
@@ -130,9 +131,6 @@ describe("rebalance execution route choices", () => {
 
   it("stages the simulated trades and selected option rung in one request", async () => {
     apiMock.mockImplementation((path: string) => {
-      if (typeof path === "string" && path.startsWith("/api/rebalance/route?")) {
-        return Promise.resolve(route("increase"));
-      }
       if (path === "/api/rebalance/stage") {
         return Promise.resolve({
           trades: [{
@@ -151,6 +149,17 @@ describe("rebalance execution route choices", () => {
       return Promise.resolve({});
     });
     document.body.innerHTML = '<div id="reb-whatif"></div>';
+    const selected = new Map<string, RebalanceRouteSelection>([[
+      "NVDA",
+      {
+        symbol: "NVDA",
+        route: "cash_secured_put",
+        conid: 556,
+        expiry: "2026-08-07",
+        strike: 93,
+        contracts: 1,
+      },
+    ]]);
     renderWhatif({
       currency: "CZK",
       trades: [{ symbol: "NVDA", delta_czk: 230_000 }],
@@ -158,15 +167,8 @@ describe("rebalance execution route choices", () => {
       before_status: {},
       after: { rows: [] },
       caveats: [],
-    } as unknown as Whatif);
-    const option = [...document.querySelectorAll("button")]
-      .find((node) => node.textContent === "Check cash-secured puts")!;
-    option.click();
-    await vi.waitFor(() =>
-      expect(document.getElementById("reb-whatif")!.textContent).toContain("Sell cash-secured put"));
-    const use = [...document.querySelectorAll("button")]
-      .find((node) => node.textContent === "Use")!;
-    use.click();
+    } as unknown as Whatif, selected);
+    expect(document.getElementById("reb-whatif")!.textContent).toContain("Cash-secured put");
     const stage = [...document.querySelectorAll("button")]
       .find((node) => node.textContent?.startsWith("Add 1 order to queue"))!;
     stage.click();
