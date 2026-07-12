@@ -44,6 +44,7 @@ type OptionPreviewFields = Omit<
   if_assigned_shares?: number;
   premium_credit?: number;
   cash_secured_czk?: number;
+  collateral_mode?: "cash" | "margin";
   currency?: string | null;
   provenance?: DisplayProvenance | DisplayProvenance[];
   coverage_ok?: boolean;
@@ -222,7 +223,7 @@ export function reconciliationTitle(c: OrderReconciliation): string {
     if (c.classification === "opposite_side") return "Resolve opposite put order";
     if (c.classification === "fully_covered") return "Put order already working";
     if (c.classification === "same_side_partial") return "Reduced by working put order";
-    return "New cash-secured put";
+    return "New short put";
   }
   if (c.classification === "opposite_side") return "Resolve opposite order";
   if (c.classification === "fully_covered") return "Already covered";

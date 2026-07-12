@@ -162,8 +162,14 @@ class Plan(unittest.TestCase):
             "base_currency": "CZK",
             "generated_at": "2026-06-03T10:00:00+00:00",
             "positions": [
-                {"symbol": "AMD", "base_market_value": 147.0},   # 14.7%
-                {"symbol": "NVDA", "base_market_value": 8.0},    # 0.8%
+                {
+                    "symbol": "AMD", "base_market_value": 147.0,
+                    "mark_price": 115.5, "currency": "USD",
+                },   # 14.7%
+                {
+                    "symbol": "NVDA", "base_market_value": 8.0,
+                    "mark_price": 180.25, "currency": "USD",
+                },    # 0.8%
                 {"symbol": "SOFI", "base_market_value": 40.0},   # 4.0%
                 {"symbol": "ORPHAN", "base_market_value": 60.0},  # 6.0%, untargeted
                 {"symbol": "REST", "base_market_value": 745.0},  # 74.5%
@@ -191,6 +197,8 @@ class Plan(unittest.TestCase):
         self.assertEqual(nvda["status"], "BELOW")
         self.assertEqual(nvda["action"], "buy")
         self.assertGreater(nvda["suggest_delta_pct"], 2.2)
+        self.assertEqual(nvda["mark_price"], 180.25)
+        self.assertEqual(nvda["mark_currency"], "USD")
 
     def test_sleeve_is_combined_and_not_interactive(self):
         p = self._plan()

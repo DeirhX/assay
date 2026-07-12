@@ -1942,6 +1942,21 @@ a.tlink:hover { border-bottom-style: solid; }
 }
 .reb-data-row.planned-sell { border-left: 3px solid var(--bad); }
 .reb-data-row.planned-buy { border-left: 3px solid var(--good); }
+.reb-data-row,
+.reb-mem-row {
+  transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.reb-data-row:has(.reb-execution-cell[data-status="selected"]),
+.reb-mem-row:has(.reb-execution-cell[data-status="selected"]) {
+  border-color: color-mix(in srgb, var(--good) 58%, var(--border));
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--good) 13%, var(--panel)),
+      color-mix(in srgb, var(--good) 5%, var(--panel))
+    );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--good) 18%, transparent);
+}
 
 .reb-c { min-width: 0; font-size: 13.5px; }
 /* align-items:flex-start keeps children (star, ticker, chips, sparkline) at
@@ -2004,56 +2019,58 @@ a.tlink:hover { border-bottom-style: solid; }
 /* ---- position track: band zone + current + projected on a shared axis ---- */
 .reb-pos { display: flex; flex-direction: column; gap: 4px; }
 .reb-pos-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-variant-numeric: tabular-nums; }
-.reb-pos-cur { font-weight: 700; font-size: 13.5px; }
+.reb-pos-cur { display: inline-flex; align-items: baseline; gap: 5px; }
+.reb-pos-cur i {
+  color: var(--muted); font-size: 8px; font-style: normal; font-weight: 800;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.reb-pos-cur b { color: var(--text); font-size: 13.5px; }
 .reb-pos-meta small { color: var(--muted); font-size: 11px; }
 .reb-band-cue {
-  margin-left: auto; font-size: 10.5px; font-weight: 750; white-space: nowrap;
+  margin-left: auto; padding: 2px 6px; border: 1px solid rgba(107,211,138,.32);
+  border-radius: 5px; background: rgba(107,211,138,.07); color: var(--muted);
+  font-size: 9px; font-weight: 700; white-space: nowrap;
 }
-.reb-band-cue b { font-size: 14px; line-height: 0; vertical-align: -1px; }
-.reb-band-cue.buy { color: var(--good); }
-.reb-band-cue.trim { color: var(--bad); }
-.reb-band-cue.in { color: var(--muted); }
+.reb-band-cue b { color: var(--good); font-size: 10.5px; }
 .reb-track {
-  position: relative; height: 16px; border-radius: 6px;
+  position: relative; height: 22px; border-radius: 6px;
   background: var(--panel-2); border: 1px solid var(--border); overflow: hidden;
 }
 /* Target band: the "where we want it" zone. */
 .reb-zone {
-  position: absolute; top: 2px; bottom: 2px; border-radius: 4px;
+  position: absolute; top: 2px; bottom: 2px; display: flex; align-items: center;
+  justify-content: center; min-width: 2px; border-radius: 4px;
   background: rgba(107,211,138,.16); border: 1px solid rgba(107,211,138,.45);
-}
-.reb-band-gap {
-  position: absolute; top: 3px; height: 1px; z-index: 2; opacity: .82;
-  border-top: 1px dashed currentColor;
-}
-.reb-band-gap.buy { color: var(--good); }
-.reb-band-gap.trim { color: var(--bad); }
-.reb-band-gap.buy::after {
-  content: ""; position: absolute; right: -1px; top: -4px;
-  border-top: 3px solid transparent; border-bottom: 3px solid transparent;
-  border-left: 5px solid currentColor;
-}
-.reb-band-gap.trim::before {
-  content: ""; position: absolute; left: -1px; top: -4px;
-  border-top: 3px solid transparent; border-bottom: 3px solid transparent;
-  border-right: 5px solid currentColor;
 }
 /* Current weight: a muted tick (where we are today). */
 .reb-cur-mark {
   position: absolute; top: -1px; bottom: -1px; width: 2px; transform: translateX(-1px);
-  background: var(--muted); opacity: .85; z-index: 2;
+  background: color-mix(in srgb, var(--text) 55%, transparent); z-index: 3;
 }
 .reb-cur-mark::after {
-  content: ""; position: absolute; top: -2px; left: 50%; width: 7px; height: 7px;
-  transform: translateX(-50%) rotate(45deg); background: var(--muted);
+  content: ""; position: absolute; top: 50%; left: 50%; width: 8px; height: 8px;
+  transform: translate(-50%, -50%); border: 2px solid color-mix(in srgb, var(--text) 78%, transparent);
+  border-radius: 50%; background: var(--panel-2);
 }
-/* Projected weight: a bright tick that slides as you edit the plan. */
+/* Projected weight marker. Rebalance hides its pin below so the connector
+   arrowhead marks the landing point; other views still use the visible pin. */
 .reb-proj-mark {
   position: absolute; top: -2px; bottom: -2px; width: 3px; transform: translateX(-1.5px);
   border-radius: 2px; z-index: 3; transition: left .12s ease;
 }
 .reb-proj-mark.in { background: var(--good); box-shadow: 0 0 0 2px rgba(107,211,138,.25); }
 .reb-proj-mark.out { background: var(--warn); box-shadow: 0 0 0 2px rgba(245,199,107,.25); }
+.reb-proj-mark::before {
+  content: ""; position: absolute; top: 50%; left: 50%; width: 9px; height: 9px;
+  transform: translate(-50%, -50%); border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 0 2px var(--panel-2);
+}
+.reb-proj-mark.in::before { color: var(--good); }
+.reb-proj-mark.out::before { color: var(--warn); }
+.reb-tbl .reb-proj-mark {
+  width: 1px; transform: translateX(-.5px); background: transparent; box-shadow: none;
+}
+.reb-tbl .reb-proj-mark::before { display: none; }
 .reb-track.draggable { cursor: ew-resize; touch-action: none; }
 .reb-proj-mark.draggable { cursor: ew-resize; touch-action: none; }
 .reb-proj-mark.draggable::after {
@@ -2064,9 +2081,45 @@ a.tlink:hover { border-bottom-style: solid; }
   outline: 2px solid var(--accent); outline-offset: 4px;
 }
 /* Connector showing the planned move from current → projected. */
-.reb-conn { position: absolute; top: 50%; height: 3px; transform: translateY(-50%); border-radius: 2px; z-index: 1; transition: left .12s ease, width .12s ease; }
-.reb-conn.buy { background: rgba(107,211,138,.6); }
-.reb-conn.sell { background: rgba(255,122,122,.6); }
+.reb-conn {
+  position: absolute; top: 50%; height: 5px; transform: translateY(-50%);
+  border-radius: 3px; z-index: 2; transition: left .12s ease, width .12s ease;
+}
+.reb-conn.buy { background: color-mix(in srgb, var(--good) 80%, transparent); }
+.reb-conn.sell { background: color-mix(in srgb, var(--bad) 80%, transparent); }
+.reb-conn.buy::after {
+  content: ""; position: absolute; right: -1px; top: 50%; transform: translateY(-50%);
+  border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--good);
+}
+.reb-conn.sell::before {
+  content: ""; position: absolute; left: -1px; top: 50%; transform: translateY(-50%);
+  border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+  border-right: 7px solid var(--bad);
+}
+.reb-track-readout {
+  display: grid; grid-template-columns: minmax(105px, 1fr) auto auto;
+  align-items: center; gap: 5px 8px; min-height: 19px;
+  color: var(--muted); font-size: 9.5px; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.reb-track-readout span { display: inline-flex; align-items: center; gap: 4px; }
+.reb-track-movement { font-weight: 700; }
+.reb-track-movement.buy { color: var(--good); }
+.reb-track-movement.sell { color: var(--bad); }
+.reb-track-movement b { color: inherit; font-size: 14px; line-height: .7; }
+.reb-track-movement strong { color: var(--text); font-size: 10px; }
+.reb-track-planned b { color: var(--text); font-size: 10.5px; }
+.reb-track-planned i {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+}
+.reb-track-planned i { background: var(--good); box-shadow: 0 0 0 1px rgba(107,211,138,.25); }
+.reb-track-landing {
+  justify-self: end; padding: 2px 5px; border: 1px solid currentColor; border-radius: 999px;
+  font-size: 8.5px; font-weight: 800; white-space: nowrap;
+}
+.reb-track-landing.in { color: var(--good); background: rgba(107,211,138,.07); }
+.reb-track-landing.out { color: var(--warn); background: rgba(245,199,107,.07); }
 .reb-axis { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .chip {
@@ -2091,11 +2144,13 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-execution { min-width: 0; }
 .reb-execution-cell { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .reb-execution-cell[data-status="selected"] {
-  flex-direction: row; align-items: center; gap: 5px;
+  align-items: stretch; gap: 3px;
 }
-.reb-execution-cell[data-status="selected"] .reb-execution-route-line { order: 1; }
-.reb-execution-cell[data-status="selected"] .reb-execution-life { order: 2; min-height: 29px; }
-.reb-execution-cell[data-status="selected"] .reb-execute-toggle { display: none; }
+.reb-execution-cell[data-status="selected"] .reb-execution-life { display: none; }
+.reb-execution-cell[data-status="selected"] .reb-execution-route-line {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 6px;
+}
+.reb-execution-cell[data-status="selected"] .reb-route-select { width: 100%; }
 .reb-execution-life { display: flex; align-items: center; gap: 7px; min-height: 28px; }
 .reb-execute-toggle {
   display: inline-flex; align-items: center; gap: 7px; min-height: 28px;
@@ -2129,6 +2184,10 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-execution-manual:has(.reb-route-select:not([hidden])) .reb-execution-na {
   color: var(--accent); font-style: normal; font-weight: 700;
 }
+.reb-execution-exclude {
+  min-height: 27px; padding: 3px 8px; color: var(--muted); font-size: 10.5px;
+}
+.reb-execution-exclude:hover { color: var(--text); border-color: var(--muted); }
 .reb-execution-more { position: relative; margin-left: auto; }
 .reb-execution-more > summary {
   display: grid; place-items: center; width: 27px; height: 27px;
@@ -2151,9 +2210,9 @@ a.tlink:hover { border-bottom-style: solid; }
 .reb-execution-menu button:hover { background: rgba(255,255,255,.06); }
 .reb-execution-menu .reb-dismiss { color: var(--bad); }
 .reb-limit-field {
-  display: flex; flex-direction: column; gap: 4px; padding: 5px 7px 7px;
-  border-bottom: 1px solid var(--border); color: var(--muted);
-  font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 88px;
+  align-items: center; gap: 6px; color: var(--muted);
+  font-size: 9.5px; font-weight: 700; letter-spacing: .025em; text-transform: uppercase;
 }
 .reb-execution-cell:not([data-status="selected"]) .reb-limit-field { display: none; }
 .reb-limit-field .reb-limit-input { width: 100%; }
@@ -2628,19 +2687,123 @@ a.tlink:hover { border-bottom-style: solid; }
   padding: 3px 7px; font-size: 10.5px; white-space: nowrap;
 }
 .reb-route-row-detail {
-  grid-column: 1 / -1; width: 100%; margin: 6px 0 0;
-  padding: 10px 12px 12px; border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  position: relative; grid-column: 1 / -1; width: 100%; margin: 8px 0 0;
+  padding: 14px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 10px; background: color-mix(in srgb, var(--panel-2) 82%, var(--panel));
 }
 .reb-route-detail-close {
-  float: right; margin: -2px 0 8px 12px; padding: 3px 8px; font-size: 10.5px;
+  position: absolute; top: 12px; right: 12px; z-index: 2;
+  min-height: 28px; padding: 3px 10px; font-size: 10.5px;
 }
 .reb-route-row-detail[hidden] { display: none; }
 .reb-mem-plan .reb-route-inline { flex: 1 1 100%; }
 .reb-mem-row > .reb-route-row-detail { grid-column: 1 / -1; }
-.reb-route-option-summary { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
-.reb-route-option-summary strong { color: var(--text); }
-.reb-route-ladder { min-width: 760px; }
+.reb-route-option-summary {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
+  min-height: 36px; margin: 0 76px 12px 0;
+}
+.reb-route-option-heading { display: flex; flex-direction: column; gap: 3px; }
+.reb-route-option-heading strong { color: var(--text); font-size: 14px; }
+.reb-route-eyebrow {
+  color: var(--accent); font-size: 8.5px; font-weight: 850;
+  letter-spacing: .09em; text-transform: uppercase;
+}
+.reb-route-option-facts { display: flex; justify-content: flex-end; gap: 5px; flex-wrap: wrap; }
+.reb-route-option-facts > span {
+  padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--muted); font-size: 10px; white-space: nowrap;
+}
+.reb-route-option-facts b { color: var(--text); }
+.reb-route-option-facts .warn b { color: var(--warn); }
+.reb-route-option-facts .margin {
+  border-color: rgba(107,211,138,.35); background: rgba(107,211,138,.07);
+}
+.reb-route-option-facts .margin b { color: var(--good); }
+.reb-route-unavailable {
+  display: grid; gap: 6px; margin-right: 74px; padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+  border-radius: 8px; background: color-mix(in srgb, var(--warn) 5%, var(--panel));
+}
+.reb-route-unavailable > strong { color: var(--text); font-size: 13px; }
+.reb-route-unavailable > p { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+.reb-route-unavailable.error {
+  border-color: color-mix(in srgb, var(--bad) 42%, var(--border));
+  background: color-mix(in srgb, var(--bad) 5%, var(--panel));
+}
+.reb-route-unavailable.error .reb-route-eyebrow { color: var(--bad); }
+.reb-route-unavailable-next {
+  margin-top: 2px; padding-top: 7px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 10px;
+}
+.reb-route-unavailable-next b { color: var(--text); }
+.reb-option-contracts { display: grid; gap: 8px; }
+.reb-option-contract {
+  display: grid; gap: 9px; padding: 11px 12px;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.reb-option-contract:has(.reb-option-use.active) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+}
+.reb-option-contract-top {
+  display: grid; grid-template-columns: minmax(130px, 1.2fr) repeat(4, minmax(82px, .8fr));
+  align-items: center; gap: 8px 14px;
+}
+.reb-option-contract-name { display: flex; flex-direction: column; gap: 3px; }
+.reb-option-contract-name span {
+  color: var(--muted); font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+}
+.reb-option-contract-name strong { color: var(--text); font-size: 14.5px; }
+.reb-option-metric { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.reb-option-metric > span {
+  color: var(--muted); font-size: 9px; font-weight: 750;
+  letter-spacing: .04em; text-transform: uppercase;
+}
+.reb-option-metric > strong {
+  overflow: hidden; color: var(--text); font-size: 12px;
+  font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap;
+}
+.reb-option-metric > strong small { color: var(--muted); font-size: 9px; font-weight: 600; }
+.reb-option-contract-footer {
+  display: grid; grid-template-columns: minmax(170px, auto) minmax(230px, 1fr) auto;
+  align-items: center; gap: 8px 14px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.reb-option-market-state { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.reb-option-market-state .chip { padding: 2px 6px; font-size: 9px; }
+.reb-option-backing {
+  display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 5px 8px;
+  min-width: 0; color: var(--muted); font-size: 9.5px;
+}
+.reb-option-backing > span { font-weight: 700; }
+.reb-option-backing strong { color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; }
+.reb-option-backing small {
+  overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap;
+}
+.reb-option-use {
+  min-width: 92px; min-height: 30px; padding: 5px 10px;
+  border: 1px solid var(--accent); border-radius: 7px;
+  background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 800;
+}
+.reb-option-use:hover:not(:disabled), .reb-option-use.active {
+  background: var(--accent); color: var(--panel);
+}
+.reb-option-use:disabled {
+  border-color: var(--border); background: transparent; color: var(--muted); opacity: .65;
+}
+@media (max-width: 900px) {
+  .reb-route-option-summary { align-items: flex-start; flex-direction: column; }
+  .reb-route-option-facts { justify-content: flex-start; }
+  .reb-option-contract-top { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
+  .reb-option-contract-name { grid-column: 1 / -1; }
+  .reb-option-contract-footer { grid-template-columns: 1fr auto; }
+  .reb-option-market-state { grid-column: 1 / -1; }
+  .reb-option-backing { grid-template-columns: auto auto; }
+  .reb-option-backing small { grid-column: 1 / -1; }
+  .reb-route-unavailable { margin-right: 0; padding-top: 44px; }
+}
 .reb-queue-mode {
   display: flex; flex: 1 1 100%; gap: 8px; flex-wrap: wrap;
   margin: 4px 0 2px;

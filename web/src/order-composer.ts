@@ -27,7 +27,7 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
     `</select></label>` +
     `<label>Amount (CZK)<input data-order-amount type="number" min="1" step="1000" value="100000"></label>` +
     `<label>Execution<select data-order-route>` +
-      `<option value="cash_secured_put">Cash-secured put</option>` +
+      `<option value="cash_secured_put">Put option</option>` +
       `<option value="buy_shares">Shares</option>` +
     `</select></label>` +
     `<label>Limit<input data-order-limit type="number" min="0.01" step="0.01" placeholder="Recommended"></label>`;
@@ -92,6 +92,9 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
       optionSelection = {
         symbol,
         route: optionRoute(),
+        ...(route.option.collateral_mode
+          ? { collateral_mode: route.option.collateral_mode }
+          : {}),
         conid: Number(rung.conid),
         expiry: rung.expiry,
         strike: rung.strike,
@@ -113,7 +116,7 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
   const syncDirection = () => {
     const option = optionRoute();
     routeSelect.innerHTML =
-      `<option value="${option}">${direction.value === "increase" ? "Cash-secured put" : "Covered call"}</option>` +
+      `<option value="${option}">${direction.value === "increase" ? "Put option" : "Covered call"}</option>` +
       `<option value="${directRoute()}">Shares</option>`;
     limit.value = "";
     if (selectedRoute() === option) void loadOption();

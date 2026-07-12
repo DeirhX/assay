@@ -5,6 +5,7 @@ const row = {
   key: "AAPL", name: "AAPL", kind: "target", rule: "accumulate", held: true,
   current_pct: 2, current_czk: 20_000, low: 3, high: 5, mid: 4, status: "BELOW",
   drift_pct: -1, action: "buy", suggest_delta_pct: 1, suggest_delta_czk: 10_000,
+  mark_price: 190, mark_currency: "USD",
   note: null, members: null, interactive: true,
 };
 
@@ -26,6 +27,61 @@ const projection = {
   before_status: { AAPL: "BELOW" },
   cash: null, caveats: [],
 };
+
+const putRoute = ({
+  eligible = true,
+  stageable = true,
+  margin = true,
+  reasons = [],
+  ladder,
+}: {
+  eligible?: boolean;
+  stageable?: boolean;
+  margin?: boolean;
+  reasons?: string[];
+  ladder?: Record<string, unknown>[];
+} = {}) => ({
+  symbol: "AAPL", delta_czk: 10_000, direction: "increase",
+  planned_shares: 100, underlying: 200, currency: "USD", fx_to_base: 23,
+  source: "ibkr",
+  direct: { kind: "buy_shares", label: "Buy shares", eligible: true, reasons: [] },
+  option: {
+    kind: "cash_secured_put",
+    label: margin ? "Sell put (margin)" : "Sell cash-secured put",
+    eligible, stageable, reasons,
+    contracts: eligible ? 1 : 0,
+    assignment_shares: eligible ? 100 : 0,
+    share_deviation: 0,
+    rounded_up: false,
+    collateral_mode: margin ? "margin" : "cash",
+    available_cash_czk: margin ? null : 1_000_000,
+  },
+  recommended: "buy_shares",
+  ladder: ladder ?? (eligible ? [{
+    conid: stageable ? 556 : null,
+    strike: 190,
+    expiry: "2026-08-21",
+    dte: 37,
+    premium: 2.1,
+    premium_czk: 4_830,
+    effective_entry: 187.9,
+    cash_secured_czk: 437_000,
+    moneyness_pct: -5,
+    premium_yield_annual_pct: 10.9,
+    assignment_prob_pct: 25,
+    open_interest: 500,
+    volume: 50,
+    spread_pct: 5,
+    liquidity: stageable ? "ok" : "thin",
+    source: stageable ? "ibkr" : "yahoo",
+    estimate: !stageable,
+    stageable,
+    executable: stageable,
+    bid: stageable ? 2 : null,
+    ask: stageable ? 2.2 : null,
+    quote_fresh: stageable,
+  }] : []),
+});
 
 test.describe("rebalance review safety", () => {
   test("impact preview stays read-only until orders are explicitly queued", async ({ page }) => {
@@ -179,15 +235,55 @@ test.describe("rebalance review safety", () => {
 
     await page.goto("/?view=rebalance");
     const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    const idleBackground = await aapl.evaluate((node) => getComputedStyle(node).backgroundImage);
     await aapl.locator(".reb-execute-toggle").click();
 
     await expect(aapl.locator("select.reb-route-select")).toHaveValue("direct");
+    await expect.poll(
+      () => aapl.evaluate((node) => getComputedStyle(node).backgroundImage),
+    ).not.toBe(idleBackground);
+    await expect(aapl.locator(".reb-limit-input")).toHaveValue("190");
+    await expect(aapl.locator(".reb-limit-field")).toContainText("recommended");
     await expect.poll(() => requests.length).toBeGreaterThanOrEqual(2);
     expect(requests).toEqual(expect.arrayContaining([
       expect.objectContaining({ changes: expect.objectContaining({ status: "selected" }) }),
-      expect.objectContaining({ changes: expect.objectContaining({ route_policy: "buy_shares" }) }),
+      expect.objectContaining({
+        changes: expect.objectContaining({ route_policy: "buy_shares", limit_price: 190 }),
+      }),
     ]));
     expect(routeRequests).toBe(0);
+
+    const limit = aapl.locator(".reb-limit-input");
+    await limit.fill("195");
+    await limit.press("Tab");
+    await expect(aapl.locator(".reb-limit-field")).toContainText("custom");
+    await expect.poll(() => requests.some(
+      (request) => (request.changes as Record<string, unknown>)?.limit_price === 195,
+    )).toBe(true);
+
+    await limit.fill("");
+    await limit.press("Tab");
+    await expect(aapl.locator(".reb-limit-field")).toContainText("market");
+    await expect.poll(() => requests.some(
+      (request) => (request.changes as Record<string, unknown>)?.limit_price === null,
+    )).toBe(true);
+
+    await aapl.getByRole("button", { name: "Exclude" }).click();
+    await expect(aapl.getByText("Include trade", { exact: true })).toBeVisible();
+    await expect(aapl.locator("select.reb-route-select")).toBeHidden();
+    await expect.poll(
+      () => aapl.evaluate((node) => getComputedStyle(node).backgroundImage),
+    ).toBe(idleBackground);
+    expect(requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ changes: expect.objectContaining({ status: "deferred" }) }),
+    ]));
+
+    await aapl.locator(".reb-execute-toggle").click();
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("direct");
+    await expect(aapl.getByRole("button", { name: "Exclude" })).toBeVisible();
+    await expect.poll(
+      () => aapl.evaluate((node) => getComputedStyle(node).backgroundImage),
+    ).not.toBe(idleBackground);
   });
 
   test("Trade preview stays locked for an unreviewed queue", async ({ page }) => {
@@ -204,6 +300,132 @@ test.describe("rebalance review safety", () => {
 
     await expect(page.getByRole("tab", { name: "Order review" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Review projected portfolio →" })).toBeVisible();
+  });
+
+  test("margin account offers a short put without the cash-collateral blocker", async ({ page }) => {
+    const route = putRoute();
+    route.ladder.push({
+      ...route.ladder[0],
+      conid: 557,
+      strike: 185,
+      effective_entry: 182.6,
+      premium_yield_annual_pct: 8.7,
+      assignment_prob_pct: 19,
+      bid: 1.5,
+      ask: 1.7,
+    });
+    await installApi(page, {
+      "/api/rebalance": plan,
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/rebalance/route": route,
+    });
+    await page.goto("/?view=rebalance");
+    const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    await aapl.locator("select.reb-route-select").selectOption("option");
+
+    await expect(aapl.getByText("Conditional entry")).toBeVisible();
+    await expect(aapl.locator(".reb-option-contract")).toHaveCount(2);
+    await expect(aapl).toContainText("Bid / ask");
+    await expect(aapl).toContainText("Effective entry");
+    await expect(aapl).toContainText("Assignment notional");
+    await expect(aapl).toContainText("IBKR validates margin at preview");
+    await expect(aapl).not.toContainText("Cash-secured put unavailable");
+
+    await aapl.getByRole("button", { name: "Close" }).click();
+    await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+    await aapl.locator("select.reb-route-select").selectOption("option");
+
+    const use = aapl.getByRole("button", { name: "Use contract" });
+    await use.nth(1).click();
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("option");
+    await expect(aapl.getByRole("button", { name: "Selected ✓" }))
+      .toHaveClass(/active/);
+
+    await aapl.locator("select.reb-route-select").selectOption("direct");
+    await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("direct");
+  });
+
+  test("one ticker explains unavailable and indicative option routes", async ({ page }) => {
+    const unavailable = putRoute({
+      eligible: false,
+      margin: false,
+      reasons: ["No uncommitted snapshot cash is available to secure a put."],
+    });
+    let response = unavailable;
+    await installApi(page, {
+      "/api/rebalance": plan,
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+    });
+    await page.route("**/api/rebalance/route?*", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(response),
+      });
+    });
+    await page.goto("/?view=rebalance");
+    const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    const select = aapl.locator("select.reb-route-select");
+    await select.selectOption("option");
+
+    await expect(aapl).toContainText("Cash-secured put unavailable");
+    await expect(aapl).toContainText("choose Buy shares");
+    await aapl.getByRole("button", { name: "Close" }).click();
+    await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+
+    response = putRoute({
+      stageable: false,
+      reasons: ["Indicative levels are available; staging needs an exact IBKR contract."],
+    });
+    await select.selectOption("option");
+    await expect(aapl.locator(".reb-option-contract")).toHaveCount(1);
+    await expect(aapl.getByRole("button", { name: "Indicative only" })).toBeDisabled();
+    await expect(aapl).toContainText("thin liquidity");
+    await expect(aapl).toContainText("Indicative levels are available");
+  });
+
+  test("one ticker surfaces option loading failures and can close them", async ({ page }) => {
+    await installApi(page, {
+      "/api/rebalance": plan,
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+    });
+    await page.route("**/api/rebalance/route?*", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "IBKR option service unavailable" }),
+      });
+    });
+    await page.goto("/?view=rebalance");
+    const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    await aapl.locator("select.reb-route-select").selectOption("option");
+
+    await expect(aapl).toContainText("loading strikes and quotes");
+    await expect(aapl).toContainText("Could not load option routes");
+    await expect(aapl).toContainText("IBKR option service unavailable");
+    await aapl.getByRole("button", { name: "Close" }).click();
+    await expect(aapl.locator(".reb-route-row-detail")).toBeHidden();
+  });
+
+  test("editing one ticker flips routes and exit navigation preserves its symbol", async ({ page }) => {
+    await installApi(page, {
+      "/api/rebalance": plan,
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/exit-plan": { positions: [], generated_at: "2026-07-12T00:00:00Z" },
+    });
+    await page.goto("/?view=rebalance");
+    const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    const input = aapl.locator(".reb-plan-input");
+    await input.fill("-1");
+    await input.press("Tab");
+
+    await expect(aapl.locator("select.reb-route-select").locator('option[value="direct"]'))
+      .toHaveText("Sell shares");
+    await expect(aapl.locator("select.reb-route-select").locator('option[value="option"]'))
+      .toHaveText("Covered call…");
+    await aapl.locator("select.reb-route-select").selectOption("exit");
+    await expect(page).toHaveURL(/view=exit.*ticker=AAPL/);
   });
 
   test("choose CSP in the plan → simulate → stage → approve → unlock Trade preview", async ({ page }) => {
@@ -285,7 +507,7 @@ test.describe("rebalance review safety", () => {
     const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
     await aapl.locator("select.reb-route-select").selectOption("option");
     await expect(aapl.getByText("Conditional entry")).toBeVisible();
-    await page.getByRole("button", { name: "Use" }).click();
+    await page.getByRole("button", { name: "Use contract" }).click();
     await page.getByRole("button", { name: "Preview impact" }).click();
     await expect(page.locator("#reb-whatif")).toContainText("Cash-secured put");
     await page.getByRole("button", { name: "Add 1 order to queue →" }).click();

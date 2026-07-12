@@ -148,11 +148,12 @@ def build_route(
     import trade_service
 
     cash_capacity = trade_service.cash_secured_put_capacity(holdings)
+    margin_enabled = direction == "increase" and trade_service.margin_account_enabled()
     available_cash = float(cash_capacity["available_cash_czk"])
     if direction == "reduce":
         covered = trade_service.covered_call_capacity(sym, raw_working)
         capacity = int(covered.get("capacity_contracts") or 0)
-    elif spot > 0 and fx > 0:
+    elif spot > 0 and fx > 0 and not margin_enabled:
         # A previous rebalance alternative will be replaced atomically. Unrelated
         # queue commitments and every resting short put remain real obligations.
         staged = [
@@ -171,7 +172,10 @@ def build_route(
         )
         available_cash = max(0.0, available_cash)
         capacity = int(available_cash // (spot * fx * OPTION_MULTIPLIER))
-    contracts = contracts_for_shares(planned_shares, capacity=capacity)
+    contracts = contracts_for_shares(
+        planned_shares,
+        capacity=None if margin_enabled else capacity,
+    )
 
     rate = option_market.cached_risk_free_rate()
     use_rate = float(rate) if isinstance(rate, (int, float)) else 0.04
@@ -189,7 +193,7 @@ def build_route(
             contracts=contracts, fx=fx,
         )
         option_kind = "cash_secured_put"
-        option_label = "Sell cash-secured put"
+        option_label = "Sell put (margin)" if margin_enabled else "Sell cash-secured put"
     _decorate_execution(ladder, now=current)
 
     exact = [rung for rung in ladder if rung.get("stageable") and rung.get("conid")]
@@ -198,7 +202,7 @@ def build_route(
     if planned_shares < 1:
         reasons.append("The planned amount cannot be converted to shares from the available mark.")
     elif contracts < 1:
-        if direction == "increase" and available_cash <= 0:
+        if direction == "increase" and not margin_enabled and available_cash <= 0:
             cash = float(cash_capacity.get("cash_czk") or 0)
             held = float(cash_capacity.get("held_short_put_collateral_czk") or 0)
             reasons.append(
@@ -210,7 +214,7 @@ def build_route(
                 if held > 0
                 else "No uncommitted snapshot cash is available to secure a put."
             )
-        elif direction == "increase" and capacity < 1:
+        elif direction == "increase" and not margin_enabled and capacity < 1:
             required = spot * fx * OPTION_MULTIPLIER
             reasons.append(
                 f"One cash-secured put needs about {required:,.0f} CZK; "
@@ -267,7 +271,16 @@ def build_route(
             "assignment_shares": contracts * OPTION_MULTIPLIER,
             "share_deviation": contracts * OPTION_MULTIPLIER - planned_shares,
             "rounded_up": contracts * OPTION_MULTIPLIER > planned_shares,
-            "available_cash_czk": round(available_cash, 2) if direction == "increase" else None,
+            "collateral_mode": (
+                "margin" if direction == "increase" and margin_enabled
+                else "cash" if direction == "increase"
+                else None
+            ),
+            "available_cash_czk": (
+                None if margin_enabled
+                else round(available_cash, 2) if direction == "increase"
+                else None
+            ),
             "snapshot_cash_czk": (
                 round(float(cash_capacity.get("cash_czk") or 0), 2)
                 if direction == "increase" else None
@@ -449,6 +462,7 @@ def stage_routes(
             "staging_warning": exact.get("staging_warning"),
             "currency": route.get("currency"),
             "fx_to_base": route.get("fx_to_base"),
+            "collateral_mode": route.get("option", {}).get("collateral_mode"),
             "provenance": provenance,
         }
         generated.append(leg)
@@ -521,7 +535,8 @@ def stage_routes(
     )
     working_puts = trade_service.working_short_put_collateral(raw_working)
     required_cash = stock_buys + staged_puts + working_puts
-    if required_cash > available_cash + 0.01:
+    margin_enabled = staged_puts > 0 and trade_service.margin_account_enabled()
+    if not margin_enabled and required_cash > available_cash + 0.01:
         raise ValueError(
             f"stock buys and cash-secured puts need {required_cash:,.0f} CZK, "
             f"but only {available_cash:,.0f} CZK is available"
@@ -535,4 +550,5 @@ def stage_routes(
         "routes": selected_routes,
         "required_cash_czk": round(required_cash, 2),
         "available_cash_czk": round(available_cash, 2),
+        "collateral_mode": "margin" if margin_enabled else "cash",
     }

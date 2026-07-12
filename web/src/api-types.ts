@@ -64,6 +64,8 @@ export interface HoldingsLiveResponse {
 export interface GatewayAccount {
   id: string;
   kind?: "paper" | "live" | string;
+  trading_type?: "CASH" | "MRGN" | "PMRGN" | string | null;
+  margin?: boolean;
 }
 
 export interface GatewayStatus {
@@ -116,6 +118,8 @@ export interface PlanMember {
   symbol: string;
   current_pct: number;
   current_czk: number | null;
+  mark_price?: number;
+  mark_currency?: string;
   // Per-member sleeve advice (sleeve members only; absent on the untargeted bucket):
   // an even split of the sleeve midpoint capped by member_caps, the share of the
   // sleeve's suggested buy/trim allocated to this name, and a 1-based order.
@@ -214,6 +218,8 @@ export interface PlanRow {
   held: boolean;
   current_pct: number;
   current_czk: number | null;
+  mark_price?: number;
+  mark_currency?: string;
   low: number;
   high: number;
   mid: number;
@@ -828,6 +834,7 @@ export interface RebalanceRouteResponse {
     assignment_shares: number;
     share_deviation: number;
     rounded_up: boolean;
+    collateral_mode?: "cash" | "margin" | null;
     available_cash_czk?: number | null;
     snapshot_cash_czk?: number | null;
     held_short_put_collateral_czk?: number | null;
@@ -839,6 +846,7 @@ export interface RebalanceRouteResponse {
 export interface RebalanceRouteSelection {
   symbol: string;
   route: RebalanceExecutionRoute;
+  collateral_mode?: "cash" | "margin";
   conid?: number;
   expiry?: string;
   strike?: number;
@@ -902,6 +910,7 @@ export interface CashSecuredPutTradeLeg {
   multiplier?: 100;
   currency?: string | null;
   fx_to_base?: number | null;
+  collateral_mode?: "cash" | "margin";
   provenance?: TradeLegProvenance[];
 }
 

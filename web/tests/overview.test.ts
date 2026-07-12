@@ -135,7 +135,7 @@ describe("in-flight cards hide when there is nothing in flight", () => {
       total_abs_czk: 250_000,
     });
     expect(html).toContain("1 share buy");
-    expect(html).toContain("1 cash-secured put");
+    expect(html).toContain("1 short put");
     expect(html).toContain("1 covered call");
     expect(html).toContain("direct-share value");
   });

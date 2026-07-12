@@ -218,7 +218,7 @@ export function stagedBasketCard(b: StagedBasketSum): string {
   if (!b.count) return "";
   const conditional = [
     b.conditional_buys
-      ? `${b.conditional_buys} cash-secured put${b.conditional_buys === 1 ? "" : "s"}`
+      ? `${b.conditional_buys} short put${b.conditional_buys === 1 ? "" : "s"}`
       : "",
     b.conditional_reductions
       ? `${b.conditional_reductions} covered call${b.conditional_reductions === 1 ? "" : "s"}`
