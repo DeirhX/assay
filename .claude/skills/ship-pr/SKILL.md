@@ -13,8 +13,9 @@ deterministic push → PR → auto-merge → sync tail.
 ## Repo facts (don't relearn these)
 
 - **Squash merges only.** Every merged PR is one squash commit (`… (#N)`).
-- **Branch protection requires CI** to pass before a merge is allowed:
-  *Python lint + unittest suite* and *Frontend typecheck + tests + build*.
+- **The `Protect main` ruleset requires CI** to pass before a merge is allowed:
+  *Python lint (ruff + mypy)*, *Python tests*, and *Frontend typecheck + tests
+  + build*. (Playwright e2e and the data-leak backstop run but are NOT required.)
 - **Auto-merge may be DISABLED at the repo level** (`gh pr merge --auto` then
   fails with "Auto merge is not allowed for this repository"). If so, fall back
   to: wait for both checks to go green, then `gh pr merge <N> --squash
@@ -57,12 +58,12 @@ Stage explicit paths, not `git add -A`. Typical: `git add tools web .cursor …`
   If anything sensitive appears, STOP and ask.
 
 ### 4. Verify locally — run EVERYTHING CI runs, not just the build
-CI has two required jobs and will block the PR if either fails. Reproduce both
+CI has three required jobs and will block the PR if any fails. Reproduce them
 locally first; `npm run build` alone is NOT enough (it skips lint/typecheck/tests
 — exactly the checks that catch real breakage).
 
 ```powershell
-py -3 -m pytest tools/tests -q          # Python lint + unittest job
+py -3 -m pytest tools/tests -q          # Python tests job (lint is separate)
 npm install                              # ensure the toolchain matches package.json
 npm run lint; npm run typecheck; npm run test; npm run build   # Frontend job, in CI's order
 ```

@@ -15,8 +15,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python:
-    name: Python lint + unittest suite
+  # Split from the old combined "Python lint + unittest suite" job so a red
+  # check names its own cause: lint/type failures land here, test failures in
+  # the sibling "Python tests" job. (The old name made every test break look
+  # like a lint break.) Both are required by the "Protect main" ruleset.
+  python-lint:
+    name: Python lint (ruff + mypy)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -37,6 +41,17 @@ jobs:
         run: |
           pip install --quiet mypy==2.1.0
           mypy tools
+
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Backend is stdlib-only; the test suite needs no extra installs.
       - name: Run tests
         run: python -m unittest discover -s tools/tests -t tools/tests -v
 
