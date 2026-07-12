@@ -504,12 +504,13 @@ Flagged so future-you doesn't trust a stale line:
 
 ## 10. Testing & CI
 
-CI runs two workflows. `.github/workflows/tests.yml` has three jobs (branch
-protection needs them green before merge):
+CI runs two workflows. `.github/workflows/tests.yml` has four jobs (the
+`Protect main` ruleset needs the Python + frontend ones green before merge):
 
-- **Python lint + typecheck + unittest suite:** pinned `ruff check tools` (rules
-  frozen in `ruff.toml`), pinned `mypy tools` (lenient baseline in `mypy.ini`),
-  then `python -m unittest discover -s tools/tests` (stdlib-only, offline, ~1s).
+- **Python lint (ruff + mypy):** pinned `ruff check tools` (rules frozen in
+  `ruff.toml`) + pinned `mypy tools` (lenient baseline in `mypy.ini`).
+- **Python tests:** `python -m unittest discover -s tools/tests` (stdlib-only,
+  offline, ~1s). Split from lint so a red check names its own cause.
 - **Frontend typecheck + tests + build:** `npm ci && npm run lint && npm run
   typecheck && npm test && npm run build`.
 - **Playwright e2e (hermetic):** `npm run e2e` — the suite intercepts `/api/**`,
