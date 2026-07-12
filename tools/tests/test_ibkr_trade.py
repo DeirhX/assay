@@ -487,7 +487,7 @@ class TradeServiceGuards(unittest.TestCase):
                                   Path(tmp) / "staged-basket.json"):
             trades = [
                 {"symbol": "AMD", "delta_czk": 1000},
-                {"symbol": "ARM", "delta_czk": -500},
+                {"symbol": "ARM", "delta_czk": 500},
             ]
             trade_service.save_basket(trades)
             initial = trade_service.basket_state()
