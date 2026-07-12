@@ -18,7 +18,7 @@ import type {
   ExitCoveredCallRoute, ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
-import { pushNav, setActiveView } from "./shell";
+import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
 
 // Config knobs (mirror exit_plan.py defaults); tunable from the header and sent
 // back on every (re)build and stage so the server rebuilds an identical plan.
@@ -202,7 +202,30 @@ function renderExit(data: ExitPlanResponse): void {
       `<strong>trim only</strong>, <strong>hold-don't-add</strong>, or <strong>avoid</strong> above the band.</div>`;
     return;
   }
-  data.positions.forEach((p) => body.appendChild(positionCard(p, data.currency)));
+  const focusedSymbol = navFromUrl().ticker;
+  const focused = focusedSymbol
+    ? data.positions.find((position) => position.symbol === focusedSymbol)
+    : null;
+  if (focusedSymbol) {
+    const focusBar = el("div", `exit-focus-bar${focused ? "" : " warn"}`);
+    const copy = el("div");
+    copy.innerHTML = focused
+      ? `<strong>${esc(focusedSymbol)} exit routes</strong>` +
+        `<span>Opened from its Rebalance recommendation.</span>`
+      : `<strong>${esc(focusedSymbol)} is not currently an exit candidate</strong>` +
+        `<span>The plan changed or this position is no longer above its governed band.</span>`;
+    const all = el("button", "ghost", `Show all ${data.positions.length} exit candidates`);
+    all.type = "button";
+    all.addEventListener("click", () => {
+      replaceViewState({ ticker: "" });
+      renderExit(data);
+    });
+    focusBar.append(copy, all);
+    body.appendChild(focusBar);
+  }
+  const positions = focused ? [focused] : data.positions;
+  positions.forEach((p) =>
+    body.appendChild(positionCard(p, data.currency, p.symbol === focusedSymbol)));
 }
 
 // ---- header config controls ------------------------------------------------
@@ -247,8 +270,9 @@ function renderSummary(data: ExitPlanResponse): void {
 }
 
 // ---- per-position card -----------------------------------------------------
-function positionCard(p: ExitPosition, baseCcy: string): HTMLElement {
-  const card = el("div", "card exit-card");
+function positionCard(p: ExitPosition, baseCcy: string, focused = false): HTMLElement {
+  const card = el("div", `card exit-card${focused ? " exit-card-focused" : ""}`);
+  card.dataset.exitSymbol = p.symbol;
 
   const head = el("div", "exit-head");
   const title = el("div", "exit-title");

@@ -138,6 +138,58 @@ test.describe("rebalance review safety", () => {
     await expect(input).toHaveValue("2.2");
   });
 
+  test("including a buy defaults to shares instead of silently trying a put", async ({ page }) => {
+    const item = {
+      id: "rebalance:AAPL",
+      symbol: "AAPL",
+      source: "rebalance",
+      direction: "increase",
+      delta_czk: 10_000,
+      delta_pct: 1,
+      desired_weight_pct: 3,
+      route_policy: "auto_put",
+      route_selection: null,
+      status: "suggested",
+    };
+    const executionPlan = {
+      schema_version: 1,
+      version: 1,
+      items: [item],
+    };
+    const requests: Record<string, unknown>[] = [];
+    let routeRequests = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/rebalance/route") routeRequests += 1;
+    });
+    await installApi(page, {
+      "/api/rebalance": { ...plan, execution_plan: executionPlan },
+      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+    });
+    await page.route("**/api/execution-plan", async (route) => {
+      const body = route.request().postDataJSON() as {
+        changes?: Record<string, unknown>;
+      };
+      requests.push(body);
+      Object.assign(item, body.changes || {});
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(executionPlan),
+      });
+    });
+
+    await page.goto("/?view=rebalance");
+    const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
+    await aapl.locator(".reb-execute-toggle").click();
+
+    await expect(aapl.locator("select.reb-route-select")).toHaveValue("direct");
+    await expect.poll(() => requests.length).toBeGreaterThanOrEqual(2);
+    expect(requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ changes: expect.objectContaining({ status: "selected" }) }),
+      expect.objectContaining({ changes: expect.objectContaining({ route_policy: "buy_shares" }) }),
+    ]));
+    expect(routeRequests).toBe(0);
+  });
+
   test("Trade preview stays locked for an unreviewed queue", async ({ page }) => {
     await installApi(page, {
       "/api/trade/status": {
@@ -231,8 +283,8 @@ test.describe("rebalance review safety", () => {
     await installApi(page, responses);
     await page.goto("/?view=rebalance");
     const aapl = page.locator(".reb-data-row").filter({ hasText: "AAPL" });
-    await aapl.getByRole("button", { name: "Cash-secured put" }).click();
-    await expect(page.getByText("Sell cash-secured put", { exact: true })).toBeVisible();
+    await aapl.locator("select.reb-route-select").selectOption("option");
+    await expect(aapl.getByText("Conditional entry")).toBeVisible();
     await page.getByRole("button", { name: "Use" }).click();
     await page.getByRole("button", { name: "Preview impact" }).click();
     await expect(page.locator("#reb-whatif")).toContainText("Cash-secured put");

@@ -203,8 +203,9 @@ def build_route(
             held = float(cash_capacity.get("held_short_put_collateral_czk") or 0)
             reasons.append(
                 (
-                    "Snapshot cash is already reserved by held short puts "
-                    f"({held:,.0f} CZK collateral against {cash:,.0f} CZK cash)."
+                    "No uncommitted snapshot cash remains after held short puts and "
+                    "working or queued obligations "
+                    f"({held:,.0f} CZK held-put collateral; {cash:,.0f} CZK snapshot cash)."
                 )
                 if held > 0
                 else "No uncommitted snapshot cash is available to secure a put."
