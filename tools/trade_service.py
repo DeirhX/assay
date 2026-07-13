@@ -315,6 +315,156 @@ def validate_stock_sell_capacity(
         )
 
 
+def basket_call_coverage_violations(
+    basket: list[dict],
+    holdings: dict[str, Any] | None = None,
+    raw_working: list[dict] | None = None,
+    *,
+    live_account_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Describe queue combinations that would leave short calls uncovered."""
+    snapshot = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
+    shares = _position_quantity_map(snapshot)
+    held_calls = _held_short_call_contracts(snapshot)
+    stock_values: dict[str, float] = {}
+    stock_quantities: dict[str, float] = {}
+    for row in snapshot.get("positions") or []:
+        if row.get("asset_class") == "OPT":
+            continue
+        sym = clean_symbol(row.get("symbol"))
+        qty = _number(row.get("quantity"))
+        base_value = _number(row.get("base_market_value"))
+        if sym and qty > 0 and base_value > 0:
+            stock_values[sym] = stock_values.get(sym, 0) + base_value
+            stock_quantities[sym] = stock_quantities.get(sym, 0) + qty
+    unit_values = {
+        sym: value / stock_quantities[sym]
+        for sym, value in stock_values.items()
+        if stock_quantities.get(sym, 0) > 0
+    }
+
+    call_symbols = sorted({
+        clean_symbol(leg.get("symbol"))
+        for leg in basket
+        if leg.get("type") == "covered_call" and clean_symbol(leg.get("symbol"))
+    })
+    violations: list[dict[str, Any]] = []
+    for sym in call_symbols:
+        if live_account_id:
+            capacity = covered_call_capacity(
+                sym, raw_working, live_account_id=live_account_id,
+            )
+            current_shares = max(0, int(capacity.get("current_shares") or 0))
+            held = max(0, int(capacity.get("held_short_calls") or 0))
+            working = max(0, int(capacity.get("working_short_calls") or 0))
+        else:
+            current_shares = max(0, int(shares.get(sym, 0)))
+            held = max(0, int(held_calls.get(sym, 0)))
+            working = 0
+            for raw in raw_working or []:
+                if (
+                    isinstance(raw, dict)
+                    and not _order_terminal(raw)
+                    and _is_working_option(raw)
+                    and _working_option_right(raw) != "P"
+                    and option_root(raw.get("ticker") or raw.get("symbol")) == sym
+                    and str(raw.get("side") or "").upper() == "SELL"
+                ):
+                    remaining = raw.get("remainingQuantity")
+                    qty = _number(remaining) if remaining is not None else max(
+                        0,
+                        _number(raw.get("totalSize") or raw.get("quantity"))
+                        - _number(raw.get("filledQuantity")),
+                    )
+                    working += int(qty)
+
+        calls = sum(
+            int(leg.get("contracts") or 0)
+            for leg in basket
+            if leg.get("type") == "covered_call"
+            and clean_symbol(leg.get("symbol")) == sym
+        )
+        stock_sells = sum(
+            abs(float(leg.get("delta_czk") or 0))
+            for leg in basket
+            if leg.get("type") == "stock"
+            and clean_symbol(leg.get("symbol")) == sym
+            and float(leg.get("delta_czk") or 0) < 0
+        )
+        working_stock_sell_shares = 0
+        working_stock_order_ids: list[str] = []
+        working_call_order_ids: list[str] = []
+        for raw in raw_working or []:
+            if (
+                isinstance(raw, dict)
+                and not _order_terminal(raw)
+                and _is_working_option(raw)
+                and _working_option_right(raw) != "P"
+                and option_root(raw.get("ticker") or raw.get("symbol")) == sym
+                and str(raw.get("side") or "").upper() == "SELL"
+            ):
+                order_id = str(raw.get("orderId") or raw.get("order_id") or "")
+                if order_id:
+                    working_call_order_ids.append(order_id)
+            if (
+                not isinstance(raw, dict)
+                or _order_terminal(raw)
+                or _is_working_option(raw)
+                or str(raw.get("side") or "").upper() != "SELL"
+            ):
+                continue
+            raw_sym = clean_symbol(
+                raw.get("ticker") or raw.get("symbol") or raw.get("description1")
+            )
+            if raw_sym != sym:
+                continue
+            remaining = raw.get("remainingQuantity")
+            qty = _number(remaining) if remaining is not None else max(
+                0,
+                _number(raw.get("totalSize") or raw.get("quantity"))
+                - _number(raw.get("filledQuantity")),
+            )
+            working_stock_sell_shares += int(qty)
+            order_id = str(raw.get("orderId") or raw.get("order_id") or "")
+            if order_id:
+                working_stock_order_ids.append(order_id)
+        unit_value = unit_values.get(sym, 0)
+        sell_shares = int(round(stock_sells / unit_value)) if unit_value > 0 else 0
+        required_shares = sell_shares + working_stock_sell_shares + (
+            held + working + calls
+        ) * OPTION_MULTIPLIER
+        if required_shares <= current_shares:
+            continue
+        violations.append({
+            "symbol": sym,
+            "current_shares": current_shares,
+            "planned_stock_sell_shares": sell_shares,
+            "working_stock_sell_shares": working_stock_sell_shares,
+            "working_stock_order_ids": working_stock_order_ids,
+            "working_call_order_ids": working_call_order_ids,
+            "selected_call_contracts": calls,
+            "held_short_call_contracts": held,
+            "working_short_call_contracts": working,
+            "required_shares": required_shares,
+            "excess_shares": required_shares - current_shares,
+            "stock_leg_ids": [
+                str(leg.get("leg_id") or f"stock:{sym}")
+                for leg in basket
+                if leg.get("type") == "stock"
+                and clean_symbol(leg.get("symbol")) == sym
+                and float(leg.get("delta_czk") or 0) < 0
+            ],
+            "call_leg_ids": [
+                str(leg.get("leg_id") or "")
+                for leg in basket
+                if leg.get("type") == "covered_call"
+                and clean_symbol(leg.get("symbol")) == sym
+                and leg.get("leg_id")
+            ],
+        })
+    return violations
+
+
 def basket_state() -> dict:
     """Current queue plus whether that exact revision was projection-reviewed."""
     with _basket_lock:
@@ -322,8 +472,12 @@ def basket_state() -> dict:
         all_legs, excluded, basket = _basket_record(raw)
         revision = _basket_revision(basket)
         reviewed_revision = str(raw.get("reviewed_revision") or "") if isinstance(raw, dict) else ""
-        violations = _basket_sell_violations(basket)
-        reviewed = bool(revision and reviewed_revision == revision and not violations)
+        holdings = _load(HOLDINGS_JSON) or {}
+        violations = _basket_sell_violations(basket, holdings)
+        coverage_violations = basket_call_coverage_violations(basket, holdings)
+        valid = not violations and not coverage_violations
+        reviewed = bool(revision and reviewed_revision == revision and valid)
+        display_all_legs = _basket_legs_with_share_estimates(all_legs, holdings)
         return {
             "trades": basket,
             "queue_trades": [
@@ -331,15 +485,47 @@ def basket_state() -> dict:
                     **leg,
                     "included": str(leg.get("leg_id") or "") not in excluded,
                 }
-                for leg in all_legs
+                for leg in display_all_legs
             ],
             "excluded_leg_ids": sorted(excluded),
             "revision": revision,
             "reviewed": reviewed,
             "reviewed_at": raw.get("reviewed_at") if isinstance(raw, dict) and reviewed else None,
-            "valid": not violations,
+            "valid": valid,
             "stock_sell_violations": violations,
+            "coverage_violations": coverage_violations,
         }
+
+
+def queue_working_conflicts() -> dict[str, Any]:
+    """Reconcile queued covered calls against current IBKR working orders."""
+    basket = load_basket()
+    if not any(leg.get("type") == "covered_call" for leg in basket):
+        return {
+            "working_orders_verified": True,
+            "working_orders_error": None,
+            "coverage_violations": [],
+        }
+    try:
+        account_id = _resolve_trade_account(None)
+        raw_working = ibkr_trade.live_orders()
+        violations = basket_call_coverage_violations(
+            basket,
+            _load(HOLDINGS_JSON) or {},
+            raw_working,
+            live_account_id=account_id,
+        )
+    except (ibkr_trade.CPAPIError, ValueError) as exc:
+        return {
+            "working_orders_verified": False,
+            "working_orders_error": str(exc),
+            "coverage_violations": [],
+        }
+    return {
+        "working_orders_verified": True,
+        "working_orders_error": None,
+        "coverage_violations": violations,
+    }
 
 
 def save_basket(trades: Any) -> list[dict]:
@@ -427,6 +613,33 @@ def set_basket_leg_included(leg_id: Any, included: Any) -> list[dict]:
         return _persist_basket_record(all_legs, excluded)
 
 
+def set_only_basket_legs_included(leg_ids: Any) -> list[dict]:
+    """Atomically include exactly the requested server-known queue legs."""
+    if not isinstance(leg_ids, list) or not all(
+        isinstance(leg_id, str) and leg_id.strip() for leg_id in leg_ids
+    ):
+        raise ValueError("only_leg_ids must be a list of leg ids")
+    requested = {leg_id.strip() for leg_id in leg_ids}
+    with _basket_lock:
+        raw = _load(STAGED_BASKET_JSON)
+        all_legs, current_excluded, active = _basket_record(raw)
+        known = {
+            str(leg.get("leg_id") or "")
+            for leg in all_legs
+            if leg.get("leg_id")
+        }
+        unknown = requested - known
+        if unknown:
+            raise _Conflict(
+                "order queue changed — reload it before selecting queued legs"
+            )
+        excluded = known - requested
+        if excluded == current_excluded:
+            return active
+        _preview_issued.clear()
+        return _persist_basket_record(all_legs, excluded)
+
+
 def review_basket(revision: Any) -> dict:
     """Record that the human reviewed the projection for this exact queue."""
     with _basket_lock:
@@ -436,11 +649,35 @@ def review_basket(revision: Any) -> dict:
             raise ValueError("nothing staged to review")
         if not requested or requested != state["revision"]:
             raise _Conflict("order queue changed since projection — reload Target state and review it again")
-        violations = _basket_sell_violations(state["trades"])
-        if violations:
+        violations = state.get("stock_sell_violations") or []
+        coverage_violations = state.get("coverage_violations") or []
+        if violations or coverage_violations:
+            reasons = [
+                _oversell_message(violation) for violation in violations
+            ]
+            reasons.extend(
+                f"{violation['symbol']}: queued share sales and covered calls "
+                f"need {violation['required_shares']} shares against "
+                f"{violation['current_shares']} held"
+                for violation in coverage_violations
+            )
+            raise _Conflict(
+                "projection cannot be approved — " + "; ".join(reasons)
+            )
+        working = queue_working_conflicts()
+        if not working["working_orders_verified"]:
+            raise _Conflict(
+                "projection cannot be approved — IBKR working orders could not "
+                f"be verified ({working['working_orders_error']})"
+            )
+        working_violations = working["coverage_violations"]
+        if working_violations:
             raise _Conflict(
                 "projection cannot be approved — " + "; ".join(
-                    _oversell_message(violation) for violation in violations
+                    f"{violation['symbol']}: working stock sells and queued calls "
+                    f"need {violation['required_shares']} shares against "
+                    f"{violation['current_shares']} held"
+                    for violation in working_violations
                 )
             )
         reviewed_at = datetime.now(UTC).isoformat()
@@ -476,11 +713,13 @@ def _basket_token(account_id: str, basket: list[dict]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _trade_price_map() -> dict[str, dict]:
+def _trade_price_map(
+    holdings: dict[str, Any] | None = None,
+) -> dict[str, dict]:
     """Per-symbol {price, fx_to_base, currency} from the holdings snapshot -- the
     very marks the CZK basket was sized against, so held names size precisely.
     Names you don't hold are absent and get a live price at preview time."""
-    holdings = _load(HOLDINGS_JSON) or {}
+    holdings = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
     out: dict[str, dict] = {}
     for p in holdings.get("positions") or []:
         sym = str(p.get("symbol") or "").strip().upper()
@@ -494,11 +733,74 @@ def _trade_price_map() -> dict[str, dict]:
     return out
 
 
-def _position_quantity_map() -> dict[str, float]:
+def _basket_legs_with_share_estimates(
+    legs: list[dict],
+    holdings: dict[str, Any],
+) -> list[dict]:
+    """Decorate stock legs with the same whole-share sizing rule as preview.
+
+    This is display context only. Preview refreshes missing prices and remains
+    authoritative because a market-priced CZK target has no immutable share
+    quantity before that point.
+    """
+    import quote_cache
+    import rebalance_overlay
+    from symbols import resolve_symbol
+
+    prices = _trade_price_map(holdings)
+    quotes = quote_cache.load()
+    fx_by_currency = _fx_by_currency()
+    decorated: list[dict] = []
+    for leg in legs:
+        row = dict(leg)
+        if leg.get("type") not in (None, "stock"):
+            decorated.append(row)
+            continue
+        sym = clean_symbol(leg.get("symbol"))
+        price = prices.get(sym)
+        source = "holdings snapshot" if price else None
+        if not price:
+            try:
+                quote = rebalance_overlay.last_quote_snapshot(
+                    sym,
+                    resolve_symbol(sym),
+                    prices,
+                    quotes=quotes,
+                )
+            except Exception:  # noqa: BLE001 - display estimate must degrade safely
+                quote = None
+            if quote and _number(quote.get("price")) > 0:
+                currency = str(quote.get("currency") or "USD").upper()
+                price = {
+                    "price": _number(quote.get("price")),
+                    "fx_to_base": fx_by_currency.get(currency, 1.0),
+                    "currency": currency,
+                }
+                source = str(quote.get("source") or "cached quote")
+        if price:
+            quantity = ibkr_trade.shares_for(
+                _number(leg.get("delta_czk")),
+                _number(price.get("price")),
+                _number(price.get("fx_to_base")) or 1.0,
+            )
+            if quantity:
+                row.update({
+                    "estimated_shares": abs(quantity),
+                    "share_estimate_price": _number(price.get("price")),
+                    "share_estimate_currency": price.get("currency"),
+                    "share_estimate_source": source,
+                })
+        decorated.append(row)
+    return decorated
+
+
+def _position_quantity_map(
+    holdings: dict[str, Any] | None = None,
+) -> dict[str, float]:
     """Current stock quantity by symbol from the same holdings snapshot used for
     sizing. This is explanation-only context for the preview: it lets the UI
     distinguish an order remainder from the position left after all orders."""
-    holdings = _load(HOLDINGS_JSON) or {}
+    holdings = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
     out: dict[str, float] = {}
     for p in holdings.get("positions") or []:
         if p.get("asset_class") == "OPT":
@@ -510,9 +812,11 @@ def _position_quantity_map() -> dict[str, float]:
     return out
 
 
-def _held_short_call_contracts() -> dict[str, int]:
+def _held_short_call_contracts(
+    holdings: dict[str, Any] | None = None,
+) -> dict[str, int]:
     """Existing short-call assignment obligations by underlying."""
-    holdings = _load(HOLDINGS_JSON) or {}
+    holdings = holdings if holdings is not None else (_load(HOLDINGS_JSON) or {})
     out: dict[str, int] = {}
     today = datetime.now(UTC).date()
     for p in holdings.get("positions") or []:

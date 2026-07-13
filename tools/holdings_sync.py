@@ -11,13 +11,16 @@ are underscore-free; serve.py imports them aliased to its private call sites.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 import sys
 from pathlib import Path
 
 import errorlog
 import generate_site
+import holdings_live
 import ibkr_history  # full trade + NAV history via windowed Flex
+import ibkr_trade
 import jobs
 import sectors  # symbol -> sector map (research seed + Yahoo backfill)
 from apierror import Conflict as _Conflict
@@ -36,6 +39,30 @@ IBKR_SECRETS = TOOLS_SECRETS
 # Raw pulls + snapshots are personal data -> keep them under data/cache (gitignored
 # and inside the private submodule), never in the public working tree.
 IBKR_CACHE_DIR = DATA_DIR / "cache" / "ibkr"
+
+
+def _flex_as_of_stamp(
+    fresh: dict,
+    *,
+    now: dt.datetime | None = None,
+) -> str:
+    """End of the final statement day, not the later Flex download time."""
+    raw = str(fresh.get("report_to_date") or "").strip()
+    report_day = None
+    for fmt in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            report_day = dt.datetime.strptime(raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    if report_day is None:
+        report_day = ((now or dt.datetime.now(dt.timezone.utc)).date()
+                      - dt.timedelta(days=1))
+    return dt.datetime.combine(
+        report_day,
+        dt.time(23, 59, 59),
+        tzinfo=dt.timezone.utc,
+    ).isoformat(timespec="seconds")
 
 
 def ibkr_status() -> dict:
@@ -107,8 +134,11 @@ def save_ibkr_secrets(body: dict) -> dict:
 
 
 def _sync_holdings(progress=None) -> dict:
-    """Re-pull the portfolio via the vendored read-only IBKR Flex reader and
-    refresh data/current-holdings.json. Read-only: the Flex query cannot trade.
+    """Refresh the portfolio from live CPAPI when connected, otherwise Flex.
+
+    A live resync replaces quantities, positions, marks, NAV, and base cash from
+    the authenticated Client Portal session. Flex remains the bootstrap/fallback
+    and the only source for acquisition-dated tax lots.
     Credentials come from IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID in the environment
     or a gitignored tools/secrets.env. Raw output stays in data/cache/ibkr/ (also
     gitignored). Returns the fresh holdings payload.
@@ -120,6 +150,48 @@ def _sync_holdings(progress=None) -> dict:
     def _p(msg: str) -> None:
         if progress:
             progress(msg)
+
+    current = _load(HOLDINGS_JSON) or {}
+    if current:
+        try:
+            gateway = ibkr_trade.auth_status()
+            authenticated = bool(
+                gateway.get("authenticated")
+                and gateway.get("connected") is not False
+            )
+        except ibkr_trade.CPAPIError:
+            authenticated = False
+        if authenticated:
+            _p("reading live positions and balances from IBKR Client Portal…")
+            live = holdings_live.fetch_live_portfolio(assume_authenticated=True)
+            if live is None:
+                raise ValueError(
+                    "IBKR was connected, but the live portfolio became unavailable"
+                )
+            summary = live.get("summary")
+            net_liquidation = (
+                summary.get("netliquidation")
+                if isinstance(summary, dict) else None
+            )
+            if not isinstance(net_liquidation, dict) or not isinstance(
+                net_liquidation.get("amount"), (int, float)
+            ):
+                raise ValueError(
+                    "IBKR live portfolio returned no usable net liquidation value"
+                )
+            fresh_live = holdings_live.merge_live_snapshot(
+                current,
+                live["positions"],
+                live["summary"],
+                live["account"],
+            )
+            _p("saving live portfolio snapshot…")
+            _write_json(HOLDINGS_JSON, fresh_live)
+            _p("regenerating holdings summary…")
+            payload = holdings_payload()
+            payload["site"] = regenerate_site()
+            payload["sync_source"] = "live"
+            return payload
 
     if not IBKR_READER.exists():  # vendored next to serve.py; should always be here
         raise ValueError(f"IBKR reader missing at {IBKR_READER}")
@@ -150,15 +222,16 @@ def _sync_holdings(progress=None) -> dict:
     fresh = _load(out_json)
     if not isinstance(fresh, dict) or "positions" not in fresh or fresh.get("net_asset_value") is None:
         raise ValueError("IBKR reader produced no usable portfolio.json")
+    fresh["generated_at"] = _flex_as_of_stamp(fresh)
 
     _p("merging snapshot…")
-    current = _load(HOLDINGS_JSON) or {}
     _write_json(HOLDINGS_JSON, _merge_holdings_snapshot(current, fresh))
     # A fresh snapshot makes the derived holdings summary stale, so regenerate it
     # in the same call. Best-effort: a render hiccup must not fail the sync itself.
     _p("regenerating holdings summary…")
     payload = holdings_payload()
     payload["site"] = regenerate_site()
+    payload["sync_source"] = "flex"
     return payload
 
 
@@ -183,8 +256,17 @@ def _run_holdings_sync_job(job_id: str) -> None:
     # Keep the public result small: the UI re-fetches /api/holdings on done; we
     # only need the site-regen summary (for the "plan regenerated" line) and the
     # snapshot stamp.
-    _update_job(job_id, state="done", message="synced",
-                result={"site": payload.get("site"), "generated_at": payload.get("generated_at")})
+    source = payload.get("sync_source") or "flex"
+    _update_job(
+        job_id,
+        state="done",
+        message=f"synced from IBKR {'live connection' if source == 'live' else 'Flex'}",
+        result={
+            "site": payload.get("site"),
+            "generated_at": payload.get("generated_at"),
+            "sync_source": source,
+        },
+    )
 
 
 def start_holdings_sync() -> dict:

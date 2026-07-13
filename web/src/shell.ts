@@ -570,7 +570,9 @@ function initShell() {
       status,
       onDone: async (done) => {
         await loadHoldings();
-        status.textContent = "Synced. " + siteMsg((done.result as Record<string, any>)?.site);
+        const result = done.result as Record<string, any>;
+        const source = result?.sync_source === "live" ? "live IBKR connection" : "IBKR Flex";
+        status.textContent = `Synced from ${source}. ` + siteMsg(result?.site);
       },
     });
   });

@@ -131,10 +131,12 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
     _trade_tickle, basket_state as _basket_state,
+    queue_working_conflicts as _queue_working_conflicts,
     remove_basket_leg as _remove_basket_leg,
     replace_stock_basket as _replace_stock_basket,
     review_basket as _review_basket, save_basket as _save_basket,
     set_basket_leg_included as _set_basket_leg_included,
+    set_only_basket_legs_included as _set_only_basket_legs_included,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
 # alias them so the rest of this file's call sites stay unchanged.
@@ -330,6 +332,7 @@ _GET_EXACT = {
     "/api/trade/orders": "_get_trade_orders",
     "/api/trade/quotes": "_get_trade_quotes",
     "/api/trade/basket": "_get_trade_basket",
+    "/api/trade/queue-conflicts": "_get_trade_queue_conflicts",
     "/api/deep-research/login-status": "_get_login_status",
     "/api/deep-job": "_get_deep_job",
     "/api/jobs": "_get_jobs",
@@ -905,6 +908,9 @@ class Handler(BaseHTTPRequestHandler):
         # Include the content revision and projection-review status so the Trade
         # desk can fail closed when the queue changed after Target-state review.
         return self._send_json(_basket_state())
+
+    def _get_trade_queue_conflicts(self, path, query):
+        return self._send_json(_queue_working_conflicts())
 
     def _get_login_status(self, path, query):
         return self._send_json(_get_auth_state())
@@ -1591,6 +1597,8 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body.get("clear") is True:
             _save_basket([])
+        elif body.get("only_leg_ids") is not None:
+            _set_only_basket_legs_included(body.get("only_leg_ids"))
         elif body.get("toggle_leg_id") is not None:
             _set_basket_leg_included(
                 body.get("toggle_leg_id"),

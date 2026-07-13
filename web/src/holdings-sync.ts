@@ -8,7 +8,7 @@ import { pollDeepJob } from "./jobs";
 import { runAsyncButton } from "./async-action";
 
 export const HOLDINGS_SYNC_PENDING_HTML =
-  `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
+  `<span class="spinner"></span> Syncing portfolio from IBKR (live connection preferred)…`;
 
 export const HOLDINGS_SYNC_JOB_LABEL = "IBKR sync";
 

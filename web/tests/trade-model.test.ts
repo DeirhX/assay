@@ -11,7 +11,6 @@ import {
   contractsLabel,
   coveredCallActionLabel,
   coverageCheckLabel,
-  gatewayOrigin,
   isCoveredCallLeg,
   optionContractLabel,
   orderBandScopeLabel,
@@ -263,18 +262,6 @@ describe("riskPanelHtml", () => {
     });
     expect(html).toContain("Portfolio vol");
     expect(html).toContain("concentration rising");
-  });
-});
-
-describe("gatewayOrigin", () => {
-  it("strips the /v1/api suffix to the bare origin", () => {
-    expect(gatewayOrigin("https://localhost:5000/v1/api")).toBe("https://localhost:5000");
-    expect(gatewayOrigin("https://localhost:5000/v1/api/")).toBe("https://localhost:5000");
-  });
-
-  it("falls back to the default gateway when unset", () => {
-    expect(gatewayOrigin(null)).toBe("https://127.0.0.1:5000");
-    expect(gatewayOrigin(undefined)).toBe("https://127.0.0.1:5000");
   });
 });
 

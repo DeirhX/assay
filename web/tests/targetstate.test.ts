@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareRowHtml, compareRows, deriveSuggestionTrades,
-  scaleMaxOf, sourceBanner,
+  queueOrdersHtml, scaleMaxOf, sourceBanner,
   violationsHtml,
 } from "../src/targetstate";
 import { executionPlanHtml } from "../src/execution-plan-ui";
@@ -104,7 +104,7 @@ describe("projection review gate", () => {
     const html = sourceBanner("basket", 1, {
       trades: [], revision: "bad-rev", reviewed: false,
     }, false);
-    expect(html).toContain("Fix blocked sells first");
+    expect(html).toContain("Resolve queue conflicts first");
     expect(html).toContain("disabled");
     expect(html).not.toContain("data-ts-review");
   });
@@ -119,6 +119,42 @@ describe("projection review gate", () => {
     }]);
     expect(html).toContain('data-ts-remove-leg="stock:EEFT"');
     expect(html).toContain("Remove EEFT sell");
+  });
+
+  it("shows every queued leg and offers a covered-calls-only selection", () => {
+    const html = queueOrdersHtml({
+      trades: [],
+      queue_trades: [
+        {
+          type: "stock", leg_id: "stock:NVDA", symbol: "NVDA",
+          delta_czk: 100_000, estimated_shares: 50, included: true,
+        },
+        {
+          type: "covered_call", leg_id: "covered_call:PYPL:900",
+          symbol: "PYPL", route: "covered_call", conid: 900,
+          expiry: "2026-08-14", strike: 47, contracts: 7, included: true,
+        },
+        {
+          type: "covered_call", leg_id: "covered_call:EEFT:777",
+          symbol: "EEFT", route: "covered_call", conid: 777,
+          expiry: "2026-08-21", strike: 85, contracts: 3, included: true,
+        },
+      ],
+      excluded_leg_ids: [],
+      revision: "queue",
+      reviewed: false,
+    });
+
+    expect(html).toContain("Queued orders");
+    expect(html).toContain("PYPL");
+    expect(html).toContain("EEFT");
+    expect(html).toContain("Trade only covered calls");
+    expect(html).toContain("≈ 50 shares");
+    expect(html).toContain("700 shares covered");
+    expect(html).toContain('data-ts-delete-leg="stock:NVDA"');
+    expect(html).toContain(
+      'data-ts-only-leg-ids="covered_call:PYPL:900,covered_call:EEFT:777"',
+    );
   });
 
   it("shows the if-assigned increase for a staged cash-secured put", () => {

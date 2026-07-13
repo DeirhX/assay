@@ -322,7 +322,7 @@ function setupSteps(st: SetupState): SetupStep[] {
   const dataReady = !!data.ready;
   const portfolioStep = {
     id: "ibkr",
-    title: "Portfolio data (IBKR Flex)",
+    title: "Portfolio data (IBKR)",
     required: !dataReady,
     done: dataReady,
     partial: !dataReady && !!ibkr.configured,
@@ -548,7 +548,7 @@ function renderIbkr(st: SetupState) {
     `</div>` +
     `<div class="setup-row" style="margin-top:10px"><strong>History query</strong>${badge(k.history_configured, k.history_configured ? "ready" : "not set")}</div>` +
     `<div class="setup-row" style="margin-top:14px"><strong>2. Holdings snapshot</strong>${badge(hasSnapshot, hasSnapshot ? `${positions} positions` : "not pulled yet")}</div>` +
-    `<p class="hint">Pulls the latest positions, cash, and tax lots directly from IBKR (read-only — the Flex query cannot trade). Same action as <strong>Resync from IBKR</strong> on the Holdings tab.</p>` +
+    `<p class="hint">With an authenticated Client Portal Gateway, resync takes positions, balances, and marks from the live connection. Flex is used when live is unavailable and remains the source for acquisition-dated tax lots.</p>` +
     `<div class="action-row setup-actions">` +
       `<button class="primary" id="setup-sync-ibkr" type="button"${canSync ? "" : " disabled"} title="${canSync ? "Re-pull holdings from IBKR (read-only)" : "Save your Flex credentials first"}">${hasSnapshot ? "Re-sync holdings" : "Sync holdings now"}</button>` +
       `<span class="status" id="setup-ibkr-sync-status">${canSync ? "" : "Save credentials first to enable syncing."}</span>` +

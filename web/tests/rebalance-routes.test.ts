@@ -134,6 +134,83 @@ describe("rebalance execution route choices", () => {
     expect(state.stagedBasket[0].type).toBe("cash_secured_put");
   });
 
+  it("stages an unrelated option and offers to reconcile an older coverage conflict", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/rebalance/stage") {
+        return Promise.resolve({
+          trades: [{
+            type: "covered_call", symbol: "EEFT", conid: 777,
+            expiry: "2026-08-07", strike: 105, contracts: 1,
+          }],
+          revision: "with-conflict",
+          reviewed: false,
+          coverage_violations: [{
+            symbol: "PYPL",
+            current_shares: 1_000,
+            planned_stock_sell_shares: 619,
+            selected_call_contracts: 7,
+            held_short_call_contracts: 0,
+            working_short_call_contracts: 0,
+            required_shares: 1_319,
+            excess_shares: 319,
+            stock_leg_ids: ["stock:PYPL"],
+            call_leg_ids: ["covered_call:PYPL:900"],
+          }],
+        });
+      }
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({
+          trades: [{
+            type: "covered_call", symbol: "EEFT", conid: 777,
+            expiry: "2026-08-07", strike: 105, contracts: 1,
+          }],
+          revision: "reconciled",
+          reviewed: false,
+        });
+      }
+      return Promise.resolve({});
+    });
+    document.body.innerHTML = '<div id="reb-whatif"></div>';
+    renderWhatif({
+      currency: "CZK",
+      trades: [{ symbol: "EEFT", delta_czk: -230_000 }],
+      summary: {},
+      before_status: {},
+      after: { rows: [] },
+      caveats: [],
+    } as unknown as Whatif, new Map([[
+      "EEFT",
+      {
+        symbol: "EEFT", route: "covered_call", conid: 777,
+        expiry: "2026-08-07", strike: 105, contracts: 1,
+      },
+    ]]));
+
+    [...document.querySelectorAll("button")]
+      .find((node) => node.textContent?.startsWith("Add 1 order to queue"))!
+      .click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain(
+      "New orders were added. Reconcile older covered-call plans before review.",
+    ));
+    expect(document.body.textContent).toContain("319 shares over capacity");
+    expect(
+      [...document.querySelectorAll<HTMLButtonElement>("button")]
+        .find((node) => node.textContent === "Reconcile coverage before review")!
+        .disabled,
+    ).toBe(true);
+
+    [...document.querySelectorAll("button")]
+      .find((node) => node.textContent === "Keep calls · exclude share sale")!
+      .click();
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket",
+      "POST",
+      { toggle_leg_id: "stock:PYPL", included: false },
+    ));
+    expect(document.body.textContent).toContain("PYPL reconciled");
+    expect(document.body.textContent).toContain("Review projected portfolio →");
+  });
+
   it("can explicitly replace prior rebalance orders instead of appending", async () => {
     apiMock.mockResolvedValue({
       trades: [{ type: "stock", symbol: "NVDA", delta_czk: 230_000 }],

@@ -2,8 +2,10 @@ import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } fr
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { runHoldingsSync } from "./holdings-sync";
 import { openJournalWith } from "./journal";
+import { coverageConflictsHtml } from "./coverage-conflicts";
 import {
-  getGatewayStatus, reconnectGateway, refreshGatewayStatus, subscribeGatewayStatus,
+  gatewayLoginUrl, getGatewayStatus, reconnectGateway, refreshGatewayStatus,
+  subscribeGatewayStatus,
 } from "./gateway";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
 import { navFromUrl, replaceViewState } from "./shell";
@@ -17,7 +19,7 @@ import {
 } from "./execution-queue";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
-  gatewayOrigin, orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
+  orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
   reconciliationTitle, riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
@@ -264,13 +266,25 @@ function showTradeReviewError(message: string): void {
   const panel = tradePanel("review");
   if (!panel) return;
   panel.innerHTML = "";
-  const error = el("div", "trade-review-error");
+  const coverage = _queueState.coverage_violations || [];
+  const error = el(
+    "div",
+    `trade-review-error${coverage.length ? " has-coverage-conflicts" : ""}`,
+  );
   error.innerHTML = `<strong>Order review unavailable</strong><span>${esc(message)}</span>`;
-  const retry = el("button", "ghost", "Try again") as HTMLButtonElement;
-  retry.type = "button";
-  retry.addEventListener("click", () => void doPreview(retry));
-  error.appendChild(retry);
+  if (!coverage.length) {
+    const retry = el("button", "ghost", "Try again") as HTMLButtonElement;
+    retry.type = "button";
+    retry.addEventListener("click", () => void doPreview(retry));
+    error.appendChild(retry);
+  }
   panel.appendChild(error);
+  if (coverage.length) {
+    const conflicts = el("div", "trade-review-conflicts");
+    conflicts.innerHTML = coverageConflictsHtml(coverage);
+    panel.appendChild(conflicts);
+    wireCoverageActions(conflicts);
+  }
 }
 
 function updateTradeReviewAvailability(): void {
@@ -284,7 +298,9 @@ function updateTradeReviewAvailability(): void {
   btn.title = !hasBasket
     ? "Add orders to the queue first"
     : _queueState.valid === false
-      ? "Fix staged stock sells that exceed holdings in Target state"
+      ? (_queueState.coverage_violations || []).length
+        ? "Reconcile queued share sales and covered calls first"
+        : "Fix staged stock sells that exceed holdings in Target state"
     : !_queueState.reviewed
       ? "Approve the current portfolio projection in Review impact first"
       : !connected
@@ -341,7 +357,9 @@ async function loadTrade() {
     if (review && !review.disabled) await doPreview(review);
     else showTradeReviewError(
       _queueState.valid === false
-        ? "The staged queue contains a stock sell larger than the held position. Fix it in Target state before previewing orders."
+        ? (_queueState.coverage_violations || []).length
+          ? "Queued share sales and covered calls exceed the shares held. Reconcile the conflicting legs below."
+          : "The staged queue contains a stock sell larger than the held position. Fix it in Target state before previewing orders."
         : state.stagedBasket.length && !_queueState.reviewed
         ? "Review and approve the projected portfolio before previewing orders."
         : "Add orders to the queue and connect the IBKR gateway before previewing them.",
@@ -402,7 +420,7 @@ function paintConnection(token?: number) {
     bits.push(`<div class="trade-bnr bad"><strong>Trading is disabled.</strong> Set <code>IBKR_TRADING_ENABLED=1</code> in <code>tools/secrets.env</code> (and start the Client Portal Gateway), then refresh. Nothing here can place an order until you do.</div>`);
   }
   if (!s.authenticated) {
-    const origin = gatewayOrigin(s.gateway_base);
+    const origin = gatewayLoginUrl(s.gateway_base);
     bits.push(`<div class="trade-bnr warn"><strong>Gateway not connected.</strong> Start the IBKR Client Portal Gateway, log in (with 2FA) at <a href="${esc(origin)}" target="_blank" rel="noopener">${esc(origin)}</a>, then press <em>Refresh connection</em>.</div>`);
     if (s.reconnect_error) {
       bits.push(`<div class="trade-bnr bad">Reconnect failed: ${esc(s.reconnect_error)}. The saved login has likely expired \u2014 log in at the gateway page above.</div>`);
@@ -466,6 +484,45 @@ async function persistQueue(
   }
 }
 
+function wireCoverageActions(host: ParentNode): void {
+  host.querySelectorAll<HTMLButtonElement>("[data-coverage-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const conflict = button.closest<HTMLElement>(".coverage-conflict");
+      const buttons = conflict?.querySelectorAll<HTMLButtonElement>("button") || [];
+      const status = conflict?.querySelector<HTMLElement>(".coverage-conflict-status");
+      const legIds = (button.dataset.coverageLegIds || "").split(",").filter(Boolean);
+      buttons.forEach((item) => { item.disabled = true; });
+      button.textContent = "Reconciling…";
+      void (async () => {
+        try {
+          let saved: TradeQueueState | null = null;
+          for (const legId of legIds) {
+            saved = await api<TradeQueueState>("/api/trade/basket", "POST", {
+              toggle_leg_id: legId,
+              included: false,
+            });
+          }
+          if (saved) applyQueueState(saved);
+          _preview = null;
+          stopPreviewCountdown();
+          window.dispatchEvent(new Event("assay:queue-changed"));
+          renderBasket();
+          if (_tradeDeskTab === "review") {
+            showTradeReviewError(
+              (_queueState.coverage_violations || []).length
+                ? "Another share-coverage conflict still needs reconciliation."
+                : "Coverage reconciled. Review and approve the updated portfolio impact before previewing orders.",
+            );
+          }
+        } catch (error) {
+          buttons.forEach((item) => { item.disabled = false; });
+          if (status) status.textContent = (error as Error).message;
+        }
+      })();
+    });
+  });
+}
+
 function renderBasket() {
   const wrap = tradePanel("basket");
   if (!wrap) return;
@@ -515,6 +572,13 @@ function renderBasket() {
     head.appendChild(controls);
   }
   card.appendChild(head);
+  const coverageViolations = _queueState.coverage_violations || [];
+  if (coverageViolations.length) {
+    const conflicts = el("div", "trade-queue-conflicts");
+    conflicts.innerHTML = coverageConflictsHtml(coverageViolations);
+    card.appendChild(conflicts);
+    wireCoverageActions(conflicts);
+  }
 
   if (!queue.length) {
     card.appendChild(el("div", "hint",

@@ -340,6 +340,64 @@ def test_stage_margin_put_does_not_require_assignment_cash(_basket):
     assert out["basket"][0]["collateral_mode"] == "margin"
 
 
+def test_margin_account_can_append_a_covered_call_despite_existing_stock_buys():
+    existing = [{
+        "type": "stock", "symbol": "ADI", "delta_czk": 1_000_000,
+    }]
+    route = {
+        "planned_shares": 100,
+        "currency": "USD",
+        "fx_to_base": 23.0,
+        "option": {"eligible": True, "contracts": 1},
+        "ladder": [{
+            "conid": 555, "expiry": "2026-08-07", "strike": 105.0,
+            "stageable": True,
+        }],
+    }
+    exact = {
+        "conid": 555, "expiry": "2026-08-07", "strike": 105.0,
+        "right": "C", "bid": 2.4, "ask": 2.6, "limit_price": 2.5,
+        "quote_timestamp": NOW.isoformat(),
+    }
+    with mock.patch.object(trade_service, "load_basket", return_value=existing), \
+            mock.patch.object(
+                trade_service, "save_basket",
+                side_effect=lambda rows: trade_service._normalize_basket(rows),
+            ), \
+            mock.patch.object(rebalance_routes, "build_route", return_value=route), \
+            mock.patch("ibkr_trade.resolve_executable_call", return_value=exact), \
+            mock.patch("ibkr_trade.live_orders", return_value=[]), \
+            mock.patch.object(trade_service, "_resolve_trade_account", return_value="U1"), \
+            mock.patch.object(
+                trade_service, "covered_call_capacity",
+                return_value={
+                    "current_shares": 300,
+                    "held_short_calls": 0,
+                    "working_short_calls": 0,
+                },
+            ), \
+            mock.patch.object(
+                trade_service, "cash_secured_put_capacity",
+                return_value={"available_cash_czk": 0},
+            ), \
+            mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+        out = rebalance_routes.stage_routes(
+            _holdings(),
+            [{"symbol": "NVDA", "delta_czk": -230_000}],
+            [{
+                "symbol": "NVDA", "route": "covered_call", "conid": 555,
+                "expiry": "2026-08-07", "strike": 105.0, "contracts": 1,
+            }],
+            mode="append",
+        )
+
+    assert out["collateral_mode"] == "margin"
+    assert any(
+        leg["type"] == "covered_call" and leg["symbol"] == "NVDA"
+        for leg in out["basket"]
+    )
+
+
 def test_append_mode_keeps_existing_queue_and_adds_new_stock_amounts():
     existing = [
         {
@@ -372,6 +430,98 @@ def test_append_mode_keeps_existing_queue_and_adds_new_stock_amounts():
     }
     assert stocks == {"AAPL": 100_000.0, "MSFT": -40_000.0, "NVDA": 230_000.0}
     assert out["mode"] == "append"
+
+
+def test_append_option_is_saved_when_an_unrelated_existing_symbol_needs_reconciliation():
+    holdings = _holdings()
+    holdings["positions"].extend([
+        {
+            "symbol": "EEFT", "asset_class": "STK", "quantity": 1_000,
+            "mark_price": 100.0, "market_value": 100_000.0,
+            "base_market_value": 2_300_000.0, "currency": "USD",
+            "fx_rate_to_base": 23.0,
+        },
+        {
+            "symbol": "PYPL", "asset_class": "STK", "quantity": 1_000,
+            "mark_price": 50.0, "market_value": 50_000.0,
+            "base_market_value": 1_150_000.0, "currency": "USD",
+            "fx_rate_to_base": 23.0,
+        },
+    ])
+    existing = [
+        {"type": "stock", "symbol": "PYPL", "delta_czk": -115_000},
+        {
+            "type": "covered_call", "symbol": "PYPL", "conid": 900,
+            "expiry": "2026-08-07", "strike": 55.0, "contracts": 10,
+            "multiplier": 100,
+        },
+    ]
+    route = {
+        "planned_shares": 100,
+        "currency": "USD",
+        "fx_to_base": 23.0,
+        "option": {"eligible": True, "contracts": 1},
+        "ladder": [{
+            "conid": 777, "expiry": "2026-08-07", "strike": 105.0,
+            "stageable": True,
+        }],
+    }
+    exact = {
+        "conid": 777, "expiry": "2026-08-07", "strike": 105.0,
+        "right": "C", "bid": 2.4, "ask": 2.6, "limit_price": 2.5,
+        "quote_timestamp": NOW.isoformat(),
+    }
+
+    def capacity(symbol, *_args, **_kwargs):
+        return {
+            "current_shares": 1_000,
+            "held_short_calls": 0,
+            "working_short_calls": 0,
+        }
+
+    with mock.patch.object(trade_service, "load_basket", return_value=existing), \
+            mock.patch.object(
+                trade_service, "save_basket",
+                side_effect=lambda rows: trade_service._normalize_basket(rows),
+            ), \
+            mock.patch.object(rebalance_routes, "build_route", return_value=route), \
+            mock.patch("ibkr_trade.resolve_executable_call", return_value=exact), \
+            mock.patch("ibkr_trade.live_orders", return_value=[]), \
+            mock.patch.object(trade_service, "_resolve_trade_account", return_value="U1"), \
+            mock.patch.object(trade_service, "covered_call_capacity", side_effect=capacity), \
+            mock.patch.object(
+                trade_service, "cash_secured_put_capacity",
+                return_value={"available_cash_czk": 1_000_000},
+            ):
+        out = rebalance_routes.stage_routes(
+            holdings,
+            [{"symbol": "EEFT", "delta_czk": -230_000}],
+            [{
+                "symbol": "EEFT", "route": "covered_call", "conid": 777,
+                "expiry": "2026-08-07", "strike": 105.0, "contracts": 1,
+            }],
+            mode="append",
+        )
+
+    assert any(
+        leg["type"] == "covered_call" and leg["symbol"] == "EEFT"
+        for leg in out["basket"]
+    )
+    assert out["coverage_violations"] == [{
+        "symbol": "PYPL",
+        "current_shares": 1_000,
+        "planned_stock_sell_shares": 100,
+        "working_stock_sell_shares": 0,
+        "working_stock_order_ids": [],
+        "working_call_order_ids": [],
+        "selected_call_contracts": 10,
+        "held_short_call_contracts": 0,
+        "working_short_call_contracts": 0,
+        "required_shares": 1_100,
+        "excess_shares": 100,
+        "stock_leg_ids": ["stock:PYPL"],
+        "call_leg_ids": ["covered_call:PYPL:900"],
+    }]
 
 
 def test_replace_mode_removes_prior_rebalance_legs_but_keeps_exit_routes():

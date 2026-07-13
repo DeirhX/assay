@@ -327,6 +327,25 @@ def _is_rebalance_leg(leg: dict[str, Any]) -> bool:
     )
 
 
+def _call_coverage_violations(
+    holdings: dict[str, Any],
+    all_legs: list[dict[str, Any]],
+    raw_working: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Use the durable queue validator with live IBKR coverage when staging."""
+    import trade_service
+
+    if not any(leg.get("type") == "covered_call" for leg in all_legs):
+        return []
+    account_id = trade_service._resolve_trade_account(None)
+    return trade_service.basket_call_coverage_violations(
+        all_legs,
+        holdings,
+        raw_working,
+        live_account_id=account_id,
+    )
+
+
 def stage_routes(
     holdings: dict[str, Any],
     trades: Any,
@@ -502,46 +521,25 @@ def stage_routes(
 
     # Verify the complete resulting queue, including existing legs in append mode.
     all_legs = trade_service._normalize_basket(existing + generated)
-    call_symbols = {
-        str(leg.get("symbol") or "") for leg in all_legs
-        if leg.get("type") == "covered_call"
-    }
     raw_working: list[dict[str, Any]] = []
     if any(leg.get("type") in {"covered_call", "cash_secured_put"} for leg in all_legs):
         try:
             raw_working = ibkr_trade.live_orders()
         except ibkr_trade.CPAPIError as exc:
             raise ValueError("working option orders could not be verified") from exc
-    if call_symbols:
-        account_id = trade_service._resolve_trade_account(None)
-        for sym in call_symbols:
-            capacity = trade_service.covered_call_capacity(
-                sym, raw_working, live_account_id=account_id,
-            )
-            calls = sum(
-                int(leg.get("contracts") or 0)
-                for leg in all_legs
-                if leg.get("type") == "covered_call" and leg.get("symbol") == sym
-            )
-            stock_sells = sum(
-                abs(float(leg.get("delta_czk") or 0))
-                for leg in all_legs
-                if leg.get("type") == "stock"
-                and leg.get("symbol") == sym
-                and float(leg.get("delta_czk") or 0) < 0
-            )
-            mark = float((_position(holdings, sym) or {}).get("mark_price") or 0)
-            fx = _fx_for_currency(holdings, None, _position(holdings, sym))
-            sell_shares = int(round(stock_sells / (mark * fx))) if mark > 0 and fx > 0 else 0
-            available_shares = max(0, int(capacity.get("current_shares") or 0) - sell_shares)
-            available_contracts = max(
-                0,
-                available_shares // OPTION_MULTIPLIER
-                - int(capacity.get("held_short_calls") or 0)
-                - int(capacity.get("working_short_calls") or 0),
-            )
-            if calls > available_contracts:
-                raise ValueError(f"{sym}: selected calls and stock sales exceed live share coverage")
+    coverage_violations = _call_coverage_violations(holdings, all_legs, raw_working)
+    generated_symbols = {
+        str(leg.get("symbol") or "") for leg in generated if leg.get("symbol")
+    }
+    introduced = [
+        violation for violation in coverage_violations
+        if violation["symbol"] in generated_symbols
+    ]
+    if introduced:
+        symbols = ", ".join(violation["symbol"] for violation in introduced)
+        raise ValueError(
+            f"{symbols}: selected calls and stock sales exceed live share coverage"
+        )
 
     # Aggregate cash-secured puts, working puts, and immediate stock buys.
     cash_capacity = trade_service.cash_secured_put_capacity(holdings)
@@ -557,7 +555,14 @@ def stage_routes(
     )
     working_puts = trade_service.working_short_put_collateral(raw_working)
     required_cash = stock_buys + staged_puts + working_puts
-    margin_enabled = staged_puts > 0 and trade_service.margin_account_enabled()
+    # A margin account is not cash-capped merely because this particular append
+    # contains a stock buy or a covered call instead of a short put. IBKR owns
+    # the real buying-power check at preview; this local snapshot guard is only
+    # for cash accounts.
+    margin_enabled = (
+        required_cash > available_cash + 0.01
+        and trade_service.margin_account_enabled()
+    )
     if not margin_enabled and required_cash > available_cash + 0.01:
         raise ValueError(
             f"stock buys and cash-secured puts need {required_cash:,.0f} CZK, "
@@ -573,4 +578,5 @@ def stage_routes(
         "required_cash_czk": round(required_cash, 2),
         "available_cash_czk": round(available_cash, 2),
         "collateral_mode": "margin" if margin_enabled else "cash",
+        "coverage_violations": coverage_violations,
     }
