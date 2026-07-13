@@ -1,11 +1,9 @@
 import datetime as dt
-import inspect
 import sys
-import tempfile
-import unittest
 from pathlib import Path
-from typing import Any, Callable
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -13,80 +11,6 @@ import exit_plan  # noqa: E402
 import ibkr_trade  # noqa: E402
 import tax_lots  # noqa: E402
 
-
-class _Raises:
-    """Small pytest.raises-compatible wrapper for unittest-only CI."""
-
-    def __init__(self, exc: type[BaseException], match: str | None = None):
-        case = unittest.TestCase()
-        self._cm = case.assertRaisesRegex(exc, match) if match else case.assertRaises(exc)
-
-    def __enter__(self) -> "_Raises":
-        self._cm.__enter__()
-        return self
-
-    def __exit__(self, *args: Any) -> bool | None:
-        return self._cm.__exit__(*args)
-
-    @property
-    def value(self) -> BaseException:
-        return self._cm.exception
-
-
-class _PytestCompat:
-    @staticmethod
-    def raises(exc: type[BaseException], match: str | None = None) -> _Raises:
-        return _Raises(exc, match)
-
-
-pytest = _PytestCompat()
-
-
-class _MonkeyPatch:
-    def __init__(self) -> None:
-        self._patches: list[Any] = []
-
-    def setattr(self, target: Any, name: str, value: Any) -> None:
-        patcher = mock.patch.object(target, name, value)
-        patcher.start()
-        self._patches.append(patcher)
-
-    def undo(self) -> None:
-        for patcher in reversed(self._patches):
-            patcher.stop()
-
-
-def _unittest_case(fn: Callable[..., None]) -> unittest.FunctionTestCase:
-    def run() -> None:
-        params = inspect.signature(fn).parameters
-        monkeypatch = _MonkeyPatch()
-        try:
-            if "tmp_path" in params:
-                with tempfile.TemporaryDirectory() as tmp:
-                    kwargs: dict[str, Any] = {"tmp_path": Path(tmp)}
-                    if "monkeypatch" in params:
-                        kwargs["monkeypatch"] = monkeypatch
-                    fn(**kwargs)
-            elif "monkeypatch" in params:
-                fn(monkeypatch=monkeypatch)
-            else:
-                fn()
-        finally:
-            monkeypatch.undo()
-
-    return unittest.FunctionTestCase(run, description=fn.__name__)
-
-
-def load_tests(
-    _loader: unittest.TestLoader,
-    _tests: unittest.TestSuite,
-    _pattern: str | None,
-) -> unittest.TestSuite:
-    funcs = [
-        value for name, value in globals().items()
-        if name.startswith("test_") and callable(value)
-    ]
-    return unittest.TestSuite(_unittest_case(fn) for fn in funcs)
 
 AS_OF = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
 

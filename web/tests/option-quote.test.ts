@@ -8,6 +8,8 @@ import {
   quoteBidAskMissing,
   quoteBidAskValid,
   quoteFreshnessCaption,
+  quoteFreshnessLabel,
+  quotePresentationState,
   quoteSourceChipClass,
   quoteTimestampIsStale,
   rungQuoteIsStale,
@@ -49,6 +51,10 @@ describe("option-quote", () => {
     expect(quoteFreshnessCaption({ quote_fresh: true, stageable: true })).toBe("fresh");
     expect(quoteFreshnessCaption({ quote_fresh: false, stageable: true })).toBe("stale / no quote");
     expect(quoteFreshnessCaption({ quote_fresh: false, stageable: false })).toBe("indicative");
+    expect(quotePresentationState({ quote_fresh: false, stageable: true })).toBe("stale");
+    expect(quoteFreshnessLabel({ quote_fresh: true, stageable: true })).toBe("Fresh quote");
+    expect(quoteFreshnessLabel({ quote_fresh: false, stageable: true })).toBe("Quote needed at preview");
+    expect(quoteFreshnessLabel({ quote_fresh: false, stageable: false })).toBe("Indicative only");
     expect(formatQuoteSourceLabel("yahoo_finance")).toBe("yahoo finance");
     expect(quoteSourceChipClass("ibkr")).toBe("good");
     expect(quoteSourceChipClass("yahoo")).toBe("muted");

@@ -1,6 +1,8 @@
 import type { ExitQuoteFields } from "./api-types";
 
 export const EXECUTION_QUOTE_MAX_AGE_MS = 120_000;
+type QuotePresentationFields = Pick<ExitQuoteFields, "quote_fresh" | "stageable">;
+export type QuotePresentationState = "fresh" | "stale" | "indicative";
 
 export function quoteTimestampIsStale(timestamp: string | null | undefined): boolean {
   const quoteTime = timestamp ? new Date(timestamp).getTime() : NaN;
@@ -38,11 +40,25 @@ export function quoteBidAskMissing(
 }
 
 export function quoteFreshnessCaption(
-  rung: Pick<ExitQuoteFields, "quote_fresh" | "stageable">,
+  rung: QuotePresentationFields,
 ): string {
+  const state = quotePresentationState(rung);
+  if (state === "fresh") return "fresh";
+  if (state === "stale") return "stale / no quote";
+  return state;
+}
+
+export function quotePresentationState(rung: QuotePresentationFields): QuotePresentationState {
   if (rung.quote_fresh) return "fresh";
-  if (rung.stageable) return "stale / no quote";
+  if (rung.stageable) return "stale";
   return "indicative";
+}
+
+export function quoteFreshnessLabel(rung: QuotePresentationFields): string {
+  const state = quotePresentationState(rung);
+  if (state === "fresh") return "Fresh quote";
+  if (state === "stale") return "Quote needed at preview";
+  return "Indicative only";
 }
 
 export function formatQuoteSourceLabel(source: string): string {

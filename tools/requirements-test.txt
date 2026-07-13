@@ -1,0 +1,3 @@
+# Test-runner dependency for the backend suite. Production remains stdlib-only.
+# Keep this pinned so local and CI discovery semantics do not drift.
+pytest==9.1.1
