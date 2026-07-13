@@ -29,6 +29,92 @@ let _holdToken = 0;
 
 interface RenderOpts { live: boolean; asOf?: string | null; coverage?: { live: number; eligible: number; total: number }; }
 
+export interface HoldingGroup {
+  symbol: string;
+  stocks: HoldingPosition[];
+  options: HoldingPosition[];
+  stockWeight: number;
+  optionExercisePct: number;
+  baseMarketValue: number | null;
+}
+
+function optionUnderlying(position: HoldingPosition): string {
+  if (position.option?.underlying) return position.option.underlying;
+  const compact = String(position.symbol || "").replace(/\s/g, "");
+  return compact.length > 15 ? compact.slice(0, -15) : String(position.symbol || "");
+}
+
+const groupKey = (symbol: string) => symbol.split(".")[0].trim().toUpperCase();
+
+/** One display row per underlying, with its stock and every option leg together. */
+export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGroup[] {
+  const groups = new Map<string, HoldingGroup>();
+  const stocksByRoot = new Map<string, HoldingGroup>();
+  for (const position of positions || []) {
+    if (position.asset_class === "OPT") continue;
+    const key = groupKey(position.symbol);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        symbol: position.symbol,
+        stocks: [],
+        options: [],
+        stockWeight: 0,
+        optionExercisePct: 0,
+        baseMarketValue: 0,
+      };
+      groups.set(key, group);
+      stocksByRoot.set(key, group);
+    }
+    group.stocks.push(position);
+    group.stockWeight += Number(position.percent_of_nav) || 0;
+    group.baseMarketValue = (group.baseMarketValue || 0)
+      + (Number(position.base_market_value) || 0);
+  }
+  for (const position of positions || []) {
+    if (position.asset_class !== "OPT") continue;
+    const underlying = optionUnderlying(position);
+    const key = groupKey(underlying);
+    let group = stocksByRoot.get(key) || groups.get(key);
+    if (!group) {
+      group = {
+        symbol: underlying || position.symbol,
+        stocks: [],
+        options: [],
+        stockWeight: 0,
+        optionExercisePct: 0,
+        baseMarketValue: 0,
+      };
+      groups.set(key, group);
+    }
+    group.options.push(position);
+    group.optionExercisePct += Number(position.option?.exercise_pct) || 0;
+    group.baseMarketValue = (group.baseMarketValue || 0)
+      + (Number(position.base_market_value) || 0);
+  }
+  return [...groups.values()].sort((a, b) =>
+    (b.stockWeight - a.stockWeight)
+    || (Math.abs(b.optionExercisePct) - Math.abs(a.optionExercisePct))
+    || a.symbol.localeCompare(b.symbol));
+}
+
+function optionLegLabel(position: HoldingPosition): string {
+  const option = position.option;
+  if (!option) return position.description || position.symbol;
+  const contracts = Number(option.contracts) || 0;
+  const side = contracts < 0 ? "short" : "long";
+  const count = Math.abs(contracts).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  const expiry = option.expiry
+    ? new Date(`${option.expiry}T00:00:00Z`).toLocaleDateString(undefined, {
+      month: "short", day: "numeric",
+    })
+    : "";
+  const strike = Number(option.strike).toLocaleString(undefined, {
+    maximumFractionDigits: 4,
+  });
+  return `${side} ${count}× ${strike}${option.right}${expiry ? ` · ${expiry}` : ""}`;
+}
+
 async function loadHoldings() {
   const status = $$("#hold-status");
   const token = ++_holdToken;
@@ -96,11 +182,15 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     if (synced) synced.innerHTML = freshnessLabel(h, opts);
     out.innerHTML = "";
 
-    const rows = (h.positions || [])
-      .slice()
-      .sort((a, b) => (b.percent_of_nav || 0) - (a.percent_of_nav || 0));
-    const weights = rows.map((p) => p.percent_of_nav || 0);
-    const maxW = Math.max(1e-6, ...weights);
+    const rows = groupHoldingPositions(h.positions || []);
+    const weights = rows.map((group) => group.stockWeight);
+    const maxW = Math.max(
+      1e-6,
+      ...rows.flatMap((group) => [
+        Math.abs(group.stockWeight),
+        Math.abs(group.optionExercisePct),
+      ]),
+    );
     const cum = (n: number) => weights.slice(0, n).reduce((s, w) => s + w, 0);
 
     out.appendChild(portfolioHero(h, rows.length, cum));
@@ -108,8 +198,9 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     // the colour coding (its whole point) was invisible until you scrolled past
     // everything it explains.
     out.appendChild(el("div", "hint pos-legend",
-      "Bar length \u221d weight. Colour = concentration: red >10% (single-name risk), amber 5\u201310%, blue 1\u20135%, grey <1%. " +
-      "Striped bar = option notional if exercised (\u2193 downside/short, \u2191 upside/long), not capital at risk. Click a row to deep-dive."));
+      "Each row is one underlying: shares use the solid upper bar; held options use the striped lower bar. " +
+      "Colour = share concentration: red >10%, amber 5\u201310%, blue 1\u20135%, grey <1%. " +
+      "Option arrows show assignment/exercise exposure, not capital at risk. Click a row to deep-dive."));
 
     // Opt-in column of each position's current market value (base currency).
     // Off by default because the bars are about concentration, not money, and the
@@ -133,66 +224,68 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     out.appendChild(controls);
 
     const list = el("div", "pos-list" + (showValues ? " show-values" : ""));
-    rows.forEach((p) => {
-      const isOpt = p.asset_class === "OPT";
-      const researchable = isResearchableHolding(p);
-      const providerSymbol = p.provider_symbol || p.symbol;
-      const w = p.percent_of_nav || 0;
+    rows.forEach((group) => {
+      const stock = group.stocks[0] || null;
+      const hasOptions = group.options.length > 0;
+      const researchable = stock
+        ? isResearchableHolding(stock)
+        : !!group.symbol && !group.symbol.toUpperCase().endsWith(".DRRT");
+      const providerSymbol = stock?.provider_symbol || group.symbol;
+      const w = group.stockWeight;
       // Tier by absolute concentration (flags the AMD/ARM problem on sight);
       // bar length is relative to the largest holding for visual ranking.
-      const tier = isOpt ? "opt" : w >= 10 ? "core" : w >= 5 ? "large" : w >= 1 ? "mid" : "small";
-      const o = isOpt ? p.option : null;
-      const exPct = o ? o.exercise_pct : null;
-      const qty = p.quantity;
-      const qtyText = qty == null || !Number.isFinite(Number(qty))
-        ? "quantity n/a"
-        : `${Number(qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${isOpt ? "contracts" : "shares"}`;
-
-      let right, barW, barClass;
-      if (isOpt) {
-        // Options carry ~0 capital but real notional exposure if exercised; show
-        // that (signed: a put is downside protection) instead of the tiny premium
-        // value, and draw a striped "notional, not capital" bar. Percentages are
-        // privacy-safe, so unlike the old absolute CZK value this needs no blur.
-        right = exPct != null
-          ? `${exPct < 0 ? "\u2193" : "\u2191"}${Math.abs(exPct).toFixed(1)}% if exercised`
-          : "n/a";
-        barW = exPct != null ? Math.min(100, (Math.abs(exPct) / maxW) * 100) : 0;
-        barClass = "pos-bar opt-bar";
-      } else {
-        right = `${w.toFixed(2)}%`;
-        // Bar length ∝ |weight| (a short/negative weight still has real size), and
-        // clamp to [0,100]. Without abs, a negative weight yields width:"-0.8%",
-        // which is invalid CSS the browser drops — so the display:block bar falls
-        // back to width:auto and fills the whole track (a tiny short reading full).
-        barW = Math.min(100, (Math.abs(w) / maxW) * 100);
-        barClass = "pos-bar" + (w < 0 ? " pos-bar-short" : "");
-      }
-
-      const displaySymbol = providerSymbol && providerSymbol !== p.symbol ? `${p.symbol} \u2192 ${providerSymbol}` : p.symbol;
-      const label = isOpt ? (p.description || p.symbol) : displaySymbol;
-      const tag = isOpt ? ` <span class="opt-tag">OPT</span>` : "";
+      const tier = stock ? (w >= 10 ? "core" : w >= 5 ? "large" : w >= 1 ? "mid" : "small") : "opt";
+      const stockQty = group.stocks.reduce(
+        (sum, position) => sum + (Number(position.quantity) || 0), 0,
+      );
+      const qtyText = stock
+        ? `${stockQty.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares`
+        : "no shares";
+      const stockBarW = Math.min(100, (Math.abs(w) / maxW) * 100);
+      const optionBarW = Math.min(
+        100, (Math.abs(group.optionExercisePct) / maxW) * 100,
+      );
+      const displaySymbol = stock && providerSymbol !== stock.symbol
+        ? `${stock.symbol} \u2192 ${providerSymbol}`
+        : group.symbol;
+      const optionSummary = group.options.map(optionLegLabel).join(" · ");
+      const optionDirection = group.optionExercisePct < 0 ? "\u2193" : "\u2191";
+      const optionExposure = hasOptions
+        ? `${optionDirection}${Math.abs(group.optionExercisePct).toFixed(1)}% if exercised`
+        : "";
+      const tag = hasOptions
+        ? ` <span class="opt-tag">${group.options.length} OPT</span>`
+        : "";
       // When live marks are on, flag any equity still riding the delayed Flex
       // mark (no live match) so coverage is honest at the row level.
-      const delayed = opts.live && !isOpt && p.live_mark === false;
+      const delayed = opts.live && group.stocks.some((position) => position.live_mark === false);
       const delayTag = delayed
         ? ` <span class="pos-delayed" title="Delayed \u2014 still on the Flex snapshot mark (no live match)">\u23f1</span>` : "";
-      const valText = p.base_market_value == null
+      const valText = group.baseMarketValue == null
         ? "\u2014"
-        : sensitive(`${Math.round(p.base_market_value).toLocaleString()} CZK`, "position value");
+        : sensitive(`${Math.round(group.baseMarketValue).toLocaleString()} CZK`, "position value");
       const row = el("div", "pos-row tier-" + tier);
       row.innerHTML =
-        `<span class="pos-sym">${esc(label)}${tag}${delayTag}</span>` +
-        `<span class="pos-bar-track"><span class="${barClass}" style="width:${barW.toFixed(2)}%"></span></span>` +
+        `<span class="pos-sym"><span class="pos-sym-main">${esc(displaySymbol)}${tag}${delayTag}</span>` +
+          (hasOptions ? `<span class="pos-option-summary">${esc(optionSummary)}</span>` : "") +
+        `</span>` +
+        `<span class="pos-bar-track${hasOptions ? " has-options" : ""}">` +
+          (stock
+            ? `<span class="pos-bar pos-group-stock${w < 0 ? " pos-bar-short" : ""}" style="width:${stockBarW.toFixed(2)}%"></span>`
+            : "") +
+          (hasOptions
+            ? `<span class="pos-bar opt-bar pos-group-opt" style="width:${optionBarW.toFixed(2)}%"></span>`
+            : "") +
+        `</span>` +
         `<span class="pos-w" title="${esc(`Position: ${qtyText}`)}">` +
-          `<span class="pos-w-pct">${esc(right)}</span><span class="pos-w-qty">${esc(qtyText)}</span>` +
+          `<span class="pos-w-pct">${stock ? `${w.toFixed(2)}%` : "options only"}</span>` +
+          `<span class="pos-w-qty">${esc(qtyText)}</span>` +
+          (hasOptions ? `<span class="pos-w-opt">${esc(optionExposure)}</span>` : "") +
         `</span>` +
         `<span class="pos-val">${valText}</span>`;
-      row.title = isOpt && o
-        ? `${p.description || p.symbol} \u00b7 ${Math.abs(o.contracts)} ${o.right === "P" ? "put" : "call"} @ ${o.strike} \u00b7 ` +
-          `${(exPct ?? 0).toFixed(1)}% of invested if exercised (notional, not capital)`
-        : (p.description || p.symbol) + ` \u00b7 ${w.toFixed(2)}% of invested \u00b7 ${qtyText}` +
-          (providerSymbol !== p.symbol ? ` \u00b7 opens ${providerSymbol}` : "");
+      row.title = `${stock?.description || group.symbol} \u00b7 ${w.toFixed(2)}% of invested \u00b7 ${qtyText}` +
+        (hasOptions ? ` \u00b7 ${optionSummary} \u00b7 ${optionExposure} (notional, not capital)` : "") +
+        (stock && providerSymbol !== stock.symbol ? ` \u00b7 opens ${providerSymbol}` : "");
       if (researchable) {
         row.addEventListener("click", () => analyzeFromAnywhere(providerSymbol));
       } else {
@@ -262,7 +355,7 @@ function portfolioHero(h: HoldingsPayload, count: number, cum: (n: number) => nu
       `</div>`).join("");
   conc.innerHTML =
     `<div class="conc-head"><span class="conc-title">Concentration</span>` +
-    `<span class="muted">${count} positions \u00b7 weights = % of invested</span></div>` +
+    `<span class="muted">${count} underlyings \u00b7 weights = % of invested</span></div>` +
     `<div class="conc-bars">${chips}</div>`;
   hero.appendChild(conc);
 

@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -114,3 +115,58 @@ def test_refresh_marks_uses_fetched_positions():
         res = hl.refresh_marks(_snapshot())
     assert res["available"] is True
     assert res["coverage"]["live"] == 3
+
+
+def test_live_snapshot_replaces_book_and_drops_mismatched_tax_lots():
+    snap = _snapshot()
+    snap.update({
+        "base_currency": "CZK",
+        "lots": [
+            {"symbol": "ACN", "quantity": 20.0},
+            {"symbol": "005930.KS", "quantity": 170.0},
+        ],
+        "tax_lot_summary": [
+            {"symbol": "ACN", "total_quantity": 20.0},
+            {"symbol": "005930.KS", "total_quantity": 170.0},
+        ],
+        "top_positions": [],
+    })
+    live = [
+        {
+            "ticker": "ACN", "contractDesc": "ACN", "assetClass": "STK",
+            "currency": "USD", "mktPrice": 110.0, "mktValue": 2750.0,
+            "position": 25.0, "unrealizedPnl": 500.0,
+        },
+        {
+            "ticker": "005930", "contractDesc": "005930", "assetClass": "STK",
+            "currency": "KRW", "mktPrice": 294_000.0, "mktValue": 49_980_000.0,
+            "position": 170.0, "unrealizedPnl": 1000.0,
+        },
+        {
+            "ticker": "PYPL", "contractDesc": "PYPL AUG2026 47 C",
+            "assetClass": "OPT", "currency": "USD", "mktPrice": 1.0,
+            "mktValue": -100.0, "position": -1.0, "expiry": "20260814",
+            "putOrCall": "C", "strike": "47", "multiplier": 100.0,
+        },
+    ]
+    summary = {
+        "netliquidation": {"amount": 1_100_000.0, "currency": "CZK"},
+        "totalcashvalue": {"amount": 20_000.0, "currency": "CZK"},
+    }
+
+    before = datetime.now(timezone.utc)
+    out = hl.merge_live_snapshot(snap, live, summary, {"currency": "CZK"})
+    after = datetime.now(timezone.utc)
+    by = {row["symbol"]: row for row in out["positions"]}
+
+    assert set(by) == {"ACN", "005930.KS", "PYPL  260814C00047000"}
+    assert by["ACN"]["quantity"] == 25.0
+    assert by["ACN"]["base_market_value"] == 63_250.0
+    assert by["PYPL  260814C00047000"]["base_market_value"] == -2300.0
+    assert out["net_asset_value"] == 1_100_000.0
+    assert out["cash"][0]["ending_cash"] == 20_000.0
+    assert [lot["symbol"] for lot in out["lots"]] == ["005930.KS"]
+    assert [row["symbol"] for row in out["tax_lot_summary"]] == ["005930.KS"]
+    assert "Client Portal API live snapshot" in out["source"]
+    generated = datetime.fromisoformat(out["generated_at"])
+    assert before.replace(microsecond=0) <= generated <= after

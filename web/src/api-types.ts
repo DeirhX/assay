@@ -14,6 +14,8 @@
 
 // ---- holdings (GET /api/holdings) -----------------------------------------
 export interface OptionExposure {
+  underlying: string;
+  expiry: string | null;
   right: "C" | "P";
   strike: number;
   contracts: number;

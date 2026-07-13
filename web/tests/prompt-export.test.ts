@@ -24,7 +24,7 @@ const holdings = (): HoldingsPayload => ({
     { symbol: "KLAC  260717P00238000", provider_symbol: "KLAC", researchable: false, description: "KLAC 17JUL26 238 P",
       asset_class: "OPT", quantity: -2, percent_of_nav: 0.1, broker_percent_of_nav: null,
       base_market_value: -100, currency: "USD", unrealized_pnl: 0, issuer_country_code: null,
-      option: { right: "P", strike: 238, contracts: -2, multiplier: 100, notional_base: 1000, exercise_pct: 3.5 } },
+      option: { underlying: "KLAC", expiry: "2026-07-17", right: "P", strike: 238, contracts: -2, multiplier: 100, notional_base: 1000, exercise_pct: 3.5 } },
   ],
 });
 

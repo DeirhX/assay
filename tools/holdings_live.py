@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import math
+import re
 import threading
 import time
 from typing import Any
@@ -43,6 +45,236 @@ _CACHE_TTL_SECONDS = 15.0
 _MAX_POSITION_PAGES = 8
 _cache: tuple[float, list[dict[str, Any]] | None] | None = None
 _cache_lock = threading.Lock()
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        out = float(value)
+    except ValueError:
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _summary_amount(summary: dict[str, Any], key: str) -> float | None:
+    field = summary.get(key)
+    return _number(field.get("amount")) if isinstance(field, dict) else None
+
+
+def _live_option_symbol(row: dict[str, Any]) -> str:
+    """Canonical OCC symbol for a CPAPI option position."""
+    ticker = str(row.get("ticker") or "").strip().upper()
+    expiry = re.sub(r"\D", "", str(row.get("expiry") or ""))
+    right = str(row.get("putOrCall") or "").strip().upper()[:1]
+    strike = _number(row.get("strike"))
+    if ticker and len(expiry) == 8 and right in {"C", "P"} and strike is not None:
+        return f"{ticker[:6]:<6}{expiry[2:]}{right}{round(strike * 1000):08d}"
+    desc = str(row.get("contractDesc") or "")
+    bracketed = re.search(r"\[([A-Z0-9 ]{6}\d{6}[CP]\d{8})\s+\d+\]", desc)
+    return bracketed.group(1) if bracketed else ticker
+
+
+def _position_key(row: dict[str, Any], *, live: bool) -> tuple[str, str, str]:
+    asset = str(row.get("assetClass") if live else row.get("asset_class") or "").upper()
+    currency = str(row.get("currency") or "").upper()
+    if asset == "OPT":
+        symbol = _live_option_symbol(row) if live else str(row.get("symbol") or "").strip().upper()
+    else:
+        symbol = _norm_ticker(
+            row.get("ticker") or row.get("contractDesc")
+            if live else row.get("symbol")
+        )
+    return asset, symbol, currency
+
+
+def _fx_rates(snapshot: dict[str, Any]) -> dict[str, float]:
+    """Snapshot-local currency to base rates inferred from existing positions."""
+    numerators: dict[str, float] = {}
+    denominators: dict[str, float] = {}
+    base = str(snapshot.get("base_currency") or "").upper()
+    if base:
+        numerators[base] = denominators[base] = 1.0
+    for row in snapshot.get("positions") or []:
+        currency = str(row.get("currency") or "").upper()
+        local = _number(row.get("market_value"))
+        base_value = _number(row.get("base_market_value"))
+        if not currency or local is None or local == 0 or base_value is None:
+            continue
+        numerators[currency] = numerators.get(currency, 0.0) + abs(base_value)
+        denominators[currency] = denominators.get(currency, 0.0) + abs(local)
+    return {
+        currency: numerators[currency] / denominator
+        for currency, denominator in denominators.items()
+        if denominator > 0
+    }
+
+
+def merge_live_snapshot(
+    snapshot: dict[str, Any],
+    live_positions: list[dict[str, Any]],
+    summary: dict[str, Any],
+    account: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Replace portfolio quantities and values from CPAPI, preserving safe metadata.
+
+    Flex remains the tax-lot source because CPAPI's portfolio endpoint does not
+    expose acquisition dates. Lots are retained only when their summed quantity
+    still matches the live position; otherwise they are dropped rather than
+    silently presenting stale tax eligibility after a fill.
+    """
+    existing = {
+        _position_key(row, live=False): row
+        for row in snapshot.get("positions") or []
+        if isinstance(row, dict)
+    }
+    fx = _fx_rates(snapshot)
+    nav = _summary_amount(summary, "netliquidation")
+    base_currency = str(
+        (summary.get("netliquidation") or {}).get("currency")
+        or (account or {}).get("currency")
+        or snapshot.get("base_currency")
+        or ""
+    ).upper()
+    if base_currency:
+        fx[base_currency] = 1.0
+
+    positions: list[dict[str, Any]] = []
+    position_by_symbol: dict[str, dict[str, Any]] = {}
+    for live in live_positions:
+        if not isinstance(live, dict):
+            continue
+        quantity = _number(live.get("position"))
+        if quantity is None or abs(quantity) < 1e-12:
+            continue
+        asset, live_symbol, currency = _position_key(live, live=True)
+        if not live_symbol:
+            continue
+        prior = existing.get((asset, live_symbol, currency))
+        symbol = str((prior or {}).get("symbol") or live_symbol)
+        mark = _number(live.get("mktPrice"))
+        market_value = _number(live.get("mktValue"))
+        multiplier = _number(live.get("multiplier")) or (100.0 if asset == "OPT" else 1.0)
+        if market_value is None and mark is not None:
+            market_value = quantity * mark * multiplier
+        rate = fx.get(currency)
+        base_value = market_value * rate if market_value is not None and rate is not None else None
+        row = {
+            "symbol": symbol,
+            "description": (prior or {}).get("description")
+            or live.get("fullName") or live.get("name") or live.get("contractDesc"),
+            "asset_class": asset,
+            "quantity": quantity,
+            "mark_price": mark,
+            "market_value": market_value,
+            "base_market_value": base_value,
+            "percent_of_nav": (
+                round(base_value / nav * 100, 6)
+                if base_value is not None and nav is not None and nav != 0
+                else None
+            ),
+            "currency": currency,
+            "unrealized_pnl": _number(live.get("unrealizedPnl")),
+            "issuer_country_code": (prior or {}).get("issuer_country_code")
+            or live.get("countryCode"),
+            "listing_exchange": (prior or {}).get("listing_exchange")
+            or live.get("listingExchange"),
+            "sub_category": (prior or {}).get("sub_category")
+            or live.get("sector"),
+        }
+        positions.append(row)
+        position_by_symbol[symbol] = row
+
+    positions.sort(key=lambda row: abs(_number(row.get("base_market_value")) or 0), reverse=True)
+    out = copy.deepcopy(snapshot)
+    out["base_currency"] = base_currency or snapshot.get("base_currency")
+    out["net_asset_value"] = nav if nav is not None else snapshot.get("net_asset_value")
+    out["generated_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    out["source"] = (
+        "IBKR Client Portal API live snapshot; Flex tax lots retained only "
+        "where quantities still match"
+    )
+    out["positions"] = positions
+
+    cash = copy.deepcopy(snapshot.get("cash") or [])
+    total_cash = _summary_amount(summary, "totalcashvalue")
+    if total_cash is not None:
+        base_row = next(
+            (row for row in cash if row.get("currency") == "BASE_SUMMARY"),
+            None,
+        )
+        if base_row is None:
+            cash.insert(0, {"currency": "BASE_SUMMARY", "ending_cash": total_cash})
+        else:
+            base_row["ending_cash"] = total_cash
+    out["cash"] = cash
+
+    live_quantities = {
+        symbol: _number(row.get("quantity"))
+        for symbol, row in position_by_symbol.items()
+    }
+    lot_totals: dict[str, float] = {}
+    for lot in snapshot.get("lots") or []:
+        if isinstance(lot, dict):
+            symbol = str(lot.get("symbol") or "")
+            lot_totals[symbol] = lot_totals.get(symbol, 0.0) + (_number(lot.get("quantity")) or 0)
+    safe_lot_symbols = {
+        symbol for symbol, total in lot_totals.items()
+        if live_quantities.get(symbol) is not None
+        and math.isclose(total, live_quantities[symbol] or 0, abs_tol=1e-8)
+    }
+    out["lots"] = [
+        copy.deepcopy(lot) for lot in snapshot.get("lots") or []
+        if isinstance(lot, dict) and str(lot.get("symbol") or "") in safe_lot_symbols
+    ]
+    out["tax_lot_summary"] = [
+        copy.deepcopy(row) for row in snapshot.get("tax_lot_summary") or []
+        if isinstance(row, dict) and str(row.get("symbol") or "") in safe_lot_symbols
+    ]
+    top_fields = {
+        "symbol", "description", "quantity", "percent_of_nav",
+        "base_market_value", "currency", "unrealized_pnl",
+    }
+    out["top_positions"] = [
+        {key: value for key, value in row.items() if key in top_fields}
+        for row in positions
+    ]
+    return out
+
+
+def fetch_live_portfolio(
+    *,
+    include_summary: bool = True,
+    assume_authenticated: bool = False,
+) -> dict[str, Any] | None:
+    """Return an authenticated CPAPI portfolio, or None when not connected."""
+    import ibkr_trade
+
+    if not assume_authenticated and not ibkr_trade.auth_status().get("authenticated"):
+        return None
+    accounts = ibkr_trade.accounts()
+    if not accounts:
+        raise ValueError("IBKR is authenticated but returned no portfolio account")
+    account = accounts[0]
+    account_id = account.get("accountId") or account.get("id") or account.get("account")
+    if not account_id:
+        raise ValueError("IBKR portfolio account has no account id")
+    rows: list[dict[str, Any]] = []
+    for page in range(_MAX_POSITION_PAGES):
+        page_rows = ibkr_trade.positions(str(account_id), page)
+        if not page_rows:
+            break
+        rows.extend(page_rows)
+        if len(page_rows) < 30:
+            break
+    return {
+        "account": account,
+        "positions": rows,
+        "summary": (
+            ibkr_trade.account_summary(str(account_id))
+            if include_summary else {}
+        ),
+    }
 
 
 def _norm_ticker(sym: str | None) -> str:
@@ -124,24 +356,8 @@ def _fetch_live_positions_uncached() -> list[dict[str, Any]] | None:
     unauthenticated / unreachable. Best-effort and quiet — any failure just means
     'no live overlay this time', never an exception to the caller."""
     try:
-        import ibkr_trade
-        if not ibkr_trade.auth_status().get("authenticated"):
-            return None
-        accts = ibkr_trade.accounts()  # also primes the /portfolio session
-        if not accts:
-            return None
-        acct = accts[0].get("accountId") or accts[0].get("id") or accts[0].get("account")
-        if not acct:
-            return None
-        rows: list[dict[str, Any]] = []
-        for page in range(_MAX_POSITION_PAGES):
-            pg = ibkr_trade.positions(str(acct), page)
-            if not pg:
-                break
-            rows.extend(pg)
-            if len(pg) < 30:  # CPAPI pages positions in 30s; a short page is the last
-                break
-        return rows
+        portfolio_data = fetch_live_portfolio(include_summary=False)
+        return portfolio_data["positions"] if portfolio_data else None
     except Exception:  # noqa: BLE001 -- gateway hiccup: fall back to delayed-only
         return None
 

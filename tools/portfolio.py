@@ -301,7 +301,10 @@ def option_exposure(position: dict[str, Any], invested: float) -> dict[str, Any]
     notional_base = abs(qty) * multiplier * strike * fx
     pct = notional_base / invested * 100.0
     direction = (1 if right == "C" else -1) * (1 if qty > 0 else -1)
+    expiry = parse_occ_expiry(position.get("symbol"))
     return {
+        "underlying": option_root(position.get("symbol")),
+        "expiry": expiry.isoformat() if expiry else None,
         "right": right,
         "strike": strike,
         "contracts": qty,
