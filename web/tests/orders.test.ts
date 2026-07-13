@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  isTerminalOrder, ordersDashboardHtml, pipelineCounts, type OrdersDashboardData,
+  ordersDashboardHtml, pipelineCounts, type OrdersDashboardData,
 } from "../src/orders";
+import { isTerminalOrder } from "../src/pipeline-summary";
 
 const data = (over: Partial<OrdersDashboardData> = {}): OrdersDashboardData => ({
   plan: {
@@ -92,5 +93,13 @@ describe("ordersDashboardHtml", () => {
     }));
     expect(html).not.toContain("<strong>META</strong>");
     expect(html).toContain("“submitted” plan records are not treated as fills");
+  });
+
+  it("makes stale intent revalidation the planned-trades action", () => {
+    const html = ordersDashboardHtml(data({
+      plan: { ...data().plan, stale: true },
+    }));
+    expect(html).toContain("Recheck stale amounts");
+    expect(html).toContain("execution plan is stale");
   });
 });

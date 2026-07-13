@@ -9,6 +9,7 @@ import { starHtml } from "./basket";
 import { $, api, esc, fmtCZK, relAge, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { runHoldingsSync } from "./holdings-sync";
+import { publishPipelineChanged, queueWorkflowView } from "./pipeline-summary";
 import { pushNav, setActiveView } from "./shell";
 import { openTicker } from "./ticker-nav";
 import { loadCachedSegment } from "./segment";
@@ -52,6 +53,7 @@ interface ExecutionPlanSum {
 interface StagedBasketSum {
   count: number; buys: number; sells: number; total_abs_czk: number;
   conditional_buys?: number; conditional_reductions?: number; option_legs?: number;
+  reviewed?: boolean; valid?: boolean;
 }
 interface JournalSum { total: number; pending_outcomes: number; oldest_pending_days?: number | null; review_due: number }
 interface PickRow { symbol: string; tier?: string; segment?: string | null; age_days?: number | null }
@@ -127,7 +129,10 @@ function card(tone: "ok" | "warn" | "bad" | "muted", title: string, chip: string
 
 // ---- next-step banner -------------------------------------------------------
 export function nextStepHtml(step: NextStep): string {
-  const urgent = ["setup", "resync", "drift-resync", "commit-draft", "place-basket", "planned-orders", "gates-open"].includes(step.id);
+  const urgent = [
+    "setup", "resync", "drift-resync", "commit-draft", "place-basket",
+    "stale-plan", "planned-orders", "gates-open",
+  ].includes(step.id);
   const tone = step.id === "all-clear" ? "ok" : urgent ? "warn" : "info";
   const go = step.id === "all-clear" ? "" :
     `<button class="primary" type="button" data-goto="${esc(step.view)}"` +
@@ -221,6 +226,8 @@ export function draftCard(d: DraftSum): string {
 
 export function stagedBasketCard(b: StagedBasketSum): string {
   if (!b.count) return "";
+  const nextView = queueWorkflowView(b);
+  const ready = nextView === "trade";
   const conditional = [
     b.conditional_buys
       ? `${b.conditional_buys} short put${b.conditional_buys === 1 ? "" : "s"}`
@@ -230,13 +237,17 @@ export function stagedBasketCard(b: StagedBasketSum): string {
       : "",
   ].filter(Boolean).join(", ");
   return card("warn", "Order queue",
-    `<span class="chip warn">${b.count} trade${b.count === 1 ? "" : "s"}</span>`,
+    `<span class="chip ${ready ? "good" : "warn"}">${b.count} trade${b.count === 1 ? "" : "s"}${ready ? " · approved" : ""}</span>`,
     `${b.buys} share buy${b.buys === 1 ? "" : "s"}, ` +
     `${b.sells} share sell${b.sells === 1 ? "" : "s"}` +
     `${conditional ? ` · conditional: ${conditional}` : ""} · ` +
     `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "queued direct-share size")} direct-share value — queued, not yet placed.`,
     goBtn("orders", "Order pipeline →") +
-    goBtn("target-state", "Review projected portfolio →", "primary"));
+    goBtn(
+      nextView || "target-state",
+      ready ? "Preview & place →" : "Review projected portfolio →",
+      "primary",
+    ));
 }
 
 export function journalCard(j: JournalSum): string {
@@ -349,8 +360,20 @@ export function attentionItems(v: Overview): AttentionItem[] {
   }
   if (v.draft.pending) rows.push({ id: "commit-draft", tone: "warn", title: "Target-model changes need a decision",
     detail: `${v.draft.pending} target change${v.draft.pending === 1 ? "" : "s"} remain unapplied.`, view: "working-draft", action: "Review" });
-  if (v.staged_basket.count) rows.push({ id: "place-basket", tone: "warn", title: "Orders are queued",
-    detail: `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} need a projected-portfolio review.`, view: "orders", action: "Open pipeline" });
+  if (v.staged_basket.count) {
+    const nextView = queueWorkflowView(v.staged_basket) || "target-state";
+    const ready = nextView === "trade";
+    rows.push({ id: "place-basket", tone: "warn", title: ready ? "Orders are approved" : "Orders are queued",
+      detail: ready
+        ? `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} are ready for IBKR preview.`
+        : `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} need a projected-portfolio review.`,
+      view: nextView, action: ready ? "Preview & place" : "Review impact" });
+  }
+  if (v.execution_plan?.stale && v.execution_plan.planned) rows.push({
+    id: "stale-plan", tone: "warn", title: "Planned trades are stale",
+    detail: `${v.execution_plan.planned} planned trade${v.execution_plan.planned === 1 ? "" : "s"} no longer match the current portfolio plan.`,
+    view: "rebalance", action: "Recheck amounts",
+  });
   if (v.execution_plan?.planned) rows.push({ id: "planned-orders", tone: "warn", title: "Trades remain planned",
     detail: `${v.execution_plan.planned} selected or deferred trade${v.execution_plan.planned === 1 ? "" : "s"} have not reached the order queue.`, view: "orders", action: "Open pipeline" });
   if (v.plan?.gates_open) rows.push({ id: "gates-open", tone: "warn", title: "Price levels have triggered",
@@ -385,6 +408,7 @@ export function pulseHtml(v: Overview): string {
   const cash = plan?.cash;
   const planned = v.execution_plan?.planned || 0;
   const inFlight = planned + v.staged_basket.count;
+  const staleNote = v.execution_plan?.stale && planned ? " · planned amounts stale" : "";
   const stat = (label: string, value: string, note: string, tone = "", view = "", id = "") => {
     const tag = view ? "button" : "div";
     return `<${tag}${id ? ` id="${esc(id)}"` : ""}${view ? ` type="button" data-goto="${esc(view)}"` : ""} ` +
@@ -397,7 +421,7 @@ export function pulseHtml(v: Overview): string {
       stat("Holdings", `${v.snapshot.positions} positions`, v.snapshot.exists ? `synced ${agoText(v.snapshot.age_days)}` : "snapshot missing", !v.snapshot.exists || v.snapshot.stale ? "warn" : "") +
       stat("Plan", plan ? `${plan.actionable} actions` : "not configured", plan && !plan.actionable ? "all targeted names in band" : `${plan?.out_of_band || 0} outside band`, plan?.actionable ? "warn" : "") +
       stat("Cash", cash ? `${cash.pct_of_nav.toFixed(1)}%` : "n/a", cash ? `${cash.low}–${cash.high}% band` : "no cash target", cash && cash.status !== "IN" ? "warn" : "") +
-      stat("In flight", `${inFlight}`, inFlight ? `${planned} planned · ${v.staged_basket.count} queued` : "no planned or queued trades", inFlight ? "warn" : "", "orders", "today-orders-inflight") +
+      stat("In flight", `${inFlight}`, inFlight ? `${planned} planned · ${v.staged_basket.count} queued${staleNote}` : "no planned or queued trades", inFlight ? "warn" : "", "orders", "today-orders-inflight") +
     `</div></section>`;
 }
 
@@ -473,12 +497,11 @@ async function loadOverview(): Promise<void> {
         : "Today";
     }
     body.innerHTML = overviewHtml(v, activity.events || [], previousVisit);
-    document.dispatchEvent(new CustomEvent("orders-local-summary", {
-      detail: {
-        planned: v.execution_plan?.planned || 0,
-        queued: v.staged_basket.count || 0,
-      },
-    }));
+    publishPipelineChanged({
+      source: "overview",
+      planned: v.execution_plan?.planned || 0,
+      queued: v.staged_basket.count || 0,
+    });
     localStorage.setItem("assay.home.lastVisit", stamp);
   } catch (e) {
     if (status) { status.textContent = "Could not load the overview: " + (e as Error).message; status.classList.add("err"); }

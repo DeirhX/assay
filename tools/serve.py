@@ -685,7 +685,7 @@ class Handler(BaseHTTPRequestHandler):
             "plan": plan_sum,
             "draft": draft,
             "execution_plan": overview.execution_plan_summary(execution_state),
-            "staged_basket": overview.staged_basket_summary(queue.get("trades")),
+            "staged_basket": overview.staged_basket_summary(queue),
             "journal": overview.journal_summary(journal.load_entries(), now=now),
             # Read-only over the cached verdict (warmed when Attribution is opened) --
             # no network on the Today path. Absent/thin cache degrades to a nudge.
@@ -1577,8 +1577,18 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_preview(self._read_body()))
 
     def _post_trade_place(self, path):
-        result = _trade_place(self._read_body())
-        execution_plan.mark_submitted()
+        body = self._read_body()
+        result = _trade_place(body)
+        submitted_ids = execution_plan.execution_item_ids_for_orders(
+            body.get("trades") or [],
+            result.get("orders") or [],
+        )
+        execution_plan.mark_submitted(submitted_ids)
+        # _trade_place clears the exact queue. Any queued intent that did not
+        # produce a residual order (excluded, blocked, or already covered by a
+        # working IBKR order) returns to selected instead of disappearing as
+        # falsely submitted.
+        execution_plan.reconcile_queue([])
         return self._send_json(result)
 
     def _post_trade_cancel(self, path):

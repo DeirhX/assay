@@ -464,6 +464,10 @@ sources: `execution-plan.json` (selected/deferred intent),
 `staged-basket.json` (exact local queue + projection approval), and live CPAPI
 working orders. It does not infer fills from an execution-plan `submitted`
 status; completed executions remain broker/Flex truth under Portfolio History.
+`pipeline-summary.ts` owns the shared terminal-order predicate, persistent
+header/Today counts, and the one invalidation event emitted after queue, plan,
+review, or broker changes; Orders, Trade, and the flowbar consume that same
+definition instead of maintaining competing counters.
 
 ### 7.4 Cross-cutting
 

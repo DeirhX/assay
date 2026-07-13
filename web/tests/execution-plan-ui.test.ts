@@ -14,6 +14,7 @@ import {
   patchExecutionPlanItem,
 } from "../src/execution-plan-ui";
 import type { ExecutionPlanItem, RebalanceRouteSelection } from "../src/api-types";
+import { subscribePipelineChanged } from "../src/pipeline-summary";
 
 const apiMock = vi.mocked(api);
 
@@ -91,9 +92,13 @@ describe("patchExecutionPlanItem", () => {
       items: [{ ...item, status: "selected" }],
     });
     const statusEl = document.createElement("span");
+    const changed = vi.fn();
+    const unsubscribe = subscribePipelineChanged(changed);
     await patchExecutionPlanItem(item, { status: "selected" }, statusEl);
+    unsubscribe();
     expect(item.status).toBe("selected");
     expect(statusEl.textContent).toBe("plan saved ✓");
+    expect(changed).toHaveBeenCalledWith({ source: "plan" });
   });
 });
 

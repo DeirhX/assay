@@ -1,5 +1,6 @@
 import { api, el, esc, fmtCZK, sensitive } from "./core";
 import type { ExecutionPlanItem, ExecutionPlanState, RebalanceRouteSelection } from "./api-types";
+import { publishPipelineChanged } from "./pipeline-summary";
 
 const normalizeSymbol = (raw: string) => raw.trim().toUpperCase();
 
@@ -39,6 +40,7 @@ export async function patchExecutionPlanItem(
     });
     const fresh = updated.items.find((candidate) => candidate.id === item.id);
     if (fresh) Object.assign(item, fresh);
+    publishPipelineChanged({ source: "plan" });
     if (statusEl) {
       statusEl.textContent = "plan saved ✓";
       statusEl.className = "";

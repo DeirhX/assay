@@ -122,18 +122,26 @@ class TestExecutionPlanSummary(unittest.TestCase):
 
 class TestStagedBasketAndJournal(unittest.TestCase):
     def test_basket_totals(self):
-        b = overview.staged_basket_summary(
-            [{"symbol": "A", "delta_czk": 1000}, {"symbol": "B", "delta_czk": -400}])
+        b = overview.staged_basket_summary({
+            "trades": [
+                {"symbol": "A", "delta_czk": 1000},
+                {"symbol": "B", "delta_czk": -400},
+            ],
+            "reviewed": True,
+            "valid": True,
+        })
         self.assertEqual((b["count"], b["buys"], b["sells"]), (2, 1, 1))
         self.assertEqual(b["total_abs_czk"], 1400)
+        self.assertTrue(b["reviewed"])
+        self.assertTrue(b["valid"])
         self.assertEqual(overview.staged_basket_summary(None)["count"], 0)
 
     def test_basket_counts_conditional_option_routes_separately(self):
-        b = overview.staged_basket_summary([
+        b = overview.staged_basket_summary({"trades": [
             {"type": "stock", "symbol": "A", "delta_czk": 1000},
             {"type": "cash_secured_put", "symbol": "B", "contracts": 1},
             {"type": "covered_call", "symbol": "C", "contracts": 2},
-        ])
+        ]})
         self.assertEqual(b["count"], 3)
         self.assertEqual((b["buys"], b["sells"]), (1, 0))
         self.assertEqual(b["conditional_buys"], 1)
@@ -232,10 +240,21 @@ class TestNextStep(unittest.TestCase):
             self._payload(staged_basket={"count": 2}))
         self.assertEqual(basket_step["id"], "place-basket")
         self.assertEqual(basket_step["view"], "target-state")
+        ready_step = overview.next_step(
+            self._payload(staged_basket={"count": 2, "reviewed": True, "valid": True}))
+        self.assertEqual(ready_step["view"], "trade")
+        self.assertEqual(ready_step["label"], "Preview & place orders")
+        invalid_step = overview.next_step(
+            self._payload(staged_basket={"count": 2, "reviewed": True, "valid": False}))
+        self.assertEqual(invalid_step["view"], "target-state")
         planned_step = overview.next_step(
             self._payload(execution_plan={"planned": 2}))
         self.assertEqual(planned_step["id"], "planned-orders")
         self.assertEqual(planned_step["view"], "orders")
+        stale_step = overview.next_step(
+            self._payload(execution_plan={"planned": 2, "stale": True}))
+        self.assertEqual(stale_step["id"], "stale-plan")
+        self.assertEqual(stale_step["view"], "rebalance")
         self.assertEqual(overview.next_step(
             self._payload(plan={"actionable": 2, "gates_open": 1}))["id"], "gates-open")
         self.assertEqual(overview.next_step(
