@@ -5,6 +5,7 @@
 // Target-model design lives under Plan. Current holdings are an input, not a
 // task, and the projected outcome remains the explicit pre-trade safety gate.
 import { $, api, esc } from "./core";
+import { subscribeQueueChanged } from "./execution-queue";
 import { gatewayConnected, refreshGatewayStatus } from "./gateway";
 import { pushNav, setActiveView } from "./shell";
 import type { GatewayStatus, HoldingsPayload } from "./api-types";
@@ -233,7 +234,7 @@ let _wired = false;
 export function initFlowBar(): void {
   if (_wired) return;
   _wired = true;
-  window.addEventListener("assay:queue-changed", () => {
+  subscribeQueueChanged(() => {
     invalidateFlowData();
     if (_activeView) updateFlowBar(_activeView, _activeGroup);
   });
@@ -265,6 +266,8 @@ export function updateFlowBar(view: string, group: string): void {
   if (_cache) host.innerHTML = flowBarHtml(_cache, stage);
   void fetchFlowData().then((d) => {
     // Only paint if we're still on a rebalance view (fetch may outlive a nav).
-    if (!host.hidden) host.innerHTML = flowBarHtml(d, stage);
+    if (!host.hidden && _activeGroup === "rebalance") {
+      host.innerHTML = flowBarHtml(d, stageForView(_activeView));
+    }
   });
 }

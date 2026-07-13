@@ -68,7 +68,7 @@ function renderFilters(): void {
     task: _events.filter((e) => e.type === "task").length,
   };
   ([["all", "All"], ["view", "Tickers"], ["task", "Tasks"]] as [ActFilter, string][]).forEach(([key, label]) => {
-    const b = el("button", "chip" + (_filter === key ? " active" : ""), `${label} ${counts[key]}`);
+    const b = el("button", "chip tone-chip ui-segment-pill" + (_filter === key ? " active" : ""), `${label} ${counts[key]}`);
     b.type = "button";
     b.addEventListener("click", () => {
       _filter = key;

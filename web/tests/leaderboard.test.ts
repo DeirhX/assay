@@ -180,7 +180,7 @@ describe("loadLeaderboard render", () => {
   it("surfaces the hot-but-underweight callout", async () => {
     await loadLeaderboard();
     await flush();
-    const callout = document.querySelector("#lb-body .lb-callout-hot");
+    const callout = document.querySelector("#lb-body .lb-callout-hot.banner-callout-good");
     expect(callout).not.toBeNull();
     expect(callout!.textContent).toContain("Hot");
   });
@@ -188,10 +188,10 @@ describe("loadLeaderboard render", () => {
   it("switching sort re-renders, moves the active toggle, and updates the caption", async () => {
     await loadLeaderboard();
     await flush();
-    const momentumBtn = [...document.querySelectorAll<HTMLElement>("#lb-body .lb-sort")]
+    const momentumBtn = [...document.querySelectorAll<HTMLElement>("#lb-body .lb-sort.ui-segment-pill")]
       .find((b) => b.dataset.sort === "momentum")!;
     momentumBtn.click();
-    const active = document.querySelector<HTMLElement>("#lb-body .lb-sort.active");
+    const active = document.querySelector<HTMLElement>("#lb-body .lb-sort.ui-segment-pill.active");
     expect(active!.dataset.sort).toBe("momentum");
     expect(document.querySelector("#lb-body .lb-rankedby")!.textContent).toBe("ranked by momentum");
     // the metric emphasis follows the active sort

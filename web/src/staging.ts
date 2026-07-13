@@ -1,5 +1,5 @@
 import { bandBar, bandText, directionTag, ruleWord, scaleMaxFor, type Band } from "./band-viz";
-import { $, api, esc, fmtWeight } from "./core";
+import { $, api, apiLoad, esc, fmtWeight, loadError } from "./core";
 
 // The working-draft (staging) view. Renders the whole-book diff of the staged
 // target model vs the live one: reconciliation totals, overlap warnings, pins,
@@ -298,13 +298,12 @@ function render(s: Staging): void {
 }
 
 async function loadStaging(): Promise<void> {
-  const status = $("#stage-status");
-  if (status) status.textContent = "";
-  try {
-    render(await api<Staging>("/api/staging"));
-  } catch (e: any) {
-    if (status) { status.textContent = "Could not load pending model changes: " + (e && e.message); status.classList.add("err"); }
-  }
+  await apiLoad<Staging>({
+    path: "/api/staging",
+    status: $("#stage-status"),
+    errorLabel: "Could not load pending model changes",
+    render,
+  });
 }
 
 let _wired = false;
@@ -327,7 +326,7 @@ function initStaging(): void {
       _committed = { as_of: res.as_of, backup: res.backup };
       await loadStaging();
     } catch (e: any) {
-      if (status) { status.textContent = "Commit failed: " + (e && e.message); status.classList.add("err"); }
+      loadError(status, "Commit failed", e);
       commit.disabled = false;
     }
   });
@@ -340,7 +339,7 @@ function initStaging(): void {
       if (status) { status.classList.remove("err"); status.textContent = "Pending model changes discarded."; }
       await loadStaging();
     } catch (e: any) {
-      if (status) { status.textContent = "Discard failed: " + (e && e.message); status.classList.add("err"); }
+      loadError(status, "Discard failed", e);
     }
   });
 
@@ -400,7 +399,7 @@ function initStaging(): void {
       await api("/api/staging/edit", "POST", { op: "revert", key });
       await loadStaging();
     } catch (err: any) {
-      if (status) { status.textContent = "Revert failed: " + (err && err.message); status.classList.add("err"); }
+      loadError(status, "Revert failed", err);
       btn.removeAttribute("disabled");
     }
   });

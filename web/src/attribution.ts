@@ -1,4 +1,6 @@
 import { $, $$, apiLoad, el, esc, statTile } from "./core";
+import { fmtMoneyCcy, fmtSignedPct2 } from "./display/format";
+import { analyticsSection, caveatBanner, metaStrip } from "./display/chrome";
 import { navFromUrl, replaceViewState } from "./shell";
 
 // ---- process attribution ---------------------------------------------------
@@ -19,11 +21,6 @@ interface AttrPayload {
   caveats?: string[];
   enough_data?: boolean;
 }
-
-const fmtSignedPct = (v: number | null | undefined) =>
-  v == null ? "n/a" : (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%";
-const fmtCcy = (v: number | null | undefined, base: string) =>
-  v == null ? "n/a" : Math.round(v).toLocaleString("en-US") + " " + base;
 
 // Each curve gets a stable label, order, and colour class (defined in style.css).
 const SERIES: { key: "actual" | "hold" | "benchmark"; label: string; cls: string }[] = [
@@ -52,31 +49,25 @@ function renderAttribution(r: AttrPayload) {
   const base = r.base || "CZK";
 
   // Caveats first, always — a thin ledger or a missing price makes a curve lie.
-  if ((r.caveats || []).length) {
-    const banner = el("div", "risk-caveat");
-    banner.innerHTML =
-      `<strong>Read this before you trust a number below.</strong>` +
-      `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
-    out.appendChild(banner);
-  }
+  const banner = caveatBanner(r.caveats || []);
+  if (banner) out.appendChild(banner);
 
   if (!r.enough_data) {
     out.appendChild(el("div", "hint", "Not enough portfolio history yet to attribute the process."));
     return;
   }
 
-  const meta = el("div", "reb-meta");
-  meta.innerHTML =
-    `<span>window ${esc(r.range || "?")}</span>` +
-    `<span>${esc(r.start || "?")} → ${esc(r.as_of || "?")}</span>` +
-    `<span>benchmark ${esc(r.benchmark || "?")}</span>` +
-    `<span>net flows ${esc(fmtCcy(r.flows_total, base))}</span>`;
-  out.appendChild(meta);
+  out.appendChild(metaStrip([
+    `window ${esc(r.range || "?")}`,
+    `${esc(r.start || "?")} → ${esc(r.as_of || "?")}`,
+    `benchmark ${esc(r.benchmark || "?")}`,
+    `net flows ${esc(fmtMoneyCcy(r.flows_total, base))}`,
+  ]));
 
   const twr = r.twr || {};
   const actual = twr.actual;
   const stats = el("div", "risk-stats");
-  stats.appendChild(statTile("Actual TWR", fmtSignedPct(actual), {
+  stats.appendChild(statTile("Actual TWR", fmtSignedPct2(actual), {
     family: "risk-stat",
     cls: actual == null ? "muted" : actual >= 0 ? "good" : "bad",
     title: "Time-weighted return over the window. Deposits and withdrawals are removed, " +
@@ -92,11 +83,11 @@ function renderAttribution(r: AttrPayload) {
 
   const chart = growthChart(r);
   if (chart) {
-    const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", undefined, "Growth of 100, same flows"));
-    sec.appendChild(el("p", "hint",
+    const sec = analyticsSection(
+      "Growth of 100, same flows",
       "Each line starts at 100 and receives the identical deposits; they diverge only on " +
-      "what the money was invested in. Foreign prices are converted day-by-day."));
+      "what the money was invested in. Foreign prices are converted day-by-day.",
+    );
     sec.appendChild(legend(r));
     sec.appendChild(chart);
     out.appendChild(sec);

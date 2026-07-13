@@ -33,8 +33,10 @@ export async function ensureTickerSet(): Promise<Set<string>> {
 // middle-click / open-in-new-tab fallback. `bold` wraps the label in <strong>
 // for the table/summary surfaces that want the symbol to stand out.
 export function tickerAnchorHtml(raw: string, opts: { bold?: boolean } = {}): string {
-  const s = String(raw).toUpperCase();
-  const label = opts.bold ? `<strong>${esc(raw)}</strong>` : esc(raw);
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return "";
+  const s = trimmed.toUpperCase();
+  const label = opts.bold ? `<strong>${esc(trimmed)}</strong>` : esc(trimmed);
   return `<a class="tlink" data-ticker="${esc(s)}" href="?view=deepdive&ticker=${encodeURIComponent(s)}" title="Open ${esc(s)} deep-dive">${label}</a>`;
 }
 

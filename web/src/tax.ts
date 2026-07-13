@@ -1,4 +1,6 @@
 import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
+import { fmtMoneyCcy } from "./display/format";
+import { metaStrip } from "./display/chrome";
 import { navFromUrl, replaceViewState } from "./shell";
 
 // ---- tax calendar ----------------------------------------------------------
@@ -61,8 +63,6 @@ interface TaxCalendar {
 
 let _taxSoon = "60";
 
-const fmtMoney = (v: number | null | undefined, ccy = "CZK") =>
-  v == null ? "n/a" : Math.round(Number(v)).toLocaleString("en-US") + " " + ccy;
 const shortDate = (iso: string | null | undefined) => (iso ? String(iso).slice(0, 10) : "n/a");
 
 // Countdown severity: a small number of days is the *opportunity* (almost free —
@@ -92,36 +92,34 @@ function renderTax(r: TaxCalendar) {
   const t = r.totals || {};
   const ye = r.year_end || {};
 
-  // Meta line.
-  const meta = el("div", "reb-meta");
-  meta.innerHTML =
-    `<span>as of ${esc(r.as_of || "n/a")}</span>` +
-    `<span>snapshot ${freshnessNote(r.snapshot) || esc(fmtStamp(r.snapshot))}</span>` +
-    `<span>soon = ${esc(r.soon_days ?? 60)}d</span>` +
-    `<span>tax rate ${esc(Math.round((r.tax_rate ?? 0.15) * 100))}%</span>`;
-  out.appendChild(meta);
+  out.appendChild(metaStrip([
+    `as of ${esc(r.as_of || "n/a")}`,
+    `snapshot ${freshnessNote(r.snapshot) || esc(fmtStamp(r.snapshot))}`,
+    `soon = ${esc(r.soon_days ?? 60)}d`,
+    `tax rate ${esc(Math.round((r.tax_rate ?? 0.15) * 100))}%`,
+  ]));
 
   // Headline tiles.
   const stats = el("div", "risk-stats");
-  stats.appendChild(statTile("Tax-free soon", fmtMoney(t.tax_free_soon, ccy),
+  stats.appendChild(statTile("Tax-free soon", fmtMoneyCcy(t.tax_free_soon, ccy),
     { family: "risk-stat", cls: (t.tax_free_soon || 0) > 0 ? "good" : "muted",
       title: `Czech tax you avoid by waiting for gain lots that clear the 3-year mark within ${r.soon_days ?? 60} days.` }));
   stats.appendChild(statTile("Exemptions upcoming", String(t.n_exemptions ?? 0),
     { family: "risk-stat", cls: "muted",
-      title: `${t.n_exemptions_soon ?? 0} within the soon window; ${fmtMoney(t.tax_free_total, ccy)} of tax becomes free in total across all held gain lots.` }));
-  stats.appendChild(statTile("Harvestable loss", fmtMoney(t.harvestable_loss, ccy),
+      title: `${t.n_exemptions_soon ?? 0} within the soon window; ${fmtMoneyCcy(t.tax_free_total, ccy)} of tax becomes free in total across all held gain lots.` }));
+  stats.appendChild(statTile("Harvestable loss", fmtMoneyCcy(t.harvestable_loss, ccy),
     { family: "risk-stat", cls: (t.harvestable_loss || 0) > 0 ? "warn" : "muted",
       title: "Realized losses on <3y lots offset taxable gains this tax period. They stop being usable once the lot turns exempt." }));
   stats.appendChild(statTile("Days to year-end", String(ye.days_to_year_end ?? "n/a"),
     { family: "risk-stat", cls: "muted",
-      title: `${esc(ye.date || "")}: ${fmtMoney(ye.harvestable_by_year_end, ccy)} of losses still harvestable by then.` }));
+      title: `${esc(ye.date || "")}: ${fmtMoneyCcy(ye.harvestable_by_year_end, ccy)} of losses still harvestable by then.` }));
   out.appendChild(stats);
 
   // Year-end nudge, only when there's a loss to harvest and it's within reach.
   if ((ye.harvestable_by_year_end || 0) > 0 && (ye.days_to_year_end ?? 999) <= 60) {
     const note = el("div", "tax-year-end",
       `<strong>Year-end harvest:</strong> ${esc(ye.days_to_year_end)} days to ${esc(ye.date || "")} — up to ` +
-      `${esc(fmtMoney(ye.harvestable_by_year_end, ccy))} of losses can still offset this year's taxable gains.`);
+      `${esc(fmtMoneyCcy(ye.harvestable_by_year_end, ccy))} of losses can still offset this year's taxable gains.`);
     out.appendChild(note);
   }
 
@@ -145,9 +143,9 @@ function renderTax(r: TaxCalendar) {
           `<td class="muted">${esc(shortDate(e.open_datetime))}</td>` +
           `<td>${esc(shortDate(e.exempt_on))}</td>` +
           `<td class="num ${cls}">${esc(e.days_to_exempt)}d</td>` +
-          `<td class="num muted">${esc(fmtMoney(e.market_value, ""))}</td>` +
-          `<td class="num">${esc(fmtMoney(e.gain, ""))}</td>` +
-          `<td class="num tax-cost">${esc(fmtMoney(e.tax_if_sold_now, ""))}</td>`;
+          `<td class="num muted">${esc(fmtMoneyCcy(e.market_value, ""))}</td>` +
+          `<td class="num">${esc(fmtMoneyCcy(e.gain, ""))}</td>` +
+          `<td class="num tax-cost">${esc(fmtMoneyCcy(e.tax_if_sold_now, ""))}</td>`;
       },
     }));
   }
@@ -173,8 +171,8 @@ function renderTax(r: TaxCalendar) {
           `<td class="muted">${esc(shortDate(h.open_datetime))}</td>` +
           `<td>${esc(shortDate(h.deadline))}</td>` +
           `<td class="num ${cls}">${esc(h.days_to_deadline)}d</td>` +
-          `<td class="num muted">${esc(fmtMoney(h.market_value, ""))}</td>` +
-          `<td class="num tax-cost">${esc(fmtMoney(h.loss, ""))}</td>`;
+          `<td class="num muted">${esc(fmtMoneyCcy(h.market_value, ""))}</td>` +
+          `<td class="num tax-cost">${esc(fmtMoneyCcy(h.loss, ""))}</td>`;
       },
     }));
   }

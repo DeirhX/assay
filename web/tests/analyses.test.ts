@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   buildReportToc, collectReportTickers, linkifyTickers, mdToHtml, promptSegmentFor, slugify,
 } from "../src/analyses";
+import { tickerAnchorHtml } from "../src/analyses/linkify";
 import { state } from "../src/core";
 
 describe("deep prompt routing", () => {
@@ -123,6 +124,25 @@ describe("mdToHtml", () => {
     const out = mdToHtml("```\ndangling code");
     expect(out).toContain('<pre class="md-code">');
     expect(out).toContain("dangling code");
+  });
+});
+
+describe("tickerAnchorHtml", () => {
+  it("builds a deep-dive link with uppercase data-ticker", () => {
+    const html = tickerAnchorHtml("nvda");
+    expect(html).toContain('class="tlink"');
+    expect(html).toContain('data-ticker="NVDA"');
+    expect(html).toContain("?view=deepdive&ticker=NVDA");
+    expect(html).toContain(">nvda<");
+  });
+
+  it("returns empty for a blank symbol", () => {
+    expect(tickerAnchorHtml("")).toBe("");
+    expect(tickerAnchorHtml("   ")).toBe("");
+  });
+
+  it("wraps bold labels when requested", () => {
+    expect(tickerAnchorHtml("AMD", { bold: true })).toContain("<strong>AMD</strong>");
   });
 });
 

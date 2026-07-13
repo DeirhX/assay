@@ -2,7 +2,7 @@ import { loadAnalyses, startPipeline } from "./analyses";
 import { initBasket, loadBasket } from "./basket";
 import { $$, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
 import { loadTickerFromCache } from "./deepdive";
-import { pollDeepJob } from "./jobs";
+import { runHoldingsSync, siteMsg } from "./holdings-sync";
 import { loadDeepRun } from "./pipeline";
 import { initFlowBar, updateFlowBar } from "./flowbar";
 import { initHistoryControls, loadHistory } from "./history";
@@ -556,47 +556,19 @@ function initShell() {
     if (_selChip && !_selChip.hidden && !(tgt.closest && tgt.closest(".sel-analyze"))) hideSelChip();
   });
 
-  $$<HTMLButtonElement>("#hold-sync").addEventListener("click", async () => {
+  $$<HTMLButtonElement>("#hold-sync").addEventListener("click", () => {
     const btn = $$<HTMLButtonElement>("#hold-sync");
     const status = $$("#hold-status");
-    if (btn.disabled) return;
-    const prev = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = "Syncing…";
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
-    try {
-      // The sync now runs as a registered background job: start it, then poll the
-      // shared job loop so it survives navigation and shows in the global pill.
-      const job = await api("/api/holdings/sync", "POST", {});
-      await pollDeepJob(job.id, status, async (done) => {
+    void runHoldingsSync({
+      btn,
+      status,
+      onDone: async (done) => {
         await loadHoldings();
         status.textContent = "Synced. " + siteMsg((done.result as Record<string, any>)?.site);
-      }, "IBKR sync");
-    } catch (e) {
-      status.textContent = "Sync failed: " + (e as Error).message;
-      status.classList.add("err");
-    } finally {
-      btn.disabled = false;
-      btn.textContent = prev;
-    }
+      },
+    });
   });
 
-}
-
-// One generate_site.regenerate() result (now: the markdown holdings summary).
-interface SiteRegen {
-  ok?: boolean;
-  error?: string;
-  written?: string[];
-}
-
-// Human-readable tail for the sync status line, reporting whether the derived
-// holdings summary was refreshed alongside the snapshot.
-function siteMsg(site: SiteRegen | null | undefined) {
-  if (!site) return "Summary not refreshed.";
-  if (site.ok === false) return "Summary not refreshed: " + (site.error || "unknown error");
-  return (site.written || []).length ? "Holdings summary refreshed." : "Holdings summary already up to date.";
 }
 
 export {

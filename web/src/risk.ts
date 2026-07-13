@@ -1,4 +1,6 @@
 import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
+import { fmtSignedPct1 } from "./display/format";
+import { analyticsSection, caveatBanner, metaStrip } from "./display/chrome";
 import { navFromUrl, replaceViewState } from "./shell";
 
 // ---- portfolio risk lens ---------------------------------------------------
@@ -78,9 +80,6 @@ interface RiskPayload {
   fx?: FxReport;
 }
 
-const fmtSignedPct1 = (v: number | null | undefined) =>
-  v == null ? "n/a" : (v >= 0 ? "+" : "") + Number(v).toFixed(1) + "%";
-
 // Correlation -> background. High positive correlation is the risk here, so make
 // it loud (red); near-zero is calm (neutral); negative (a real hedge) is green.
 function corrColor(c: number | null | undefined) {
@@ -108,21 +107,17 @@ function renderRisk(r: RiskPayload) {
   const m = r.metrics || {};
 
   // 1) Caveat banner — first, on purpose.
-  const banner = el("div", "risk-caveat");
-  banner.innerHTML =
-    `<strong>Read this before you trust a number below.</strong>` +
-    `<ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
-  out.appendChild(banner);
+  const banner = caveatBanner(r.caveats || [], { always: true });
+  if (banner) out.appendChild(banner);
 
   // 2) Meta + headline metrics.
-  const meta = el("div", "reb-meta");
-  meta.innerHTML =
-    `<span>names ${esc(m.n_names ?? 0)}</span>` +
-    `<span>window ${esc(r.range || "?")} · ${esc(r.n_obs ?? 0)} obs</span>` +
-    `<span>as of ${esc(r.as_of || "n/a")}</span>` +
-    `<span>snapshot ${freshnessNote(r.snapshot) || esc(fmtStamp(r.snapshot))}</span>` +
-    `<span>source ${esc(r.source || "?")}</span>`;
-  out.appendChild(meta);
+  out.appendChild(metaStrip([
+    `names ${esc(m.n_names ?? 0)}`,
+    `window ${esc(r.range || "?")} · ${esc(r.n_obs ?? 0)} obs`,
+    `as of ${esc(r.as_of || "n/a")}`,
+    `snapshot ${freshnessNote(r.snapshot) || esc(fmtStamp(r.snapshot))}`,
+    `source ${esc(r.source || "?")}`,
+  ]));
 
   const effBets = m.effective_bets;
   const covShare = m.covariance_share_pct;
@@ -159,12 +154,12 @@ function renderRisk(r: RiskPayload) {
 
   // 2b) Currency lens: exposure + how much of the window's CZK move was FX.
   if (fx && (fx.exposure || []).length) {
-    const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", undefined, "Currency exposure & FX effect"));
-    sec.appendChild(el("p", "hint",
+    const sec = analyticsSection(
+      "Currency exposure & FX effect",
       `A ${esc(fx.base || "base")}-base book holding foreign names earns two returns: the stock's ` +
       `and the exchange rate's. "FX move" is the pair's change over the window; "est. contribution" ` +
-      `is that move scaled by the sleeve's weight.`));
+      `is that move scaled by the sleeve's weight.`,
+    );
     const win: Record<string, FxWindow> = {};
     (fx.window || []).forEach((w) => { win[w.currency] = w; });
     sec.appendChild(simpleTable<FxExposure>({
@@ -187,11 +182,11 @@ function renderRisk(r: RiskPayload) {
 
   // 3) Stress scenarios.
   if (r.stress && r.stress.length) {
-    const sec = el("div", "risk-section");
-    sec.appendChild(el("h3", undefined, "Factor-shock stress test"));
-    sec.appendChild(el("p", "hint",
+    const sec = analyticsSection(
+      "Factor-shock stress test",
       "Estimated NAV hit if a factor moves, using each holding's beta to that factor " +
-      "over the window. Linear and beta-based — it ignores that correlations spike in a real crash."));
+      "over the window. Linear and beta-based — it ignores that correlations spike in a real crash.",
+    );
     r.stress.forEach((s) => sec.appendChild(stressCard(s)));
     out.appendChild(sec);
   }
