@@ -34,6 +34,7 @@ const data = (over: Partial<OrdersDashboardData> = {}): OrdersDashboardData => (
     { ticker: "MSFT", side: "BUY", quantity: 2, status: "Submitted", price: 400 },
     { ticker: "GOOG", side: "SELL", quantity: 1, status: "Filled", price: 200 },
   ],
+    correlations: [],
   workingState: "ready",
   ...over,
 });
@@ -101,5 +102,29 @@ describe("ordersDashboardHtml", () => {
     }));
     expect(html).toContain("Recheck stale amounts");
     expect(html).toContain("execution plan is stale");
+  });
+
+  it("shows durable broker links and recent fill transitions", () => {
+    const html = ordersDashboardHtml(data({
+      working: [{ orderId: "42", ticker: "MSFT", status: "Submitted", quantity: 2 }],
+      correlations: [{
+        key: "DU1:42",
+        leg_id: "stock:MSFT",
+        execution_item_ids: ["intent-1"],
+        symbol: "MSFT",
+        side: "BUY",
+        quantity: 2,
+        cOID: "assay-msft-2",
+        broker_order_id: "42",
+        broker_status: "Submitted",
+        filled_qty: 1,
+        total_qty: 2,
+        terminal: false,
+        last_event_kind: "partial",
+      }],
+    }));
+    expect(html).toContain("1 linked intent");
+    expect(html).toContain("partial");
+    expect(html).toContain("1/2");
   });
 });

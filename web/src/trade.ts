@@ -11,22 +11,27 @@ import { hydrateSparks, sparkPlaceholder } from "./spark";
 import { navFromUrl, replaceViewState } from "./shell";
 import { gotoWorkflowView } from "./workflow-nav";
 import type {
-  GatewayStatus, QueuedTradeLeg, TradeLeg, TradeLegProvenance, TradeQueueState,
+  GatewayStatus, QueuedTradeLeg, TradeLeg, TradeQueueState,
 } from "./api-types";
 import {
   applyStagedBasketFromQueue, clearStagedBasket, normalizeTradeQueueState,
   publishQueueChanged,
 } from "./execution-queue";
 import {
-  countWorkingOrders, isTerminalOrder, updatePipelineChrome,
+  countWorkingOrders, isTerminalOrder, observeBrokerState, updatePipelineChrome,
 } from "./pipeline-summary";
+import type { BrokerCorrelationState } from "./pipeline-summary";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
   orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
   reconciliationTitle, riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
-import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./trade-model";
+import type { OrderBand, OrderReconciliation, PlaceResult } from "./trade-model";
+import { marketCells, orderLastDist, statusCell } from "./trade-live-model";
+import type {
+  LiveOrder, PegState, Quote, TradePreview,
+} from "./trade-types";
 
 // ---- trade desk -----------------------------------------------------------
 // The ONLY surface in Assay that can place real orders. It reuses the basket
@@ -34,117 +39,6 @@ import type { OrderBand, OrderReconciliation, PlaceResult, RiskDelta } from "./t
 // IBKR's Client Portal Web API for margin/commission, and places it only after
 // per-order human confirmation. Everything is gated server-side too; this UI
 // just refuses early and explains why.
-
-// One sized order inside a /api/trade/preview response.
-interface TradeOrder {
-  instrument_type?: "stock" | "covered_call" | "cash_secured_put";
-  leg_id?: string;
-  symbol?: string;
-  conid?: string | number;
-  side?: string;
-  quantity?: number | string;
-  orderType?: string;
-  price?: number | null;
-  tif?: string;
-  expiry?: string;
-  strike?: number;
-  right?: string;
-  multiplier?: number;
-  contracts?: number;
-  current_shares?: number;
-  coverage_shares?: number;
-  if_assigned_shares?: number;
-  premium_credit?: number;
-  cash_secured_czk?: number;
-  collateral_mode?: "cash" | "margin";
-  currency?: string | null;
-  provenance?: TradeLegProvenance[];
-}
-
-interface TradePreview {
-  is_paper?: boolean;
-  live_allowed?: boolean;
-  account?: string;
-  kind?: string;
-  warnings?: string[];
-  // Basket names the account can't buy directly (US-domiciled / no PRIIPs KID):
-  // their buy orders were dropped server-side; reachable only via options.
-  options_only?: string[];
-  preview_ttl_s?: number;
-  orders?: TradeOrder[];
-  proposed_orders?: TradeOrder[];
-  order_context?: OrderReconciliation[];
-  working_orders_available?: boolean;
-  working_orders_error?: string | null;
-  placement_blocked?: boolean;
-  // The raw IBKR margin/commission blob; shape varies per account/order type.
-  ibkr_preview?: any;
-  // The normalized basket the token binds to: [{symbol, delta_czk}]. Echoed to
-  // /api/trade/place and used here for the last-mile money facts on the modal.
-  trades?: TradeLeg[];
-  effective_trades?: Array<{ symbol: string; delta_czk: number }>;
-  residual_trades?: Array<{ symbol: string; delta_czk: number }>;
-  token?: string;
-  // Structured snapshot staleness (mirrors the prose warning) so the UI can
-  // turn it into a soft gate instead of parsing the warnings[] strings.
-  snapshot_age_days?: number | null;
-  snapshot_stale?: boolean;
-  stale_after_days?: number;
-  // Per-target-symbol band context (before/after weight vs band) from the local
-  // what-if, so each order can show its effect on its band at confirm time.
-  order_bands?: Record<string, OrderBand>;
-  // The local what-if recompute; carries the pre-trade risk delta.
-  local_whatif?: { risk?: RiskDelta } | null;
-}
-
-// One live working order from /api/trade/orders. Field names vary by IBKR
-// endpoint version, so every reader-facing alias is optional.
-interface LiveOrder {
-  orderId?: string | number;
-  order_id?: string | number;
-  ticker?: string;
-  symbol?: string;
-  conid?: string | number;
-  side?: string;
-  totalSize?: number | string;
-  quantity?: number | string;
-  remainingQuantity?: number | string;
-  filledQuantity?: number | string;
-  status?: string;
-  order_status?: string;
-  orderType?: string;
-  order_type?: string;
-  price?: number | string | null;
-  tif?: string;
-  timeInForce?: string;
-  // IBKR's human-readable one-liner, e.g. "Sell 100 AAPL Limit 150.00 GTC".
-  orderDesc?: string;
-  // Epoch ms of the order's last update (placement/modify) — our age proxy.
-  lastExecutionTime_r?: number;
-  // Live market snapshot, hydrated asynchronously after the list paints (the
-  // snapshot round-trip is ~as slow as the orders fetch, so it's a second call).
-  quote?: Quote;
-  // Average purchase price (holdings cost basis / share), in the instrument's
-  // currency. Present when the order's symbol is held; drives a SELL's gain/loss.
-  avg_cost?: number;
-}
-
-type Quote = { last?: number | null; bid?: number | null; ask?: number | null };
-
-// One active peg from /api/trade/orders (folded in alongside `orders`). The
-// server keeps these in memory; a restart clears them and the order simply
-// rests at its last price.
-interface PegState {
-  order_id: string;
-  state?: string;
-  reprices?: number;
-  price?: number | null;
-  message?: string;
-  side?: string;
-  symbol?: string;
-  bound?: number;
-  tick?: number;
-}
 
 let _status: GatewayStatus | null = null;   // shared gateway status snapshot
 let _preview: TradePreview | null = null;  // last /api/trade/preview (carries the place token)
@@ -1027,11 +921,22 @@ function renderPreview() {
   impactWrap.appendChild(el("summary", "trade-impact-title", "IBKR margin and commission · new orders only"));
   if (impact && (impact.amount || impact.initial || impact.maintenance || impact.commission)) {
     const grid = el("div", "trade-impact");
-    const add = (label: string, val: any) => { if (val) grid.appendChild(el("div", "trade-impact-cell", `<span class="muted">${esc(label)}</span> ${esc(typeof val === "object" ? (val.amount || JSON.stringify(val)) : val)}`)); };
-    add("Order value", impact.amount && (impact.amount.amount || impact.amount));
+    const field = (value: unknown, key: string): unknown =>
+      value && typeof value === "object"
+        ? (value as Record<string, unknown>)[key]
+        : undefined;
+    const add = (label: string, value: unknown) => {
+      if (!value) return;
+      const shown = field(value, "amount") ?? (
+        typeof value === "object" ? JSON.stringify(value) : value
+      );
+      grid.appendChild(el("div", "trade-impact-cell",
+        `<span class="muted">${esc(label)}</span> ${esc(shown)}`));
+    };
+    add("Order value", field(impact.amount, "amount") ?? impact.amount);
     add("Init margin", impact.initial && (impact.initial.after || impact.initial.amount));
     add("Maint margin", impact.maintenance && (impact.maintenance.after || impact.maintenance.amount));
-    add("Est. commission", impact.commission || (impact.amount && impact.amount.commission));
+    add("Est. commission", impact.commission || field(impact.amount, "commission"));
     impactWrap.appendChild(grid);
   } else {
     impactWrap.appendChild(el("div", "hint", "IBKR did not return margin or commission estimates."));
@@ -1343,9 +1248,17 @@ async function renderLiveOrders(token?: number) {
   }
 
   body.innerHTML = `<span class="spinner"></span> loading working orders\u2026`;
-  let data: { orders?: LiveOrder[]; pegs?: PegState[] } | undefined;
+  let data: {
+    orders?: LiveOrder[];
+    pegs?: PegState[];
+    correlations?: BrokerCorrelationState;
+  } | undefined;
   try {
-    data = await api<{ orders?: LiveOrder[]; pegs?: PegState[] }>("/api/trade/orders", "GET", null, { timeoutMs: 20_000 });
+    data = await api<{
+      orders?: LiveOrder[];
+      pegs?: PegState[];
+      correlations?: BrokerCorrelationState;
+    }>("/api/trade/orders", "GET", null, { timeoutMs: 20_000 });
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
     stopPegPoll();
@@ -1360,6 +1273,7 @@ async function renderLiveOrders(token?: number) {
   const all = (data && data.orders) || [];
   const pegs = (data && data.pegs) || [];
   updatePipelineChrome({ working: countWorkingOrders(all) });
+  observeBrokerState(data?.correlations);
   // Seed quotes from the last hydration so a re-fetch (peg poll / manual
   // refresh) doesn't blink every market cell back to a placeholder before the
   // fresh snapshot lands.
@@ -1441,16 +1355,6 @@ function cycleOrdersSort(key: OrdersSortKey): void {
   else if (_ordersSort.dir === "desc") _ordersSort.dir = "asc";
   else _ordersSort = null;  // third click restores IBKR's own order
   replaceViewState({ sort: _ordersSort ? `${_ordersSort.key}-${_ordersSort.dir}` : "" });
-}
-
-// |limit - last| / last: how far the resting price has drifted from the last
-// trade, as a fraction. null when either price is missing.
-function orderLastDist(o: LiveOrder): number | null {
-  const last = o.quote && typeof o.quote.last === "number" ? o.quote.last : null;
-  const limit = typeof o.price === "number" ? o.price
-    : (o.price != null && o.price !== "" ? Number(o.price) : NaN);
-  if (last == null || last === 0 || !Number.isFinite(limit)) return null;
-  return Math.abs(limit - last) / last;
 }
 
 function sortWorking(rows: LiveOrder[]): LiveOrder[] {
@@ -1603,160 +1507,6 @@ async function stopPeg(order_id: string, btn: HTMLButtonElement) {
   }
 }
 
-// Format a price in the instrument's own currency: 2 decimals, up to 4 for the
-// sub-dollar / fractional-tick names (e.g. 8.400, 1.54).
-function px(n: number): string {
-  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-}
-
-// Cost basis needs less precision than a live quote (it's not tick-sensitive):
-// always two decimals, regardless of the price magnitude.
-function pxCost(n: number): string {
-  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-// A dim placeholder for a market column with nothing to show, so empty cells
-// read as intentionally blank rather than a broken layout.
-const EMPTY_CELL = `<span class="trade-live-dim">\u00b7</span>`;
-
-// The five market columns for one order — bid × ask, spread, last, edge, cost —
-// emitted as SEPARATE grid cells (not one wrapping blob) so figures line up down
-// each column and stay scannable across rows. This is what makes "keep at top" a
-// judgement call rather than a blind toggle.
-function marketCells(o: LiveOrder): string {
-  const q = o.quote;
-  const bid = q && typeof q.bid === "number" ? q.bid : null;
-  const ask = q && typeof q.ask === "number" ? q.ask : null;
-  const last = q && typeof q.last === "number" ? q.last : null;
-  const cold = bid == null && ask == null && last == null;
-
-  let quoteC: string;
-  if (cold) {
-    quoteC = _quotesPending
-      ? `<span class="trade-live-quoteload"><span class="spinner"></span> quote\u2026</span>`
-      : `<span class="muted">no quote</span>`;
-  } else if (bid != null && ask != null) {
-    quoteC = `${px(bid)} <span class="muted">\u00d7</span> ${px(ask)}`;
-  } else {
-    quoteC = EMPTY_CELL;
-  }
-
-  let spreadC = EMPTY_CELL;
-  if (bid != null && ask != null) {
-    const spread = ask - bid;
-    const mid = (ask + bid) / 2;
-    const spreadPct = mid > 0 ? (spread / mid) * 100 : 0;
-    const wide = spreadPct >= 0.5;  // a spread the peg can meaningfully work inside
-    spreadC = `<span class="trade-live-spread${wide ? " wide" : ""}" ` +
-      `title="bid-ask spread \u0394${esc(px(spread))}">${spreadPct.toFixed(2)}%</span>`;
-  }
-
-  const lastC = last != null ? px(last) : EMPTY_CELL;
-
-  // Where the resting limit sits relative to the price it must beat to fill,
-  // drawn as a distance meter (short/green = near the touch, long/red = far).
-  let edgeC = EMPTY_CELL;
-  const limit = typeof o.price === "number" ? o.price : (o.price != null && o.price !== "" ? Number(o.price) : NaN);
-  const side = String(o.side || "").toUpperCase();
-  if (Number.isFinite(limit) && (bid != null || ask != null)) {
-    const ref = side === "BUY" ? ask : bid;  // buyers chase the ask; sellers the bid
-    if (ref != null && ref > 0) {
-      const gapPct = side === "BUY" ? ((ref - limit) / ref) * 100 : ((limit - ref) / ref) * 100;
-      const word = side === "BUY"
-        ? (gapPct >= 0 ? "below ask" : "above ask")
-        : (gapPct >= 0 ? "above bid" : "below bid");
-      const label = Math.abs(gapPct) < 0.05
-        ? `at the ${side === "BUY" ? "ask" : "bid"}`
-        : `${Math.abs(gapPct).toFixed(1)}% ${word}`;
-      edgeC = edgeMeter(gapPct, label);
-    }
-  }
-
-  // Last leads (the price you judge your limit against, so it's the headline);
-  // bid × ask + spread follow as supporting microstructure, then edge and cost.
-  return `<span class="trade-live-last num">${lastC}</span>` +
-    `<span class="trade-live-quote">${quoteC}</span>` +
-    `<span class="num">${spreadC}</span>` +
-    `<span class="trade-live-edge-c">${edgeC}</span>` +
-    `<span class="trade-live-cost-c">${costCell(o)}</span>`;
-}
-
-// A SELL's average purchase price and the limit's gain/loss against it — the
-// "am I selling at a profit?" read — for its own column. Dim for buys or a name
-// with no cost basis. With a limit, shows the % the fill would lock in.
-function costCell(o: LiveOrder): string {
-  if (String(o.side || "").toUpperCase() !== "SELL") return EMPTY_CELL;
-  const cost = typeof o.avg_cost === "number" ? o.avg_cost : null;
-  if (cost == null || cost <= 0) return EMPTY_CELL;
-  const limit = typeof o.price === "number" ? o.price : (o.price != null && o.price !== "" ? Number(o.price) : NaN);
-  if (Number.isFinite(limit)) {
-    const g = ((limit - cost) / cost) * 100;
-    const cls = g >= 0 ? "gain" : "loss";
-    const sign = g >= 0 ? "+" : "\u2212";
-    return `<span class="trade-live-cost" title="avg purchase price ${esc(pxCost(cost))}; the limit locks ${sign}${Math.abs(g).toFixed(1)}%">` +
-      `${pxCost(cost)} <span class="${cls}">${sign}${Math.abs(g).toFixed(1)}%</span></span>`;
-  }
-  return `<span class="trade-live-cost" title="average purchase price">${pxCost(cost)}</span>`;
-}
-
-// A bar for the limit-vs-touch gap. LOG-scaled (cap ~120%) rather than linear:
-// resting targets span <1% to 100%+, so a linear 5% cap saturated almost every
-// bar to full-width red. Log spreads that range out, and the fill's colour runs
-// continuously green (at the touch) -> amber -> red (far) so distance reads at a
-// glance. The exact figure sits beside it; direction is in the tooltip.
-function edgeMeter(gapPct: number, label: string): string {
-  const mag = Math.abs(gapPct);
-  const CAP = 120;
-  const frac = Math.min(1, Math.log1p(mag) / Math.log1p(CAP));
-  const fill = Math.max(6, Math.round(frac * 100));   // floor so a ~0% gap still shows
-  const hue = Math.round((1 - frac) * 130);           // 130=green (near) .. 0=red (far)
-  return `<span class="trade-live-edge" title="limit ${esc(label)}">` +
-    `<span class="edge-meter"><span class="edge-fill" ` +
-      `style="width:${fill}%;background:hsl(${hue}, 68%, 52%)"></span></span>` +
-    `<span class="edge-num">${mag.toFixed(1)}%</span></span>`;
-}
-
-// Compact "how long it's rested" from an epoch-ms stamp: 5m / 3h / 2d / 4w.
-function agoShort(sinceMs: number): string {
-  const secs = Math.max(0, (Date.now() - sinceMs) / 1000);
-  const mins = secs / 60, hrs = mins / 60, days = hrs / 24;
-  if (secs < 90) return "just now";
-  if (mins < 90) return `${Math.round(mins)}m`;
-  if (hrs < 36) return `${Math.round(hrs)}h`;
-  if (days < 14) return `${Math.round(days)}d`;
-  if (days < 60) return `${Math.round(days / 7)}w`;
-  return `${Math.round(days / 30)}mo`;
-}
-
-// IBKR-style status-as-colour: a dot carries the state (exact text on hover), so
-// the uninteresting "PreSubmitted" string doesn't need a whole column of prose.
-// green = working at the exchange, blue = accepted/held (e.g. resting GTC),
-// amber = pending, grey = inactive/unknown.
-function statusDot(o: LiveOrder): string {
-  const st = String(o.status || o.order_status || "").trim();
-  const k = st.toLowerCase();
-  let tone = "unknown";
-  if (k === "submitted") tone = "live";
-  else if (k === "presubmitted") tone = "held";
-  else if (k.startsWith("pending")) tone = "pending";
-  else if (k === "inactive") tone = "inactive";
-  return `<span class="trade-live-dot tone-${tone}" title="${esc(st || "unknown status")}"></span>`;
-}
-
-// Status column: the colour dot plus the order's age; while pegging, the live
-// reprice/resting message is more useful than the age, so show that instead.
-function statusCell(o: LiveOrder, peg?: PegState): string {
-  const dot = statusDot(o);
-  if (peg) {
-    const msg = esc(peg.message || peg.state || "");
-    return `${dot}${msg ? `<span class="trade-live-pegmsg">${msg}</span>` : ""}`;
-  }
-  const ms = typeof o.lastExecutionTime_r === "number" ? o.lastExecutionTime_r : null;
-  if (!ms) return dot;
-  return `${dot}<span class="trade-live-age" title="last update ${esc(new Date(ms).toLocaleString())}">` +
-    `${esc(agoShort(ms))}</span>`;
-}
-
 function liveOrderRow(o: LiveOrder, peg?: PegState): HTMLElement {
   const row = el("div", "trade-live-row");
   const oid = String(o.orderId || o.order_id || "");
@@ -1782,7 +1532,7 @@ function liveOrderRow(o: LiveOrder, peg?: PegState): HTMLElement {
     `<span>${side ? sideTag(side) : ""}</span>` +
     `<span class="num">${esc(qty)}</span>` +
     `<span class="trade-live-detail">${detail}</span>` +
-    marketCells(o) +
+    marketCells(o, _quotesPending) +
     `<span class="trade-live-status">${statusCell(o, peg)}</span>`;
 
   const actions = el("span", "trade-live-actions");

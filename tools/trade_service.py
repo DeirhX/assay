@@ -2482,6 +2482,33 @@ def _trade_place(body: dict) -> dict:
     try:
         placed = ibkr_trade.place_orders(account_id, placement_orders)
     except ibkr_trade.CPAPIError as exc:
+        partial = getattr(exc, "placed", None)
+        if isinstance(partial, list) and partial:
+            # Some earlier requests are already live at IBKR. Consume the local
+            # basket and return the accepted subset explicitly; retrying the
+            # original basket would duplicate those orders.
+            accepted_orders = [
+                dict(sent)
+                for acknowledgement in partial
+                if isinstance(acknowledgement, dict)
+                and isinstance((sent := acknowledgement.get("assay_order")), dict)
+            ]
+            save_basket([])
+            _preview_issued.pop(expected, None)
+            return {
+                "account": account_id,
+                "kind": ibkr_trade.account_kind(account_id),
+                "is_paper": ibkr_trade.is_paper_account(account_id),
+                "orders": accepted_orders,
+                "warnings": [
+                    f"{len(partial)} order(s) were accepted by IBKR before a later "
+                    "order failed. The local basket was cleared to prevent duplicate "
+                    "placement; review working orders before rebuilding the remainder."
+                ],
+                "placed": partial,
+                "placement_incomplete": True,
+                "staged_basket_cleared": True,
+            }
         raise _BadGateway(str(exc)) from exc
     # Close the loop: the staged basket was just submitted, so stop offering it
     # for re-placement — double-placing the same persisted basket is the worst

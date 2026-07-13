@@ -419,6 +419,28 @@ def mark_submitted(
         return _write(state, path) if changed else state
 
 
+def reopen_broker_failed(
+    item_ids: list[str],
+    *,
+    path: Path = EXECUTION_PLAN_JSON,
+) -> dict[str, Any]:
+    """Return failed/cancelled correlated submissions to actionable intent."""
+    ids = {str(item_id) for item_id in item_ids if str(item_id)}
+    if not ids:
+        return load_plan(path)
+    with _LOCK:
+        state = load_plan(path)
+        changed = False
+        for item in state.get("items") or []:
+            if item.get("status") != "submitted" or str(item.get("id") or "") not in ids:
+                continue
+            item["status"] = "selected"
+            item["queued_leg_id"] = None
+            item["updated_at"] = _now()
+            changed = True
+        return _write(state, path) if changed else state
+
+
 def reconcile_queue(
     basket: list[dict[str, Any]],
     *,

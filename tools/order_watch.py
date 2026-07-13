@@ -32,9 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import apierror
 import config
+import execution_plan
 import holdings_sync
 import ibkr_trade
 import notify
+import order_correlation
 import store
 
 STATE_FILE = config.DATA_DIR / "cache" / "order-watch.json"
@@ -162,6 +164,8 @@ def poll_once(
     notifier: Callable[..., list[str]] | None = None,
     resync: Callable[[], dict] | None = None,
     state_path: Path | None = None,
+    correlation_path: Path | None = None,
+    execution_plan_path: Path | None = None,
     dry_run: bool = False,
 ) -> dict:
     """One watch cycle. Reads the gateway session + working orders, diffs against
@@ -179,6 +183,8 @@ def poll_once(
     notifier = notifier or notify.notify
     resync = resync or holdings_sync.start_holdings_sync
     state_path = state_path or STATE_FILE
+    correlation_path = correlation_path or state_path.with_name("order-correlation.json")
+    execution_plan_path = execution_plan_path or state_path.with_name("execution-plan.json")
 
     state = store.load(state_path, {}) or {}
     prev_map: dict = state.get("orders") or {}
@@ -214,6 +220,20 @@ def poll_once(
 
     events, new_map = diff_orders(prev_map, orders)
     fills = [e for e in events if e["kind"] in ("filled", "partial")]
+    correlation_result: dict[str, Any] = {
+        "changed": False,
+        "reopen_item_ids": [],
+    }
+    if not dry_run:
+        correlation_result = order_correlation.sync_orders(
+            orders,
+            path=correlation_path,
+            now=now.isoformat(timespec="seconds"),
+        )
+        execution_plan.reopen_broker_failed(
+            correlation_result["reopen_item_ids"],
+            path=execution_plan_path,
+        )
 
     resynced = False
     if fills and not dry_run:
@@ -241,7 +261,9 @@ def poll_once(
         store.write_json(state_path, state)
 
     summary: dict[str, Any] = {"ok": True, "events": len(events), "fills": len(fills),
-                               "resynced": resynced, "orders": len(new_map), "dry_run": dry_run}
+                               "resynced": resynced, "orders": len(new_map), "dry_run": dry_run,
+                               "correlations_changed": correlation_result["changed"],
+                               "intent_reopened": len(correlation_result["reopen_item_ids"])}
     if dry_run:
         # The diagnostic wants the transitions themselves and what it *would* do.
         summary["authenticated"] = True

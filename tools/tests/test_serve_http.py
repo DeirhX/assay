@@ -747,6 +747,45 @@ class PortfolioPrereqHttp(ServeHttpCase):
         submitted.assert_called_once_with(["item-amd"])
         reconcile.assert_called_once_with([])
 
+    def test_trade_place_prefers_acknowledged_correlation_and_hides_internal_context(self):
+        body = {
+            "trades": [{
+                "leg_id": "stock:AMD", "symbol": "AMD",
+                "provenance": [{"execution_item_id": "item-amd"}],
+            }],
+            "token": "preview-token",
+            "confirm": True,
+        }
+        result = {
+            "account": "DU1",
+            "orders": [{"symbol": "AMD"}],
+            "placed": [{
+                "order_id": "1",
+                "assay_order": {"cOID": "assay-amd", "symbol": "AMD"},
+            }],
+            "staged_basket_cleared": True,
+        }
+        records = [{
+            "broker_order_id": "1",
+            "execution_item_ids": ["item-amd"],
+        }]
+        with mock.patch.object(serve, "_trade_place", return_value=result), \
+             mock.patch.object(
+                 serve.order_correlation, "record_placements", return_value=records,
+             ) as correlate, \
+             mock.patch.object(
+                 serve.execution_plan, "execution_item_ids_for_orders",
+                 return_value=["wrong-fallback"],
+             ), \
+             mock.patch.object(serve.execution_plan, "mark_submitted") as submitted, \
+             mock.patch.object(serve.execution_plan, "reconcile_queue"):
+            status, payload = self.post_json("/api/trade/place", body)
+        self.assertEqual(status, 200)
+        correlate.assert_called_once_with("DU1", body["trades"], mock.ANY)
+        submitted.assert_called_once_with(["item-amd"])
+        self.assertNotIn("assay_order", payload["placed"][0])
+        self.assertEqual(payload["correlations"], records)
+
 
 class HostGuard(unittest.TestCase):
     def test_non_loopback_host_is_refused(self):

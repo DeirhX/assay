@@ -52,6 +52,7 @@ import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import rebalance_routes  # noqa: E402
 import execution_plan  # noqa: E402
+import order_correlation  # noqa: E402  -- durable intent/cOID/broker-order join
 import risk  # noqa: E402
 import attribution  # noqa: E402  -- process attribution: actual TWR vs never-rebalanced / benchmark
 import regime  # noqa: E402  -- descriptive macro strip over the segment leaderboard
@@ -330,6 +331,7 @@ _GET_EXACT = {
     "/api/trade/status": "_get_trade_status",
     "/api/trade/tickle": "_get_trade_tickle",
     "/api/trade/orders": "_get_trade_orders",
+    "/api/trade/correlations": "_get_trade_correlations",
     "/api/trade/quotes": "_get_trade_quotes",
     "/api/trade/basket": "_get_trade_basket",
     "/api/trade/queue-conflicts": "_get_trade_queue_conflicts",
@@ -686,6 +688,7 @@ class Handler(BaseHTTPRequestHandler):
             "draft": draft,
             "execution_plan": overview.execution_plan_summary(execution_state),
             "staged_basket": overview.staged_basket_summary(queue),
+            "broker_orders": order_correlation.summary(),
             "journal": overview.journal_summary(journal.load_entries(), now=now),
             # Read-only over the cached verdict (warmed when Attribution is opened) --
             # no network on the Today path. Absent/thin cache degrades to a nudge.
@@ -887,7 +890,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(_trade_tickle())
 
     def _get_trade_orders(self, path, query):
-        return self._send_json(_trade_orders())
+        result = _trade_orders()
+        synced = order_correlation.sync_orders(result.get("orders") or [])
+        execution_plan.reopen_broker_failed(synced["reopen_item_ids"])
+        result["correlations"] = order_correlation.public_state()
+        return self._send_json(result)
+
+    def _get_trade_correlations(self, path, query):
+        return self._send_json(order_correlation.public_state())
 
     def _get_trade_quotes(self, path, query):
         # Live {last,bid,ask} per conid for the working-orders market cells,
@@ -1579,10 +1589,34 @@ class Handler(BaseHTTPRequestHandler):
     def _post_trade_place(self, path):
         body = self._read_body()
         result = _trade_place(body)
-        submitted_ids = execution_plan.execution_item_ids_for_orders(
+        fallback_ids = execution_plan.execution_item_ids_for_orders(
             body.get("trades") or [],
             result.get("orders") or [],
         )
+        submitted_ids = fallback_ids
+        try:
+            records = order_correlation.record_placements(
+                str(result.get("account") or ""),
+                body.get("trades") or [],
+                result.get("placed") or [],
+            )
+            if records:
+                submitted_ids = sorted({
+                    str(item_id)
+                    for record in records
+                    for item_id in record.get("execution_item_ids") or []
+                })
+            result["correlations"] = records
+        except Exception as exc:  # noqa: BLE001 -- placement already happened
+            result.setdefault("warnings", []).append(
+                "Orders were placed, but durable broker correlation could not be saved. "
+                "Do not place them again; inspect IBKR working orders."
+            )
+            sys.stderr.write(f"[trade] correlation persistence failed: {exc}\n")
+        result["placed"] = [
+            {key: value for key, value in acknowledgement.items() if key != "assay_order"}
+            for acknowledgement in result.get("placed") or []
+        ]
         execution_plan.mark_submitted(submitted_ids)
         # _trade_place clears the exact queue. Any queued intent that did not
         # produce a residual order (excluded, blocked, or already covered by a

@@ -9,7 +9,9 @@ import { starHtml } from "./basket";
 import { $, api, esc, fmtCZK, relAge, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { runHoldingsSync } from "./holdings-sync";
-import { publishPipelineChanged, queueWorkflowView } from "./pipeline-summary";
+import {
+  publishPipelineChanged, queueWorkflowView, subscribePipelineChanged,
+} from "./pipeline-summary";
 import { pushNav, setActiveView } from "./shell";
 import { openTicker } from "./ticker-nav";
 import { loadCachedSegment } from "./segment";
@@ -55,6 +57,10 @@ interface StagedBasketSum {
   conditional_buys?: number; conditional_reductions?: number; option_legs?: number;
   reviewed?: boolean; valid?: boolean;
 }
+interface BrokerOrdersSum {
+  active: number; partial: number; recent_filled: number; recent_failed: number;
+  updated_at?: string | null;
+}
 interface JournalSum { total: number; pending_outcomes: number; oldest_pending_days?: number | null; review_due: number }
 interface PickRow { symbol: string; tier?: string; segment?: string | null; age_days?: number | null }
 interface QueueRow { symbol: string; score: number; segment?: string | null; decision?: string | null }
@@ -95,6 +101,7 @@ export interface Overview {
   draft: DraftSum;
   execution_plan?: ExecutionPlanSum;
   staged_basket: StagedBasketSum;
+  broker_orders?: BrokerOrdersSum;
   journal: JournalSum;
   attribution?: AttributionVerdictSum;
   research: ResearchSum;
@@ -374,6 +381,16 @@ export function attentionItems(v: Overview): AttentionItem[] {
     detail: `${v.execution_plan.planned} planned trade${v.execution_plan.planned === 1 ? "" : "s"} no longer match the current portfolio plan.`,
     view: "rebalance", action: "Recheck amounts",
   });
+  if (v.broker_orders?.partial) rows.push({
+    id: "partial-fill", tone: "warn", title: "Orders partially filled",
+    detail: `${v.broker_orders.partial} broker order${v.broker_orders.partial === 1 ? "" : "s"} filled only in part.`,
+    view: "orders", action: "Track fills",
+  });
+  if (v.broker_orders?.recent_failed) rows.push({
+    id: "broker-failed", tone: "warn", title: "Broker orders failed or were cancelled",
+    detail: `${v.broker_orders.recent_failed} correlated order${v.broker_orders.recent_failed === 1 ? "" : "s"} need review; failed intent is reopened automatically.`,
+    view: "orders", action: "Review",
+  });
   if (v.execution_plan?.planned) rows.push({ id: "planned-orders", tone: "warn", title: "Trades remain planned",
     detail: `${v.execution_plan.planned} selected or deferred trade${v.execution_plan.planned === 1 ? "" : "s"} have not reached the order queue.`, view: "orders", action: "Open pipeline" });
   if (v.plan?.gates_open) rows.push({ id: "gates-open", tone: "warn", title: "Price levels have triggered",
@@ -407,7 +424,8 @@ export function pulseHtml(v: Overview): string {
   const plan = v.plan;
   const cash = plan?.cash;
   const planned = v.execution_plan?.planned || 0;
-  const inFlight = planned + v.staged_basket.count;
+  const brokerActive = v.broker_orders?.active || 0;
+  const inFlight = planned + v.staged_basket.count + brokerActive;
   const staleNote = v.execution_plan?.stale && planned ? " · planned amounts stale" : "";
   const stat = (label: string, value: string, note: string, tone = "", view = "", id = "") => {
     const tag = view ? "button" : "div";
@@ -421,7 +439,7 @@ export function pulseHtml(v: Overview): string {
       stat("Holdings", `${v.snapshot.positions} positions`, v.snapshot.exists ? `synced ${agoText(v.snapshot.age_days)}` : "snapshot missing", !v.snapshot.exists || v.snapshot.stale ? "warn" : "") +
       stat("Plan", plan ? `${plan.actionable} actions` : "not configured", plan && !plan.actionable ? "all targeted names in band" : `${plan?.out_of_band || 0} outside band`, plan?.actionable ? "warn" : "") +
       stat("Cash", cash ? `${cash.pct_of_nav.toFixed(1)}%` : "n/a", cash ? `${cash.low}–${cash.high}% band` : "no cash target", cash && cash.status !== "IN" ? "warn" : "") +
-      stat("In flight", `${inFlight}`, inFlight ? `${planned} planned · ${v.staged_basket.count} queued${staleNote}` : "no planned or queued trades", inFlight ? "warn" : "", "orders", "today-orders-inflight") +
+      stat("In flight", `${inFlight}`, inFlight ? `${planned} planned · ${v.staged_basket.count} queued · ${brokerActive} working${staleNote}` : "no planned, queued, or working trades", inFlight ? "warn" : "", "orders", "today-orders-inflight") +
     `</div></section>`;
 }
 
@@ -525,6 +543,11 @@ function initOverview(): void {
   if (_wired) return;
   _wired = true;
   $("#today-refresh")?.addEventListener("click", () => loadOverview());
+  subscribePipelineChanged((detail) => {
+    if (detail.source === "broker" && $("#view-today")?.classList.contains("active")) {
+      void loadOverview();
+    }
+  });
   const host = $("#view-today");
   if (!host) return;
   host.addEventListener("click", (e) => {

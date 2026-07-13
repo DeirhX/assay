@@ -8,9 +8,12 @@ import {
   refreshGatewayStatus,
 } from "./gateway";
 import {
-  countWorkingOrders, isTerminalOrder, queueWorkflowView, updatePipelineChrome,
+  countWorkingOrders, isTerminalOrder, observeBrokerState, queueWorkflowView,
+  subscribePipelineChanged, updatePipelineChrome,
 } from "./pipeline-summary";
-import type { LiveOrderSummary } from "./pipeline-summary";
+import type {
+  BrokerCorrelationRecord, BrokerCorrelationState, LiveOrderSummary,
+} from "./pipeline-summary";
 import { pushNav, setActiveView } from "./shell";
 import type {
   ExecutionPlanItem, ExecutionPlanState, QueuedTradeLeg, TradeLeg, TradeQueueState,
@@ -22,6 +25,7 @@ export interface OrdersDashboardData {
   plan: ExecutionPlanState;
   queue: TradeQueueState;
   working: LiveOrderSummary[];
+  correlations: BrokerCorrelationRecord[];
   workingState: WorkingState;
   workingMessage?: string;
 }
@@ -155,6 +159,9 @@ function workingDescription(order: LiveOrderSummary): string {
 
 function workingHtml(data: OrdersDashboardData, counts: PipelineCounts): string {
   const working = data.working.filter((order) => !isTerminalOrder(order));
+  const correlations = new Map(
+    data.correlations.map((record) => [String(record.broker_order_id), record]),
+  );
   let body: string;
   if (data.workingState === "loading") {
     body = `<div class="orders-empty"><span class="spinner"></span> Checking IBKR working orders…</div>`;
@@ -166,11 +173,32 @@ function workingHtml(data: OrdersDashboardData, counts: PipelineCounts): string 
     body = `<div class="orders-list">${working.slice(0, 8).map((order) => {
       const symbol = order.ticker || order.symbol || "—";
       const status = order.status || order.order_status || "working";
+      const brokerId = String(order.orderId || order.order_id || "");
+      const linked = correlations.get(brokerId);
+      const linkNote = linked?.execution_item_ids?.length
+        ? ` · ${linked.execution_item_ids.length} linked intent${linked.execution_item_ids.length === 1 ? "" : "s"}`
+        : "";
       return `<div class="orders-row"><div class="orders-symbol"><strong>${esc(symbol)}</strong>` +
-        `<small>IBKR</small></div><div class="orders-intent">${workingDescription(order)}</div>` +
+        `<small>IBKR${linkNote}</small></div><div class="orders-intent">${workingDescription(order)}</div>` +
         `<span class="chip good">${esc(status)}</span></div>`;
     }).join("")}</div>`;
   }
+  const recent = data.correlations
+    .filter((record) => record.last_event_kind)
+    .slice(0, 4);
+  const lifecycle = recent.length
+    ? `<div class="orders-list">${recent.map((record) => {
+        const kind = record.last_event_kind || record.broker_status || "updated";
+        const qty = record.total_qty
+          ? `${record.filled_qty}/${record.total_qty}`
+          : String(record.filled_qty || "");
+        return `<div class="orders-row"><div class="orders-symbol"><strong>${esc(record.symbol)}</strong>` +
+          `<small>${esc(record.broker_order_id)}</small></div>` +
+          `<div class="orders-intent">${esc(record.side)} ${esc(qty)} · linked to ` +
+          `${record.execution_item_ids.length} intent${record.execution_item_ids.length === 1 ? "" : "s"}</div>` +
+          `<span class="chip ${kind === "filled" ? "good" : kind === "partial" ? "warn" : "bad"}">${esc(kind)}</span></div>`;
+      }).join("")}</div>`
+    : "";
   const note = data.workingState === "ready"
     ? `<span class="orders-footnote">Live from the Client Portal Gateway</span>`
     : `<span class="orders-footnote">Local plan and queue remain available while IBKR is offline</span>`;
@@ -178,7 +206,8 @@ function workingHtml(data: OrdersDashboardData, counts: PipelineCounts): string 
     `<div class="orders-card-head"><div><span class="orders-step">Broker</span><h3>Working at IBKR</h3></div>` +
     `<span class="orders-count">${data.workingState === "ready" ? counts.working : "—"}</span></div>` +
     `<p class="orders-card-copy">Orders accepted by IBKR. These are broker truth; “submitted” plan records are not treated as fills.</p>` +
-    body + `<div class="orders-card-actions">${note}${action("trade", "Open working orders →", "orders", "primary")}</div>` +
+    body + lifecycle +
+    `<div class="orders-card-actions">${note}${action("trade", "Open working orders →", "orders", "primary")}</div>` +
     `</section>`;
 }
 
@@ -200,6 +229,7 @@ export function ordersDashboardHtml(data: OrdersDashboardData): string {
 
 async function loadLiveOrders(): Promise<{
   orders: LiveOrderSummary[];
+  correlations: BrokerCorrelationRecord[];
   state: WorkingState;
   message?: string;
 }> {
@@ -210,17 +240,29 @@ async function loadLiveOrders(): Promise<{
   if (!gatewayConnected(status)) {
     return {
       orders: [],
+      correlations: [],
       state: "offline",
       message: gatewayUnavailableReason(status) || "IBKR Gateway is offline.",
     };
   }
   try {
-    const data = await api<{ orders?: LiveOrderSummary[] }>(
+    const data = await api<{
+      orders?: LiveOrderSummary[];
+      correlations?: BrokerCorrelationState;
+    }>(
       "/api/trade/orders", "GET", null, { timeoutMs: 20_000, reportError: false },
     );
-    return { orders: data.orders || [], state: "ready" };
+    observeBrokerState(data.correlations, false);
+    return {
+      orders: data.orders || [],
+      correlations: data.correlations?.records || [],
+      state: "ready",
+    };
   } catch (error) {
-    return { orders: [], state: "error", message: `Could not read IBKR working orders: ${(error as Error).message}` };
+    return {
+      orders: [], correlations: [], state: "error",
+      message: `Could not read IBKR working orders: ${(error as Error).message}`,
+    };
   }
 }
 
@@ -249,7 +291,7 @@ export async function loadOrders(): Promise<void> {
   }
   if (isStaleToken("orders", token)) return;
   const initial: OrdersDashboardData = {
-    plan, queue, working: [], workingState: "loading",
+    plan, queue, working: [], correlations: [], workingState: "loading",
   };
   body.innerHTML = ordersDashboardHtml(initial);
   const localCounts = pipelineCounts(initial);
@@ -261,7 +303,8 @@ export async function loadOrders(): Promise<void> {
   const live = await loadLiveOrders();
   if (isStaleToken("orders", token)) return;
   const complete: OrdersDashboardData = {
-    plan, queue, working: live.orders, workingState: live.state, workingMessage: live.message,
+    plan, queue, working: live.orders, correlations: live.correlations,
+    workingState: live.state, workingMessage: live.message,
   };
   body.innerHTML = ordersDashboardHtml(complete);
   updatePipelineChrome({
@@ -281,5 +324,10 @@ export function initOrders(): void {
     pushNav({ view, tab: target.dataset.ordersTab || "" });
     setActiveView(view);
     window.scrollTo(0, 0);
+  });
+  subscribePipelineChanged((detail) => {
+    if (detail.source === "broker" && $("#view-orders")?.classList.contains("active")) {
+      void loadOrders();
+    }
   });
 }

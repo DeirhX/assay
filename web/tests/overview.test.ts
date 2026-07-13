@@ -223,6 +223,18 @@ describe("daily command center", () => {
     expect(pulseHtml(payload)).toContain("planned amounts stale");
   });
 
+  it("surfaces correlated partial fills and counts broker-active orders", () => {
+    const payload = base();
+    payload.broker_orders = {
+      active: 2, partial: 1, recent_filled: 0, recent_failed: 0,
+    };
+    const rows = attentionItems(payload);
+    expect(rows.map((row) => row.id)).toContain("partial-fill");
+    const html = pulseHtml(payload);
+    expect(html).toContain(">9<");
+    expect(html).toContain("2 working");
+  });
+
   it("shows only activity newer than the previous visit", () => {
     const html = recentActivityHtml([
       { ts: "2026-07-10T20:00:00Z", type: "view", symbol: "ARM" },
