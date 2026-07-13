@@ -494,7 +494,17 @@ class NormalizeBasket(unittest.TestCase):
     def test_remove_leg_invalidates_review_and_rejects_stale_identifier(self):
         with tempfile.TemporaryDirectory() as tmp:
             staged = Path(tmp) / "staged-basket.json"
-            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged):
+            with mock.patch.object(
+                trade_service, "STAGED_BASKET_JSON", staged,
+            ), mock.patch.object(
+                trade_service, "basket_call_coverage_violations", return_value=[],
+            ), mock.patch.object(
+                trade_service, "queue_working_conflicts", return_value={
+                    "working_orders_verified": True,
+                    "working_orders_error": None,
+                    "coverage_violations": [],
+                },
+            ):
                 trade_service.save_basket([
                     {"symbol": "AMD", "delta_czk": 1000},
                     _cc_leg(),

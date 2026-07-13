@@ -7,6 +7,7 @@ touching the real Client Portal Gateway."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import time
 import unittest
@@ -519,6 +520,168 @@ class TradeServiceGuards(unittest.TestCase):
             )
             self.assertEqual(restored["excluded_leg_ids"], [])
             self.assertFalse(restored["reviewed"])
+
+    def test_queue_can_atomically_include_only_selected_legs(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(
+                    trade_service,
+                    "STAGED_BASKET_JSON",
+                    Path(tmp) / "staged-basket.json",
+                ):
+            trade_service.save_basket([
+                {"symbol": "AMD", "delta_czk": 1000},
+                {"symbol": "ARM", "delta_czk": 500},
+                {"symbol": "NVDA", "delta_czk": 750},
+            ])
+            state = trade_service.basket_state()
+            trade_service.review_basket(state["revision"])
+
+            trade_service.set_only_basket_legs_included(
+                ["stock:AMD", "stock:NVDA"],
+            )
+            selected = trade_service.basket_state()
+
+            self.assertEqual(
+                [leg["symbol"] for leg in selected["trades"]],
+                ["AMD", "NVDA"],
+            )
+            self.assertEqual(selected["excluded_leg_ids"], ["stock:ARM"])
+            self.assertFalse(selected["reviewed"])
+
+    def test_queue_state_adds_snapshot_share_estimates_without_changing_basket(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            basket_path = Path(tmp) / "staged-basket.json"
+            holdings_path = Path(tmp) / "holdings.json"
+            holdings_path.write_text(json.dumps({
+                "positions": [{
+                    "symbol": "NVDA",
+                    "asset_class": "STK",
+                    "quantity": 100,
+                    "mark_price": 100,
+                    "currency": "USD",
+                    "fx_rate_to_base": 20,
+                    "base_market_value": 200_000,
+                }],
+            }), encoding="utf-8")
+            with mock.patch.object(
+                trade_service, "STAGED_BASKET_JSON", basket_path,
+            ), mock.patch.object(
+                trade_service, "HOLDINGS_JSON", holdings_path,
+            ):
+                trade_service.save_basket([
+                    {"symbol": "NVDA", "delta_czk": 100_000},
+                ])
+                state = trade_service.basket_state()
+
+            self.assertEqual(state["queue_trades"][0]["estimated_shares"], 50)
+            self.assertEqual(
+                state["queue_trades"][0]["share_estimate_source"],
+                "holdings snapshot",
+            )
+            self.assertNotIn("estimated_shares", state["trades"][0])
+
+    def test_coverage_conflict_is_durable_and_blocks_review_until_reconciled(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            basket_path = Path(tmp) / "staged-basket.json"
+            holdings_path = Path(tmp) / "holdings.json"
+            holdings_path.write_text(json.dumps({
+                "positions": [{
+                    "symbol": "PYPL",
+                    "asset_class": "STK",
+                    "quantity": 1000,
+                    "base_market_value": 1_000_000,
+                }],
+            }), encoding="utf-8")
+            with mock.patch.object(
+                trade_service, "STAGED_BASKET_JSON", basket_path,
+            ), mock.patch.object(
+                trade_service, "HOLDINGS_JSON", holdings_path,
+            ):
+                trade_service.save_basket([
+                    {"type": "stock", "symbol": "PYPL", "delta_czk": -300_000},
+                    {
+                        "type": "covered_call", "symbol": "PYPL", "conid": 900,
+                        "expiry": "2026-08-07", "strike": 55.0, "contracts": 8,
+                    },
+                ])
+                state = trade_service.basket_state()
+
+                self.assertFalse(state["valid"])
+                self.assertEqual(state["coverage_violations"][0]["excess_shares"], 100)
+                self.assertEqual(
+                    state["coverage_violations"][0]["stock_leg_ids"],
+                    ["stock:PYPL"],
+                )
+                with self.assertRaisesRegex(apierror.Conflict, "covered calls"):
+                    trade_service.review_basket(state["revision"])
+
+                trade_service.set_basket_leg_included("stock:PYPL", False)
+                reconciled = trade_service.basket_state()
+                self.assertTrue(reconciled["valid"])
+                self.assertEqual(reconciled["coverage_violations"], [])
+
+    def test_working_stock_sell_conflict_is_visible_and_blocks_review(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            basket_path = Path(tmp) / "staged-basket.json"
+            holdings_path = Path(tmp) / "holdings.json"
+            holdings_path.write_text(json.dumps({
+                "positions": [{
+                    "symbol": "PYPL",
+                    "asset_class": "STK",
+                    "quantity": 1000,
+                    "base_market_value": 1_000_000,
+                }],
+            }), encoding="utf-8")
+            working = [{
+                "orderId": "991",
+                "ticker": "PYPL",
+                "secType": "STK",
+                "side": "SELL",
+                "remainingQuantity": 400,
+                "status": "Submitted",
+            }]
+            with mock.patch.object(
+                trade_service, "STAGED_BASKET_JSON", basket_path,
+            ), mock.patch.object(
+                trade_service, "HOLDINGS_JSON", holdings_path,
+            ), mock.patch.object(
+                trade_service, "_resolve_trade_account", return_value="U1",
+            ), mock.patch.object(
+                trade_service, "covered_call_capacity", return_value={
+                    "current_shares": 1000,
+                    "held_short_calls": 0,
+                    "working_short_calls": 0,
+                },
+            ), mock.patch.object(ibt, "live_orders", return_value=working):
+                trade_service.save_basket([{
+                    "type": "covered_call",
+                    "symbol": "PYPL",
+                    "conid": 900,
+                    "expiry": "2026-08-07",
+                    "strike": 55.0,
+                    "contracts": 7,
+                }])
+                state = trade_service.basket_state()
+                conflicts = trade_service.queue_working_conflicts()
+
+                self.assertTrue(state["valid"])
+                self.assertTrue(conflicts["working_orders_verified"])
+                violation = conflicts["coverage_violations"][0]
+                self.assertEqual(violation["working_stock_sell_shares"], 400)
+                self.assertEqual(violation["working_stock_order_ids"], ["991"])
+                self.assertEqual(violation["excess_shares"], 100)
+                with self.assertRaisesRegex(apierror.Conflict, "working stock sells"):
+                    trade_service.review_basket(state["revision"])
 
     def test_basket_state_reads_persisted_queue_once(self):
         raw = {"trades": [{"symbol": "AMD", "delta_czk": 1000}]}

@@ -366,6 +366,25 @@ export interface TradeQueueState {
   reviewed_at?: string | null;
   valid?: boolean;
   stock_sell_violations?: StockSellViolation[];
+  coverage_violations?: CoveredCallCoverageViolation[];
+  working_orders_verified?: boolean;
+  working_orders_error?: string | null;
+}
+
+export interface CoveredCallCoverageViolation {
+  symbol: string;
+  current_shares: number;
+  planned_stock_sell_shares: number;
+  working_stock_sell_shares?: number;
+  working_stock_order_ids?: string[];
+  working_call_order_ids?: string[];
+  selected_call_contracts: number;
+  held_short_call_contracts: number;
+  working_short_call_contracts: number;
+  required_shares: number;
+  excess_shares: number;
+  stock_leg_ids: string[];
+  call_leg_ids: string[];
 }
 
 export interface StockSellViolation {
@@ -883,6 +902,10 @@ export interface StockTradeLeg {
   delta_czk: number;
   leg_id?: string;
   route?: "buy_shares" | "sell_shares";
+  estimated_shares?: number;
+  share_estimate_price?: number;
+  share_estimate_currency?: string | null;
+  share_estimate_source?: string | null;
   provenance?: TradeLegProvenance[];
 }
 

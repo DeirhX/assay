@@ -1,4 +1,5 @@
 import { $, el, esc, relAge, setErrorSink } from "./core";
+import { toggleGatewayPanel } from "./gateway";
 
 // ---- Centralized error center ----------------------------------------------
 // Counterpart to the task pill: failures collect here instead of dying in a
@@ -68,7 +69,13 @@ function toggleErrorPanel(force?: boolean) {
   panel.hidden = !show;
   const btn = $("#error-indicator");
   if (btn) btn.setAttribute("aria-expanded", show ? "true" : "false");
-  if (show) renderErrorCenter();
+  if (show) {
+    toggleGatewayPanel(false);
+    const taskPanel = $("#task-panel");
+    if (taskPanel) taskPanel.hidden = true;
+    $("#task-indicator")?.setAttribute("aria-expanded", "false");
+    renderErrorCenter();
+  }
 }
 
 const ERROR_SOURCE_LABEL: Record<string, string> = { api: "Server", network: "Network", task: "Task", js: "App" };

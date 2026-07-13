@@ -24,7 +24,7 @@
     <button class="tab utility-tab" data-view="basket" type="button">Watchlist <span class="group-badge" id="basket-count" hidden></span></button>
     <button class="tab utility-tab" data-view="activity" type="button">Activity</button>
     <button class="task-indicator" id="task-indicator" type="button" aria-expanded="false" aria-controls="task-panel" title="Background tasks">Tasks</button>
-    <button class="gateway-indicator checking" id="gateway-indicator" type="button" aria-live="polite" title="Checking the IBKR Client Portal Gateway">IBKR: checking…</button>
+    <button class="gateway-indicator checking" id="gateway-indicator" type="button" aria-live="polite" aria-expanded="false" aria-controls="gateway-panel" title="Checking the IBKR Client Portal Gateway">IBKR: checking…</button>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
     <button class="ghost privacy-inline" id="privacy-toggle" type="button" aria-pressed="false">Privacy: off</button>
     <button class="tab settings-cog" data-view="setup" type="button" title="Settings" aria-label="Settings">
@@ -73,6 +73,17 @@
       </div>
     </div>
     <div class="task-list" id="task-list"></div>
+  </div>
+
+  <div class="task-panel gateway-panel" id="gateway-panel" hidden>
+    <div class="task-panel-head">
+      <strong>IBKR connection</strong>
+      <div class="task-panel-actions">
+        <span class="task-panel-note">Client Portal Gateway</span>
+        <button class="panel-close" id="gateway-close" type="button" aria-label="Close IBKR connection">&times;</button>
+      </div>
+    </div>
+    <div class="task-list" id="gateway-panel-content" aria-live="polite"></div>
   </div>
 
   <main>

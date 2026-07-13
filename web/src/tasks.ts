@@ -1,4 +1,5 @@
 import { api, el, esc, relAge } from "./core";
+import { toggleGatewayPanel } from "./gateway";
 import { navFromUrl, pushNav, restoreNav } from "./shell";
 import type { JobListing, JobsResponse } from "./api-types";
 
@@ -222,6 +223,10 @@ function toggleTaskPanel(force?: boolean): void {
   const btn = document.getElementById("task-indicator");
   if (btn) btn.setAttribute("aria-expanded", panelOpen ? "true" : "false");
   if (panelOpen) {
+    toggleGatewayPanel(false);
+    const errorPanel = document.getElementById("error-panel");
+    if (errorPanel) errorPanel.hidden = true;
+    document.getElementById("error-indicator")?.setAttribute("aria-expanded", "false");
     renderPanel();
     kickTaskPoll();
   }

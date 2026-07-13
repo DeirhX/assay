@@ -4,7 +4,7 @@ import { clearErrors, recordError, renderErrorCenter, toggleErrorPanel } from ".
 import { startGatewayMonitor } from "./gateway";
 import { refreshLoginStatus, registerPipelineJobHandlers } from "./pipeline";
 import "./livereload";
-import { initShell, navFromUrl, parseSearch, pushNav, restoreNav, setActiveView, urlForNav } from "./shell";
+import { initShell, navFromUrl, parseSearch, restoreNav, urlForNav } from "./shell";
 import { startTaskCenter } from "./tasks";
 
 // ---- boot -----------------------------------------------------------------
@@ -35,11 +35,7 @@ renderErrorCenter();
 
 initShell();
 applyPrivacyMode(state.privacyMode);
-startGatewayMonitor(() => {
-  pushNav({ view: "trade" });
-  setActiveView("trade");
-  window.scrollTo(0, 0);
-});
+startGatewayMonitor();
 // Wire the pipeline's needs-login recovery into the shared job poller now that
 // every module is fully evaluated (see registerPipelineJobHandlers for why this
 // can't happen at pipeline module-init time).

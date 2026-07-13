@@ -373,10 +373,6 @@ export function riskPanelHtml(risk: RiskDelta | undefined): string {
     `<div class="trade-risk-grid">${cells}</div>${warns}</div>`;
 }
 
-export function gatewayOrigin(base: string | null | undefined) {
-  return String(base || "").replace(/\/v1\/api\/?$/, "") || "https://127.0.0.1:5000";
-}
-
 // Buy/sell gross and the single largest trade, from the token-bound basket —
 // the CZK the human actually reasoned about (orders carry shares, not CZK). Used
 // for the last-mile confirmation modal.

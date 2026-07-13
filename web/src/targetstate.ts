@@ -13,6 +13,7 @@ import type {
   ExecutionPlanItem, ExecutionPlanState, PlanRow, RebalancePlan,
   StockSellViolation, TradeQueueState, Whatif, WhatifTrade,
 } from "./api-types";
+import { coverageConflictsHtml } from "./coverage-conflicts";
 import { axisMax, onAxis, r1 } from "./weight-axis";
 import { pushNav, setActiveView } from "./shell";
 
@@ -246,7 +247,7 @@ export function sourceBanner(
           ` <span class="muted">If assigned: ${esc(assignment)}.</span>`
         : "") +
       (!projectionValid
-        ? ` <button class="primary" type="button" disabled>Fix blocked sells first</button>`
+        ? ` <button class="primary" type="button" disabled>Resolve queue conflicts first</button>`
         : reviewed
         ? ` <span class="chip good">projection approved</span>` +
           ` <button class="primary" type="button" data-ts-goto="trade">Preview &amp; place →</button>`
@@ -275,6 +276,81 @@ export function violationsHtml(violations: StockSellViolation[]): string {
       `Remove ${esc(violation.symbol)} sell</button></div>`,
     ).join("") +
     `</div>`;
+}
+
+export function queueOrdersHtml(queue: TradeQueueState | null): string {
+  const active = queue?.trades || [];
+  const rows = (queue?.queue_trades || active.map((trade) => ({
+    ...trade,
+    included: true,
+  }))).slice().sort((a, b) => {
+    const aOption = a.type === "covered_call" || a.type === "cash_secured_put";
+    const bOption = b.type === "covered_call" || b.type === "cash_secured_put";
+    return Number(bOption) - Number(aOption);
+  });
+  if (!rows.length) return "";
+  const included = rows.filter((trade) => trade.included !== false);
+  const allIds = rows.map((trade) => String(trade.leg_id || "")).filter(Boolean);
+  const callIds = rows
+    .filter((trade) => trade.type === "covered_call")
+    .map((trade) => String(trade.leg_id || "")).filter(Boolean);
+  const onlyCallsAlready = included.length === callIds.length
+    && included.every((trade) => trade.type === "covered_call");
+  const controls =
+    (callIds.length && !onlyCallsAlready
+      ? `<button class="primary" type="button" data-ts-only-leg-ids="${esc(callIds.join(","))}">` +
+        `Trade only covered calls</button>`
+      : "") +
+    (included.length < rows.length
+      ? `<button class="ghost" type="button" data-ts-only-leg-ids="${esc(allIds.join(","))}">` +
+        `Include all orders</button>`
+      : "");
+  return `<section class="tstate-queue">` +
+    `<header><div><span class="reb-route-eyebrow">Execution queue</span>` +
+      `<strong>Queued orders</strong><small>${included.length} included · ` +
+      `${rows.length - included.length} excluded</small></div>` +
+      `<div class="tstate-queue-actions">${controls}</div></header>` +
+    `<div class="tstate-queue-rows">` +
+      rows.map((trade) => {
+        const option = trade.type === "covered_call" || trade.type === "cash_secured_put";
+        const includedNow = trade.included !== false;
+        const legId = String(trade.leg_id || "");
+        const kind = trade.type === "covered_call"
+          ? "Covered call"
+          : trade.type === "cash_secured_put"
+            ? "Short put"
+            : Number(trade.delta_czk || 0) >= 0 ? "Buy shares" : "Sell shares";
+        const detail = option
+          ? `${trade.contracts} contract${trade.contracts === 1 ? "" : "s"} · ` +
+            `${trade.contracts * (trade.multiplier || 100)} shares ` +
+            `${trade.type === "covered_call" ? "covered" : "if assigned"} · ` +
+            `${esc(trade.expiry)} · ${esc(trade.strike)}${trade.type === "covered_call" ? "C" : "P"}` +
+            `${trade.limit_price != null ? ` · limit ${esc(trade.limit_price)}` : ""}`
+          : `${trade.estimated_shares
+              ? `<b>≈ ${trade.estimated_shares.toLocaleString()} shares</b> ` +
+                `<small title="Snapshot estimate; IBKR preview locks the final whole-share quantity">estimated</small> · `
+              : `<b>Shares priced at preview</b> · `}` +
+            sensitive(
+              `${Number(trade.delta_czk || 0) >= 0 ? "+" : "−"}` +
+              `${fmtCZK(Math.abs(Number(trade.delta_czk || 0)))} CZK`,
+              "queued trade size",
+            );
+        return `<article class="tstate-queue-row${includedNow ? "" : " excluded"}">` +
+          `<div class="tstate-queue-symbol"><strong>${esc(trade.symbol)}</strong>` +
+            `<span>${kind}</span></div>` +
+          `<div class="tstate-queue-detail">${detail}</div>` +
+          `<span class="chip ${includedNow ? "good" : "muted"}">` +
+            `${includedNow ? "included" : "excluded"}</span>` +
+          `<div class="tstate-queue-row-actions">` +
+            `<button class="ghost" type="button" data-ts-toggle-leg="${esc(legId)}" ` +
+              `data-ts-include="${includedNow ? "false" : "true"}">` +
+              `${includedNow ? "Exclude" : "Include"}</button>` +
+            `<button class="ghost danger" type="button" data-ts-delete-leg="${esc(legId)}" ` +
+              `data-ts-delete-label="${esc(`${trade.symbol} ${kind}`)}">Delete</button>` +
+          `</div>` +
+        `</article>`;
+      }).join("") +
+    `</div></section>`;
 }
 
 function render(
@@ -316,8 +392,17 @@ function render(
     : "";
 
   const violations = (wf && wf.stock_sell_violations) || queue?.stock_sell_violations || [];
-  const projectionValid = wf ? wf.valid !== false : queue?.valid !== false;
+  const coverageViolations = queue?.coverage_violations || [];
+  const projectionValid =
+    (wf ? wf.valid !== false : true) && queue?.valid !== false;
   const violationsBlock = violationsHtml(violations);
+  const coverageBlock = coverageConflictsHtml(coverageViolations);
+  const workingVerificationBlock = queue?.working_orders_verified === false
+    ? `<div class="tstate-invalid"><strong>Approval blocked — working orders not verified</strong>` +
+      `<span>IBKR working orders could not be checked. Reconnect and refresh before approval.` +
+      `${queue.working_orders_error ? ` ${esc(queue.working_orders_error)}` : ""}</span></div>`
+    : "";
+  const queueBlock = queueOrdersHtml(queue);
   const caveats = (wf && wf.caveats || []).map((c) => {
     const severe = /negative|blocked|exceed|cannot/i.test(c);
     return `<div class="tstate-caveat${severe ? " bad" : ""}">` +
@@ -325,24 +410,43 @@ function render(
   }).join("");
 
   body.innerHTML =
-    executionPlanHtml(plan.execution_plan) +
     sourceBanner(source, nTrades, queue, projectionValid) +
+    queueBlock +
+    workingVerificationBlock +
     violationsBlock +
+    coverageBlock +
+    executionPlanHtml(plan.execution_plan) +
     summaryTiles(plan, wf, rows) +
     changedBlock + sameBlock + tradesBlock +
     (caveats ? `<div class="tstate-caveats">${caveats}</div>` : "");
 }
 
 // ---- load --------------------------------------------------------------------
-async function loadTargetState(): Promise<void> {
+interface TargetStateLoadOptions {
+  queue?: TradeQueueState;
+  quiet?: boolean;
+  reusePlan?: boolean;
+}
+
+let _loadedPlan: RebalancePlan | null = null;
+
+async function loadTargetState(options: TargetStateLoadOptions = {}): Promise<void> {
   const status = $("#tstate-status");
   const body = $("#tstate-body");
   if (!body) return;
-  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> projecting the book…`; }
-  body.innerHTML = "";
+  if (status) {
+    status.classList.remove("err");
+    status.innerHTML = options.quiet
+      ? ""
+      : `<span class="spinner"></span> projecting the book…`;
+  }
+  if (!options.quiet) body.innerHTML = "";
   let plan: RebalancePlan;
   try {
-    plan = await api<RebalancePlan>("/api/rebalance");
+    plan = options.reusePlan && _loadedPlan
+      ? _loadedPlan
+      : await api<RebalancePlan>("/api/rebalance");
+    _loadedPlan = plan;
   } catch (e) {
     if (status) { status.textContent = "Could not load the plan: " + (e as Error).message; status.classList.add("err"); }
     return;
@@ -355,7 +459,7 @@ async function loadTargetState(): Promise<void> {
   let source: "basket" | "suggestions" | "none" = "none";
   let queue: TradeQueueState;
   try {
-    queue = await api<TradeQueueState>("/api/trade/basket");
+    queue = options.queue || await api<TradeQueueState>("/api/trade/basket");
     if (Array.isArray(queue.trades) && queue.trades.length) {
       stagedCount = queue.trades.length;
       trades = queue.trades
@@ -371,6 +475,30 @@ async function loadTargetState(): Promise<void> {
       status.classList.add("err");
     }
     return;
+  }
+  if ((queue.trades || []).some((trade) => trade.type === "covered_call")) {
+    try {
+      const working = await api<Pick<
+        TradeQueueState,
+        "coverage_violations" | "working_orders_verified" | "working_orders_error"
+      >>("/api/trade/queue-conflicts");
+      const workingCoverage = working.coverage_violations || [];
+      queue = {
+        ...queue,
+        ...working,
+        coverage_violations: workingCoverage,
+        valid: queue.valid !== false
+          && working.working_orders_verified !== false
+          && workingCoverage.length === 0,
+      };
+    } catch (error) {
+      queue = {
+        ...queue,
+        valid: false,
+        working_orders_verified: false,
+        working_orders_error: (error as Error).message,
+      };
+    }
   }
 
   let wf: Whatif | null = null;
@@ -401,7 +529,7 @@ function initTargetState(): void {
       void api("/api/execution-plan", "POST", { action: "queue_selected" }, { timeoutMs: 120_000 })
         .then(() => {
           window.dispatchEvent(new Event("assay:queue-changed"));
-          return loadTargetState();
+          return loadTargetState({ quiet: true });
         })
         .catch((err) => {
           queueSelected.disabled = false;
@@ -413,6 +541,144 @@ function initTargetState(): void {
         });
       return;
     }
+    const onlyLegs = (e.target as HTMLElement).closest<HTMLButtonElement>(
+      "[data-ts-only-leg-ids]",
+    );
+    if (onlyLegs) {
+      const legIds = (onlyLegs.dataset.tsOnlyLegIds || "").split(",").filter(Boolean);
+      const status = $("#tstate-status");
+      onlyLegs.disabled = true;
+      onlyLegs.textContent = "Updating queue…";
+      void api<TradeQueueState>("/api/trade/basket", "POST", {
+        only_leg_ids: legIds,
+      }).then((saved) => {
+        window.dispatchEvent(new Event("assay:queue-changed"));
+        return loadTargetState({ queue: saved, quiet: true, reusePlan: true });
+      }).catch((err) => {
+        onlyLegs.disabled = false;
+        onlyLegs.textContent = "Try again";
+        if (status) {
+          status.classList.add("err");
+          status.textContent = (err as Error).message;
+        }
+      });
+      return;
+    }
+    const deleteLeg = (e.target as HTMLElement).closest<HTMLButtonElement>(
+      "[data-ts-delete-leg]",
+    );
+    if (deleteLeg) {
+      const label = deleteLeg.dataset.tsDeleteLabel || "this order";
+      if (!window.confirm(
+        `Permanently delete ${label} from the queue? Exclude is the reversible alternative.`,
+      )) return;
+      const status = $("#tstate-status");
+      deleteLeg.disabled = true;
+      deleteLeg.textContent = "Deleting…";
+      void api<TradeQueueState>("/api/trade/basket", "POST", {
+        remove_leg_id: deleteLeg.dataset.tsDeleteLeg || "",
+      }).then((saved) => {
+        window.dispatchEvent(new Event("assay:queue-changed"));
+        return loadTargetState({ queue: saved, quiet: true, reusePlan: true });
+      }).catch((err) => {
+        deleteLeg.disabled = false;
+        deleteLeg.textContent = "Delete";
+        if (status) {
+          status.classList.add("err");
+          status.textContent = (err as Error).message;
+        }
+      });
+      return;
+    }
+    const toggleLeg = (e.target as HTMLElement).closest<HTMLButtonElement>(
+      "[data-ts-toggle-leg]",
+    );
+    if (toggleLeg) {
+      const status = $("#tstate-status");
+      toggleLeg.disabled = true;
+      toggleLeg.textContent = "Updating…";
+      void api<TradeQueueState>("/api/trade/basket", "POST", {
+        toggle_leg_id: toggleLeg.dataset.tsToggleLeg || "",
+        included: toggleLeg.dataset.tsInclude === "true",
+      }).then((saved) => {
+        window.dispatchEvent(new Event("assay:queue-changed"));
+        return loadTargetState({ queue: saved, quiet: true, reusePlan: true });
+      }).catch((err) => {
+        toggleLeg.disabled = false;
+        toggleLeg.textContent = "Try again";
+        if (status) {
+          status.classList.add("err");
+          status.textContent = (err as Error).message;
+        }
+      });
+      return;
+    }
+    const cancelWorking = (e.target as HTMLElement).closest<HTMLButtonElement>(
+      "[data-coverage-cancel-order-ids]",
+    );
+    if (cancelWorking) {
+      const orderIds = (cancelWorking.dataset.coverageCancelOrderIds || "")
+        .split(",").filter(Boolean);
+      const symbol = cancelWorking.dataset.coverageSymbol || "this symbol";
+      const kind = cancelWorking.dataset.coverageCancelKind || "sell";
+      if (!window.confirm(
+        `Cancel ${orderIds.length} working IBKR ${kind} order(s) for ${symbol} and keep the queued calls?`,
+      )) return;
+      const conflict = cancelWorking.closest<HTMLElement>(".coverage-conflict");
+      const buttons = conflict?.querySelectorAll<HTMLButtonElement>("button") || [];
+      const conflictStatus = conflict?.querySelector<HTMLElement>(
+        ".coverage-conflict-status",
+      );
+      buttons.forEach((button) => { button.disabled = true; });
+      cancelWorking.textContent = "Cancelling at IBKR…";
+      void (async () => {
+        try {
+          for (const orderId of orderIds) {
+            await api("/api/trade/cancel", "POST", { order_id: orderId });
+          }
+          await loadTargetState({ quiet: true, reusePlan: true });
+        } catch (error) {
+          buttons.forEach((button) => { button.disabled = false; });
+          if (conflictStatus) conflictStatus.textContent = (error as Error).message;
+        }
+      })();
+      return;
+    }
+    const coverageAction = (e.target as HTMLElement).closest<HTMLButtonElement>(
+      "[data-coverage-action]",
+    );
+    if (coverageAction) {
+      const legIds = (coverageAction.dataset.coverageLegIds || "")
+        .split(",").filter(Boolean);
+      const conflict = coverageAction.closest<HTMLElement>(".coverage-conflict");
+      const conflictStatus = conflict?.querySelector<HTMLElement>(
+        ".coverage-conflict-status",
+      );
+      const buttons = conflict?.querySelectorAll<HTMLButtonElement>("button") || [];
+      buttons.forEach((button) => { button.disabled = true; });
+      coverageAction.textContent = "Reconciling…";
+      void (async () => {
+        try {
+          let saved: TradeQueueState | null = null;
+          for (const legId of legIds) {
+            saved = await api<TradeQueueState>("/api/trade/basket", "POST", {
+              toggle_leg_id: legId,
+              included: false,
+            });
+          }
+          window.dispatchEvent(new Event("assay:queue-changed"));
+          await loadTargetState({
+            ...(saved ? { queue: saved } : {}),
+            quiet: true,
+            reusePlan: true,
+          });
+        } catch (err) {
+          buttons.forEach((button) => { button.disabled = false; });
+          if (conflictStatus) conflictStatus.textContent = (err as Error).message;
+        }
+      })();
+      return;
+    }
     const remove = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-ts-remove-leg]");
     if (remove) {
       const legId = remove.dataset.tsRemoveLeg || "";
@@ -420,7 +686,11 @@ function initTargetState(): void {
       remove.disabled = true;
       remove.textContent = "Removing…";
       void api<TradeQueueState>("/api/trade/basket", "POST", { remove_leg_id: legId })
-        .then(() => loadTargetState())
+        .then((saved) => loadTargetState({
+          queue: saved,
+          quiet: true,
+          reusePlan: true,
+        }))
         .catch((err) => {
           remove.disabled = false;
           remove.textContent = "Remove blocked sell";

@@ -1,7 +1,8 @@
 import { starHtml } from "./basket";
 import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
 import type {
-  ExecutionPlanItem, ExecutionPlanState, FundingCandidate, FundingResponse,
+  CoveredCallCoverageViolation, ExecutionPlanItem, ExecutionPlanState,
+  FundingCandidate, FundingResponse,
   Provenance, RebalancePlan as RebPlan,
   PlanRow as RebRow, PlanMember, RebalanceOptionRung, RebalanceRouteResponse,
   RebalanceRouteSelection, TradeQueueState, Whatif, WhatifTrade,
@@ -2142,19 +2143,98 @@ export function renderWhatif(
       window.dispatchEvent(new Event("assay:queue-changed"));
       stageBtn.className = "ghost";
       stageBtn.textContent = queueMode === "append" ? "Orders added ✓" : "Rebalance orders replaced ✓";
-      const anotherBtn = el("button", "ghost", "Add another trade");
-      anotherBtn.type = "button";
-      anotherBtn.title = "Close this preview and clear every amount for a fresh trade";
-      anotherBtn.addEventListener("click", () => {
-        $<HTMLButtonElement>("#reb-clear")?.click();
-        window.scrollTo(0, 0);
-      });
       const reviewBtn = el("button", "primary", "Review projected portfolio →");
       reviewBtn.type = "button";
       reviewBtn.title = "Approve the projected portfolio before IBKR preview";
       reviewBtn.addEventListener("click", () => {
         pushNav({ view: "target-state" });
         setActiveView("target-state");
+        window.scrollTo(0, 0);
+      });
+      const coverageViolations = saved.coverage_violations || [];
+      if (coverageViolations.length) {
+        let unresolvedCoverage = coverageViolations.length;
+        reviewBtn.disabled = true;
+        reviewBtn.textContent = "Reconcile coverage before review";
+        const reconcile = el("div", "reb-queue-reconcile");
+        reconcile.innerHTML =
+          `<span class="reb-route-eyebrow">Existing queue conflict</span>` +
+          `<strong>New orders were added. Reconcile older covered-call plans before review.</strong>`;
+        const excludeLegs = async (
+          violation: CoveredCallCoverageViolation,
+          legIds: string[],
+          resolution: string,
+          row: HTMLElement,
+        ) => {
+          const buttons = row.querySelectorAll<HTMLButtonElement>("button");
+          buttons.forEach((button) => { button.disabled = true; });
+          try {
+            let updated: TradeQueueState | null = null;
+            for (const legId of legIds) {
+              updated = await api<TradeQueueState>("/api/trade/basket", "POST", {
+                toggle_leg_id: legId,
+                included: false,
+              });
+            }
+            if (updated) state.stagedBasket = updated.trades.slice();
+            window.dispatchEvent(new Event("assay:queue-changed"));
+            row.classList.add("resolved");
+            row.innerHTML =
+              `<strong>${esc(violation.symbol)} reconciled</strong>` +
+              `<span>${esc(resolution)}</span>`;
+            unresolvedCoverage -= 1;
+            if (unresolvedCoverage === 0) {
+              reviewBtn.disabled = false;
+              reviewBtn.textContent = "Review projected portfolio →";
+            }
+          } catch (error) {
+            buttons.forEach((button) => { button.disabled = false; });
+            const status = row.querySelector<HTMLElement>(".reb-queue-conflict-status");
+            if (status) status.textContent = (error as Error).message;
+          }
+        };
+        coverageViolations.forEach((violation) => {
+          const row = el("div", "reb-queue-conflict");
+          row.innerHTML =
+            `<div><strong>${esc(violation.symbol)}</strong>` +
+              `<span>${violation.current_shares.toLocaleString()} live shares cannot cover ` +
+              `${violation.planned_stock_sell_shares.toLocaleString()} planned share sales plus ` +
+              `${violation.selected_call_contracts} queued call contract(s). ` +
+              `${violation.excess_shares.toLocaleString()} shares over capacity.</span></div>` +
+            `<div class="reb-queue-conflict-actions"></div>` +
+            `<span class="reb-queue-conflict-status"></span>`;
+          const conflictActions = row.querySelector<HTMLElement>(".reb-queue-conflict-actions")!;
+          if (violation.stock_leg_ids.length) {
+            const keepCalls = el("button", "ghost", "Keep calls · exclude share sale");
+            keepCalls.type = "button";
+            keepCalls.addEventListener("click", () => void excludeLegs(
+              violation,
+              violation.stock_leg_ids,
+              "Kept the covered calls and excluded the planned share sale.",
+              row,
+            ));
+            conflictActions.appendChild(keepCalls);
+          }
+          if (violation.call_leg_ids.length) {
+            const keepShares = el("button", "ghost", "Keep share sale · exclude calls");
+            keepShares.type = "button";
+            keepShares.addEventListener("click", () => void excludeLegs(
+              violation,
+              violation.call_leg_ids,
+              "Kept the share sale and excluded the queued covered calls.",
+              row,
+            ));
+            conflictActions.appendChild(keepShares);
+          }
+          reconcile.appendChild(row);
+        });
+        actions.insertBefore(reconcile, stageStatus);
+      }
+      const anotherBtn = el("button", "ghost", "Add another trade");
+      anotherBtn.type = "button";
+      anotherBtn.title = "Close this preview and clear every amount for a fresh trade";
+      anotherBtn.addEventListener("click", () => {
+        $<HTMLButtonElement>("#reb-clear")?.click();
         window.scrollTo(0, 0);
       });
       actions.insertBefore(anotherBtn, stageStatus);

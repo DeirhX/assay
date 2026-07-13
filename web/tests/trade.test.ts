@@ -671,6 +671,85 @@ describe("trade desk staged basket", () => {
     expect(apiMock).not.toHaveBeenCalledWith("/api/trade/preview", expect.anything(), expect.anything());
   });
 
+  it("shows and reconciles durable call-coverage conflicts on final review", async () => {
+    const stock = {
+      type: "stock", leg_id: "stock:PYPL", symbol: "PYPL", delta_czk: -300_000,
+    };
+    const call = {
+      type: "covered_call", leg_id: "covered_call:PYPL:900", symbol: "PYPL",
+      conid: 900, expiry: "2026-08-07", strike: 55, contracts: 8, multiplier: 100,
+    };
+    const conflict = {
+      symbol: "PYPL",
+      current_shares: 1_000,
+      planned_stock_sell_shares: 300,
+      selected_call_contracts: 8,
+      held_short_call_contracts: 0,
+      working_short_call_contracts: 0,
+      required_shares: 1_100,
+      excess_shares: 100,
+      stock_leg_ids: ["stock:PYPL"],
+      call_leg_ids: ["covered_call:PYPL:900"],
+    };
+    apiMock.mockImplementation((
+      path: string,
+      method?: string,
+      body?: { toggle_leg_id?: string; included?: boolean },
+    ) => {
+      if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
+      if (path === "/api/trade/basket" && method === "POST") {
+        return Promise.resolve({
+          trades: [call],
+          queue_trades: [
+            { ...stock, included: false },
+            { ...call, included: true },
+          ],
+          excluded_leg_ids: ["stock:PYPL"],
+          revision: "reconciled",
+          reviewed: false,
+          valid: true,
+          coverage_violations: [],
+        });
+      }
+      if (path === "/api/trade/basket") {
+        return Promise.resolve({
+          trades: [stock, call],
+          queue_trades: [
+            { ...stock, included: true },
+            { ...call, included: true },
+          ],
+          excluded_leg_ids: [],
+          revision: "blocked",
+          reviewed: false,
+          valid: false,
+          coverage_violations: [conflict],
+        });
+      }
+      return Promise.resolve({ orders: [] });
+    });
+    window.history.replaceState({}, "", "/?view=trade&tab=review");
+
+    await loadTrade();
+    await flush();
+
+    const reviewPanel = document.querySelector<HTMLElement>(
+      '[data-trade-panel="review"]',
+    )!;
+    expect(reviewPanel.textContent).toContain("100 shares over capacity");
+    reviewPanel.querySelector<HTMLButtonElement>(
+      '[data-coverage-action="keep-calls"]',
+    )!.click();
+    await flush();
+
+    expect(apiMock).toHaveBeenCalledWith(
+      "/api/trade/basket",
+      "POST",
+      { toggle_leg_id: "stock:PYPL", included: false },
+    );
+    expect(reviewPanel.textContent).toContain("Coverage reconciled");
+    expect(state.stagedBasket).toEqual([call]);
+  });
+
   it("excludes and restores individual orders, clears the queue, and invalidates review", async () => {
     const basket = [
       { symbol: "NVDA", delta_czk: 1000 },
