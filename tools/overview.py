@@ -166,6 +166,31 @@ def plan_summary(plan: dict) -> dict:
     }
 
 
+def execution_plan_summary(state: dict | None) -> dict:
+    """Small, local-only execution-intent summary for Today/header navigation.
+
+    The durable execution plan is distinct from both generated rebalance
+    suggestions and the exact order queue. Only selected/deferred items are
+    "planned trades" here; queued legs are counted from staged-basket.json so
+    the cockpit cannot double-count the same intent in two lifecycle stages.
+    """
+    items = state.get("items") if isinstance(state, dict) else None
+    items = items if isinstance(items, list) else []
+    counts = {
+        status: sum(1 for item in items if item.get("status") == status)
+        for status in (
+            "suggested", "selected", "deferred", "queued", "submitted",
+            "dismissed", "superseded",
+        )
+    }
+    return {
+        **counts,
+        "planned": counts["selected"] + counts["deferred"],
+        "stale": bool(state.get("stale")) if isinstance(state, dict) else False,
+        "updated_at": state.get("updated_at") if isinstance(state, dict) else None,
+    }
+
+
 def staged_basket_summary(trades: list[dict] | None) -> dict:
     """The basket the planner last staged for the trade desk."""
     trades = trades or []
@@ -283,13 +308,15 @@ def research_summary(basket_items: list[dict] | None, ticker_index: list[dict] |
 # --------------------------------------------------------------------------- #
 def next_step(payload: dict) -> dict:
     """The single most useful next action, by fixed priority: ground truth
-    first (snapshot), then decisions already in flight (draft, staged basket),
+    first (snapshot), then decisions already in flight (draft, staged basket,
+    selected/deferred execution intent),
     then new decisions (plan drift), then research upkeep. Returns
     ``{id, view, label, reason}`` — the UI renders it as the primary CTA."""
     snap = payload.get("snapshot") or {}
     plan = payload.get("plan")
     draft = payload.get("draft") or {}
     basket = payload.get("staged_basket") or {}
+    execution = payload.get("execution_plan") or {}
     research = payload.get("research") or {}
 
     if not snap.get("exists"):
@@ -321,6 +348,11 @@ def next_step(payload: dict) -> dict:
         return {"id": "place-basket", "view": "target-state",
                 "label": "Review projected portfolio",
                 "reason": f"{n} queued order{'s' if n != 1 else ''} awaiting impact review before IBKR preview."}
+    if execution.get("planned"):
+        n = execution["planned"]
+        return {"id": "planned-orders", "view": "orders",
+                "label": "Continue planned trades",
+                "reason": f"{n} selected or deferred trade{'s' if n != 1 else ''} remain in the order pipeline."}
     if plan and plan.get("gates_open"):
         n = plan["gates_open"]
         return {"id": "gates-open", "view": "rebalance",
@@ -343,6 +375,6 @@ def next_step(payload: dict) -> dict:
                 "symbol": top.get("symbol"),
                 "label": f"Look at {top.get('symbol')}",
                 "reason": "Highest-scoring unresearched name from your segment work."}
-    return {"id": "all-clear", "view": "rebalance",
+    return {"id": "all-clear", "view": "orders",
             "label": "All caught up",
             "reason": "Snapshot is fresh, nothing is staged, and every targeted name sits inside its band."}

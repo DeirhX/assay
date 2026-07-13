@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   attentionItems, basketTriageCard, draftCard, journalCard, nextStepHtml, planCard,
-  recentActivityHtml, segmentsCard, snapshotCard, stagedBasketCard,
+  pulseHtml, recentActivityHtml, segmentsCard, snapshotCard, stagedBasketCard,
 } from "../src/overview";
 import type { Overview } from "../src/overview";
 
@@ -138,6 +138,7 @@ describe("in-flight cards hide when there is nothing in flight", () => {
     expect(html).toContain("1 short put");
     expect(html).toContain("1 covered call");
     expect(html).toContain("direct-share value");
+    expect(html).toContain('data-goto="orders"');
   });
 });
 
@@ -179,6 +180,10 @@ describe("daily command center", () => {
     plan: { rows: 10, out_of_band: 3, buy: 2, trim: 1, review: 0, actionable: 3,
       conflicts: 0, gates_waiting: 2, gates_open: 0, untargeted: 0 },
     draft: { has_draft: true, pending: 2 },
+    execution_plan: {
+      planned: 3, selected: 2, deferred: 1, suggested: 4,
+      queued: 0, submitted: 0,
+    },
     staged_basket: { count: 4, buys: 3, sells: 1, total_abs_czk: 1000 },
     journal: { total: 2, pending_outcomes: 2, review_due: 1 },
     research: {
@@ -203,5 +208,12 @@ describe("daily command center", () => {
     ], "2026-07-10T10:00:00Z");
     expect(html).toContain("Viewed ARM");
     expect(html).not.toContain("Viewed OLD");
+  });
+
+  it("makes in-flight trade intent a direct link to the Orders pipeline", () => {
+    const html = pulseHtml(base());
+    expect(html).toContain('data-goto="orders"');
+    expect(html).toContain("3 planned · 4 queued");
+    expect(html).not.toContain("2 plan · 4 trades");
   });
 });

@@ -17,26 +17,27 @@ the **feature catalog**: every view, every button, and what it triggers.
 
 ## Navigation model
 
-The header exposes **five workflow-ordered groups**, left to right in the order
-you actually work: **Plan → Research → Rebalance → Portfolio → Watchlist**, plus
-a Settings gear that sits outside the groups.
+The header exposes **five workflow-ordered groups**:
+**Today → Plan → Research → Orders → Portfolio**. Watchlist and Activity are
+utility destinations; the Settings gear sits outside the groups.
 
 | Group | Lands on | Sub-tabs |
 | --- | --- | --- |
-| **Plan** | Direction → Rebalance (`strategy`) | *(single guided view)* |
-| **Research** | Leaderboard | Leaderboard · Ticker · Reports · Segments *(+ Pipeline as a sub-page)* |
-| **Rebalance** | Rebalance planner | Rebalance · Optimizer · Working draft · Exit · Trade *(+ Target state in-group)* |
-| **Portfolio** | Today | Today · Positions · History · Risk · Attribution · Tax · Journal |
-| **Watchlist** | Watchlist basket | *(single view)* |
+| **Today** | Daily command center | *(single view)* |
+| **Plan** | Direction → Rebalance (`strategy`) | Guided plan · Optimizer · Pending model changes |
+| **Research** | Segment leaderboard | Explore · Ticker · Deep Research *(+ Pipeline/Segment sub-pages)* |
+| **Orders** | Order pipeline | Flowbar: Build orders · Review impact · Preview & place |
+| **Portfolio** | Positions | Positions · History · Analytics |
+| **Watchlist / Activity** | Their respective utility views | Activity also contains Decisions |
 
 Behaviors that apply everywhere:
 
-- **Group memory** — re-clicking a group header returns you to the *last view you
-  visited* in that group (not always its default). The Pipeline wizard is the one
-  exception (it's a sub-page, never "remembered").
+- **Group memory** — re-clicking most group headers returns you to the *last view
+  visited* in that group. Orders is deliberately stable: its header always opens
+  the Order pipeline index rather than a remembered placement step.
 - **The URL is the persistence layer** — `?view=`, `?ticker=`, `?segment=`,
   `?run=` round-trip so any state is deep-linkable and back/forward works. A bare
-  `/` means Plan. Mangled `%3D`-encoded query strings (from chat/markdown
+  `/` means Today. Mangled `%3D`-encoded query strings (from chat/markdown
   renderers) self-heal on boot.
 - **First-run redirect** — if the data dir is empty, boot lands on Settings.
 
@@ -211,11 +212,25 @@ Endpoints: `POST /api/segment-draft`, `POST /api/segment-def/{slug}`,
 
 ---
 
-## Rebalance
+## Orders and rebalancing
 
-The Rebalance group carries a **flow bar** (`flowbar.ts`) reading *Current book →
-Plan changes → Orders → Target state* with live counts, so the sibling sub-tabs
-read as one pipeline. (`GET /api/overview`, `GET /api/trade/orders`.)
+The Orders group lands on a stable **Order pipeline** index (`orders.ts`) that
+shows three distinct sources without conflating them:
+
+- **Planned trades** — selected/deferred durable intent from
+  `data/cache/execution-plan.json`.
+- **Order queue** — exact local legs and projection-approval state from
+  `data/cache/staged-basket.json`.
+- **Working at IBKR** — live broker orders from Client Portal API.
+
+The **flow bar** (`flowbar.ts`) remains the guarded action path:
+*Current book → Build orders → Review impact → Preview & place*. Completed fills
+remain under Portfolio History. (`GET /api/overview`,
+`GET /api/execution-plan`, `GET /api/trade/basket`,
+`GET /api/trade/orders`.)
+
+The Optimizer and Working draft are documented nearby because they feed this
+path, but their navigation home is **Plan**, not Orders.
 
 ### Rebalance planner — `rebalance.ts`
 The core advice view: target-vs-holdings drift and band-closing suggestions.

@@ -129,7 +129,7 @@ from ticker_directory import (  # noqa: E402  -- known-symbol universe, recents 
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
     _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
-    _trade_tickle, basket_state as _basket_state, load_basket as _load_basket,
+    _trade_tickle, basket_state as _basket_state,
     remove_basket_leg as _remove_basket_leg,
     replace_stock_basket as _replace_stock_basket,
     review_basket as _review_basket, save_basket as _save_basket,
@@ -626,6 +626,7 @@ class Handler(BaseHTTPRequestHandler):
         snap = overview.snapshot_summary(holdings, now=now)
 
         plan_sum = None
+        plan = None
         if model and snap["exists"]:
             plan = rebalance.plan(model, holdings)
             _attach_research_overlay(plan, holdings)
@@ -643,13 +644,21 @@ class Handler(BaseHTTPRequestHandler):
         # predates? Cheap read of the already-cached history; degrades to
         # "not checked" when history has never been pulled.
         drift = reconcile.drift_report(holdings, _history_payload())
+        queue = _basket_state()
+        execution_plan.reconcile_queue(queue.get("trades") or [])
+        execution_state = (
+            execution_plan.state_for_plan(plan)
+            if plan is not None
+            else execution_plan.load_plan()
+        )
         payload = {
             "generated_at": now.isoformat(timespec="seconds"),
             "snapshot": snap,
             "drift": drift,
             "plan": plan_sum,
             "draft": draft,
-            "staged_basket": overview.staged_basket_summary(_load_basket()),
+            "execution_plan": overview.execution_plan_summary(execution_state),
+            "staged_basket": overview.staged_basket_summary(queue.get("trades")),
             "journal": overview.journal_summary(journal.load_entries(), now=now),
             # Read-only over the cached verdict (warmed when Attribution is opened) --
             # no network on the Today path. Absent/thin cache degrades to a nudge.
