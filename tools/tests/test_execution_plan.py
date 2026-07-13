@@ -118,6 +118,53 @@ class ExecutionPlanStore(unittest.TestCase):
             self.assertEqual(updated["items"][0]["status"], "selected")
             self.assertIsNone(updated["items"][0]["queued_leg_id"])
 
+    def test_resolves_only_execution_items_on_residual_orders(self):
+        basket = [
+            {
+                "leg_id": "stock:AMD",
+                "symbol": "AMD",
+                "provenance": [{"execution_item_id": "item-amd"}],
+            },
+            {
+                "leg_id": "covered_call:NVDA:123",
+                "symbol": "NVDA",
+                "provenance": [{"execution_item_id": "item-nvda"}],
+            },
+        ]
+        got = execution_plan.execution_item_ids_for_orders(
+            basket,
+            [{"symbol": "AMD"}, {"leg_id": "unknown", "symbol": "OTHER"}],
+        )
+        self.assertEqual(got, ["item-amd"])
+
+    def test_mark_submitted_only_changes_named_queued_items(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "execution-plan.json"
+            state = execution_plan.state_for_plan(_plan(), path=path)
+            first_id = state["items"][0]["id"]
+            _, manual = execution_plan.add_manual({
+                "symbol": "AMD",
+                "delta_czk": 5_000,
+                "route_policy": "buy_shares",
+            }, path=path)
+            execution_plan.mark_queued(
+                [first_id, manual["id"]],
+                [
+                    {"leg_id": "stock:NVDA", "provenance": [{"execution_item_id": first_id}]},
+                    {"leg_id": "stock:AMD", "provenance": [{"execution_item_id": manual["id"]}]},
+                ],
+                path=path,
+            )
+            updated = execution_plan.mark_submitted([first_id], path=path)
+            by_id = {item["id"]: item for item in updated["items"]}
+            self.assertEqual(by_id[first_id]["status"], "submitted")
+            self.assertEqual(by_id[manual["id"]]["status"], "queued")
+            unchanged = execution_plan.mark_submitted([], path=path)
+            self.assertEqual(
+                next(item for item in unchanged["items"] if item["id"] == manual["id"])["status"],
+                "queued",
+            )
+
     def test_queue_selected_consolidates_sources_by_symbol(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "execution-plan.json"

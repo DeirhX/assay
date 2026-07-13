@@ -18,6 +18,9 @@ import {
   publishQueueChanged,
 } from "./execution-queue";
 import {
+  countWorkingOrders, isTerminalOrder, updatePipelineChrome,
+} from "./pipeline-summary";
+import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
   orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
   reconciliationTitle, riskPanelHtml, sideTag,
@@ -1333,6 +1336,7 @@ async function renderLiveOrders(token?: number) {
   wrap.appendChild(card);
 
   if (!s.authenticated) {
+    updatePipelineChrome({ working: null });
     body.appendChild(el("div", "hint",
       "Connect the IBKR Client Portal Gateway (see above) to see your working orders here."));
     return;
@@ -1345,6 +1349,7 @@ async function renderLiveOrders(token?: number) {
   } catch (e) {
     if (token != null && isStaleToken("trade", token)) return;
     stopPegPoll();
+    updatePipelineChrome({ working: null });
     body.innerHTML = "";
     body.appendChild(el("div", "trade-bnr warn",
       `Could not read working orders: ${esc((e as Error).message)}`));
@@ -1354,6 +1359,7 @@ async function renderLiveOrders(token?: number) {
 
   const all = (data && data.orders) || [];
   const pegs = (data && data.pegs) || [];
+  updatePipelineChrome({ working: countWorkingOrders(all) });
   // Seed quotes from the last hydration so a re-fetch (peg poll / manual
   // refresh) doesn't blink every market cell back to a placeholder before the
   // fresh snapshot lands.
@@ -1364,7 +1370,7 @@ async function renderLiveOrders(token?: number) {
   // Cache the payload so column-sort clicks can re-render locally without a
   // refetch (which would re-hit IBKR on every click).
   _ordersData = { orders: all, pegs };
-  const working = all.filter((o) => !orderTerminal(o));
+  const working = all.filter((o) => !isTerminalOrder(o));
   // The market snapshot is a separate ~2s call; paint the list now and stream
   // the quotes into the market cells once they arrive, rather than blocking the
   // whole list on them (which used to double this endpoint's latency).
@@ -1395,7 +1401,7 @@ function orderConid(o: LiveOrder): number | null {
 async function hydrateQuotes(token: number | undefined, body: HTMLElement, title: HTMLElement): Promise<void> {
   if (!_ordersData) return;
   const conids = Array.from(new Set(
-    _ordersData.orders.filter((o) => !orderTerminal(o))
+    _ordersData.orders.filter((o) => !isTerminalOrder(o))
       .map(orderConid).filter((c): c is number => c != null),
   ));
   if (!conids.length) {
@@ -1468,8 +1474,8 @@ function sortWorking(rows: LiveOrder[]): LiveOrder[] {
 function paintOrders(body: HTMLElement, title: HTMLElement): void {
   if (!_ordersData) return;
   const { orders: all, pegs } = _ordersData;
-  const working = all.filter((o) => !orderTerminal(o));
-  const done = all.filter((o) => orderTerminal(o));
+  const working = all.filter((o) => !isTerminalOrder(o));
+  const done = all.filter((o) => isTerminalOrder(o));
   const pegById = new Map(pegs.map((p) => [String(p.order_id), p]));
   body.innerHTML = "";
   title.textContent = `Working orders (${working.length})`;
@@ -1516,13 +1522,6 @@ function ordersHeaderCells(): string {
     `<button class="trade-live-h sortable${active("age")}" type="button" data-osort="age" ` +
       `title="sort by how long the order has rested">Age${arrow("age")}</button>` +
     `<span class="trade-live-h"></span>`;
-}
-
-// Terminal (done) statuses: IBKR keeps recently filled/cancelled orders in the
-// orders feed, but they can't be pegged or cancelled.
-const TERMINAL_STATUS = /^(filled|cancelled|canceled|expired|rejected|apicancelled)$/i;
-function orderTerminal(o: LiveOrder): boolean {
-  return TERMINAL_STATUS.test(String(o.status || o.order_status || "").trim());
 }
 
 // Inline icons (currentColor) so actions read as buttons, not a wall of text.

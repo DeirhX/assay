@@ -717,6 +717,36 @@ class PortfolioPrereqHttp(ServeHttpCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], serve.MSG_HOLDINGS_VALUE_ERROR)
 
+    def test_trade_place_submits_only_items_on_residual_orders(self):
+        body = {
+            "trades": [{
+                "leg_id": "stock:AMD",
+                "symbol": "AMD",
+                "provenance": [{"execution_item_id": "item-amd"}],
+            }],
+            "token": "preview-token",
+            "confirm": True,
+        }
+        result = {
+            "orders": [{"symbol": "AMD"}],
+            "placed": [{"order_id": "1"}],
+            "staged_basket_cleared": True,
+        }
+        with mock.patch.object(serve, "_trade_place", return_value=result), \
+             mock.patch.object(
+                 serve.execution_plan,
+                 "execution_item_ids_for_orders",
+                 return_value=["item-amd"],
+             ) as resolve, \
+             mock.patch.object(serve.execution_plan, "mark_submitted") as submitted, \
+             mock.patch.object(serve.execution_plan, "reconcile_queue") as reconcile:
+            status, payload = self.post_json("/api/trade/place", body)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, result)
+        resolve.assert_called_once_with(body["trades"], result["orders"])
+        submitted.assert_called_once_with(["item-amd"])
+        reconcile.assert_called_once_with([])
+
 
 class HostGuard(unittest.TestCase):
     def test_non_loopback_host_is_refused(self):

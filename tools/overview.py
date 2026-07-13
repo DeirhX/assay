@@ -191,9 +191,10 @@ def execution_plan_summary(state: dict | None) -> dict:
     }
 
 
-def staged_basket_summary(trades: list[dict] | None) -> dict:
-    """The basket the planner last staged for the trade desk."""
-    trades = trades or []
+def staged_basket_summary(queue: dict | None) -> dict:
+    """The exact local queue plus the state of its projection safety gate."""
+    queue = queue if isinstance(queue, dict) else {}
+    trades = queue.get("trades") or []
     stock = [t for t in trades if t.get("type") in {None, "stock"}]
     puts = [t for t in trades if t.get("type") == "cash_secured_put"]
     calls = [t for t in trades if t.get("type") == "covered_call"]
@@ -207,6 +208,8 @@ def staged_basket_summary(trades: list[dict] | None) -> dict:
         "conditional_reductions": len(calls),
         "option_legs": len(puts) + len(calls),
         "total_abs_czk": round(total),
+        "reviewed": bool(queue.get("reviewed")),
+        "valid": queue.get("valid") is not False,
     }
 
 
@@ -345,9 +348,18 @@ def next_step(payload: dict) -> dict:
                 "reason": f"{n} target-model change{'s' if n != 1 else ''} awaiting a decision — applying them will not trade."}
     if basket.get("count"):
         n = basket["count"]
+        if basket.get("reviewed") and basket.get("valid", True):
+            return {"id": "place-basket", "view": "trade",
+                    "label": "Preview & place orders",
+                    "reason": f"{n} queued order{'s' if n != 1 else ''} passed projection review and are ready for IBKR preview."}
         return {"id": "place-basket", "view": "target-state",
                 "label": "Review projected portfolio",
                 "reason": f"{n} queued order{'s' if n != 1 else ''} awaiting impact review before IBKR preview."}
+    if execution.get("stale") and execution.get("planned"):
+        n = execution["planned"]
+        return {"id": "stale-plan", "view": "rebalance",
+                "label": "Recheck stale planned trades",
+                "reason": f"{n} planned trade{'s no longer match' if n != 1 else ' no longer matches'} the current portfolio plan."}
     if execution.get("planned"):
         n = execution["planned"]
         return {"id": "planned-orders", "view": "orders",

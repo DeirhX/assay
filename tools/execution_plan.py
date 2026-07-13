@@ -375,12 +375,44 @@ def mark_queued(
         return _write(state, path)
 
 
-def mark_submitted(*, path: Path = EXECUTION_PLAN_JSON) -> dict[str, Any]:
+def execution_item_ids_for_orders(
+    basket: list[dict[str, Any]],
+    orders: list[dict[str, Any]],
+) -> list[str]:
+    """Resolve actually placed residual orders back to durable intent ids.
+
+    A preview may remove legs already covered by working IBKR orders, so the
+    original basket is not proof that every queued item was submitted.  Orders
+    are the residual set sent to IBKR; basket provenance is the authoritative
+    leg -> execution-item mapping.
+    """
+    placed_legs = {
+        str(order.get("leg_id") or f"stock:{clean_symbol(order.get('symbol'))}")
+        for order in orders
+        if order.get("leg_id") or clean_symbol(order.get("symbol"))
+    }
+    return sorted({
+        str(provenance.get("execution_item_id") or "")
+        for leg in basket
+        if str(leg.get("leg_id") or f"stock:{clean_symbol(leg.get('symbol'))}") in placed_legs
+        for provenance in leg.get("provenance") or []
+        if isinstance(provenance, dict) and provenance.get("execution_item_id")
+    })
+
+
+def mark_submitted(
+    item_ids: list[str],
+    *,
+    path: Path = EXECUTION_PLAN_JSON,
+) -> dict[str, Any]:
+    ids = {str(item_id) for item_id in item_ids if str(item_id)}
+    if not ids:
+        return load_plan(path)
     with _LOCK:
         state = load_plan(path)
         changed = False
         for item in state.get("items") or []:
-            if item.get("status") == "queued":
+            if item.get("status") == "queued" and str(item.get("id") or "") in ids:
                 item["status"] = "submitted"
                 item["updated_at"] = _now()
                 changed = True

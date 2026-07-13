@@ -676,6 +676,7 @@ function initTargetState(): void {
       review.textContent = "Approving…";
       void api<TradeQueueState>("/api/trade/basket/review", "POST", { revision })
         .then(() => {
+          publishQueueChanged();
           review.className = "ghost";
           review.textContent = "Projection approved ✓";
           const open = el("button", "primary", "Preview & place →");

@@ -18,6 +18,7 @@ import {
 import { directRouteFor, optionRouteFor } from "./execution-routes";
 import { createOptionRouteControl } from "./option-route-control";
 import { gatewayConnected, gatewayUnavailableReason, refreshGatewayStatus } from "./gateway";
+import { publishPipelineChanged } from "./pipeline-summary";
 import { ruleTone, ruleWord, POSITION_TRACK_SEL, positionTrackHtml } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
@@ -489,6 +490,7 @@ function renderRebalance(plan: RebPlan) {
       replace.textContent = "Replacing…";
       try {
         await api("/api/execution-plan", "POST", { action: "replace_rebalance" });
+        publishPipelineChanged({ source: "plan" });
         await loadRebalance();
       } catch (error) {
         replace.disabled = false;

@@ -140,6 +140,16 @@ describe("in-flight cards hide when there is nothing in flight", () => {
     expect(html).toContain("direct-share value");
     expect(html).toContain('data-goto="orders"');
   });
+
+  it("routes an approved valid queue directly to IBKR preview", () => {
+    const html = stagedBasketCard({
+      count: 2, buys: 1, sells: 1, total_abs_czk: 10_000,
+      reviewed: true, valid: true,
+    });
+    expect(html).toContain("approved");
+    expect(html).toContain('data-goto="trade"');
+    expect(html).not.toContain('data-goto="target-state"');
+  });
 });
 
 describe("research lane", () => {
@@ -199,6 +209,18 @@ describe("daily command center", () => {
     expect(rows).toHaveLength(3);
     expect(rows.map((r) => r.id)).not.toContain("commit-draft");
     expect(rows[0].id).toBe("place-basket");
+    expect(rows[0].view).toBe("target-state");
+  });
+
+  it("surfaces stale intent and advances approved queues to placement", () => {
+    const payload = base();
+    payload.execution_plan!.stale = true;
+    payload.staged_basket.reviewed = true;
+    payload.staged_basket.valid = true;
+    const rows = attentionItems(payload);
+    expect(rows.find((row) => row.id === "place-basket")?.view).toBe("trade");
+    expect(rows.map((row) => row.id)).toContain("stale-plan");
+    expect(pulseHtml(payload)).toContain("planned amounts stale");
   });
 
   it("shows only activity newer than the previous visit", () => {
