@@ -101,3 +101,29 @@ def test_numeric_mode_accepts_zero_sides_rebalance_style():
     )
     assert truthy["limit_price"] is None
     assert "staging_warning" not in truthy
+
+
+def test_freshness_matches_placement_boundaries():
+    at_ttl = _rung(quote_timestamp=(NOW - dt.timedelta(seconds=MAX_AGE)).isoformat())
+    eq.decorate_ladder_rung(at_ttl, now=NOW, max_age_seconds=MAX_AGE)
+    assert at_ttl["quote_age_seconds"] == MAX_AGE
+    assert at_ttl["quote_fresh"] is False
+    assert at_ttl["limit_price"] is None
+
+    future = _rung(quote_timestamp=(NOW + dt.timedelta(seconds=1)).isoformat())
+    eq.decorate_ladder_rung(future, now=NOW, max_age_seconds=MAX_AGE)
+    assert future["quote_age_seconds"] == 0.0
+    assert future["quote_fresh"] is False
+    assert future["limit_price"] is None
+
+
+def test_freshness_accepts_naive_exit_clock_as_utc():
+    naive_now = NOW.replace(tzinfo=None)
+    rung = _rung(quote_timestamp=(NOW - dt.timedelta(seconds=1)).isoformat())
+    eq.decorate_ladder_rung(
+        rung,
+        now=naive_now,
+        max_age_seconds=MAX_AGE,
+        assume_naive_utc=True,
+    )
+    assert rung["quote_fresh"] is True

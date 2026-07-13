@@ -2,8 +2,10 @@
 
 ## Tests
 
-Stdlib `unittest`, no dependencies. They cover the parts where a silent bug
-costs money: the trust engine (`research_pull` cross-checks, market-cap
+The backend remains stdlib-only in production. Tests use pinned `pytest` for
+complete discovery of both function-style and `unittest.TestCase` coverage.
+They cover the parts where a silent bug costs money: the trust engine
+(`research_pull` cross-checks, market-cap
 reconciliation/quarantine, metric/profile merge, peer score), the target-band
 decision logic (`portfolio`, `rebalance` model validation), the claim verifier
 (`verify_claims` identity/staleness checks), the site generator
@@ -22,12 +24,13 @@ the Czech tax-lot selection (`tax_lots`), the what-if recompute (`whatif`), and
 the decision-journal calibration (`journal`).
 
 ```powershell
-py -3 -m unittest discover -s tools/tests -p "test_*.py" -t tools/tests
+py -3 -m pip install -r tools/requirements-test.txt
+py -3 -m pytest tools/tests -q
 py -3 -m ruff check tools             # lint (CI runs both)
 npm test                              # frontend unit tests (Vitest, web/tests/)
 ```
 
-They run offline (no network, no live CLI) in ~1s. The config test sandboxes
+They run offline (no network, no live CLI). The config test sandboxes
 `CONFIG_PATH` to a temp dir, so your real `analysis-config.json` is never
 touched; the integration smoke test reuses a real committed `data/research/*.json`
 dossier and skips cleanly if none is present.

@@ -48,12 +48,19 @@ def decorate_ladder_rung(
     eps: float = 1e-9,
 ) -> None:
     """Annotate one ladder rung with quote age, freshness, limit, and warnings."""
+    freshness_now = now
+    if assume_naive_utc and freshness_now is not None and freshness_now.tzinfo is None:
+        freshness_now = freshness_now.replace(tzinfo=dt.timezone.utc)
     age = quote_age_seconds(
         rung.get("quote_timestamp"),
         now=now,
         assume_naive_utc=assume_naive_utc,
     )
-    quote_fresh = age is not None and age <= max_age_seconds
+    quote_fresh = timeutil.cache_fresh(
+        rung.get("quote_timestamp"),
+        max_age_seconds,
+        now=freshness_now,
+    )
     rung["quote_age_seconds"] = round(age, 1) if age is not None else None
     rung["quote_fresh"] = quote_fresh
 

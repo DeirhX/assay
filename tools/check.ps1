@@ -8,7 +8,7 @@
 #   pwsh tools/check.ps1                # all gating checks (ruff, mypy, tests, build, leak)
 #   pwsh tools/check.ps1 -E2E           # also run the Playwright e2e suite
 #   pwsh tools/check.ps1 -Data          # also run the private-data validators
-#   pwsh tools/check.ps1 -SkipInstall   # skip `npm install`
+#   pwsh tools/check.ps1 -SkipInstall   # skip npm + Python test dependency installs
 #
 # Exit code is non-zero iff a GATING step failed. Skipped stages never fail the run.
 
@@ -55,12 +55,14 @@ function Add-Skip {
 if (-not $SkipInstall) {
     Write-Host "=== npm install ===" -ForegroundColor Cyan
     npm install | Out-Null
+    Write-Host "=== Python test dependencies ===" -ForegroundColor Cyan
+    py -3 -m pip install --quiet -r tools/requirements-test.txt
 }
 
 # --- gating: Python job ----------------------------------------------------
 Invoke-Step "ruff (lint)"        { ruff check tools }
 Invoke-Step "mypy (typecheck)"   { py -3 -m mypy tools }
-Invoke-Step "unittest"           { py -3 -m unittest discover -s tools/tests -t tools/tests }
+Invoke-Step "pytest"             { py -3 -m pytest tools/tests -q }
 
 # --- gating: Frontend job (CI order) ---------------------------------------
 Invoke-Step "eslint"             { npm run lint }
