@@ -74,6 +74,62 @@ class Weights(unittest.TestCase):
         )
 
 
+class UnrealizedPnlPercent(unittest.TestCase):
+    def test_long_position_uses_reconstructed_cost_basis(self):
+        self.assertEqual(
+            pf.unrealized_pnl_pct({"market_value": 1_000.0, "unrealized_pnl": 200.0}),
+            25.0,
+        )
+
+    def test_profitable_short_option_keeps_positive_sign(self):
+        self.assertAlmostEqual(
+            pf.unrealized_pnl_pct({"market_value": -100.0, "unrealized_pnl": 50.0}),
+            33.333333,
+            places=5,
+        )
+
+    def test_holdings_payload_exposes_mark_and_percent(self):
+        payload = pf.holdings_payload({
+            "net_asset_value": 2_000.0,
+            "positions": [{
+                "symbol": "AAA",
+                "asset_class": "STK",
+                "quantity": 10,
+                "mark_price": 100.0,
+                "market_value": 1_000.0,
+                "base_market_value": 1_000.0,
+                "unrealized_pnl": 200.0,
+                "currency": "USD",
+            }],
+        })
+        self.assertEqual(payload["positions"][0]["mark_price"], 100.0)
+        self.assertEqual(payload["positions"][0]["average_cost_price"], 80.0)
+        self.assertEqual(payload["positions"][0]["unrealized_pnl_pct"], 25.0)
+        self.assertEqual(payload["positions"][0]["base_unrealized_pnl"], 200.0)
+
+    def test_base_unrealized_pnl_uses_position_fx_ratio(self):
+        self.assertEqual(
+            pf.base_unrealized_pnl({
+                "market_value": 1_000.0,
+                "base_market_value": 23_000.0,
+                "unrealized_pnl": -100.0,
+            }),
+            -2_300.0,
+        )
+
+    def test_average_cost_handles_option_multiplier(self):
+        self.assertEqual(
+            pf.average_cost_price({
+                "asset_class": "OPT",
+                "quantity": -2,
+                "mark_price": 1.0,
+                "market_value": -200.0,
+                "unrealized_pnl": 100.0,
+            }),
+            1.5,
+        )
+
+
 class OptionExposure(unittest.TestCase):
     # A real 2-lot SPY put: premium ~870 CZK, but ~9% of invested if exercised.
     PUT = {

@@ -34,8 +34,12 @@ export interface HoldingPosition {
   percent_of_nav: number | null;
   broker_percent_of_nav: number | null;
   base_market_value: number | null;
+  mark_price?: number | null;
+  average_cost_price?: number | null;
   currency: string | null;
   unrealized_pnl: number | null;
+  unrealized_pnl_pct?: number | null;
+  base_unrealized_pnl?: number | null;
   issuer_country_code: string | null;
   option: OptionExposure | null;
   // Set only on the /api/holdings/live payload: true when this row's mark was

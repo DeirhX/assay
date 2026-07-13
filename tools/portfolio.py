@@ -418,8 +418,12 @@ def holdings_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
                 "percent_of_nav": position_weight_pct(p, invested),
                 "broker_percent_of_nav": p.get("percent_of_nav"),
                 "base_market_value": p.get("base_market_value"),
+                "mark_price": p.get("mark_price"),
+                "average_cost_price": average_cost_price(p),
                 "currency": p.get("currency"),
                 "unrealized_pnl": p.get("unrealized_pnl"),
+                "unrealized_pnl_pct": unrealized_pnl_pct(p),
+                "base_unrealized_pnl": base_unrealized_pnl(p),
                 "issuer_country_code": p.get("issuer_country_code"),
                 "option": (
                     option_exposure(p, invested)
@@ -431,6 +435,75 @@ def holdings_payload(data: dict[str, Any] | None = None) -> dict[str, Any]:
             if isinstance(p.get("symbol"), str)
         ],
     }
+
+
+def unrealized_pnl_pct(position: dict[str, Any]) -> float | None:
+    """Unrealized P/L as a percentage of signed cost basis.
+
+    ``market_value - unrealized_pnl`` reconstructs the local-currency cost
+    basis for both long and short positions. The denominator is absolute so the
+    percentage sign follows profit/loss rather than flipping for short options.
+    """
+    market_value = position.get("market_value")
+    unrealized = position.get("unrealized_pnl")
+    if (
+        not isinstance(market_value, (int, float))
+        or isinstance(market_value, bool)
+        or not isinstance(unrealized, (int, float))
+        or isinstance(unrealized, bool)
+    ):
+        return None
+    cost_basis = float(market_value) - float(unrealized)
+    if abs(cost_basis) < 1e-12:
+        return None
+    return float(unrealized) / abs(cost_basis) * 100.0
+
+
+def average_cost_price(position: dict[str, Any]) -> float | None:
+    """Average acquisition price per share or per option unit."""
+    market_value = position.get("market_value")
+    unrealized = position.get("unrealized_pnl")
+    quantity = position.get("quantity")
+    if (
+        not isinstance(market_value, (int, float))
+        or isinstance(market_value, bool)
+        or not isinstance(unrealized, (int, float))
+        or isinstance(unrealized, bool)
+        or not isinstance(quantity, (int, float))
+        or isinstance(quantity, bool)
+        or not quantity
+    ):
+        return None
+    multiplier = 1.0
+    if position.get("asset_class") == "OPT":
+        mark = position.get("mark_price")
+        if isinstance(mark, (int, float)) and not isinstance(mark, bool) and mark:
+            inferred = abs(float(market_value)) / (abs(float(mark)) * abs(float(quantity)))
+            if inferred > 1:
+                multiplier = round(inferred)
+        else:
+            multiplier = 100.0
+    cost_basis = float(market_value) - float(unrealized)
+    denominator = abs(float(quantity)) * multiplier
+    return abs(cost_basis) / denominator if denominator else None
+
+
+def base_unrealized_pnl(position: dict[str, Any]) -> float | None:
+    """Translate local unrealized P/L into account-base currency."""
+    market_value = position.get("market_value")
+    base_market_value = position.get("base_market_value")
+    unrealized = position.get("unrealized_pnl")
+    if (
+        not isinstance(market_value, (int, float))
+        or isinstance(market_value, bool)
+        or not market_value
+        or not isinstance(base_market_value, (int, float))
+        or isinstance(base_market_value, bool)
+        or not isinstance(unrealized, (int, float))
+        or isinstance(unrealized, bool)
+    ):
+        return None
+    return float(unrealized) * (float(base_market_value) / float(market_value))
 
 
 def target_context(model: dict[str, Any], symbol: str) -> dict[str, Any]:

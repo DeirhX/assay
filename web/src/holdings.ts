@@ -36,6 +36,9 @@ export interface HoldingGroup {
   stockWeight: number;
   optionExercisePct: number;
   baseMarketValue: number | null;
+  stockPnlPct: number | null;
+  optionPnlPct: number | null;
+  unrealizedPnlPct: number | null;
 }
 
 function optionUnderlying(position: HoldingPosition): string {
@@ -45,6 +48,26 @@ function optionUnderlying(position: HoldingPosition): string {
 }
 
 const groupKey = (symbol: string) => symbol.split(".")[0].trim().toUpperCase();
+
+function aggregatePnlPct(positions: HoldingPosition[]): number | null {
+  let pnl = 0;
+  let cost = 0;
+  let usable = 0;
+  for (const position of positions) {
+    const basePnl = position.base_unrealized_pnl;
+    const marketValue = position.base_market_value;
+    if (
+      typeof basePnl !== "number" || !Number.isFinite(basePnl)
+      || typeof marketValue !== "number" || !Number.isFinite(marketValue)
+    ) continue;
+    pnl += basePnl;
+    cost += Math.abs(marketValue - basePnl);
+    usable += 1;
+  }
+  return usable === positions.length && usable > 0 && cost > 1e-9
+    ? pnl / cost * 100
+    : null;
+}
 
 /** One display row per underlying, with its stock and every option leg together. */
 export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGroup[] {
@@ -62,6 +85,9 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
         stockWeight: 0,
         optionExercisePct: 0,
         baseMarketValue: 0,
+        stockPnlPct: null,
+        optionPnlPct: null,
+        unrealizedPnlPct: null,
       };
       groups.set(key, group);
       stocksByRoot.set(key, group);
@@ -84,6 +110,9 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
         stockWeight: 0,
         optionExercisePct: 0,
         baseMarketValue: 0,
+        stockPnlPct: null,
+        optionPnlPct: null,
+        unrealizedPnlPct: null,
       };
       groups.set(key, group);
     }
@@ -91,6 +120,11 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
     group.optionExercisePct += Number(position.option?.exercise_pct) || 0;
     group.baseMarketValue = (group.baseMarketValue || 0)
       + (Number(position.base_market_value) || 0);
+  }
+  for (const group of groups.values()) {
+    group.stockPnlPct = aggregatePnlPct(group.stocks);
+    group.optionPnlPct = aggregatePnlPct(group.options);
+    group.unrealizedPnlPct = aggregatePnlPct([...group.stocks, ...group.options]);
   }
   return [...groups.values()].sort((a, b) =>
     (b.stockWeight - a.stockWeight)
@@ -113,6 +147,29 @@ function optionLegLabel(position: HoldingPosition): string {
     maximumFractionDigits: 4,
   });
   return `${side} ${count}× ${strike}${option.right}${expiry ? ` · ${expiry}` : ""}`;
+}
+
+function marketLineHtml(position: HoldingPosition): string {
+  const option = position.option;
+  const label = option ? `${option.strike}${option.right}` : "Shares";
+  const price = position.mark_price;
+  const priceText = typeof price === "number" && Number.isFinite(price)
+    ? price.toLocaleString(undefined, { maximumFractionDigits: 4 })
+    : "\u2014";
+  const pnl = position.unrealized_pnl_pct;
+  const hasPnl = typeof pnl === "number" && Number.isFinite(pnl);
+  const pnlText = hasPnl
+    ? `${pnl >= 0 ? "+" : ""}${pnl.toFixed(1)}%`
+    : "\u2014";
+  const pnlClass = hasPnl ? (pnl >= 0 ? "good" : "bad") : "";
+  const average = position.average_cost_price;
+  const averageText = typeof average === "number" && Number.isFinite(average)
+    ? `${average.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${position.currency || ""}`
+    : "unavailable";
+  return `<span class="pos-val-detail" title="${esc(`Average purchase price: ${averageText}`)}">` +
+    `<b>${esc(label)}</b>` +
+    `<span>${esc(priceText)} ${esc(position.currency || "")}</span>` +
+    `<em class="${pnlClass}">P/L ${esc(pnlText)}</em></span>`;
 }
 
 async function loadHoldings() {
@@ -182,14 +239,28 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     if (synced) synced.innerHTML = freshnessLabel(h, opts);
     out.innerHTML = "";
 
+    const metric = localStorage.getItem("holdings.barMetric") === "pnl" ? "pnl" : "size";
+    const pnlOrder = localStorage.getItem("holdings.pnlOrder") === "gains" ? "gains" : "losses";
     const rows = groupHoldingPositions(h.positions || []);
-    const weights = rows.map((group) => group.stockWeight);
+    if (metric === "pnl") {
+      const direction = pnlOrder === "losses" ? 1 : -1;
+      rows.sort((a, b) => {
+        if (a.unrealizedPnlPct == null) return 1;
+        if (b.unrealizedPnlPct == null) return -1;
+        return direction * (a.unrealizedPnlPct - b.unrealizedPnlPct);
+      });
+    }
+    const weights = rows.map((group) => group.stockWeight).sort((a, b) => b - a);
+    const barMagnitudes = rows.flatMap((group) => [
+      Math.abs(metric === "pnl" ? group.stockPnlPct || 0 : group.stockWeight),
+      Math.abs(metric === "pnl" ? group.optionPnlPct || 0 : group.optionExercisePct),
+    ]).filter((value) => value > 0).sort((a, b) => a - b);
+    const robustIndex = Math.max(0, Math.ceil(barMagnitudes.length * 0.9) - 1);
     const maxW = Math.max(
       1e-6,
-      ...rows.flatMap((group) => [
-        Math.abs(group.stockWeight),
-        Math.abs(group.optionExercisePct),
-      ]),
+      metric === "pnl"
+        ? barMagnitudes[robustIndex] || 0
+        : barMagnitudes[barMagnitudes.length - 1] || 0,
     );
     const cum = (n: number) => weights.slice(0, n).reduce((s, w) => s + w, 0);
 
@@ -197,10 +268,13 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     // Legend goes above the list: with 40+ positions it was below the fold, so
     // the colour coding (its whole point) was invisible until you scrolled past
     // everything it explains.
-    out.appendChild(el("div", "hint pos-legend",
-      "Each row is one underlying: shares use the solid upper bar; held options use the striped lower bar. " +
-      "Colour = share concentration: red >10%, amber 5\u201310%, blue 1\u20135%, grey <1%. " +
-      "Option arrows show assignment/exercise exposure, not capital at risk. Click a row to deep-dive."));
+    out.appendChild(el("div", "hint pos-legend", metric === "pnl"
+      ? "Bars show unrealized return on cost: green is a gain, red is a loss. Shares use the solid upper bar; held options use the striped lower bar. Rows are ordered from " +
+        (pnlOrder === "losses" ? "largest loss to largest gain." : "largest gain to largest loss.") +
+        " A brighter inner band marks returns beyond the shared bar scale. Click a row to deep-dive."
+      : "Each row is one underlying: shares use the solid upper bar; held options use the striped lower bar. " +
+        "Colour = share concentration: red >10%, amber 5\u201310%, blue 1\u20135%, grey <1%. " +
+        "Option arrows show assignment/exercise exposure, not capital at risk. Click a row to deep-dive."));
 
     // Opt-in column of each position's current market value (base currency).
     // Off by default because the bars are about concentration, not money, and the
@@ -209,6 +283,13 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     const showValues = localStorage.getItem("holdings.showValues") === "1";
     const controls = el("div", "pos-controls");
     controls.innerHTML =
+      `<div class="pos-metric-switch" role="group" aria-label="Order and draw bars by">` +
+        `<button type="button" data-hold-metric="size" class="${metric === "size" ? "active" : ""}" aria-pressed="${metric === "size"}">Position size</button>` +
+        `<button type="button" data-hold-metric="pnl" class="${metric === "pnl" ? "active" : ""}" aria-pressed="${metric === "pnl"}">P/L return</button>` +
+      `</div>` +
+      (metric === "pnl"
+        ? `<button type="button" class="ghost pos-pnl-order" id="hold-pnl-order" title="Reverse P/L order">${pnlOrder === "losses" ? "Losses first" : "Gains first"}</button>`
+        : "") +
       `<label class="setup-toggle pos-val-toggle"><input type="checkbox" id="hold-show-values"` +
       `${showValues ? " checked" : ""}><span class="setup-toggle-track"></span> ` +
       `Show asset values</label>`;
@@ -223,7 +304,12 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     controls.appendChild(copyBtn);
     out.appendChild(controls);
 
-    const list = el("div", "pos-list" + (showValues ? " show-values" : ""));
+    const list = el("div", "pos-list metric-" + metric + (showValues ? " show-values" : ""));
+    const listHead = el("div", "pos-list-head");
+    listHead.innerHTML =
+      `<span>Underlying</span><span>${metric === "pnl" ? "Return on cost" : "Exposure"}</span><span>${metric === "pnl" ? "Unrealized P/L" : "Weight"}</span>` +
+      `<span class="pos-head-values">Value · current price · unrealized P/L</span>`;
+    list.appendChild(listHead);
     rows.forEach((group) => {
       const stock = group.stocks[0] || null;
       const hasOptions = group.options.length > 0;
@@ -241,10 +327,16 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
       const qtyText = stock
         ? `${stockQty.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares`
         : "no shares";
-      const stockBarW = Math.min(100, (Math.abs(w) / maxW) * 100);
+      const stockMetric = metric === "pnl" ? group.stockPnlPct || 0 : w;
+      const optionMetric = metric === "pnl" ? group.optionPnlPct || 0 : group.optionExercisePct;
+      const barScale = metric === "pnl" ? 50 : 100;
+      const stockBarW = Math.min(barScale, (Math.abs(stockMetric) / maxW) * barScale);
       const optionBarW = Math.min(
-        100, (Math.abs(group.optionExercisePct) / maxW) * 100,
+        barScale, (Math.abs(optionMetric) / maxW) * barScale,
       );
+      const barSide = (value: number) => metric !== "pnl"
+        ? ""
+        : value < 0 ? "right:50%;left:auto;" : "left:50%;right:auto;";
       const displaySymbol = stock && providerSymbol !== stock.symbol
         ? `${stock.symbol} \u2192 ${providerSymbol}`
         : group.symbol;
@@ -252,6 +344,20 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
       const optionDirection = group.optionExercisePct < 0 ? "\u2193" : "\u2191";
       const optionExposure = hasOptions
         ? `${optionDirection}${Math.abs(group.optionExercisePct).toFixed(1)}% if exercised`
+        : "";
+      const pnlText = group.unrealizedPnlPct == null
+        ? "P/L \u2014"
+        : `${group.unrealizedPnlPct >= 0 ? "+" : ""}${group.unrealizedPnlPct.toFixed(2)}%`;
+      const metricClass = (value: number | null) => metric !== "pnl"
+        ? ""
+        : value == null ? " pnl-bar-missing"
+        : value > 0.005
+          ? ` pnl-bar-good pnl-positive${Math.abs(value) > maxW ? " pnl-bar-overflow" : ""}`
+          : value < -0.005
+            ? ` pnl-bar-bad pnl-negative${Math.abs(value) > maxW ? " pnl-bar-overflow" : ""}`
+            : " pnl-bar-flat";
+      const overflowStyle = (value: number) => metric === "pnl" && Math.abs(value) > maxW
+        ? `--pnl-overflow:${Math.min(100, (Math.abs(value) / maxW - 1) * 100).toFixed(2)}%;`
         : "";
       const tag = hasOptions
         ? ` <span class="opt-tag">${group.options.length} OPT</span>`
@@ -261,9 +367,11 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
       const delayed = opts.live && group.stocks.some((position) => position.live_mark === false);
       const delayTag = delayed
         ? ` <span class="pos-delayed" title="Delayed \u2014 still on the Flex snapshot mark (no live match)">\u23f1</span>` : "";
-      const valText = group.baseMarketValue == null
+      const totalValue = group.baseMarketValue == null
         ? "\u2014"
         : sensitive(`${Math.round(group.baseMarketValue).toLocaleString()} CZK`, "position value");
+      const valText = `<span class="pos-val-total"><b>Value</b><span>${totalValue}</span></span>` +
+        [...group.stocks, ...group.options].map(marketLineHtml).join("");
       const row = el("div", "pos-row tier-" + tier);
       row.innerHTML =
         `<span class="pos-sym"><span class="pos-sym-main">${esc(displaySymbol)}${tag}${delayTag}</span>` +
@@ -271,16 +379,16 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
         `</span>` +
         `<span class="pos-bar-track${hasOptions ? " has-options" : ""}">` +
           (stock
-            ? `<span class="pos-bar pos-group-stock${w < 0 ? " pos-bar-short" : ""}" style="width:${stockBarW.toFixed(2)}%"></span>`
+            ? `<span class="pos-bar pos-group-stock${w < 0 ? " pos-bar-short" : ""}${metricClass(group.stockPnlPct)}" style="${barSide(stockMetric)}${overflowStyle(stockMetric)}width:${stockBarW.toFixed(2)}%"></span>`
             : "") +
           (hasOptions
-            ? `<span class="pos-bar opt-bar pos-group-opt" style="width:${optionBarW.toFixed(2)}%"></span>`
+            ? `<span class="pos-bar opt-bar pos-group-opt${metricClass(group.optionPnlPct)}" style="${barSide(optionMetric)}${overflowStyle(optionMetric)}width:${optionBarW.toFixed(2)}%"></span>`
             : "") +
         `</span>` +
         `<span class="pos-w" title="${esc(`Position: ${qtyText}`)}">` +
-          `<span class="pos-w-pct">${stock ? `${w.toFixed(2)}%` : "options only"}</span>` +
+          `<span class="pos-w-pct${metric === "pnl" && group.unrealizedPnlPct != null ? (group.unrealizedPnlPct >= 0 ? " good" : " bad") : ""}">${metric === "pnl" ? pnlText : stock ? `${w.toFixed(2)}%` : "options only"}</span>` +
           `<span class="pos-w-qty">${esc(qtyText)}</span>` +
-          (hasOptions ? `<span class="pos-w-opt">${esc(optionExposure)}</span>` : "") +
+          (hasOptions ? `<span class="pos-w-opt">${esc(metric === "pnl" && group.optionPnlPct != null ? `Options ${group.optionPnlPct >= 0 ? "+" : ""}${group.optionPnlPct.toFixed(2)}%` : optionExposure)}</span>` : "") +
         `</span>` +
         `<span class="pos-val">${valText}</span>`;
       row.title = `${stock?.description || group.symbol} \u00b7 ${w.toFixed(2)}% of invested \u00b7 ${qtyText}` +
@@ -300,6 +408,16 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     valToggle?.addEventListener("change", () => {
       list.classList.toggle("show-values", valToggle.checked);
       localStorage.setItem("holdings.showValues", valToggle.checked ? "1" : "0");
+    });
+    controls.querySelectorAll<HTMLButtonElement>("[data-hold-metric]").forEach((button) => {
+      button.addEventListener("click", () => {
+        localStorage.setItem("holdings.barMetric", button.dataset.holdMetric || "size");
+        renderHoldings(h, opts);
+      });
+    });
+    controls.querySelector<HTMLButtonElement>("#hold-pnl-order")?.addEventListener("click", () => {
+      localStorage.setItem("holdings.pnlOrder", pnlOrder === "losses" ? "gains" : "losses");
+      renderHoldings(h, opts);
     });
   }
 }
