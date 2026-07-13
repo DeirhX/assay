@@ -24,6 +24,40 @@ export interface LiveOrderSummary {
   tif?: string;
   timeInForce?: string;
   orderDesc?: string;
+  cOID?: string;
+}
+
+export interface BrokerCorrelationRecord {
+  key: string;
+  leg_id: string;
+  execution_item_ids: string[];
+  symbol: string;
+  side: string;
+  quantity: number;
+  cOID: string;
+  broker_order_id: string;
+  broker_status: string;
+  filled_qty: number;
+  total_qty: number;
+  terminal: boolean;
+  last_event_kind?: "partial" | "filled" | "cancelled" | "rejected" | null;
+  last_event_at?: string | null;
+  placed_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface BrokerCorrelationSummary {
+  active: number;
+  partial: number;
+  recent_filled: number;
+  recent_failed: number;
+  updated_at?: string | null;
+}
+
+export interface BrokerCorrelationState {
+  records: BrokerCorrelationRecord[];
+  summary: BrokerCorrelationSummary;
+  updated_at?: string | null;
 }
 
 export interface PipelineChromeCounts {
@@ -39,11 +73,12 @@ export interface PipelineChangeDetail {
 }
 
 export const PIPELINE_CHANGED_EVENT = "assay:pipeline-changed";
-const TERMINAL_STATUS = /^(filled|cancelled|canceled|expired|rejected|apicancelled)$/i;
+const TERMINAL_STATUS = /^(filled|cancelled|canceled|expired|rejected|inactive|apicancelled)$/i;
 const counts: PipelineChromeCounts = { planned: 0, queued: 0, working: null };
 let localRefresh: Promise<void> | null = null;
 let workingRefresh: Promise<void> | null = null;
 let wired = false;
+let correlationStamp: string | null = null;
 
 export function isTerminalOrder(order: LiveOrderSummary): boolean {
   return TERMINAL_STATUS.test(String(order.status || order.order_status || "").trim());
@@ -110,6 +145,17 @@ export function subscribePipelineChanged(
   return () => window.removeEventListener(PIPELINE_CHANGED_EVENT, listener);
 }
 
+export function observeBrokerState(
+  correlations: BrokerCorrelationState | null | undefined,
+  notify = true,
+): void {
+  const stamp = correlations?.updated_at || correlations?.summary?.updated_at || null;
+  if (!stamp || stamp === correlationStamp) return;
+  const previous = correlationStamp;
+  correlationStamp = stamp;
+  if (notify && previous) publishPipelineChanged({ source: "broker" });
+}
+
 export async function refreshPipelineChrome(
   { local = true, working = true }: { local?: boolean; working?: boolean } = {},
 ): Promise<void> {
@@ -140,11 +186,15 @@ export async function refreshPipelineChrome(
       if (!workingRefresh) {
         workingRefresh = (async () => {
           try {
-            const data = await api<{ orders?: LiveOrderSummary[] }>(
+            const data = await api<{
+              orders?: LiveOrderSummary[];
+              correlations?: BrokerCorrelationState;
+            }>(
               "/api/trade/orders", "GET", null,
               { timeoutMs: 20_000, reportError: false },
             );
             updatePipelineChrome({ working: countWorkingOrders(data.orders) });
+            observeBrokerState(data.correlations);
           } catch {
             updatePipelineChrome({ working: null });
           }
@@ -173,4 +223,9 @@ export function initPipelineSummary(): void {
     else void refreshPipelineChrome({ local: false, working: true });
   });
   void refreshPipelineChrome({ local: true, working: false });
+  window.setInterval(() => {
+    if (gatewayConnected(getGatewayStatus())) {
+      void refreshPipelineChrome({ local: false, working: true });
+    }
+  }, 30_000);
 }

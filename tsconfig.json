@@ -20,6 +20,8 @@
     // (strictNullChecks et al.) once the `any` noise was gone.
     "strict": true,
     "noUnusedLocals": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
     "allowJs": true,
     "checkJs": false
   },

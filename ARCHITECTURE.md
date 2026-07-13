@@ -189,6 +189,10 @@ and work survives navigation.
   gateway session drops while orders are working it alerts once. It is strictly
   read-only w.r.t. the market: it never places, modifies, or cancels an order. The
   transition logic is pure/unit-tested; the IBKR IO sits behind injectable seams.
+  Accepted placements are joined through `tools/order_correlation.py`, which
+  persists `execution_item_id → cOID → broker_order_id`; watch transitions update
+  that join and reopen failed/cancelled intent without pretending a partial fill
+  completed the original portfolio decision.
   `poll_once(dry_run=True)` (also `python tools/order_watch.py`) exercises the real
   gateway reads but suppresses every side effect — no notify, resync, or state
   write — and prints the transitions it *would* act on: the safe way to verify the
@@ -468,6 +472,11 @@ status; completed executions remain broker/Flex truth under Portfolio History.
 header/Today counts, and the one invalidation event emitted after queue, plan,
 review, or broker changes; Orders, Trade, and the flowbar consume that same
 definition instead of maintaining competing counters.
+It polls broker state while the gateway is connected, so durable partial/fill/
+cancel/reject transitions refresh active Orders and Today views automatically.
+`trade-types.ts` and `trade-live-model.ts` keep the variable CPAPI contract and
+working-order presentation out of the Trade orchestrator; `rebalance-position.ts`
+owns the planner's interactive weight track and sleeve-delta distribution.
 
 ### 7.4 Cross-cutting
 

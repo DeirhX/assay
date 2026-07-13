@@ -11,7 +11,9 @@ from pathlib import Path
 
 import _support  # noqa: F401
 import apierror
+import execution_plan
 import ibkr_trade
+import order_correlation
 import order_watch
 import store
 
@@ -120,6 +122,41 @@ class PollTransitions(_PollCase):
                          resync=lambda: (_ for _ in ()).throw(apierror.Conflict("already running")))
         self.assertEqual(res["fills"], 1)
         self.assertFalse(res["resynced"])   # conflict -> not counted, but no crash
+
+    def test_cancelled_correlated_order_reopens_submitted_intent(self):
+        plan_path = self.state.with_name("execution-plan.json")
+        correlation_path = self.state.with_name("order-correlation.json")
+        store.write_json(plan_path, {
+            "schema_version": 1,
+            "version": 1,
+            "plan_binding": None,
+            "items": [{
+                "id": "intent-1", "symbol": "NVDA", "status": "submitted",
+                "queued_leg_id": "stock:NVDA",
+            }],
+        })
+        order_correlation.record_placements(
+            "DU1",
+            [{
+                "leg_id": "stock:NVDA", "symbol": "NVDA",
+                "provenance": [{"execution_item_id": "intent-1"}],
+            }],
+            [{
+                "order_id": "1",
+                "order_status": "Submitted",
+                "assay_order": {
+                    "cOID": "assay-nvda-10", "symbol": "NVDA",
+                    "side": "BUY", "quantity": 10,
+                },
+            }],
+            path=correlation_path,
+        )
+        self._poll([_order(status="Submitted")])
+        result = self._poll([_order(status="Cancelled")])
+        self.assertEqual(result["intent_reopened"], 1)
+        item = execution_plan.load_plan(plan_path)["items"][0]
+        self.assertEqual(item["status"], "selected")
+        self.assertIsNone(item["queued_leg_id"])
 
 
 class PollSession(_PollCase):

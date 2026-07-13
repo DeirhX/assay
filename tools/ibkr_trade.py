@@ -1624,8 +1624,7 @@ def place_orders(account_id: str, orders: list[dict], *,
     reply cap. ``auto_confirm=False`` returns the first prompt batch unanswered so
     a caller can surface the exact warnings to the human before committing."""
     endpoint = f"/iserver/account/{urllib.parse.quote(account_id)}/orders"
-    placed: list[dict] = []
-    for order in orders:
+    def place_one(order: dict) -> list[dict]:
         resp = _request("POST", endpoint, {"orders": [_cpapi_order(order)]})
         for _ in range(max_replies):
             prompts = _reply_prompts(resp)
@@ -1636,7 +1635,46 @@ def place_orders(account_id: str, orders: list[dict], *,
             reply_id = prompts[0]
             resp = _request("POST", f"/iserver/reply/{urllib.parse.quote(str(reply_id))}",
                             {"confirmed": True})
-        placed.extend(resp if isinstance(resp, list) else [resp])
+        if _reply_prompts(resp):
+            raise CPAPIError("order confirmation did not reach a broker acknowledgement")
+        rows = resp if isinstance(resp, list) else [resp]
+        accepted = [
+            row for row in rows
+            if isinstance(row, dict) and (row.get("order_id") or row.get("orderId"))
+        ]
+        if not accepted:
+            raise CPAPIError("order placement returned no broker order id")
+        # Preserve the exact sent order beside each acknowledgement.  The service
+        # sorts options before stocks for safety, so callers must never zip the
+        # original preview order with this flattened acknowledgement list.
+        if order.get("cOID"):
+            accepted = [
+                {
+                    **row,
+                    "assay_order": {
+                        key: order.get(key)
+                        for key in (
+                            "cOID", "leg_id", "instrument_type", "symbol",
+                            "conid", "side", "quantity",
+                        )
+                        if order.get(key) is not None
+                    },
+                }
+                for row in accepted
+            ]
+        return accepted
+
+    placed: list[dict] = []
+    for order in orders:
+        try:
+            placed.extend(place_one(order))
+        except CPAPIError as exc:
+            # An earlier order may already be live at IBKR. Preserve its exact
+            # acknowledgement so the service can correlate it and clear the
+            # basket instead of inviting a dangerous whole-basket retry.
+            exc.placed = list(placed)  # type: ignore[attr-defined]
+            exc.failed_order = dict(order)  # type: ignore[attr-defined]
+            raise
     return placed
 
 
