@@ -655,11 +655,6 @@ def _warmed_market_snapshot(
     return merged
 
 
-def _utc_now_iso() -> str:
-    """Second-resolution UTC ISO timestamp for quote metadata."""
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-
-
 def _exact_strike_match(a: float, b: float) -> bool:
     return _fmt_strike(a) == _fmt_strike(b)
 
@@ -1000,7 +995,7 @@ def option_chain(
         "underlying_bid": u_bid,
         "underlying_ask": u_ask,
         "underlying_last": u_last,
-        "quote_timestamp": _utc_now_iso(),
+        "quote_timestamp": timeutil.now_iso(),
         "expiries": expiries,
     }
 
@@ -1079,7 +1074,7 @@ def refresh_option_chain_quotes(
         if spot is not None:
             refreshed["underlying_price"] = round(spot, 4)
     if has_option_data:
-        refreshed["quote_timestamp"] = _utc_now_iso()
+        refreshed["quote_timestamp"] = timeutil.now_iso()
     return refreshed
 
 
@@ -1151,7 +1146,7 @@ def _resolve_exact_option(
         "underlying_last": u_last,
         "underlying_bid": u_bid,
         "underlying_ask": u_ask,
-        "quote_timestamp": _utc_now_iso(),
+        "quote_timestamp": timeutil.now_iso(),
         "tick": tick,
         "rules": rules,
     }

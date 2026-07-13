@@ -27,6 +27,7 @@ import threading
 from typing import Any
 
 from config import ACTIVITY_LOG
+from timeutil import now_iso
 
 # Keep the tail bounded. We only rewrite (trim) when the line count exceeds
 # MAX_EVENTS * (1 + SLACK), so appends stay cheap between trims.
@@ -37,10 +38,6 @@ VIEW_DEBOUNCE_S = 60.0
 _LOCK = threading.Lock()
 # In-process guard against consecutive duplicate view events (symbol -> epoch s).
 _last_view: dict[str, float] = {}
-
-
-def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def _append(event: dict[str, Any]) -> None:
@@ -86,7 +83,7 @@ def record_view(symbol: str, name: str | None = None) -> bool:
             _last_view[sym] = now
             return False
         _last_view[sym] = now
-    _append({"ts": _now(), "type": "view", "symbol": sym, "name": (name or "").strip()})
+    _append({"ts": now_iso(), "type": "view", "symbol": sym, "name": (name or "").strip()})
     return True
 
 
@@ -99,7 +96,7 @@ def record_task(job: dict[str, Any]) -> None:
     artifact = job.get("artifact") if isinstance(job.get("artifact"), dict) else {}
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     event = {
-        "ts": _now(),
+        "ts": now_iso(),
         "type": "task",
         "id": job.get("id"),
         "kind": job.get("kind"),

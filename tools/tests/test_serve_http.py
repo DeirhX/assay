@@ -5,14 +5,10 @@ ephemeral loopback port -- offline, no data submodule needed."""
 
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -23,48 +19,23 @@ import peer_stats
 import segments_service
 import serve
 import ticker_directory
+from _http import ServeHttpCase
 
 
-class RequestGuards(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
-
-    def _post(self, path: str, body: bytes, headers: dict | None = None):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}",
-            data=body,
-            headers={"Content-Type": "application/json", **(headers or {})},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
+class RequestGuards(ServeHttpCase):
     def test_malformed_json_is_400(self):
-        status, payload = self._post("/api/deep-job/cancel", b"{not json at all")
+        status, payload = self.post_json("/api/deep-job/cancel", b"{not json at all")
         self.assertEqual(status, 400)
         self.assertIn("malformed JSON", payload["error"])
 
     def test_non_object_json_is_400(self):
-        status, payload = self._post("/api/deep-job/cancel", b'["a", "list"]')
+        status, payload = self.post_json("/api/deep-job/cancel", b'["a", "list"]')
         self.assertEqual(status, 400)
         self.assertIn("must be an object", payload["error"])
 
     def test_oversized_body_is_400(self):
         # Lie about the size in the header; the guard must fire before reading.
-        status, payload = self._post(
+        status, payload = self.post_json(
             "/api/deep-job/cancel", b"{}",
             headers={"Content-Length": str(serve._MAX_BODY_BYTES + 1)},
         )
@@ -72,7 +43,7 @@ class RequestGuards(unittest.TestCase):
         self.assertIn("too large", payload["error"])
 
     def test_valid_body_still_works(self):
-        status, payload = self._post("/api/deep-job/cancel", b'{"id": ""}')
+        status, payload = self.post_json("/api/deep-job/cancel", b'{"id": ""}')
         self.assertEqual(status, 400)  # empty id is rejected by the endpoint...
         self.assertIn("missing job id", payload["error"])  # ...not by the body guard
 
@@ -128,28 +99,10 @@ class HoldingsSyncJob(unittest.TestCase):
         self.assertIn("credentials", pub["error"])
 
 
-class JobsListEndpoint(unittest.TestCase):
+class JobsListEndpoint(ServeHttpCase):
     """GET /api/jobs is the central Task Center feed: every in-memory job, newest
     first, capped to JOBS_LIST_LIMIT. The in-process registry is shared, so these
     tests pin their own jobs into the future to assert ordering/cap deterministically."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
-
-    def _get(self, path: str):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status, json.loads(resp.read().decode("utf-8"))
 
     def test_feed_returns_started_job_with_routing_fields(self):
         def fake_sync(progress=None):
@@ -162,7 +115,7 @@ class JobsListEndpoint(unittest.TestCase):
             while time.time() < deadline and (serve.jobs.get_public(job["id"]) or {}).get("state") != "done":
                 time.sleep(0.02)
 
-        status, payload = self._get("/api/jobs")
+        status, payload = self.get_json("/api/jobs")
         self.assertEqual(status, 200)
         self.assertIn("jobs", payload)
         self.assertIsInstance(payload["jobs"], list)
@@ -178,7 +131,7 @@ class JobsListEndpoint(unittest.TestCase):
     def test_newest_first_ordering(self):
         older = serve.jobs.new_job("test_order", created_at="2099-01-01T00:00:01+00:00")
         newer = serve.jobs.new_job("test_order", created_at="2099-01-01T00:00:02+00:00")
-        _, payload = self._get("/api/jobs")
+        _, payload = self.get_json("/api/jobs")
         ids = [j["id"] for j in payload["jobs"]]
         self.assertIn(newer["id"], ids)
         self.assertIn(older["id"], ids)
@@ -191,7 +144,7 @@ class JobsListEndpoint(unittest.TestCase):
         j2 = serve.jobs.new_job("test_cap", created_at="2099-02-01T00:00:02+00:00")
         j3 = serve.jobs.new_job("test_cap", created_at="2099-02-01T00:00:03+00:00")
         with mock.patch.object(serve, "JOBS_LIST_LIMIT", 2):
-            _, payload = self._get("/api/jobs")
+            _, payload = self.get_json("/api/jobs")
         ids = [j["id"] for j in payload["jobs"]]
         self.assertEqual(len(ids), 2)
         self.assertEqual(ids, [j3["id"], j2["id"]])
@@ -271,73 +224,36 @@ class RouteRegistry(unittest.TestCase):
         self.assertEqual(resolved, "_post_pull_segment")
 
 
-class DeepQa(unittest.TestCase):
+class DeepQa(ServeHttpCase):
     """Follow-up Q&A about a saved Deep Research run: GET returns an (empty)
     thread for an unknown stem, and starting a question for a run with no saved
     report is a clean 400, not a 500 or a started job."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
-
-    def _req(self, path, *, method="GET", body=None):
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", data=data,
-            headers={"Content-Type": "application/json"}, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
     def test_empty_thread_for_unknown_stem(self):
-        status, payload = self._req("/api/deep-qa?stem=does-not-exist-2026-01-01")
+        status, payload = self.get_json("/api/deep-qa?stem=does-not-exist-2026-01-01")
         self.assertEqual(status, 200)
         self.assertEqual(payload["turns"], [])
 
     def test_question_without_report_is_400(self):
-        status, payload = self._req(
+        status, payload = self.request(
             "/api/deep-qa", method="POST",
             body={"stem": "no-such-run-2026-01-01", "question": "why?"})
         self.assertEqual(status, 400)
         self.assertIn("no saved report", payload["error"])
 
     def test_delete_on_unknown_stem_is_noop_200(self):
-        status, payload = self._req(
+        status, payload = self.request(
             "/api/deep-qa", method="POST",
             body={"stem": "does-not-exist-2026-01-01", "delete": 0})
         self.assertEqual(status, 200)
         self.assertEqual(payload["turns"], [])
 
 
-class DeepRunDelete(unittest.TestCase):
+class DeepRunDelete(ServeHttpCase):
     """Deleting a saved Deep Research run removes the report plus every sidecar
     (sources, review, proposal, Q&A) for that stem, returns the refreshed run
     list, and 400s on an unknown/empty stem. DEEP_DIR is redirected to a temp
     dir so the real data/ tree is untouched."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
 
     def setUp(self):
         # DEEP_DIR must sit under REPO_ROOT because deep_runs() reports each run
@@ -356,16 +272,6 @@ class DeepRunDelete(unittest.TestCase):
         deep_runs.REPO_ROOT = self._orig_root
         self._dir.cleanup()
 
-    def _post(self, path, body):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
     def _seed(self, stem, suffixes):
         for suffix in suffixes:
             (deep_runs.DEEP_DIR / f"{stem}{suffix}").write_text("x", encoding="utf-8")
@@ -377,7 +283,7 @@ class DeepRunDelete(unittest.TestCase):
         # An unrelated run must survive the delete.
         self._seed("other-segment-2026-01-02", [".md", ".sources.json"])
 
-        status, payload = self._post("/api/deep-run/delete", {"stem": stem})
+        status, payload = self.post_json("/api/deep-run/delete", {"stem": stem})
         self.assertEqual(status, 200)
         self.assertEqual(payload["stem"], stem)
         self.assertEqual(
@@ -387,13 +293,13 @@ class DeepRunDelete(unittest.TestCase):
         self.assertTrue((deep_runs.DEEP_DIR / "other-segment-2026-01-02.md").exists())
 
     def test_delete_unknown_stem_is_400(self):
-        status, payload = self._post(
+        status, payload = self.post_json(
             "/api/deep-run/delete", {"stem": "nope-2026-01-01"})
         self.assertEqual(status, 400)
         self.assertIn("unknown run", payload["error"])
 
     def test_delete_empty_stem_is_400(self):
-        status, payload = self._post("/api/deep-run/delete", {"stem": ""})
+        status, payload = self.post_json("/api/deep-run/delete", {"stem": ""})
         self.assertEqual(status, 400)
         self.assertIn("stem is required", payload["error"])
 
@@ -438,71 +344,29 @@ class DropQaExchange(unittest.TestCase):
         self.assertEqual(len(t["turns"]), 4)
 
 
-class RouteDispatch(unittest.TestCase):
+class RouteDispatch(ServeHttpCase):
     """End-to-end proof the table-driven dispatcher is wired correctly over the
     wire: a filesystem-only GET route returns 200, and an unknown route 404s."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
-
-    def _get(self, path: str):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
     def test_known_get_route_dispatches(self):
-        status, payload = self._get("/api/segments")
+        status, payload = self.get_json("/api/segments")
         self.assertEqual(status, 200)
         self.assertIn("segments", payload)
 
     def test_unknown_get_route_is_404(self):
-        status, payload = self._get("/api/does-not-exist")
+        status, payload = self.get_json("/api/does-not-exist")
         self.assertEqual(status, 404)
         self.assertIn("unknown endpoint", payload["error"])
 
     def test_unknown_post_route_is_404(self):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/api/nope", data=b"{}",
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                status, payload = resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            status, payload = err.code, json.loads(err.read().decode("utf-8"))
+        status, payload = self.post_json("/api/nope", b"{}")
         self.assertEqual(status, 404)
         self.assertIn("unknown endpoint", payload["error"])
 
 
-class ErrorLogEndpoint(unittest.TestCase):
+class ErrorLogEndpoint(ServeHttpCase):
     """GET returns recent incidents newest-first; POST {clear:true} wipes it.
     The log path is redirected to a temp file so the real data/ dir is untouched."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
 
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -513,27 +377,16 @@ class ErrorLogEndpoint(unittest.TestCase):
         serve.errorlog.LOG_PATH = self._orig
         self._dir.cleanup()
 
-    def _req(self, path, *, method="GET", body=None):
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", data=data,
-            headers={"Content-Type": "application/json"}, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
     def test_get_returns_recent_entries_newest_first(self):
         serve.errorlog.warn("llm_backend", "cursor auth", backend="cursor")
         serve.errorlog.error("server", "boom")
-        status, payload = self._req("/api/error-log")
+        status, payload = self.get_json("/api/error-log")
         self.assertEqual(status, 200)
         self.assertEqual([e["message"] for e in payload["entries"]], ["boom", "cursor auth"])
 
     def test_post_clear_wipes(self):
         serve.errorlog.error("server", "boom")
-        status, payload = self._req("/api/error-log", method="POST", body={"clear": True})
+        status, payload = self.request("/api/error-log", method="POST", body={"clear": True})
         self.assertEqual(status, 200)
         self.assertEqual(payload["entries"], [])
 
@@ -678,61 +531,27 @@ class TickerDeepResearch(unittest.TestCase):
         self.assertEqual(rec["symbol"], "")
 
 
-class DeepPromptEndpoint(unittest.TestCase):
+class DeepPromptEndpoint(ServeHttpCase):
     """GET /api/deep-prompt routes a `ticker=` query to the single-name builder
     and a `segment=` query to the segment builder; a bad segment is a clean 400."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
-
-    def _get(self, path: str):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
     def test_ticker_query_builds_single_name_prompt(self):
         with mock.patch.object(ticker_directory, "holdings_weights", return_value={}):
-            status, payload = self._get("/api/deep-prompt?ticker=AMD")
+            status, payload = self.get_json("/api/deep-prompt?ticker=AMD")
         self.assertEqual(status, 200)
         self.assertEqual(payload["segment"], "ticker-amd")
         self.assertEqual(payload["symbol"], "AMD")
 
     def test_unknown_segment_is_400(self):
-        status, payload = self._get("/api/deep-prompt?segment=does-not-exist")
+        status, payload = self.get_json("/api/deep-prompt?segment=does-not-exist")
         self.assertEqual(status, 400)
         self.assertIn("unknown segment", payload["error"])
 
 
-class StagingEndpoints(unittest.TestCase):
+class StagingEndpoints(ServeHttpCase):
     """The rewired staging endpoints: GET /api/staging diff, POST /api/staging/edit
     (pin/unpin/revert), commit, discard. Disk paths are redirected to a temp dir
     and the site regenerator is stubbed, so this stays offline."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
-        cls.port = cls.httpd.server_address[1]
-        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
-        cls.thread.start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-        cls.thread.join(timeout=5)
 
     def setUp(self):
         import target_model
@@ -767,52 +586,41 @@ class StagingEndpoints(unittest.TestCase):
             setattr(mod, name, val)
         self.tmp.cleanup()
 
-    def _req(self, path, method="GET", body=None):
-        data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
-            headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status, json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read().decode("utf-8"))
-
     def test_empty_draft_diff(self):
-        status, payload = self._req("/api/staging")
+        status, payload = self.get_json("/api/staging")
         self.assertEqual(status, 200)
         self.assertFalse(payload["has_draft"])
         self.assertEqual(payload["counts"]["total"], 0)
 
     def test_pin_then_unpin_via_edit(self):
-        status, payload = self._req("/api/staging/edit", "POST", {
+        status, payload = self.request("/api/staging/edit", method="POST", body={
             "op": "pin", "key": "TSM", "stance": "accumulate", "floor_pct": 3.0})
         self.assertEqual(status, 200)
         self.assertEqual(payload["pin"]["stance"], "accumulate")
-        _s, diff = self._req("/api/staging")
+        _s, diff = self.get_json("/api/staging")
         self.assertIn("TSM", diff["pins"])
-        _s, payload = self._req("/api/staging/edit", "POST", {"op": "unpin", "key": "TSM"})
+        _s, payload = self.request("/api/staging/edit", method="POST", body={"op": "unpin", "key": "TSM"})
         self.assertTrue(payload["cleared"])
 
     def test_manual_edit_stages_then_commit(self):
-        status, payload = self._req("/api/staging/edit", "POST", {
+        status, payload = self.request("/api/staging/edit", method="POST", body={
             "op": "edit", "change": {"action": "add_target", "symbol": "NVDA",
                                      "proposed_target": {"low": 8, "high": 10, "rule": "accumulate"}}})
         self.assertEqual(status, 200)
         self.assertIn("NVDA", payload["applied"])
-        _s, diff = self._req("/api/staging")
+        _s, diff = self.get_json("/api/staging")
         self.assertTrue(diff["has_draft"])
         self.assertEqual(diff["counts"]["total"], 1)
         # Revert it, draft becomes empty-diff.
-        self._req("/api/staging/edit", "POST", {"op": "revert", "key": "NVDA"})
-        _s, diff = self._req("/api/staging")
+        self.request("/api/staging/edit", method="POST", body={"op": "revert", "key": "NVDA"})
+        _s, diff = self.get_json("/api/staging")
         self.assertEqual(diff["counts"]["total"], 0)
 
     def test_commit_promotes_to_live(self):
-        self._req("/api/staging/edit", "POST", {
+        self.request("/api/staging/edit", method="POST", body={
             "op": "edit", "change": {"action": "add_target", "symbol": "NVDA",
                                      "proposed_target": {"low": 8, "high": 10, "rule": "accumulate"}}})
-        status, payload = self._req("/api/staging/commit", "POST", {"confirm": True})
+        status, payload = self.request("/api/staging/commit", method="POST", body={"confirm": True})
         self.assertEqual(status, 200)
         self.assertTrue(payload["committed"])
         from store import load
@@ -820,12 +628,94 @@ class StagingEndpoints(unittest.TestCase):
         self.assertIn("NVDA", live["targets"])
 
     def test_discard_clears_draft(self):
-        self._req("/api/staging/edit", "POST", {
+        self.request("/api/staging/edit", method="POST", body={
             "op": "edit", "change": {"action": "add_target", "symbol": "NVDA",
                                      "proposed_target": {"low": 8, "high": 10, "rule": "accumulate"}}})
-        status, payload = self._req("/api/staging/discard", "POST", {})
+        status, payload = self.request("/api/staging/discard", method="POST", body={})
         self.assertEqual(status, 200)
         self.assertTrue(payload["discarded"])
+
+
+class PortfolioPrereqGuards(unittest.TestCase):
+    """Holdings/model prerequisite helpers preserve per-endpoint 404 semantics."""
+
+    def test_helper_messages(self):
+        self.assertEqual(serve._holdings_prereq_error({}), serve.MSG_HOLDINGS_REQUIRED)
+        self.assertIsNone(serve._holdings_prereq_error({"positions": []}))
+        self.assertEqual(serve._model_prereq_error(None), serve.MSG_MODEL_REQUIRED)
+        self.assertIsNone(serve._model_prereq_error({"targets": {}}))
+        self.assertEqual(
+            serve._both_prereq_error(None, {"targets": {}}),
+            serve.MSG_BOTH_REQUIRED,
+        )
+        self.assertIsNone(serve._both_prereq_error({"positions": []}, {"targets": {}}))
+
+
+class PortfolioPrereqHttp(ServeHttpCase):
+    """Wire-level checks that guarded routes keep their exact 404 messages."""
+
+    def _patch_inputs(self, *, holdings=None, model=None):
+        return mock.patch.object(serve, "_load", return_value=holdings), \
+            mock.patch.object(serve.target_staging, "active_model", return_value=model)
+
+    def test_rebalance_reports_missing_model_first(self):
+        load_patch, model_patch = self._patch_inputs(holdings=None, model=None)
+        with load_patch, model_patch:
+            status, payload = self.get_json("/api/rebalance")
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], serve.MSG_MODEL_REQUIRED)
+
+    def test_rebalance_reports_missing_holdings_second(self):
+        load_patch, model_patch = self._patch_inputs(
+            holdings=None, model={"targets": {}},
+        )
+        with load_patch, model_patch:
+            status, payload = self.get_json("/api/rebalance")
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], serve.MSG_HOLDINGS_REQUIRED)
+
+    def test_risk_requires_holdings_only(self):
+        load_patch, model_patch = self._patch_inputs(holdings=None, model=None)
+        with load_patch, model_patch:
+            status, payload = self.get_json("/api/risk")
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], serve.MSG_HOLDINGS_REQUIRED)
+
+    def test_whatif_requires_both(self):
+        load_patch, model_patch = self._patch_inputs(holdings=None, model=None)
+        with load_patch, model_patch:
+            status, payload = self.post_json("/api/whatif", {"trades": []})
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], serve.MSG_BOTH_REQUIRED)
+
+    def test_overview_stays_200_without_prereqs(self):
+        load_patch, model_patch = self._patch_inputs(holdings=None, model=None)
+        with load_patch, model_patch:
+            status, payload = self.get_json("/api/overview")
+        self.assertEqual(status, 200)
+        self.assertIn("snapshot", payload)
+
+    def test_execution_plan_replace_rebalance_value_error(self):
+        load_patch, model_patch = self._patch_inputs(holdings=None, model=None)
+        with load_patch, model_patch:
+            status, payload = self.post_json(
+                "/api/execution-plan",
+                {"action": "replace_rebalance"},
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], serve.MSG_BOTH_VALUE_ERROR)
+
+    def test_execution_plan_queue_selected_value_error(self):
+        load_patch, model_patch = self._patch_inputs(
+            holdings=None, model={"targets": {}},
+        )
+        with load_patch, model_patch:
+            status, payload = self.post_json(
+                "/api/execution-plan",
+                {"action": "queue_selected"},
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], serve.MSG_HOLDINGS_VALUE_ERROR)
 
 
 class HostGuard(unittest.TestCase):

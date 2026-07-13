@@ -1,33 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { installApi } from "./_api";
-
-const row = {
-  key: "AAPL", name: "AAPL", kind: "target", rule: "accumulate", held: true,
-  current_pct: 2, current_czk: 20_000, low: 3, high: 5, mid: 4, status: "BELOW",
-  drift_pct: -1, action: "buy", suggest_delta_pct: 1, suggest_delta_czk: 10_000,
-  mark_price: 190, mark_currency: "USD",
-  last_quote: { price: 191.25, currency: "USD", source: "quote cache" },
-  note: null, members: null, interactive: true,
-};
-
-const plan = {
-  nav: 1_000_000, invested: 1_000_000, currency: "CZK",
-  snapshot: "2026-07-10T00:00:00+00:00", as_of: "2026-07-10",
-  cash_target_pct: 5, funding_order: [], cash: null,
-  rows: [row], untargeted: [], untargeted_pct: 0, provenance: {},
-};
-
-const projection = {
-  currency: "CZK",
-  trades: [{ symbol: "AAPL", delta_czk: 10_000 }],
-  summary: {
-    bands_in_before: 0, bands_in_after: 1, bands_total: 1,
-    net_cash_czk: -10_000, realized_taxable_gain_czk: 0,
-  },
-  after: { rows: [{ ...row, current_pct: 3, current_czk: 30_000, status: "IN" }] },
-  before_status: { AAPL: "BELOW" },
-  cash: null, caveats: [],
-};
+import {
+  emptyUnreviewedQueue,
+  rebalancePlan as plan,
+  rebalanceProjection as projection,
+  rebalanceRow as row,
+  unreviewedQueue,
+} from "./_fixtures";
 
 const putRoute = ({
   eligible = true,
@@ -89,12 +68,8 @@ test.describe("rebalance review safety", () => {
     await installApi(page, {
       "/api/rebalance": plan,
       "/api/whatif": projection,
-      "/api/trade/basket": {
-        trades: projection.trades, revision: "rev-1", reviewed: false,
-      },
-      "/api/rebalance/stage": {
-        trades: projection.trades, revision: "rev-1", reviewed: false,
-      },
+      "/api/trade/basket": unreviewedQueue(projection.trades),
+      "/api/rebalance/stage": unreviewedQueue(projection.trades),
     });
     let stagePosts = 0;
     let stageMode = "";
@@ -128,7 +103,7 @@ test.describe("rebalance review safety", () => {
   test("dragging the projected marker updates the trade percentage", async ({ page }) => {
     await installApi(page, {
       "/api/rebalance": plan,
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
     });
     await page.goto("/?view=rebalance");
 
@@ -175,7 +150,7 @@ test.describe("rebalance review safety", () => {
     };
     await installApi(page, {
       "/api/rebalance": { ...plan, rows: [sleeve] },
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
     });
     await page.goto("/?view=rebalance");
 
@@ -212,7 +187,7 @@ test.describe("rebalance review safety", () => {
         plan: { rows: 1, out_of_band: 1, actionable: 1 },
         staged_basket: { count: 0 },
       },
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
       "/api/holdings": {
         net_asset_value: 1_000_000,
         invested_value: 1_000_000,
@@ -268,7 +243,7 @@ test.describe("rebalance review safety", () => {
     });
     await installApi(page, {
       "/api/rebalance": { ...plan, execution_plan: executionPlan },
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
     });
     await page.route("**/api/execution-plan", async (route) => {
       const body = route.request().postDataJSON() as {
@@ -357,9 +332,7 @@ test.describe("rebalance review safety", () => {
         trading_enabled: true, authenticated: true, default_account: "DU1",
         accounts: [{ id: "DU1", kind: "paper" }], live_allowed: false,
       },
-      "/api/trade/basket": {
-        trades: projection.trades, revision: "rev-1", reviewed: false,
-      },
+      "/api/trade/basket": unreviewedQueue(projection.trades),
     });
     await page.goto("/?view=trade");
 
@@ -381,7 +354,7 @@ test.describe("rebalance review safety", () => {
     });
     await installApi(page, {
       "/api/rebalance": plan,
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
       "/api/rebalance/route": route,
     });
     await page.goto("/?view=rebalance");
@@ -422,7 +395,7 @@ test.describe("rebalance review safety", () => {
     let response = unavailable;
     await installApi(page, {
       "/api/rebalance": plan,
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
     });
     await page.route("**/api/rebalance/route?*", async (route) => {
       await route.fulfill({
@@ -456,7 +429,7 @@ test.describe("rebalance review safety", () => {
   test("one ticker surfaces option loading failures and can close them", async ({ page }) => {
     await installApi(page, {
       "/api/rebalance": plan,
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
     });
     await page.route("**/api/rebalance/route?*", async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -482,7 +455,7 @@ test.describe("rebalance review safety", () => {
   test("editing one ticker flips routes and exit navigation preserves its symbol", async ({ page }) => {
     await installApi(page, {
       "/api/rebalance": plan,
-      "/api/trade/basket": { trades: [], revision: "", reviewed: false },
+      "/api/trade/basket": emptyUnreviewedQueue,
       "/api/exit-plan": { positions: [], generated_at: "2026-07-12T00:00:00Z" },
     });
     await page.goto("/?view=rebalance");

@@ -1,6 +1,6 @@
-import { $$, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
+import { $$, api, el, esc, fmtStamp, freshnessNote, sensitive, statTile } from "./core";
 import { metaStrip, analyticsSection } from "./display/chrome";
-import { pollDeepJob } from "./jobs";
+import { runDeepJobAction } from "./deep-job-action";
 import { groupActivity, groupBySector, type ActivityRow, type Trade } from "./history/data";
 import { ccyTag, fmtMoney, fmtSigned } from "./history/format";
 import { legend, navChart, type NavPoint } from "./history/nav-chart";
@@ -221,26 +221,22 @@ function sectorToolbar(h: HistoryPayload, unknownNames: number) {
 async function runSectorFetch() {
   const btn = $$<HTMLButtonElement>("#hist-sectors");
   const status = $$("#hist-sectors-status");
-  if (!btn || btn.disabled) return;
-  btn.disabled = true;
-  const prev = btn.textContent;
-  btn.textContent = "Resolving…";
-  status.classList.remove("err");
-  status.innerHTML = `<span class="spinner"></span> resolving sectors from Yahoo…`;
-  try {
-    const job = await api("/api/portfolio-history/sectors", "POST", {});
-    await pollDeepJob(job.id, status, async (done) => {
+  if (!btn) return;
+  await runDeepJobAction({
+    buttons: [btn],
+    status,
+    pendingStatusHtml: `<span class="spinner"></span> resolving sectors from Yahoo…`,
+    activeButton: btn,
+    activeLabel: "Resolving…",
+    startJob: () => api("/api/portfolio-history/sectors", "POST", {}),
+    jobLabel: "sector lookup",
+    failPrefix: "Sector lookup failed: ",
+    onDone: async (done) => {
       await loadHistory();
-      const r = (done.result || {}) as Record<string, any>;
+      const r = (done.result || {}) as Record<string, unknown>;
       status.textContent = `Done — resolved ${r.resolved ?? 0} new, ${r.unresolved ?? 0} still unknown.`;
-    }, "sector lookup");
-  } catch (e) {
-    status.textContent = "Sector lookup failed: " + (e as Error).message;
-    status.classList.add("err");
-  } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
+    },
+  });
 }
 
 function statCards(h: HistoryPayload) {
@@ -252,56 +248,45 @@ function statCards(h: HistoryPayload) {
   const change = latest != null && first != null ? Number(latest) - Number(first) : null;
   const wrap = el("div", "risk-stats");
   // NAV, change and the realized total are all base-currency figures.
-  wrap.appendChild(card("Latest NAV", sensitive(fmtMoney(latest), "net asset value") + ccyTag(bcy)));
-  wrap.appendChild(card("Change over span",
+  wrap.appendChild(statTile("Latest NAV",
+    sensitive(fmtMoney(latest), "net asset value") + ccyTag(bcy),
+    { family: "risk-stat", html: true, cls: "muted" }));
+  wrap.appendChild(statTile("Change over span",
     change == null ? "n/a" : sensitive(fmtSigned(change), "nav change") + ccyTag(bcy),
-    change == null ? "muted" : change >= 0 ? "good" : "bad"));
-  wrap.appendChild(card(`Realized P&L${bcy ? " (base)" : ""}`,
+    { family: "risk-stat", html: true, cls: change == null ? "muted" : change >= 0 ? "good" : "bad" }));
+  wrap.appendChild(statTile(`Realized P&L${bcy ? " (base)" : ""}`,
     s.realized_pnl_total == null ? "n/a" : sensitive(fmtSigned(s.realized_pnl_total), "realized pnl") + ccyTag(bcy),
-    s.realized_pnl_total == null ? "muted" : s.realized_pnl_total >= 0 ? "good" : "bad"));
-  wrap.appendChild(card("Trades", String(s.n_trades ?? 0)));
+    { family: "risk-stat", html: true, cls: s.realized_pnl_total == null ? "muted" : s.realized_pnl_total >= 0 ? "good" : "bad" }));
+  wrap.appendChild(statTile("Trades", String(s.n_trades ?? 0), { family: "risk-stat", cls: "muted" }));
   return wrap;
-}
-
-function card(label: string, valueHtml: string, cls = "muted") {
-  const c = el("div", "risk-stat");
-  c.innerHTML =
-    `<span class="risk-stat-k">${esc(label)}</span>` +
-    `<span class="risk-stat-v ${esc(cls)}">${valueHtml}</span>`;
-  return c;
 }
 
 async function runSync(full: boolean) {
   const status = $$("#hist-status");
-  const btns = [$$<HTMLButtonElement>("#hist-sync"), $$<HTMLButtonElement>("#hist-full")].filter(Boolean);
-  if (btns.some((b) => b.disabled)) return;
-  const prev = btns.map((b) => b.textContent);
-  btns.forEach((b) => (b.disabled = true));
-  const active = full ? $$("#hist-full") : $$("#hist-sync");
-  if (active) active.textContent = full ? "Rebuilding…" : "Updating…";
-  status.classList.remove("err");
-  status.innerHTML = full
-    ? `<span class="spinner"></span> Rebuilding full history from IBKR (read-only, can take a minute)…`
-    : `<span class="spinner"></span> Fetching new days from IBKR (read-only)…`;
-  try {
-    const job = await api("/api/portfolio-history/sync", "POST", { full });
-    await pollDeepJob(job.id, status, async (done) => {
+  const syncBtn = $$<HTMLButtonElement>("#hist-sync");
+  const fullBtn = $$<HTMLButtonElement>("#hist-full");
+  const btns = [syncBtn, fullBtn].filter(Boolean) as HTMLButtonElement[];
+  const active = full ? fullBtn : syncBtn;
+  await runDeepJobAction({
+    buttons: btns,
+    status,
+    pendingStatusHtml: full
+      ? `<span class="spinner"></span> Rebuilding full history from IBKR (read-only, can take a minute)…`
+      : `<span class="spinner"></span> Fetching new days from IBKR (read-only)…`,
+    activeButton: active,
+    activeLabel: full ? "Rebuilding…" : "Updating…",
+    startJob: () => api("/api/portfolio-history/sync", "POST", { full }),
+    jobLabel: "IBKR history",
+    failPrefix: "History pull failed: ",
+    onDone: async (done) => {
       await loadHistory();
-      const r = ((done.result as Record<string, any>)?.summary || {}) as Record<string, any>;
-      const u = r.update;
+      const r = ((done.result as Record<string, unknown>)?.summary || {}) as Record<string, unknown>;
+      const u = r.update as { new_trades?: number; new_nav_points?: number } | undefined;
       status.textContent = u
         ? `Done — +${u.new_trades} trades, +${u.new_nav_points} NAV points since the last pull.`
         : `Done — ${r.n_trades ?? 0} trades reconstructed.`;
-    }, "IBKR history");
-  } catch (e) {
-    status.textContent = "History pull failed: " + (e as Error).message;
-    status.classList.add("err");
-  } finally {
-    btns.forEach((b, i) => {
-      b.disabled = false;
-      b.textContent = prev[i];
-    });
-  }
+    },
+  });
 }
 
 function initHistoryControls() {

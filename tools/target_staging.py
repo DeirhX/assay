@@ -37,6 +37,7 @@ import rebalance
 from config import DATA_DIR, HOLDINGS_JSON, REPO_ROOT, TARGET_MODEL_JSON
 from holdings_sync import regenerate_site as _regenerate_site
 from store import load as _load, safe_symbol as _safe_symbol, write_json as _write_json
+from timeutil import now_iso
 from target_model import (
     TARGET_MODEL_BACKUP_DIR, _apply_changes_to_model, _backup_target_model,
 )
@@ -58,10 +59,6 @@ _LOG_LOCK = threading.Lock()
 _VALID_STANCES = {
     "accumulate", "hold", "trim_only", "do_not_add", "reduce", "avoid", "wait",
 }
-
-
-def _now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def _today() -> str:
@@ -256,7 +253,7 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
     applied, skipped = _apply_changes_to_model(staged, guarded, blocked=blocked)
     skipped = skipped_pre + skipped
     applied_set = set(applied)
-    now = _now_iso()
+    now = now_iso()
 
     for ch in guarded:
         act = ch.get("action")
@@ -588,7 +585,7 @@ def backfill_provenance_log(*, path: Path | None = None,
             snapshots.append((_backup_timestamp(p) or "", model))
     live = load_live()
     if live:
-        snapshots.append((live.get("as_of") or _now_iso(), live))
+        snapshots.append((live.get("as_of") or now_iso(), live))
 
     entries: list[dict] = []
     for (_, prior), (at, later) in zip(snapshots, snapshots[1:]):
@@ -632,7 +629,7 @@ def commit_staged(confirm: bool) -> dict:
     logged = 0
     try:
         logged = _append_provenance_log(
-            _provenance_entries(prior, out, at=_now_iso()))
+            _provenance_entries(prior, out, at=now_iso()))
     except Exception:  # noqa: BLE001 - the timeline is audit, not a commit gate
         logged = 0
     try:

@@ -1,5 +1,7 @@
 import { api, el, esc, fmtCZK, sensitive } from "./core";
-import type { ExecutionPlanItem, ExecutionPlanState } from "./api-types";
+import type { ExecutionPlanItem, ExecutionPlanState, RebalanceRouteSelection } from "./api-types";
+
+const normalizeSymbol = (raw: string) => raw.trim().toUpperCase();
 
 // ---- status / tone helpers ---------------------------------------------------
 
@@ -105,18 +107,21 @@ export function executionPlanHtml(state: ExecutionPlanState | null | undefined):
 
 export interface ExecutionRouteControlRef {
   controls: HTMLElement;
-  autoSelectOption: () => Promise<boolean>;
+  compact: HTMLSelectElement;
+  detail: HTMLElement;
+  selectDirect: (limitPrice?: number) => void;
 }
 
-export interface ExecutionLifecycleCallbacks {
+export interface ExecutionLifecycleConfig {
   patchItem: (changes: Partial<ExecutionPlanItem>) => Promise<void>;
-  onAmountChange: () => Promise<void>;
-  onLimitChange?: (limitPrice: number | null) => void;
-  onAutoSelectFailed?: (symbol: string, message: string) => void;
-  shouldAutoSelectOnExecute?: (item: ExecutionPlanItem) => boolean;
-  shouldAutoSelectOnAmountChange?: (item: ExecutionPlanItem, direction: "increase" | "reduce") => boolean;
-  shouldDeferAfterAutoSelect?: (symbol: string, available: boolean) => boolean;
-  onRoutePolicyPatch?: (direction: "increase" | "reduce") => Promise<void>;
+  routeSelections: Map<string, RebalanceRouteSelection>;
+  suggestedLimit?: number | null;
+  marketReference?: number | null;
+  limitCurrency?: string;
+  pctToCzk: (deltaPct: number, base: number) => number | null;
+  base: number;
+  parseDelta: (value: string) => number;
+  deltaEpsilon?: number;
 }
 
 export function createExecutionLifecycleCell(
@@ -124,11 +129,31 @@ export function createExecutionLifecycleCell(
   item: ExecutionPlanItem | null | undefined,
   amountInput: HTMLInputElement,
   route: ExecutionRouteControlRef,
-  callbacks: ExecutionLifecycleCallbacks,
+  config: ExecutionLifecycleConfig,
 ): HTMLElement {
+  const {
+    patchItem,
+    routeSelections,
+    suggestedLimit = null,
+    marketReference = null,
+    limitCurrency = "",
+    pctToCzk,
+    base,
+    parseDelta,
+    deltaEpsilon = 0.0001,
+  } = config;
   const host = el("div", "reb-execution-cell");
   if (!item) {
-    host.appendChild(route.controls);
+    host.classList.add("reb-execution-manual");
+    const note = el("span", "reb-execution-na");
+    const paintManual = () => {
+      const hasAmount = Math.abs(parseDelta(amountInput.value)) > deltaEpsilon;
+      note.textContent = hasAmount ? "Manual trade" : "No new trade";
+      route.compact.hidden = !hasAmount;
+    };
+    amountInput.addEventListener("input", paintManual);
+    host.append(note, route.compact);
+    paintManual();
     return host;
   }
 
@@ -140,75 +165,104 @@ export function createExecutionLifecycleCell(
   checkbox.type = "checkbox";
   checkbox.checked = item.status === "selected";
   checkbox.disabled = locked;
-  const label = el("span", "", checkbox.disabled ? item.status : "Execute");
+  const label = el("span", "", checkbox.disabled ? item.status : "Include trade");
+  execute.title = "Include this amount in Preview impact and the order queue";
   execute.append(checkbox, label);
-  const later = el("button", "ghost", "Later");
+  const stateNote = el("span", "reb-execution-state");
+  const exclude = el("button", "ghost reb-execution-exclude", "Exclude");
+  exclude.type = "button";
+  exclude.title = "Keep this recommendation, but remove it from Preview impact and the order queue";
+  exclude.disabled = checkbox.disabled;
+  const more = document.createElement("details");
+  more.className = "reb-execution-more";
+  const moreSummary = el("summary", "", "…");
+  moreSummary.title = "More scheduling options";
+  moreSummary.setAttribute("aria-label", "More scheduling options");
+  const menu = el("div", "reb-execution-menu");
+  const later = el("button", "", "Skip for now");
   later.type = "button";
-  later.disabled = locked;
-  const dismiss = el("button", "ghost reb-dismiss", "×");
+  later.title = "Keep the recommendation, but exclude it from Preview impact and the order queue";
+  later.disabled = checkbox.disabled;
+  const dismiss = el("button", "reb-dismiss", "Dismiss recommendation");
   dismiss.type = "button";
   dismiss.title = "Dismiss from this execution plan";
-  dismiss.disabled = locked;
-  lifecycle.append(execute, later, dismiss);
+  dismiss.disabled = checkbox.disabled;
+  menu.append(later, dismiss);
+  more.append(moreSummary, menu);
+  lifecycle.append(execute, stateNote);
+  if (!checkbox.disabled) lifecycle.appendChild(more);
 
-  const syncStatusUi = (status: ExecutionPlanItem["status"]) => {
-    checkbox.checked = status === "selected";
-    host.dataset.status = status;
-    later.classList.toggle("active", status === "deferred");
-    dismiss.classList.toggle("active", status === "dismissed");
+  const paintStatus = () => {
+    checkbox.checked = item.status === "selected";
+    host.dataset.status = item.status;
+    label.textContent = checkbox.disabled
+      ? item.status
+      : item.status === "selected"
+        ? "Included"
+        : "Include trade";
+    stateNote.textContent = item.status === "deferred"
+      ? "skipped"
+      : item.status === "dismissed"
+        ? "dismissed"
+        : "";
+    exclude.hidden = item.status !== "selected" || checkbox.disabled;
+    more.classList.toggle(
+      "has-state",
+      item.status === "deferred" || item.status === "dismissed",
+    );
   };
-  const setStatus = async (status: ExecutionPlanItem["status"]) => {
+
+  const setStatus = async (status: ExecutionPlanItem["status"]): Promise<boolean> => {
     const previousStatus = item.status;
     item.status = status;
-    syncStatusUi(status);
+    paintStatus();
     try {
-      await callbacks.patchItem({ status });
+      await patchItem({ status });
       return true;
     } catch {
       item.status = previousStatus;
-      syncStatusUi(previousStatus);
+      paintStatus();
       return false;
     }
   };
-
   checkbox.addEventListener("change", async () => {
     if (!checkbox.checked) {
       await setStatus("deferred");
       return;
     }
-    if (!(await setStatus("selected"))) return;
-    if (callbacks.shouldAutoSelectOnExecute?.(item)) {
-      const available = await route.autoSelectOption();
-      if (callbacks.shouldDeferAfterAutoSelect?.(symbol, available) ?? !available) {
-        await setStatus("deferred");
-        callbacks.onAutoSelectFailed?.(
-          symbol,
-          `${symbol}: no executable cash-secured put; deferred`,
-        );
-      }
+    if (await setStatus("selected")) {
+      route.selectDirect(Number(limit.value) || undefined);
     }
   });
-  later.addEventListener("click", () => { void setStatus("deferred"); });
-  dismiss.addEventListener("click", () => { void setStatus("dismissed"); });
-
+  later.addEventListener("click", () => {
+    more.open = false;
+    void setStatus("deferred");
+  });
+  exclude.addEventListener("click", async () => {
+    if (!(await setStatus("deferred"))) return;
+    route.detail.hidden = true;
+    route.detail.innerHTML = "";
+  });
+  dismiss.addEventListener("click", () => {
+    more.open = false;
+    void setStatus("dismissed");
+  });
   amountInput.addEventListener("change", async () => {
+    const deltaPct = parseDelta(amountInput.value);
+    const deltaCzk = pctToCzk(deltaPct, base) || 0;
+    const direction = deltaCzk >= 0 ? "increase" : "reduce";
     try {
-      await callbacks.onAmountChange();
+      await patchItem({
+        delta_pct: deltaPct,
+        delta_czk: deltaCzk,
+        desired_weight_pct: Math.max(0, Number(amountInput.dataset.currentPct || 0) + deltaPct),
+        direction,
+        status: "selected",
+      });
+      paintStatus();
+      route.selectDirect(Number(limit.value) || undefined);
     } catch {
-      syncStatusUi(item.status);
-      return;
-    }
-    checkbox.checked = true;
-    host.dataset.status = "selected";
-    const deltaPct = Number(amountInput.value) || 0;
-    const direction = deltaPct >= 0 ? "increase" : "reduce";
-    if (callbacks.shouldAutoSelectOnAmountChange?.(item, direction)) {
-      const available = await route.autoSelectOption();
-      if (callbacks.shouldDeferAfterAutoSelect?.(symbol, available) ?? !available) {
-        await setStatus("deferred");
-      }
-    } else if (direction === "reduce" && callbacks.onRoutePolicyPatch) {
-      await callbacks.onRoutePolicyPatch(direction);
+      paintStatus();
     }
   });
 
@@ -217,30 +271,76 @@ export function createExecutionLifecycleCell(
   limit.type = "number";
   limit.min = "0.01";
   limit.step = "0.01";
-  limit.placeholder = "Auto limit";
-  limit.title = "Editable order limit; option values are minimum credits";
-  if (item.limit_price) limit.value = String(item.limit_price);
-  limit.addEventListener("change", () => {
+  limit.placeholder = "Market";
+  limit.title = marketReference
+    ? `Editable order limit; an empty market value ticks from the last ${marketReference}`
+    : "Editable order limit; option values are minimum credits";
+  const initialLimit = item.limit_price || suggestedLimit;
+  if (initialLimit) limit.value = String(initialLimit);
+  const limitLabel = el("span", "", "");
+  const paintLimitLabel = () => {
+    const value = Number(limit.value);
+    const recommended = Boolean(
+      suggestedLimit && value > 0 && Math.abs(value - suggestedLimit) < 0.000001,
+    );
+    limitLabel.textContent = `Limit${limitCurrency ? ` (${limitCurrency})` : ""} · ` +
+      (recommended ? "recommended" : value > 0 ? "custom" : "market");
+  };
+  limit.addEventListener("change", async () => {
     const value = Number(limit.value);
     const nextLimit = value > 0 ? value : null;
-    void callbacks.patchItem({ limit_price: nextLimit })
-      .then(() => callbacks.onLimitChange?.(nextLimit))
-      .catch(() => {
-        limit.value = typeof item.limit_price === "number" ? String(item.limit_price) : "";
-      });
+    const selection = routeSelections.get(normalizeSymbol(symbol));
+    const persistedSelectionLimit = selection?.limit_price;
+    try {
+      await patchItem({ limit_price: nextLimit });
+      if (selection) {
+        if (value > 0) selection.limit_price = value;
+        else delete selection.limit_price;
+      }
+      paintLimitLabel();
+    } catch {
+      limit.value = typeof item.limit_price === "number" ? String(item.limit_price) : "";
+      if (selection) {
+        if (typeof persistedSelectionLimit === "number") selection.limit_price = persistedSelectionLimit;
+        else delete selection.limit_price;
+      }
+      paintLimitLabel();
+    }
   });
-
+  limit.addEventListener("keydown", (event) => {
+    if (
+      limit.value.trim()
+      || marketReference == null
+      || (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+    ) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowUp" ? 1 : -1;
+    limit.value = String(Math.max(0.01, Math.round(
+      (marketReference + direction * Number(limit.step || 0.01)) * 100,
+    ) / 100));
+    limit.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  limit.addEventListener("pointerdown", (event) => {
+    if (limit.value.trim() || marketReference == null) return;
+    const rect = limit.getBoundingClientRect();
+    if (event.clientX < rect.right - 20) return;
+    limit.value = String(marketReference);
+    paintLimitLabel();
+  });
+  const limitField = document.createElement("label");
+  limitField.className = "reb-limit-field";
+  limitField.append(limitLabel, limit);
+  paintLimitLabel();
   const routeLine = el("div", "reb-execution-route-line");
-  routeLine.append(route.controls, limit);
-  host.dataset.status = item.status;
+  routeLine.append(route.compact, exclude, limitField);
+  paintStatus();
   host.append(lifecycle, routeLine);
-
   if (locked) {
     route.controls.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
       button.disabled = true;
     });
+    route.compact.disabled = true;
     limit.disabled = true;
   }
-
   return host;
 }
