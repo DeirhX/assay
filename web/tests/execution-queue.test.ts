@@ -8,15 +8,14 @@ vi.mock("../src/core", async (importOriginal) => ({
 import { api, state } from "../src/core";
 import type { TradeLeg, TradeQueueState } from "../src/api-types";
 import {
-  QUEUE_CHANGED_EVENT,
   applyStagedBasketFromQueue,
   applyStagedBasketLegs,
   clearStagedBasket,
   normalizeTradeQueueState,
   publishQueueChanged,
   stageRebalanceQueue,
-  subscribeQueueChanged,
 } from "../src/execution-queue";
+import { subscribePipelineChanged } from "../src/pipeline-summary";
 
 const apiMock = vi.mocked(api);
 
@@ -62,15 +61,15 @@ describe("execution-queue", () => {
     expect(state.stagedBasket).toEqual([]);
   });
 
-  it("publishes and subscribes to queue-changed", () => {
+  it("publishes queue changes through the shared pipeline event", () => {
     const handler = vi.fn();
-    const unsubscribe = subscribeQueueChanged(handler);
+    const unsubscribe = subscribePipelineChanged(handler);
     publishQueueChanged();
     expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith({ source: "queue" });
     unsubscribe();
     publishQueueChanged();
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(QUEUE_CHANGED_EVENT).toBe("assay:queue-changed");
   });
 
   it("stages rebalance trades via POST /api/rebalance/stage", async () => {
@@ -81,7 +80,7 @@ describe("execution-queue", () => {
     };
     apiMock.mockResolvedValue(saved);
     const handler = vi.fn();
-    subscribeQueueChanged(handler);
+    subscribePipelineChanged(handler);
 
     const result = await stageRebalanceQueue({
       trades: [{ symbol: "NVDA", delta_czk: 1000 }],

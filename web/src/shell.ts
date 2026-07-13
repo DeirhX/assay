@@ -5,6 +5,7 @@ import { loadTickerFromCache } from "./deepdive";
 import { runHoldingsSync, siteMsg } from "./holdings-sync";
 import { loadDeepRun } from "./pipeline";
 import { initFlowBar, updateFlowBar } from "./flowbar";
+import { initPipelineSummary } from "./pipeline-summary";
 import { initHistoryControls, loadHistory } from "./history";
 import { loadActivity } from "./activity";
 import { loadHoldings } from "./holdings";
@@ -516,6 +517,7 @@ function initShell() {
   initBasket();
   initOptimizer();
   initOrders();
+  initPipelineSummary();
   initOverview();
   initFlowBar();
   initTargetState();

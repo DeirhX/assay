@@ -2,16 +2,10 @@ import { api, state } from "./core";
 import type {
   QueuedTradeLeg, RebalanceRouteSelection, TradeLeg, TradeQueueState,
 } from "./api-types";
-
-export const QUEUE_CHANGED_EVENT = "assay:queue-changed";
+import { publishPipelineChanged } from "./pipeline-summary";
 
 export function publishQueueChanged(): void {
-  window.dispatchEvent(new Event(QUEUE_CHANGED_EVENT));
-}
-
-export function subscribeQueueChanged(handler: () => void): () => void {
-  window.addEventListener(QUEUE_CHANGED_EVENT, handler);
-  return () => window.removeEventListener(QUEUE_CHANGED_EVENT, handler);
+  publishPipelineChanged({ source: "queue" });
 }
 
 export function normalizeTradeQueueState(saved: TradeQueueState): TradeQueueState {

@@ -1,12 +1,13 @@
 import { el, esc, fmtCZK } from "./core";
 import type {
-  RebalanceExecutionRoute, RebalanceOptionRung, RebalanceRouteResponse,
+  RebalanceExecutionRoute, RebalanceRouteResponse,
   RebalanceRouteSelection,
 } from "./api-types";
 import {
   buildRouteSelection, directRouteFor, fetchRebalanceRoute, optionRouteFor,
   pickStageableRung,
 } from "./execution-routes";
+import { liquidityChipClass, quoteFreshnessLabel } from "./option-quote";
 
 // ---- shared route loading with stale-response cancellation -------------------
 
@@ -50,18 +51,6 @@ export interface OptionRouteControl {
   detail: HTMLElement;
   sync: (deltaCzk: number) => void;
   selectDirect: (limitPrice?: number) => void;
-}
-
-function quoteStateLabel(rung: RebalanceOptionRung): string {
-  if (rung.quote_fresh) return "Fresh quote";
-  if (rung.stageable) return "Quote needed at preview";
-  return "Indicative only";
-}
-
-function liquidityChipTone(liquidity: string): string {
-  if (liquidity === "ok") return "good";
-  if (liquidity === "thin") return "warn";
-  return "muted";
 }
 
 export function createOptionRouteControl(
@@ -189,7 +178,7 @@ export function createOptionRouteControl(
       const card = el("article", "reb-option-contract");
       const effective = route.direction === "increase" ? rung.effective_entry : rung.effective_exit;
       const right = route.direction === "increase" ? "Put" : "Call";
-      const quoteState = quoteStateLabel(rung);
+      const quoteState = quoteFreshnessLabel(rung);
       const top = el("div", "reb-option-contract-top");
       top.innerHTML =
         `<div class="reb-option-contract-name">` +
@@ -219,7 +208,7 @@ export function createOptionRouteControl(
         `<div class="reb-option-market-state">` +
           `<span class="chip ${rung.source === "ibkr" ? "good" : "muted"}">${esc(rung.source.replace(/_/g, " "))}</span>` +
           `<span class="chip ${rung.quote_fresh ? "good" : rung.stageable ? "warn" : "muted"}">${quoteState}</span>` +
-          `<span class="chip ${liquidityChipTone(rung.liquidity)}">` +
+          `<span class="chip ${liquidityChipClass(rung.liquidity)}">` +
             `${esc(rung.liquidity)} liquidity</span>` +
         `</div>` +
         backing;

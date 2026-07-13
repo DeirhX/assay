@@ -87,7 +87,11 @@ describe("working-order polling gate", () => {
           trading_enabled: false, authenticated: true, connected: true,
         });
       }
-      if (path === "/api/trade/orders") return Promise.resolve({ orders: [{ id: 1 }] });
+      if (path === "/api/trade/orders") {
+        return Promise.resolve({
+          orders: [{ id: 1, status: "Submitted" }, { id: 2, status: "Filled" }],
+        });
+      }
       return Promise.resolve({});
     });
     document.body.innerHTML = '<nav id="flowbar" hidden></nav>';
@@ -135,6 +139,13 @@ describe("flowStages", () => {
 
   it("routes Review impact to the projected-portfolio view", () => {
     expect(flowStages(data())[1].view).toBe("target-state");
+  });
+
+  it("labels a reviewed valid queue as projection approved", () => {
+    const stages = flowStages(data({
+      ov: { ...data().ov, staged_basket: { count: 4, reviewed: true, valid: true } },
+    }));
+    expect(stages[2].sub).toContain("projection approved");
   });
 
   it("shows Current book as an input and routes only missing holdings to setup", () => {

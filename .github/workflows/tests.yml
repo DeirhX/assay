@@ -51,9 +51,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      # Backend is stdlib-only; the test suite needs no extra installs.
+      # Production is stdlib-only; pytest is a pinned test-runner dependency.
+      - name: Install test dependencies
+        run: pip install --quiet -r tools/requirements-test.txt
       - name: Run tests
-        run: python -m unittest discover -s tools/tests -t tools/tests -v
+        run: python -m pytest tools/tests -q
 
   frontend:
     name: Frontend typecheck + tests + build

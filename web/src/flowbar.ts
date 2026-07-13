@@ -5,8 +5,11 @@
 // Target-model design lives under Plan. Current holdings are an input, not a
 // task, and the projected outcome remains the explicit pre-trade safety gate.
 import { $, api, esc } from "./core";
-import { subscribeQueueChanged } from "./execution-queue";
 import { gatewayConnected, refreshGatewayStatus } from "./gateway";
+import {
+  countWorkingOrders, subscribePipelineChanged,
+} from "./pipeline-summary";
+import type { LiveOrderSummary } from "./pipeline-summary";
 import { pushNav, setActiveView } from "./shell";
 import type { GatewayStatus, HoldingsPayload } from "./api-types";
 
@@ -19,6 +22,7 @@ interface FlowOverview {
   staged_basket?: {
     count?: number; buys?: number; sells?: number;
     conditional_buys?: number; conditional_reductions?: number;
+    reviewed?: boolean; valid?: boolean;
   } | null;
 }
 export interface FlowData {
@@ -42,8 +46,8 @@ async function fetchFlowData(): Promise<FlowData> {
   try {
     gateway = await refreshGatewayStatus();
     if (gatewayConnected(gateway)) {
-      const res = await api<{ orders?: unknown[] }>("/api/trade/orders");
-      working = Array.isArray(res.orders) ? res.orders.length : 0;
+      const res = await api<{ orders?: LiveOrderSummary[] }>("/api/trade/orders");
+      working = countWorkingOrders(res.orders);
     }
   } catch { /* gateway down / orders read failed -> unknown */ }
   _cache = { ov, working, gateway };
@@ -97,6 +101,7 @@ export function flowStages(d: FlowData): Stage[] {
 
   const placeBits = [];
   if (staged) placeBits.push(`${staged} queued`);
+  if (staged && basket.reviewed && basket.valid !== false) placeBits.push("projection approved");
   if (d.working) placeBits.push(`${d.working} working`);
   if (d.working == null) {
     placeBits.push(gatewayConnected(d.gateway || null) ? "IBKR orders unavailable" : "IBKR offline");
@@ -235,7 +240,7 @@ let _wired = false;
 export function initFlowBar(): void {
   if (_wired) return;
   _wired = true;
-  subscribeQueueChanged(() => {
+  subscribePipelineChanged(() => {
     invalidateFlowData();
     if (_activeView) updateFlowBar(_activeView, _activeGroup);
   });

@@ -3,7 +3,7 @@ import sys
 import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from unittest import TestCase, mock
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -707,62 +707,3 @@ def test_place_time_margin_put_revalidation_skips_local_cash_gate():
             mock.patch.object(trade_service, "cash_secured_put_capacity") as cash_capacity:
         trade_service._revalidate_cash_secured_put_orders("DU1", [order], [])
     cash_capacity.assert_not_called()
-
-
-class RebalanceRouteUnittestCoverage(TestCase):
-    """Mirror the pytest-style cases into the repository's unittest CI runner."""
-
-    def setUp(self):
-        self._session = mock.patch.object(
-            rebalance_routes.option_market, "session_ready", return_value=False,
-        )
-        self._basket = mock.patch.object(trade_service, "load_basket", return_value=[])
-        self._session.start()
-        self._basket.start()
-        self.addCleanup(self._session.stop)
-        self.addCleanup(self._basket.stop)
-
-    def test_contract_sizing(self):
-        test_contract_sizing_matches_exit_bounded_round_up()
-
-    def test_increase_route(self):
-        test_increase_offers_exact_cash_secured_put_route()
-
-    def test_reduction_route(self):
-        test_reduction_offers_covered_call_bounded_by_held_shares()
-
-    def test_fallback_route(self):
-        test_fallback_ladder_is_visible_but_not_stageable()
-
-    def test_zero_cash_reason(self):
-        test_zero_cash_explains_held_put_collateral_without_ladder_cascade()
-
-    def test_partial_cash_reason(self):
-        test_partial_cash_reports_cost_of_one_put_contract()
-
-    def test_aggregate_route_capacity(self):
-        test_route_capacity_reserves_working_puts_and_unrelated_staged_buys()
-
-    def test_atomic_put_staging(self):
-        test_stage_put_replaces_stock_leg_and_records_conditional_provenance()
-
-    def test_stage_cash_rejection(self):
-        test_stage_rejects_aggregate_put_collateral_above_cash()
-
-    def test_append_mode(self):
-        test_append_mode_keeps_existing_queue_and_adds_new_stock_amounts()
-
-    def test_replace_mode(self):
-        test_replace_mode_removes_prior_rebalance_legs_but_keeps_exit_routes()
-
-    def test_canonical_put(self):
-        test_canonical_put_leg_preserves_explicit_right_and_type()
-
-    def test_prepare_put(self):
-        test_prepare_put_builds_exact_sell_limit_and_secured_cash()
-
-    def test_working_put_classification(self):
-        test_working_short_put_is_not_mislabeled_as_covered_call()
-
-    def test_place_time_cash_gate(self):
-        test_place_time_put_revalidation_counts_working_put_collateral()
