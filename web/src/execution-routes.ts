@@ -38,8 +38,11 @@ export function buildRouteSelection(params: {
   contracts?: number;
   limitPrice?: number;
   executionItemId?: string;
+  collateralMode?: "cash" | "margin";
 }): RebalanceRouteSelection {
-  const { symbol, route, rung, contracts, limitPrice, executionItemId } = params;
+  const {
+    symbol, route, rung, contracts, limitPrice, executionItemId, collateralMode,
+  } = params;
   if (rung?.conid) {
     return {
       symbol,
@@ -48,6 +51,7 @@ export function buildRouteSelection(params: {
       expiry: rung.expiry,
       strike: rung.strike,
       contracts,
+      ...(collateralMode ? { collateral_mode: collateralMode } : {}),
       ...(typeof rung.limit_price === "number" ? { limit_price: rung.limit_price } : {}),
       ...(executionItemId ? { execution_item_id: executionItemId } : {}),
     };

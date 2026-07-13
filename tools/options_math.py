@@ -23,8 +23,58 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 TRADING_DAYS = 252
+OPTION_CONTRACT_MULTIPLIER = 100
+DEFAULT_ROUND_UP_MAX_DEVIATION_PCT = 0.15
 # Fallback risk-free when FRED is unreachable: a neutral long-rate placeholder.
 DEFAULT_RISK_FREE = 0.04
+
+
+def whole_contracts_for_shares(
+    planned_shares: Any,
+    *,
+    multiplier: int = OPTION_CONTRACT_MULTIPLIER,
+    round_up_max_deviation_pct: float = DEFAULT_ROUND_UP_MAX_DEVIATION_PCT,
+    capacity_contracts: int | None = None,
+    max_held_shares: Any | None = None,
+    eps: float = 1e-9,
+) -> int:
+    """Whole option contracts for a share plan with a bounded round-up.
+
+  When ``max_held_shares`` is set, round-up is allowed only if the rounded
+  assignment does not exceed held shares and the final count is capped at
+  ``max_held_shares // multiplier``. When ``capacity_contracts`` is set, the
+  result is additionally capped at that contract count.
+    """
+    try:
+        planned = max(0, int(float(planned_shares or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+    held: int | None = None
+    held_contract_cap: int | None = None
+    if max_held_shares is not None:
+        try:
+            held = max(0, int(float(max_held_shares or 0)))
+        except (TypeError, ValueError):
+            return 0
+        held_contract_cap = held // multiplier
+
+    contracts = planned // multiplier
+    rounded = contracts + 1
+    assigned = rounded * multiplier
+    round_up_ok = (
+        planned > 0
+        and (assigned - planned) / planned <= round_up_max_deviation_pct + eps
+    )
+    if held is not None:
+        round_up_ok = round_up_ok and assigned <= held
+    if round_up_ok:
+        contracts = rounded
+    if capacity_contracts is not None:
+        contracts = min(contracts, max(0, int(capacity_contracts)))
+    if held_contract_cap is not None:
+        contracts = min(contracts, held_contract_cap)
+    return max(0, contracts)
 
 
 def norm_cdf(x: float) -> float:

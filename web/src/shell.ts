@@ -12,6 +12,7 @@ import { loadLeaderboard } from "./leaderboard";
 import { initJournalControls, loadJournal } from "./journal";
 import { loadPipeline, setPipeStep } from "./pipeline";
 import { initOptimizer, loadOptimizer } from "./optimizer";
+import { initOrders, loadOrders } from "./orders";
 import { initOverview, loadOverview } from "./overview";
 import { loadRebalance } from "./rebalance";
 import { loadRegime } from "./regime";
@@ -147,7 +148,7 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "activity", "basket", "setup"]);
+const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "orders", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "activity", "basket", "setup"]);
 
 // Today is the app-level cockpit, so a bare "/" lands there. Workflow tools keep
 // explicit views in the URL.
@@ -164,7 +165,7 @@ const VIEW_GROUP: Record<string, string> = {
   today: "today",
   leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
   strategy: "strategy", optimizer: "strategy", "working-draft": "strategy",
-  rebalance: "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
+  orders: "rebalance", rebalance: "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
   holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio",
   basket: "basket",
   // Activity is a global audit log (tickers viewed + tasks run), not part of any
@@ -185,10 +186,10 @@ const VIEW_SUBTAB: Record<string, string> = {
   risk: "risk", attribution: "risk", tax: "risk",
   activity: "activity", journal: "journal",
 };
-const GROUP_DEFAULT: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "holdings", basket: "basket", activity: "activity" };
+const GROUP_DEFAULT: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "orders", portfolio: "holdings", basket: "basket", activity: "activity" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "rebalance", portfolio: "holdings", basket: "basket", activity: "activity" };
+const lastViewByGroup: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "orders", portfolio: "holdings", basket: "basket", activity: "activity" };
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -365,6 +366,7 @@ function setActiveView(view: string) {
   if (active === "pipeline") loadPipeline();
   if (active === "analyses") loadAnalyses();
   if (active === "optimizer") loadOptimizer();
+  if (active === "orders") loadOrders();
   if (active === "rebalance") loadRebalance();
   if (active === "working-draft") loadStaging();
   if (active === "target-state") loadTargetState();
@@ -490,12 +492,15 @@ function initShell() {
     if (view) goToView(view);
   });
 
-  // Top-level group headers jump to wherever you last were in that group (or its
-  // default on first visit), giving the three-item nav some memory.
+  // Most group headers return to the last view used in that group. Orders is
+  // deliberately different: it always opens the pipeline index, never strands
+  // the operator in a deep placement step remembered from an earlier session.
   document.querySelectorAll<HTMLElement>(".group").forEach((btn) => {
     btn.addEventListener("click", () => {
       const group = btn.dataset.group ?? "";
-      goToView(lastViewByGroup[group] || GROUP_DEFAULT[group] || DEFAULT_VIEW);
+      goToView(group === "rebalance"
+        ? "orders"
+        : lastViewByGroup[group] || GROUP_DEFAULT[group] || DEFAULT_VIEW);
     });
   });
   $$("#brand-home")?.addEventListener("click", () => goToView("today"));
@@ -510,6 +515,7 @@ function initShell() {
   initStaging();
   initBasket();
   initOptimizer();
+  initOrders();
   initOverview();
   initFlowBar();
   initTargetState();

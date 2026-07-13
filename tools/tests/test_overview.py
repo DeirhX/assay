@@ -94,6 +94,32 @@ class TestPlanSummary(unittest.TestCase):
         self.assertEqual(p["untargeted"], 1)
 
 
+class TestExecutionPlanSummary(unittest.TestCase):
+    def test_counts_planned_intent_without_double_counting_queue(self):
+        summary = overview.execution_plan_summary({
+            "stale": True,
+            "updated_at": _iso(1),
+            "items": [
+                {"status": "suggested"},
+                {"status": "selected"},
+                {"status": "deferred"},
+                {"status": "queued"},
+                {"status": "submitted"},
+            ],
+        })
+        self.assertEqual(summary["planned"], 2)
+        self.assertEqual(summary["suggested"], 1)
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(summary["submitted"], 1)
+        self.assertTrue(summary["stale"])
+
+    def test_missing_state_is_an_empty_summary(self):
+        summary = overview.execution_plan_summary(None)
+        self.assertEqual(summary["planned"], 0)
+        self.assertEqual(summary["selected"], 0)
+        self.assertFalse(summary["stale"])
+
+
 class TestStagedBasketAndJournal(unittest.TestCase):
     def test_basket_totals(self):
         b = overview.staged_basket_summary(
@@ -186,6 +212,7 @@ class TestNextStep(unittest.TestCase):
             "snapshot": {"exists": True, "stale": False, "age_days": 1},
             "plan": {"actionable": 0, "gates_open": 0},
             "draft": {"has_draft": False, "pending": 0},
+            "execution_plan": {"planned": 0},
             "staged_basket": {"count": 0},
             "research": {"basket": {"unresearched_count": 0}, "queue": []},
         }
@@ -205,6 +232,10 @@ class TestNextStep(unittest.TestCase):
             self._payload(staged_basket={"count": 2}))
         self.assertEqual(basket_step["id"], "place-basket")
         self.assertEqual(basket_step["view"], "target-state")
+        planned_step = overview.next_step(
+            self._payload(execution_plan={"planned": 2}))
+        self.assertEqual(planned_step["id"], "planned-orders")
+        self.assertEqual(planned_step["view"], "orders")
         self.assertEqual(overview.next_step(
             self._payload(plan={"actionable": 2, "gates_open": 1}))["id"], "gates-open")
         self.assertEqual(overview.next_step(

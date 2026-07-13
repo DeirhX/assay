@@ -463,6 +463,33 @@ function renderError(msg: string) {
   panel.querySelector(".card")?.appendChild(actions);
 }
 
+// ---- gate POST helper -----------------------------------------------------
+interface StrategyGateOpts {
+  status: HTMLElement;
+  btn?: HTMLButtonElement | null;
+  pendingHtml: string;
+  payload: Record<string, unknown>;
+  endpoint: string;
+  failLabel: string;
+  disableBtn?: boolean;
+  onSuccess: (m: Manifest) => void;
+}
+
+async function postStrategyGate(opts: StrategyGateOpts): Promise<void> {
+  const { status, btn, pendingHtml, payload, endpoint, failLabel, disableBtn = true, onSuccess } = opts;
+  status.classList.remove("err");
+  if (btn && disableBtn) btn.disabled = true;
+  status.innerHTML = pendingHtml;
+  try {
+    const m = await api<Manifest>(endpoint, "POST", payload);
+    onSuccess(m);
+  } catch (e) {
+    status.classList.add("err");
+    status.textContent = failLabel + (e as Error).message;
+    if (btn && disableBtn) btn.disabled = false;
+  }
+}
+
 // ---- gate 1: approve the drafted segment ----------------------------------
 function renderSegmentGate(m: Manifest, panel: HTMLElement) {
   const draft: Draft = m.draft || {};
@@ -488,8 +515,7 @@ function renderSegmentGate(m: Manifest, panel: HTMLElement) {
 async function approveSegment(runId: string) {
   const status = $$("#strat-seg-status");
   const btn = $$<HTMLButtonElement>("#strat-approve-seg");
-  status.classList.remove("err");
-  let definition;
+  let definition: unknown;
   try {
     definition = JSON.parse($$<HTMLTextAreaElement>("#strat-seg-json").value);
   } catch (e) {
@@ -497,17 +523,15 @@ async function approveSegment(runId: string) {
     status.textContent = "invalid JSON: " + (e as Error).message;
     return;
   }
-  btn.disabled = true;
-  status.innerHTML = `<span class="spinner"></span> approving…`;
-  try {
-    const m = await api("/api/strategy/" + encodeURIComponent(runId) + "/approve-segment", "POST", { definition });
-    render(m);
-    schedulePoll(runId);
-  } catch (e) {
-    status.classList.add("err");
-    status.textContent = "could not approve: " + (e as Error).message;
-    btn.disabled = false;
-  }
+  await postStrategyGate({
+    status,
+    btn,
+    pendingHtml: `<span class="spinner"></span> approving…`,
+    payload: { definition },
+    endpoint: "/api/strategy/" + encodeURIComponent(runId) + "/approve-segment",
+    failLabel: "could not approve: ",
+    onSuccess: (m) => { render(m); schedulePoll(runId); },
+  });
 }
 
 // ---- gate 2: approve the synthesized target changes -----------------------
@@ -593,8 +617,7 @@ function changesTable(changes: Change[]) {
 async function approveProposal(runId: string) {
   const status = $$("#strat-prop-status");
   const btn = $$<HTMLButtonElement>("#strat-approve-prop");
-  status.classList.remove("err");
-  let changes;
+  let changes: unknown;
   try {
     changes = JSON.parse($$<HTMLTextAreaElement>("#strat-changes-json").value);
   } catch (e) {
@@ -603,17 +626,15 @@ async function approveProposal(runId: string) {
     return;
   }
   const allowBlocked = !!$<HTMLInputElement>("#strat-allow-blocked")?.checked;
-  btn.disabled = true;
-  status.innerHTML = `<span class="spinner"></span> staging…`;
-  try {
-    const m = await api("/api/strategy/" + encodeURIComponent(runId) + "/approve-proposal", "POST",
-      { changes, allow_blocked: allowBlocked });
-    render(m);
-  } catch (e) {
-    status.classList.add("err");
-    status.textContent = "could not stage: " + (e as Error).message;
-    btn.disabled = false;
-  }
+  await postStrategyGate({
+    status,
+    btn,
+    pendingHtml: `<span class="spinner"></span> staging…`,
+    payload: { changes, allow_blocked: allowBlocked },
+    endpoint: "/api/strategy/" + encodeURIComponent(runId) + "/approve-proposal",
+    failLabel: "could not stage: ",
+    onSuccess: (m) => { render(m); },
+  });
 }
 
 // ---- staged ---------------------------------------------------------------
@@ -707,16 +728,15 @@ function renderNeedsLogin(m: Manifest, panel: HTMLElement) {
 
 async function approveSegmentResume(runId: string) {
   const status = $$("#strat-login-status");
-  status.classList.remove("err");
-  status.innerHTML = `<span class="spinner"></span> resuming…`;
-  try {
-    const m = await api("/api/strategy/" + encodeURIComponent(runId) + "/approve-segment", "POST", {});
-    render(m);
-    schedulePoll(runId);
-  } catch (e) {
-    status.classList.add("err");
-    status.textContent = "could not resume: " + (e as Error).message;
-  }
+  await postStrategyGate({
+    status,
+    pendingHtml: `<span class="spinner"></span> resuming…`,
+    payload: {},
+    endpoint: "/api/strategy/" + encodeURIComponent(runId) + "/approve-segment",
+    failLabel: "could not resume: ",
+    disableBtn: false,
+    onSuccess: (m) => { render(m); schedulePoll(runId); },
+  });
 }
 
 // ---- done -----------------------------------------------------------------

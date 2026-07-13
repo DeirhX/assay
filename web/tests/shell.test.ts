@@ -25,6 +25,11 @@ describe("navFromUrl", () => {
     expect(nav.segment).toBe("semiconductors");
   });
 
+  it("accepts the stable Orders pipeline destination", () => {
+    setUrl("view=orders");
+    expect(navFromUrl().view).toBe("orders");
+  });
+
   it("rejects unknown views", () => {
     setUrl("view=adminpanel");
     expect(navFromUrl().view).toBe("today");

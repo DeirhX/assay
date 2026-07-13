@@ -28,6 +28,7 @@ import overview
 import price_levels
 import rebalance
 import whatif
+from value_coercion import coerce_optional_limit_price
 from apierror import (
     BadGateway as _BadGateway,
     Conflict as _Conflict,
@@ -122,11 +123,10 @@ def _normalize_basket(trades: Any) -> list[dict]:
         leg_id = str(raw.get("leg_id") or f"{leg_type}:{sym}:{conid}").strip()
         if not leg_id:
             raise ValueError(f"{sym}: {option_name} leg_id is required")
-        limit_raw = raw.get("limit_price")
-        try:
-            limit_price = float(limit_raw) if limit_raw is not None else None
-        except (TypeError, ValueError):
-            raise ValueError(f"{sym}: {option_name} limit_price must be numeric") from None
+        limit_price = coerce_optional_limit_price(
+            raw.get("limit_price"),
+            numeric_error=f"{sym}: {option_name} limit_price must be numeric",
+        )
         provenance = raw.get("provenance")
         if provenance is None:
             provenance = []
@@ -173,12 +173,12 @@ def _normalize_basket(trades: Any) -> list[dict]:
         stock_provenance.setdefault(sym, []).extend(p for p in vals if isinstance(p, dict))
         limit_raw = row.get("limit_price")
         if limit_raw is not None:
-            try:
-                limit_price = float(limit_raw)
-            except (TypeError, ValueError):
-                raise ValueError(f"{sym}: stock limit_price must be numeric") from None
-            if limit_price <= 0:
-                raise ValueError(f"{sym}: stock limit_price must be positive")
+            limit_price = coerce_optional_limit_price(
+                limit_raw,
+                numeric_error=f"{sym}: stock limit_price must be numeric",
+                positive_error=f"{sym}: stock limit_price must be positive",
+            )
+            assert limit_price is not None
             stock_limits[sym] = limit_price
     stocks = [{
         "type": "stock",

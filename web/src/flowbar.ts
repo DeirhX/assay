@@ -57,7 +57,8 @@ export function invalidateFlowData(): void { _cacheAt = 0; }
 // ---- pure builders (exported for tests) -------------------------------------
 // Which execution stage owns a view. The contextual Exit tool remains part of
 // order construction; Optimizer and pending model changes are no longer here.
-export function stageForView(view: string): 1 | 2 | 3 {
+export function stageForView(view: string): 0 | 1 | 2 | 3 {
+  if (view === "orders") return 0;  // pipeline index: no action stage active
   if (view === "target-state") return 2;
   if (view === "trade") return 3;
   return 1;  // rebalance / exit

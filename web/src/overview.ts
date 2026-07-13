@@ -45,6 +45,10 @@ interface DriftSum {
   by_symbol: DriftBySymbol[];
 }
 interface DraftSum { has_draft: boolean; pending: number }
+interface ExecutionPlanSum {
+  planned: number; selected: number; deferred: number; suggested: number;
+  queued: number; submitted: number; stale?: boolean; updated_at?: string | null;
+}
 interface StagedBasketSum {
   count: number; buys: number; sells: number; total_abs_czk: number;
   conditional_buys?: number; conditional_reductions?: number; option_legs?: number;
@@ -87,6 +91,7 @@ export interface Overview {
   drift?: DriftSum | null;
   plan?: PlanSum | null;
   draft: DraftSum;
+  execution_plan?: ExecutionPlanSum;
   staged_basket: StagedBasketSum;
   journal: JournalSum;
   attribution?: AttributionVerdictSum;
@@ -122,7 +127,7 @@ function card(tone: "ok" | "warn" | "bad" | "muted", title: string, chip: string
 
 // ---- next-step banner -------------------------------------------------------
 export function nextStepHtml(step: NextStep): string {
-  const urgent = ["setup", "resync", "drift-resync", "commit-draft", "place-basket", "gates-open"].includes(step.id);
+  const urgent = ["setup", "resync", "drift-resync", "commit-draft", "place-basket", "planned-orders", "gates-open"].includes(step.id);
   const tone = step.id === "all-clear" ? "ok" : urgent ? "warn" : "info";
   const go = step.id === "all-clear" ? "" :
     `<button class="primary" type="button" data-goto="${esc(step.view)}"` +
@@ -230,6 +235,7 @@ export function stagedBasketCard(b: StagedBasketSum): string {
     `${b.sells} share sell${b.sells === 1 ? "" : "s"}` +
     `${conditional ? ` · conditional: ${conditional}` : ""} · ` +
     `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "queued direct-share size")} direct-share value — queued, not yet placed.`,
+    goBtn("orders", "Order pipeline →") +
     goBtn("target-state", "Review projected portfolio →", "primary"));
 }
 
@@ -344,7 +350,9 @@ export function attentionItems(v: Overview): AttentionItem[] {
   if (v.draft.pending) rows.push({ id: "commit-draft", tone: "warn", title: "Target-model changes need a decision",
     detail: `${v.draft.pending} target change${v.draft.pending === 1 ? "" : "s"} remain unapplied.`, view: "working-draft", action: "Review" });
   if (v.staged_basket.count) rows.push({ id: "place-basket", tone: "warn", title: "Orders are queued",
-    detail: `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} need a projected-portfolio review.`, view: "target-state", action: "Review impact" });
+    detail: `${v.staged_basket.count} order${v.staged_basket.count === 1 ? "" : "s"} need a projected-portfolio review.`, view: "orders", action: "Open pipeline" });
+  if (v.execution_plan?.planned) rows.push({ id: "planned-orders", tone: "warn", title: "Trades remain planned",
+    detail: `${v.execution_plan.planned} selected or deferred trade${v.execution_plan.planned === 1 ? "" : "s"} have not reached the order queue.`, view: "orders", action: "Open pipeline" });
   if (v.plan?.gates_open) rows.push({ id: "gates-open", tone: "warn", title: "Price levels have triggered",
     detail: `${v.plan.gates_open} locked level${v.plan.gates_open === 1 ? " is" : "s are"} actionable.`, view: "rebalance", action: "Review" });
   if (v.plan?.actionable) rows.push({ id: "rebalance", tone: "warn", title: "The portfolio is outside plan",
@@ -372,20 +380,24 @@ function attentionHtml(v: Overview): string {
     `</section>`;
 }
 
-function pulseHtml(v: Overview): string {
+export function pulseHtml(v: Overview): string {
   const plan = v.plan;
   const cash = plan?.cash;
-  const inFlight = v.draft.pending + v.staged_basket.count;
-  const stat = (label: string, value: string, note: string, tone = "") =>
-    `<div class="today-pulse-stat${tone ? ` today-pulse-${tone}` : ""}">` +
-      `<span class="today-pulse-label">${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`;
+  const planned = v.execution_plan?.planned || 0;
+  const inFlight = planned + v.staged_basket.count;
+  const stat = (label: string, value: string, note: string, tone = "", view = "", id = "") => {
+    const tag = view ? "button" : "div";
+    return `<${tag}${id ? ` id="${esc(id)}"` : ""}${view ? ` type="button" data-goto="${esc(view)}"` : ""} ` +
+      `class="today-pulse-stat${view ? " today-pulse-link" : ""}${tone ? ` today-pulse-${tone}` : ""}">` +
+      `<span class="today-pulse-label">${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></${tag}>`;
+  };
   return `<section class="today-section today-pulse">` +
     `<div class="today-section-head"><h3>Portfolio pulse</h3>${goBtn("holdings", "Positions →")}</div>` +
     `<div class="today-pulse-grid">` +
       stat("Holdings", `${v.snapshot.positions} positions`, v.snapshot.exists ? `synced ${agoText(v.snapshot.age_days)}` : "snapshot missing", !v.snapshot.exists || v.snapshot.stale ? "warn" : "") +
       stat("Plan", plan ? `${plan.actionable} actions` : "not configured", plan && !plan.actionable ? "all targeted names in band" : `${plan?.out_of_band || 0} outside band`, plan?.actionable ? "warn" : "") +
       stat("Cash", cash ? `${cash.pct_of_nav.toFixed(1)}%` : "n/a", cash ? `${cash.low}–${cash.high}% band` : "no cash target", cash && cash.status !== "IN" ? "warn" : "") +
-      stat("In flight", `${inFlight}`, inFlight ? `${v.draft.pending} plan · ${v.staged_basket.count} trades` : "no draft or staged trades", inFlight ? "warn" : "") +
+      stat("In flight", `${inFlight}`, inFlight ? `${planned} planned · ${v.staged_basket.count} queued` : "no planned or queued trades", inFlight ? "warn" : "", "orders", "today-orders-inflight") +
     `</div></section>`;
 }
 
@@ -461,6 +473,12 @@ async function loadOverview(): Promise<void> {
         : "Today";
     }
     body.innerHTML = overviewHtml(v, activity.events || [], previousVisit);
+    document.dispatchEvent(new CustomEvent("orders-local-summary", {
+      detail: {
+        planned: v.execution_plan?.planned || 0,
+        queued: v.staged_basket.count || 0,
+      },
+    }));
     localStorage.setItem("assay.home.lastVisit", stamp);
   } catch (e) {
     if (status) { status.textContent = "Could not load the overview: " + (e as Error).message; status.classList.add("err"); }

@@ -17,11 +17,10 @@ from serve without a cycle. A missing/corrupt file reads as an empty basket.
 
 from __future__ import annotations
 
-import datetime as dt
-
 import portfolio
 from config import DATA_DIR, HOLDINGS_JSON, TARGET_MODEL_JSON
 from store import load as _load, safe_symbol as _safe_symbol, write_json as _write_json
+from timeutil import now_iso
 
 BASKET_JSON = DATA_DIR / "basket.json"
 
@@ -34,10 +33,6 @@ _SOURCES = {"manual", "deepdive", "rebalance", "strategy", "analyses", "suggesti
 # optimizer is told to include curious picks). Legacy items with no tier read as
 # "want" — a star always meant active interest before this split.
 _TIERS = {"want", "curious"}
-
-
-def _now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def _norm_source(source: str | None) -> str:
@@ -58,7 +53,7 @@ def load_basket() -> dict:
 
 
 def _save(items: list[dict]) -> None:
-    _write_json(BASKET_JSON, {"items": items, "updated_at": _now_iso()})
+    _write_json(BASKET_JSON, {"items": items, "updated_at": now_iso()})
 
 
 def _find(items: list[dict], symbol: str) -> dict | None:
@@ -198,7 +193,7 @@ def add_symbol(symbol: str, *, source: str = "manual", note: str = "",
         "source": _norm_source(source),
         "note": str(note or "").strip(),
         "tier": _norm_tier(tier),
-        "added_at": _now_iso(),
+        "added_at": now_iso(),
     }
     if segment:
         item["segment"] = str(segment)

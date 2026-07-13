@@ -7,73 +7,16 @@ vi.mock("../src/core", async (importOriginal) => ({
 
 import { api, state } from "../src/core";
 import { executionRouteChoices, renderWhatif } from "../src/rebalance";
-import type {
-  RebalanceRouteResponse, RebalanceRouteSelection, WhatifTrade,
-  Whatif,
-} from "../src/api-types";
+import type { RebalanceRouteSelection, WhatifTrade, Whatif } from "../src/api-types";
+import { rebalanceRoute } from "./fixtures/rebalance-route";
 
 const apiMock = vi.mocked(api);
-
-function route(direction: "increase" | "reduce", stageable = true): RebalanceRouteResponse {
-  const put = direction === "increase";
-  return {
-    symbol: "NVDA",
-    delta_czk: put ? 230_000 : -230_000,
-    direction,
-    planned_shares: 100,
-    underlying: 100,
-    currency: "USD",
-    fx_to_base: 23,
-    source: stageable ? "ibkr" : "yahoo",
-    direct: {
-      kind: put ? "buy_shares" : "sell_shares",
-      label: put ? "Buy shares" : "Sell shares",
-      eligible: true,
-      reasons: [],
-    },
-    option: {
-      kind: put ? "cash_secured_put" : "covered_call",
-      label: put ? "Sell cash-secured put" : "Sell covered call",
-      eligible: true,
-      stageable,
-      reasons: stageable ? [] : ["Indicative yahoo levels; exact IBKR contract required."],
-      contracts: 1,
-      assignment_shares: 100,
-      share_deviation: 0,
-      rounded_up: false,
-      available_cash_czk: put ? 1_000_000 : null,
-    },
-    recommended: put ? "buy_shares" : "sell_shares",
-    ladder: [{
-      conid: stageable ? 556 : null,
-      strike: put ? 93 : 105,
-      expiry: "2026-08-07",
-      dte: 37,
-      premium: 2,
-      premium_czk: 4_600,
-      effective_entry: put ? 91 : undefined,
-      effective_exit: put ? undefined : 107,
-      cash_secured_czk: put ? 213_900 : undefined,
-      moneyness_pct: put ? -7 : 5,
-      premium_yield_annual_pct: 21.2,
-      assignment_prob_pct: 25,
-      open_interest: 500,
-      volume: 50,
-      spread_pct: 10,
-      liquidity: "ok",
-      source: stageable ? "ibkr" : "yahoo",
-      estimate: false,
-      stageable,
-      executable: stageable,
-    }],
-  };
-}
 
 describe("rebalance execution route choices", () => {
   beforeEach(() => apiMock.mockReset());
 
   it("defaults both directions to stock and selects an exact CSP rung lazily", async () => {
-    apiMock.mockResolvedValue(route("increase"));
+    apiMock.mockResolvedValue(rebalanceRoute("increase"));
     const trades: WhatifTrade[] = [
       { symbol: "NVDA", delta_czk: 230_000 },
       { symbol: "AMD", delta_czk: -100_000 },
@@ -112,7 +55,7 @@ describe("rebalance execution route choices", () => {
   });
 
   it("shows fallback rungs but does not allow staging them", async () => {
-    apiMock.mockResolvedValue(route("reduce", false));
+    apiMock.mockResolvedValue(rebalanceRoute("reduce", false));
     const selected = new Map<string, RebalanceRouteSelection>();
     const host = executionRouteChoices(
       [{ symbol: "NVDA", delta_czk: -230_000 }],

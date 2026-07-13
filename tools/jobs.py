@@ -22,12 +22,13 @@ do NOT take a slot -- they are independent subprocesses and run alongside.
 
 from __future__ import annotations
 
-import datetime as dt
 import os
 import threading
 import uuid
 from enum import StrEnum
 from typing import Any, Callable, NotRequired, TypedDict, cast
+
+from timeutil import now_iso
 
 
 class JobState(StrEnum):
@@ -90,17 +91,13 @@ _LOCK = threading.Lock()
 _ACTIVE = {"held": 0, "max": _env_max_slots()}
 
 
-def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-
-
 def new_job(kind: str, **fields: Any) -> Job:
     job = cast(Job, {
         "id": uuid.uuid4().hex[:8],
         "kind": kind,
         "state": JobState.QUEUED,
         "message": "",
-        "created_at": _now(),
+        "created_at": now_iso(),
         **fields,
     })
     with _LOCK:
@@ -117,7 +114,7 @@ def update_job(job_id: str, **fields: Any) -> None:
             return
         was_terminal = job.get("state") in _TERMINAL_STATES
         job.update(cast(Job, fields))
-        job["updated_at"] = _now()
+        job["updated_at"] = now_iso()
         # Log the finish to the durable Activity feed once: only on the first
         # transition into a terminal state (later touches at the same state, or
         # a job created already terminal, are ignored).
@@ -196,7 +193,7 @@ def cancel_job(job_id: str) -> bool:
             return False
         job["cancelled"] = True
         job["message"] = "cancelling…"
-        job["updated_at"] = _now()
+        job["updated_at"] = now_iso()
         return True
 
 

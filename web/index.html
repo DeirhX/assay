@@ -13,7 +13,7 @@
       <button class="group" data-group="today" type="button" role="tab">Today</button>
       <button class="group" data-group="strategy" type="button" role="tab">Plan</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
-      <button class="group" data-group="rebalance" type="button" role="tab">Rebalance</button>
+      <button class="group" data-group="rebalance" type="button" role="tab">Orders <span class="group-badge" id="orders-count" hidden></span></button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
     </div>
     <div class="topsearch">
@@ -405,6 +405,22 @@
       </div>
       <div class="status" id="today-status"></div>
       <div id="today-body"></div>
+    </section>
+
+    <!-- ORDERS (stable index for intent → local queue → live broker state) -->
+    <section class="view" id="view-orders">
+      <div class="page-head page-head--spaced reb-head">
+        <div class="page-head-text reb-head-text">
+          <h2>Order pipeline</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">This is the index for everything that may change the portfolio: deliberately planned trades, exact orders queued locally, and working orders accepted by IBKR. The three stores remain separate so a local “submitted” record is never mistaken for a broker fill. Use the execution bar above to build, review, preview, and place.</p></details>
+        </div>
+        <div class="page-head-actions reb-head-actions">
+          <button class="ghost" id="orders-refresh" type="button">Refresh pipeline</button>
+          <button class="primary" type="button" data-orders-view="rebalance">Build orders →</button>
+        </div>
+      </div>
+      <div class="status" id="orders-status"></div>
+      <div id="orders-body"></div>
     </section>
 
     <section class="view" id="view-rebalance">

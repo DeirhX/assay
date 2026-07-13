@@ -36,15 +36,16 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import execution_quotes  # noqa: E402
 import ibkr_trade  # noqa: E402
 import market_data  # noqa: E402  -- shared fan-out width
 import option_market  # noqa: E402
+import options_math  # noqa: E402
 import portfolio  # noqa: E402
 import price_levels  # noqa: E402
 import rebalance  # noqa: E402
 import risk  # noqa: E402
 import tax_lots  # noqa: E402
-import timeutil  # noqa: E402  -- shared Z-tolerant ISO parse + cache-freshness
 
 # --------------------------------------------------------------------------- #
 # Config knobs (defaults; the API/UI can override per request).
@@ -67,10 +68,13 @@ EXECUTION_QUOTE_MAX_AGE_SECONDS = ibkr_trade.OPTION_QUOTE_MAX_AGE_SECONDS
 
 
 def _quote_age_seconds(raw: Any, *, now: dt.datetime | None = None) -> float | None:
-    current = now
-    if current is not None and current.tzinfo is None:
-        current = current.replace(tzinfo=dt.timezone.utc)
-    return timeutil.age_seconds(raw, now=current)
+    if now is None:
+        return None
+    return execution_quotes.quote_age_seconds(
+        raw,
+        now=now,
+        assume_naive_utc=True,
+    )
 
 
 def _covered_call_exit_contracts(exit_shares: Any, current_shares: Any) -> int:
@@ -79,22 +83,13 @@ def _covered_call_exit_contracts(exit_shares: Any, current_shares: Any) -> int:
     A call may cover slightly more shares than the exact plan when the deviation
     is at most 15%. It may never cover more shares than are currently held.
     """
-    try:
-        planned = max(0, int(float(exit_shares or 0)))
-        held = max(0, int(float(current_shares or 0)))
-    except (TypeError, ValueError):
-        return 0
-    contracts = planned // OPTION_MULTIPLIER
-    rounded_contracts = contracts + 1
-    rounded_shares = rounded_contracts * OPTION_MULTIPLIER
-    if (
-        planned > 0
-        and rounded_shares <= held
-        and (rounded_shares - planned) / planned
-        <= COVERED_CALL_ROUND_UP_MAX_DEVIATION_PCT + EPS
-    ):
-        contracts = rounded_contracts
-    return min(contracts, held // OPTION_MULTIPLIER)
+    return options_math.whole_contracts_for_shares(
+        exit_shares,
+        multiplier=OPTION_MULTIPLIER,
+        round_up_max_deviation_pct=COVERED_CALL_ROUND_UP_MAX_DEVIATION_PCT,
+        max_held_shares=current_shares,
+        eps=EPS,
+    )
 
 
 def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) -> dict[str, Any]:
@@ -116,30 +111,20 @@ def _execution_routes(entry: dict[str, Any], *, now: dt.datetime | None = None) 
     executable: list[dict] = []
     stageable_contracts: list[dict] = []
     for rung in ladder:
-        age = _quote_age_seconds(rung.get("quote_timestamp"), now=now)
-        rung["quote_age_seconds"] = round(age, 1) if age is not None else None
-        rung["quote_fresh"] = age is not None and age <= EXECUTION_QUOTE_MAX_AGE_SECONDS
-        bid, ask = rung.get("bid"), rung.get("ask")
+        execution_quotes.decorate_ladder_rung(
+            rung,
+            now=now,
+            max_age_seconds=EXECUTION_QUOTE_MAX_AGE_SECONDS,
+            two_sided_mode="truthy",
+            assume_naive_utc=True,
+            staging_warning=execution_quotes.exit_staging_warning,
+            eps=EPS,
+        )
         contract_stageable = bool(rung.get("stageable") and rung.get("conid"))
         if contract_stageable:
             stageable_contracts.append(rung)
-        if rung.get("executable") and rung["quote_fresh"] and bid and ask:
-            # Display estimate only. stage_covered_call obtains the exact tick and
-            # recomputes this from a fresh quote.
-            rung["limit_price"] = math.floor((((float(bid) + float(ask)) / 2.0) + EPS) * 100) / 100
+        if rung.get("executable") and rung.get("quote_fresh") and rung.get("limit_price") is not None:
             executable.append(rung)
-        else:
-            rung["limit_price"] = None
-            if contract_stageable and (bid is None or ask is None):
-                rung["staging_warning"] = (
-                    "No live bid/ask right now. Staging is allowed, but preview and placement "
-                    "remain blocked until IBKR returns a fresh two-sided quote."
-                )
-            elif contract_stageable and not rung["quote_fresh"]:
-                rung["staging_warning"] = (
-                    "The displayed quote is stale. Staging will refresh it from IBKR "
-                    "before calculating a limit price."
-                )
 
     reasons: list[str] = []
     if capacity_contracts < 1:

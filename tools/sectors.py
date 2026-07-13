@@ -29,14 +29,11 @@ from typing import Callable, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import store  # noqa: E402  -- shared forgiving/atomic JSON IO
+from timeutil import now_iso  # noqa: E402
 
 # How long to trust a prior "couldn't resolve this" before trying the network
 # again -- tickers get listed/relisted, and Yahoo's handshake is moody.
 UNRESOLVED_TTL_DAYS = 14
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def normalize(symbol: str) -> str:
@@ -61,7 +58,7 @@ def load_cache(path: Path) -> dict:
 
 
 def save_cache(path: Path, cache: dict) -> None:
-    cache["updated_at"] = _now_iso()
+    cache["updated_at"] = now_iso()
     store.write_json(Path(path), cache)
 
 
@@ -82,7 +79,7 @@ def seed_from_research(cache: dict, research_dir: Path) -> int:
         cur = cmap.get(key)
         if cur and cur.get("source") == "research" and cur.get("sector") == sector:
             continue  # already seeded identically -> no churn
-        cmap[key] = {"sector": sector, "source": "research", "ts": _now_iso()}
+        cmap[key] = {"sector": sector, "source": "research", "ts": now_iso()}
         seeded += 1
     return seeded
 
@@ -163,10 +160,10 @@ def backfill(
         except Exception:  # noqa: BLE001 -- a flaky feed shouldn't abort the batch
             sector = ""
         if sector:
-            cmap[key] = {"sector": sector, "source": "yahoo", "ts": _now_iso()}
+            cmap[key] = {"sector": sector, "source": "yahoo", "ts": now_iso()}
             resolved += 1
         else:
-            cmap[key] = {"sector": "", "source": "unresolved", "ts": _now_iso()}
+            cmap[key] = {"sector": "", "source": "unresolved", "ts": now_iso()}
             unresolved += 1
     return {
         "considered": considered,

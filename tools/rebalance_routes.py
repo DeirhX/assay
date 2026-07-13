@@ -5,15 +5,16 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import math
 from typing import Any
 
+import execution_quotes
 import kid_block
 import ibkr_trade
 import option_market
+import options_math
 import options_overlay
 import portfolio
-import timeutil
+from value_coercion import coerce_optional_limit_price
 
 OPTION_MULTIPLIER = 100
 ROUND_UP_MAX_DEVIATION_PCT = 0.15
@@ -23,21 +24,12 @@ _UNSET = object()
 
 def contracts_for_shares(planned_shares: Any, *, capacity: int | None = None) -> int:
     """Whole contracts near the intended shares, with Exit's bounded round-up."""
-    try:
-        planned = max(0, int(float(planned_shares or 0)))
-    except (TypeError, ValueError):
-        return 0
-    contracts = planned // OPTION_MULTIPLIER
-    rounded = contracts + 1
-    assigned = rounded * OPTION_MULTIPLIER
-    if (
-        planned > 0
-        and (assigned - planned) / planned <= ROUND_UP_MAX_DEVIATION_PCT + 1e-9
-    ):
-        contracts = rounded
-    if capacity is not None:
-        contracts = min(contracts, max(0, int(capacity)))
-    return max(0, contracts)
+    return options_math.whole_contracts_for_shares(
+        planned_shares,
+        multiplier=OPTION_MULTIPLIER,
+        round_up_max_deviation_pct=ROUND_UP_MAX_DEVIATION_PCT,
+        capacity_contracts=capacity,
+    )
 
 
 def _position(holdings: dict[str, Any], symbol: str) -> dict[str, Any] | None:
@@ -80,25 +72,12 @@ def _fx_for_currency(
 
 
 def _decorate_execution(rungs: list[dict[str, Any]], *, now: dt.datetime) -> None:
-    for rung in rungs:
-        age = timeutil.age_seconds(rung.get("quote_timestamp"), now=now)
-        rung["quote_age_seconds"] = round(age, 1) if age is not None else None
-        rung["quote_fresh"] = age is not None and age <= QUOTE_MAX_AGE_SECONDS
-        rung["limit_price"] = None
-        if (
-            rung.get("executable")
-            and rung["quote_fresh"]
-            and isinstance(rung.get("bid"), (int, float))
-            and isinstance(rung.get("ask"), (int, float))
-        ):
-            rung["limit_price"] = math.floor(
-                ((float(rung["bid"]) + float(rung["ask"])) / 2.0 + 1e-9) * 100,
-            ) / 100
-        elif rung.get("stageable"):
-            rung["staging_warning"] = (
-                "The exact IBKR contract can be staged, but preview requires a "
-                "fresh two-sided quote."
-            )
+    execution_quotes.decorate_ladder_rungs(
+        rungs,
+        now=now,
+        max_age_seconds=QUOTE_MAX_AGE_SECONDS,
+        staging_warning=execution_quotes.rebalance_staging_warning,
+    )
 
 
 def build_route(
@@ -414,13 +393,11 @@ def stage_routes(
         provenance_ids: list[str | None] = list(execution_item_ids)
         if not provenance_ids:
             provenance_ids.append(None)
-        limit_raw = choice.get("limit_price")
-        try:
-            limit_price = float(limit_raw) if limit_raw is not None else None
-        except (TypeError, ValueError):
-            raise ValueError(f"{sym}: limit_price must be numeric") from None
-        if limit_price is not None and limit_price <= 0:
-            raise ValueError(f"{sym}: limit_price must be positive")
+        limit_price = coerce_optional_limit_price(
+            choice.get("limit_price"),
+            numeric_error=f"{sym}: limit_price must be numeric",
+            positive_error=f"{sym}: limit_price must be positive",
+        )
         default_route = "buy_shares" if delta > 0 else "sell_shares"
         route_kind = str(choice.get("route") or default_route)
         option_kind = "cash_secured_put" if delta > 0 else "covered_call"

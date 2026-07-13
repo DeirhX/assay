@@ -1,6 +1,7 @@
 import datetime as dt
 import sys
 import tempfile
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import TestCase, mock
 
@@ -10,6 +11,41 @@ import rebalance_routes  # noqa: E402
 import trade_service  # noqa: E402
 
 NOW = dt.datetime(2026, 7, 1, 12, tzinfo=dt.timezone.utc)
+
+_EXACT_PUT = {
+    "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
+    "right": "P", "bid": 1.8, "ask": 2.0, "limit_price": 1.9,
+    "quote_timestamp": NOW.isoformat(),
+}
+
+
+@contextmanager
+def _stage_put_patches(
+    route,
+    *,
+    available_cash_czk: float,
+    margin_enabled: bool,
+):
+    with ExitStack() as stack:
+        tmp = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(mock.patch.object(
+            trade_service, "STAGED_BASKET_JSON", Path(tmp) / "basket.json",
+        ))
+        stack.enter_context(mock.patch.object(
+            rebalance_routes, "build_route", return_value=route,
+        ))
+        stack.enter_context(mock.patch(
+            "ibkr_trade.resolve_executable_put", return_value=_EXACT_PUT,
+        ))
+        stack.enter_context(mock.patch("ibkr_trade.live_orders", return_value=[]))
+        stack.enter_context(mock.patch.object(
+            trade_service, "cash_secured_put_capacity",
+            return_value={"available_cash_czk": available_cash_czk},
+        ))
+        stack.enter_context(mock.patch.object(
+            trade_service, "margin_account_enabled", return_value=margin_enabled,
+        ))
+        yield
 
 
 def _holdings(cash=1_000_000):
@@ -245,21 +281,7 @@ def test_stage_put_replaces_stock_leg_and_records_conditional_provenance(_basket
     route = rebalance_routes.build_route(
         _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
     )
-    exact = {
-        "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
-        "right": "P", "bid": 1.8, "ask": 2.0, "limit_price": 1.9,
-        "quote_timestamp": NOW.isoformat(),
-    }
-    with tempfile.TemporaryDirectory() as tmp, \
-            mock.patch.object(trade_service, "STAGED_BASKET_JSON", Path(tmp) / "basket.json"), \
-            mock.patch.object(rebalance_routes, "build_route", return_value=route), \
-            mock.patch("ibkr_trade.resolve_executable_put", return_value=exact), \
-            mock.patch("ibkr_trade.live_orders", return_value=[]), \
-            mock.patch.object(
-                trade_service, "cash_secured_put_capacity",
-                return_value={"available_cash_czk": 1_000_000},
-            ), \
-            mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
+    with _stage_put_patches(route, available_cash_czk=1_000_000, margin_enabled=False):
         out = rebalance_routes.stage_routes(
             _holdings(),
             [{"symbol": "NVDA", "delta_czk": 230_000}],
@@ -282,21 +304,7 @@ def test_stage_rejects_aggregate_put_collateral_above_cash(_basket):
     route = rebalance_routes.build_route(
         _holdings(), "NVDA", 230_000, chain=_chain(), now=NOW,
     )
-    exact = {
-        "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
-        "right": "P", "bid": 1.8, "ask": 2.0, "limit_price": 1.9,
-        "quote_timestamp": NOW.isoformat(),
-    }
-    with tempfile.TemporaryDirectory() as tmp, \
-            mock.patch.object(trade_service, "STAGED_BASKET_JSON", Path(tmp) / "basket.json"), \
-            mock.patch.object(rebalance_routes, "build_route", return_value=route), \
-            mock.patch("ibkr_trade.resolve_executable_put", return_value=exact), \
-            mock.patch("ibkr_trade.live_orders", return_value=[]), \
-            mock.patch.object(
-                trade_service, "cash_secured_put_capacity",
-                return_value={"available_cash_czk": 100_000},
-            ), \
-            mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
+    with _stage_put_patches(route, available_cash_czk=100_000, margin_enabled=False):
         try:
             rebalance_routes.stage_routes(
                 _holdings(),
@@ -319,21 +327,7 @@ def test_stage_margin_put_does_not_require_assignment_cash(_basket):
     )
     route["option"]["collateral_mode"] = "margin"
     route["option"]["label"] = "Sell put (margin)"
-    exact = {
-        "conid": 556, "expiry": "2026-08-07", "strike": 93.0,
-        "right": "P", "bid": 1.8, "ask": 2.0, "limit_price": 1.9,
-        "quote_timestamp": NOW.isoformat(),
-    }
-    with tempfile.TemporaryDirectory() as tmp, \
-            mock.patch.object(trade_service, "STAGED_BASKET_JSON", Path(tmp) / "basket.json"), \
-            mock.patch.object(rebalance_routes, "build_route", return_value=route), \
-            mock.patch("ibkr_trade.resolve_executable_put", return_value=exact), \
-            mock.patch("ibkr_trade.live_orders", return_value=[]), \
-            mock.patch.object(
-                trade_service, "cash_secured_put_capacity",
-                return_value={"available_cash_czk": 0},
-            ), \
-            mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+    with _stage_put_patches(route, available_cash_czk=0, margin_enabled=True):
         out = rebalance_routes.stage_routes(
             _holdings(),
             [{"symbol": "NVDA", "delta_czk": 230_000}],
