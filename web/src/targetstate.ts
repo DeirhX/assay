@@ -8,13 +8,16 @@
 // placed). The durable execution plan is shown separately as desired intent;
 // unqueued suggestions never masquerade as an executable projection.
 // Approving records only the exact queue revision shown; this view never trades.
-import { $, api, el, esc, fmtCZK, sensitive, statTile } from "./core";
+import { $, api, el, esc, fmtCZK, loadError, sensitive, setLoading, statTile } from "./core";
+import { executionPlanHtml } from "./execution-plan-ui";
+import { applyStagedBasketFromQueue, publishQueueChanged } from "./execution-queue";
 import type {
-  ExecutionPlanItem, ExecutionPlanState, PlanRow, RebalancePlan,
+  PlanRow, RebalancePlan,
   StockSellViolation, TradeQueueState, Whatif, WhatifTrade,
 } from "./api-types";
-import { axisMax, onAxis, r1 } from "./weight-axis";
-import { pushNav, setActiveView } from "./shell";
+import { axisMax } from "./weight-axis";
+import { positionTrackHtml } from "./band-viz";
+import { gotoWorkflowView } from "./workflow-nav";
 
 // ---- pure builders (exported for tests) -------------------------------------
 // The plan's suggested amounts as a tradeable basket: interactive buy/trim rows
@@ -92,15 +95,7 @@ export function scaleMaxOf(rows: CompareRow[]): number {
 // One comparison row: name + rule, the shared band track with a ghost "now"
 // tick and a solid "after" tick, and the numeric now → after with status chips.
 export function compareRowHtml(r: CompareRow, scaleMax: number): string {
-  const toP = (v: number) => onAxis(v, scaleMax);
-  const zL = toP(r.low);
-  const zW = Math.max(1.5, toP(r.high) - zL);
-  const curP = toP(r.cur);
-  const projP = toP(r.proj);
   const inAfter = r.statusAfter === "IN";
-  const conn = r.changed
-    ? `<span class="reb-conn ${r.proj > r.cur ? "buy" : "sell"}" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>`
-    : "";
   const afterChip = `<span class="chip ${statusCls(r.statusAfter)}">${esc(r.statusAfter)}</span>`;
   const arrow = r.changed
     ? `<span class="chip ${statusCls(r.statusBefore)} tstate-before">${esc(r.statusBefore)}</span><span class="tstate-arrow">→</span>${afterChip}`
@@ -115,18 +110,28 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
           : ""
   );
   const kind = r.kind === "sleeve" ? "sleeve total" : "target";
+  const track = positionTrackHtml({
+    scaleMax,
+    band: { low: r.low, high: r.high },
+    current: r.cur,
+    projected: r.proj,
+    ariaLabel: `${r.name}: now ${r.cur.toFixed(1)}%, after ${r.proj.toFixed(1)}%, band ${r.low}–${r.high}%`,
+    opts: {
+      showProjected: r.changed,
+      showConn: r.changed,
+      connTone: "auto",
+      inBand: inAfter,
+      currentTitle: `now ${r.cur.toFixed(2)}%`,
+      projectedTitle: `after ${r.proj.toFixed(2)}%`,
+    },
+  }).html;
   return `<div class="tstate-row${r.changed ? " tstate-changed" : ""}${outcome}">` +
     `<div class="tstate-name">` +
       `<strong title="${esc(r.name)}">${esc(r.name)}</strong>` +
       `<span class="tstate-name-meta"><span class="tstate-kind">${kind}</span>` +
       `<span class="tstate-rule ${ruleCls(r.rule)}">${esc(r.rule)}</span></span>` +
     `</div>` +
-    `<div class="reb-track" role="img" aria-label="${esc(r.name)}: now ${r.cur.toFixed(1)}%, after ${r.proj.toFixed(1)}%, band ${r.low}–${r.high}%">` +
-      `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>` +
-      conn +
-      `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="now ${r.cur.toFixed(2)}%"></span>` +
-      (r.changed ? `<span class="reb-proj-mark ${inAfter ? "in" : "out"}" style="left:${r1(projP)}%" title="after ${r.proj.toFixed(2)}%"></span>` : "") +
-    `</div>` +
+    track +
     `<div class="tstate-nums"><span><small>now</small>${r.cur.toFixed(2)}%</span>` +
     (r.changed
       ? ` <span class="tstate-arrow">→</span> <strong><small>after</small>${r.proj.toFixed(2)}%</strong>`
@@ -143,50 +148,7 @@ export function compareRowHtml(r: CompareRow, scaleMax: number): string {
 const tile = (label: string, valueHtml: string, cls = ""): string =>
   statTile(label, valueHtml, { html: true, cls }).outerHTML;
 
-export function executionPlanHtml(state: ExecutionPlanState | null | undefined): string {
-  const allItems = state?.items || [];
-  const submitted = allItems.filter((item) => item.status === "submitted").length;
-  const items = allItems.filter(
-    (item) => !["dismissed", "superseded", "submitted"].includes(item.status),
-  );
-  if (!items.length) {
-    return `<section class="exec-review"><div class="exec-review-head"><div>` +
-      `<h3>Execution plan</h3><p>No active actions${submitted ? ` · ${submitted} submitted` : ""}.</p></div>` +
-      `<button class="ghost" data-ts-goto="rebalance" type="button">Build actions →</button></div></section>`;
-  }
-  const grouped = new Map<string, ExecutionPlanItem[]>();
-  items.forEach((item) => {
-    const rows = grouped.get(item.symbol) || [];
-    rows.push(item);
-    grouped.set(item.symbol, rows);
-  });
-  const selected = items.filter((item) => item.status === "selected").length;
-  const queued = items.filter((item) => item.status === "queued").length;
-  const deferred = items.filter((item) => item.status === "deferred").length;
-  const rows = [...grouped.entries()].map(([symbol, symbolItems]) => {
-    const delta = symbolItems.reduce((sum, item) => sum + Number(item.delta_czk || 0), 0);
-    const latest = symbolItems[symbolItems.length - 1];
-    const statuses = [...new Set(symbolItems.map((item) => item.status))];
-    const sources = [...new Set(symbolItems.map((item) => item.source))];
-    const routes = [...new Set(symbolItems.map((item) =>
-      item.route_selection?.route || item.route_policy).filter(Boolean))];
-    return `<tr><td><strong>${esc(symbol)}</strong><small>${esc(sources.join(" + "))}</small></td>` +
-      `<td>${latest.desired_weight_pct != null ? `${latest.desired_weight_pct.toFixed(2)}% target` : "custom action"}</td>` +
-      `<td class="num ${delta >= 0 ? "good" : "bad"}">${sensitive(`${delta >= 0 ? "+" : "−"}${fmtCZK(Math.abs(delta))} CZK`, "planned execution")}</td>` +
-      `<td>${esc(routes.map((route) => String(route).replace(/_/g, " ")).join(" + "))}</td>` +
-      `<td>${statuses.map((status) => `<span class="chip ${status === "queued" ? "good" : status === "deferred" ? "warn" : "muted"}">${esc(status)}</span>`).join(" ")}</td></tr>`;
-  }).join("");
-  return `<section class="exec-review"><div class="exec-review-head"><div>` +
-    `<h3>Execution plan</h3><p>Desired position changes consolidated across Rebalance, ticker dossiers, and Exit.</p></div>` +
-    `<div class="exec-review-actions">` +
-      `<span>${selected} selected · ${deferred} later · ${queued} queued${submitted ? ` · ${submitted} submitted` : ""}</span>` +
-      (selected
-        ? `<button class="primary" data-ts-queue-selected type="button">Add ${selected} selected to queue</button>`
-        : `<button class="ghost" data-ts-goto="rebalance" type="button">Select actions →</button>`) +
-    `</div></div><div class="table-wrap"><table class="whatif-table exec-review-table">` +
-    `<thead><tr><th>Position</th><th>Desired target</th><th class="num">Net action</th><th>Route</th><th>Lifecycle</th></tr></thead>` +
-    `<tbody>${rows}</tbody></table></div></section>`;
-}
+export { executionPlanHtml } from "./execution-plan-ui";
 
 function summaryTiles(plan: RebalancePlan, wf: Whatif | null, rows: CompareRow[]): string {
   const total = rows.length;
@@ -338,13 +300,13 @@ async function loadTargetState(): Promise<void> {
   const status = $("#tstate-status");
   const body = $("#tstate-body");
   if (!body) return;
-  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> projecting the book…`; }
+  if (status) setLoading(status, "projecting the book…", true);
   body.innerHTML = "";
   let plan: RebalancePlan;
   try {
     plan = await api<RebalancePlan>("/api/rebalance");
   } catch (e) {
-    if (status) { status.textContent = "Could not load the plan: " + (e as Error).message; status.classList.add("err"); }
+    loadError(status, "Could not load the plan", e);
     return;
   }
 
@@ -366,10 +328,7 @@ async function loadTargetState(): Promise<void> {
       source = "basket";
     }
   } catch (e) {
-    if (status) {
-      status.textContent = "Could not load the order queue: " + (e as Error).message;
-      status.classList.add("err");
-    }
+    loadError(status, "Could not load the order queue", e);
     return;
   }
 
@@ -378,7 +337,7 @@ async function loadTargetState(): Promise<void> {
     try {
       wf = await api<Whatif>("/api/whatif", "POST", { trades });
     } catch (e) {
-      if (status) { status.textContent = "Projection failed: " + (e as Error).message; status.classList.add("err"); }
+      loadError(status, "Projection failed", e);
       return;
     }
   }
@@ -400,7 +359,7 @@ function initTargetState(): void {
       queueSelected.textContent = "Resolving routes…";
       void api("/api/execution-plan", "POST", { action: "queue_selected" }, { timeoutMs: 120_000 })
         .then(() => {
-          window.dispatchEvent(new Event("assay:queue-changed"));
+          publishQueueChanged();
           return loadTargetState();
         })
         .catch((err) => {
@@ -420,7 +379,11 @@ function initTargetState(): void {
       remove.disabled = true;
       remove.textContent = "Removing…";
       void api<TradeQueueState>("/api/trade/basket", "POST", { remove_leg_id: legId })
-        .then(() => loadTargetState())
+        .then((saved) => {
+          applyStagedBasketFromQueue(saved);
+          publishQueueChanged();
+          return loadTargetState();
+        })
         .catch((err) => {
           remove.disabled = false;
           remove.textContent = "Remove blocked sell";
@@ -460,8 +423,7 @@ function initTargetState(): void {
     }
     const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ts-goto]");
     if (!b || !b.dataset.tsGoto) return;
-    pushNav({ view: b.dataset.tsGoto });
-    setActiveView(b.dataset.tsGoto);
+    gotoWorkflowView(b.dataset.tsGoto as "rebalance" | "exit" | "target-state" | "trade");
   });
   $("#tstate-refresh")?.addEventListener("click", () => loadTargetState());
 }

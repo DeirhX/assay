@@ -7,13 +7,14 @@
 // way — if a new figure or fragment needs to appear on the desk, derive it here
 // first so it stays testable.
 import { esc, sensitive } from "./core";
+import { positionTrackHtml } from "./band-viz";
 import type {
   CoveredCallTradeLeg,
   StockTradeLeg,
   TradeLeg,
   TradeLegProvenance,
 } from "./api-types";
-import { axisMax, onAxis, r1 } from "./weight-axis";
+import { axisMax, r1 } from "./weight-axis";
 
 // r1 now lives in the shared weight-axis module; re-export for the desk's own
 // call sites.
@@ -279,22 +280,23 @@ export function weightScaleMax(bands: OrderBand[]): number {
 export function weightBandTrackHtml(sym: string, b: OrderBand, scaleMax: number): string {
   const low = typeof b.low === "number" ? b.low : 0;
   const high = typeof b.high === "number" ? b.high : low;
-  const toP = (v: number) => onAxis(v, scaleMax);
   const before = typeof b.before_pct === "number" ? b.before_pct : null;
   const after = typeof b.after_pct === "number" ? b.after_pct : null;
   const inBand = String(b.status_after || "").toUpperCase() === "IN";
-  const zL = toP(low), zW = Math.max(1.5, toP(high) - zL);
-  const dir = before != null && after != null && after < before ? "sell" : "buy";
-  const conn = before != null && after != null
-    ? `<span class="reb-conn ${dir}" style="left:${r1(Math.min(toP(before), toP(after)))}%;width:${r1(Math.abs(toP(after) - toP(before)))}%"></span>`
-    : "";
-  const curMark = before != null
-    ? `<span class="reb-cur-mark" style="left:${r1(toP(before))}%" title="current ${before.toFixed(2)}%"></span>` : "";
-  const projMark = after != null
-    ? `<span class="reb-proj-mark ${inBand ? "in" : "out"}" style="left:${r1(toP(after))}%" title="after ${after.toFixed(2)}%"></span>` : "";
   const aria = `${sym}: ${before != null ? before.toFixed(1) + "%" : "?"} to ${after != null ? after.toFixed(1) + "%" : "?"} vs band ${low.toFixed(1)}–${high.toFixed(1)}%`;
-  return `<div class="reb-track" role="img" aria-label="${esc(aria)}">` +
-    `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%"></span>${conn}${curMark}${projMark}</div>`;
+  return positionTrackHtml({
+    scaleMax,
+    band: { low, high },
+    current: before,
+    projected: after,
+    ariaLabel: aria,
+    opts: {
+      connTone: "auto",
+      inBand,
+      currentTitle: before != null ? `current ${before.toFixed(2)}%` : undefined,
+      projectedTitle: after != null ? `after ${after.toFixed(2)}%` : undefined,
+    },
+  }).html;
 }
 
 // The caption under a band track: "8.2% → 6.9% · back inside 5–7%" (or a red

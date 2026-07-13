@@ -1,4 +1,5 @@
 import { $$, api, el, esc, fmtStamp, freshnessNote, sensitive } from "./core";
+import { metaStrip, analyticsSection } from "./display/chrome";
 import { pollDeepJob } from "./jobs";
 import { groupActivity, groupBySector, type ActivityRow, type Trade } from "./history/data";
 import { ccyTag, fmtMoney, fmtSigned } from "./history/format";
@@ -117,21 +118,19 @@ function renderHistory(h: HistoryPayload) {
   out.innerHTML = "";
   const s = h.summary || {};
 
-  const meta = el("div", "reb-meta");
-  meta.innerHTML =
-    `<span>account ${sensitive(esc(h.account || "n/a"), "account id")}</span>` +
-    `<span>${esc(h.from_date || "?")} → ${esc(h.to_date || "?")}</span>` +
-    `<span>${esc(s.n_trades ?? 0)} trades · ${esc(s.n_nav_points ?? 0)} NAV points</span>` +
-    `<span>${esc(s.windows ?? 0)} Flex window(s)</span>` +
-    (h.base_currency ? `<span>base ${esc(h.base_currency)}</span>` : "") +
-    `<span>pulled ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}</span>`;
-  out.appendChild(meta);
+  out.appendChild(metaStrip([
+    `account ${sensitive(esc(h.account || "n/a"), "account id")}`,
+    `${esc(h.from_date || "?")} → ${esc(h.to_date || "?")}`,
+    `${esc(s.n_trades ?? 0)} trades · ${esc(s.n_nav_points ?? 0)} NAV points`,
+    `${esc(s.windows ?? 0)} Flex window(s)`,
+    ...(h.base_currency ? [`base ${esc(h.base_currency)}`] : []),
+    `pulled ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}`,
+  ]));
 
   out.appendChild(statCards(h));
 
   const series = (h.nav_series || []).filter((p) => p && p.date && p.nav != null);
-  const chartSec = el("div", "risk-section");
-  chartSec.appendChild(el("h3", undefined, "Portfolio value & actions"));
+  const chartSec = analyticsSection("Portfolio value & actions");
   if (series.length >= 2) {
     chartSec.appendChild(el("p", "hint",
       "Net asset value over time. Each marker is a day you traded (bigger = more fills); " +

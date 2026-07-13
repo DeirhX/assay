@@ -8,7 +8,7 @@
 import { starHtml } from "./basket";
 import { $, api, esc, fmtCZK, relAge, sensitive } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
-import { pollDeepJob } from "./jobs";
+import { runHoldingsSync } from "./holdings-sync";
 import { pushNav, setActiveView } from "./shell";
 import { openTicker } from "./ticker-nav";
 import { loadCachedSegment } from "./segment";
@@ -469,25 +469,14 @@ async function loadOverview(): Promise<void> {
 
 async function resyncHoldings(btn: HTMLButtonElement): Promise<void> {
   const status = $("#today-status");
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Syncing…";
-  if (status) {
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
-  }
-  try {
-    const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
-    await pollDeepJob(job.id, status, async () => {
+  await runHoldingsSync({
+    btn,
+    status,
+    onDone: async () => {
       if (status) status.textContent = "Synced.";
       await loadOverview();
-    }, "IBKR sync");
-  } catch (e) {
-    if (status) { status.textContent = "Sync failed: " + (e as Error).message; status.classList.add("err"); }
-  } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
+    },
+  });
 }
 
 let _wired = false;

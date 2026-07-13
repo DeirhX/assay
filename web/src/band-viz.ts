@@ -131,3 +131,132 @@ export function bandBar(r: BandRow, scaleMax: number, opts?: { axis?: boolean })
     ${axis}
   </div>`;
 }
+
+// ---- current → projected position track ------------------------------------
+// The horizontal weight track shared by the rebalance planner (draggable),
+// target-state comparison (static), and trade-desk band preview (static). Same
+// .reb-* styling everywhere so a trim, a raise, and an in-band land read
+// identically across surfaces.
+
+/** Stable class names the draggable planner queries after paint. */
+export const POSITION_TRACK_SEL = {
+  track: "reb-track",
+  zone: "reb-zone",
+  conn: "reb-conn",
+  curMark: "reb-cur-mark",
+  projMark: "reb-proj-mark",
+  axis: "reb-axis",
+} as const;
+
+export type PositionTrackRole = "img" | "group";
+
+export interface PositionTrackBand {
+  low: number;
+  high: number;
+}
+
+export interface PositionTrackSpec {
+  scaleMax: number;
+  band: PositionTrackBand;
+  current: number | null;
+  projected: number | null;
+  ariaLabel: string;
+  opts?: {
+    /** `group` for draggable planner rows; `img` for read-only surfaces. */
+    role?: PositionTrackRole;
+    /** When false, omit the projected tick (target-state unchanged rows). */
+    showProjected?: boolean;
+    /** Colour the connector: auto infers buy/sell from current vs projected. */
+    connTone?: "none" | "auto" | "buy" | "sell";
+    /** When false, omit the current→projected connector (unchanged target-state rows). */
+    showConn?: boolean;
+    inBand?: boolean;
+    showAxis?: boolean;
+    currentTitle?: string;
+    projectedTitle?: string;
+  };
+}
+
+/** Axis max for a set of position tracks (band edges + current + projected). */
+export function positionTrackScaleMax(
+  values: Array<number | null | undefined>,
+): number {
+  return axisMax(values);
+}
+
+/** Band zone geometry on the shared axis. */
+export function bandZoneGeom(
+  band: PositionTrackBand,
+  scaleMax: number,
+): { left: number; width: number } {
+  const low = typeof band.low === "number" ? band.low : 0;
+  const high = typeof band.high === "number" ? band.high : low;
+  const zL = onAxis(low, scaleMax);
+  return { left: zL, width: Math.max(1.5, onAxis(high, scaleMax) - zL) };
+}
+
+/** Connector bar between current and projected ticks (0..100 axis percentages). */
+export const connectorGeom = (curP: number, projP: number) =>
+  ({ left: Math.min(curP, projP), width: Math.abs(projP - curP) });
+
+function connToneClass(
+  tone: "none" | "auto" | "buy" | "sell" | undefined,
+  cur: number | null,
+  proj: number | null,
+): string {
+  if (tone === "buy") return " buy";
+  if (tone === "sell") return " sell";
+  if (tone === "auto" && cur != null && proj != null) {
+    return proj > cur ? " buy" : proj < cur ? " sell" : "";
+  }
+  return "";
+}
+
+/**
+ * Build the position track markup. Returns the track HTML plus stable selectors
+ * for imperative updates (rebalance planner drag/recompute).
+ */
+export function positionTrackHtml(spec: PositionTrackSpec): {
+  html: string;
+  refs: typeof POSITION_TRACK_SEL;
+  geom: { curP: number | null; projP: number | null };
+} {
+  const o = spec.opts || {};
+  const role = o.role || "img";
+  const showProj = o.showProjected !== false && spec.projected != null;
+  const zone = bandZoneGeom(spec.band, spec.scaleMax);
+  const curP = spec.current != null ? onAxis(spec.current, spec.scaleMax) : null;
+  const projP = spec.projected != null ? onAxis(spec.projected, spec.scaleMax) : null;
+  const connCls = connToneClass(o.connTone ?? "none", spec.current, spec.projected);
+  const showConn = o.showConn ?? (curP != null && projP != null && showProj);
+  const connGeom = curP != null && projP != null ? connectorGeom(curP, projP) : null;
+  const conn = showConn && connGeom
+    ? `<span class="${POSITION_TRACK_SEL.conn}${connCls}" style="left:${r1(connGeom.left)}%;width:${r1(connGeom.width)}%"></span>`
+    : "";
+  const curTitle = o.currentTitle
+    ?? (spec.current != null ? `current ${spec.current.toFixed(2)}%` : "");
+  const curMark = curP != null
+    ? `<span class="${POSITION_TRACK_SEL.curMark}" style="left:${r1(curP)}%"` +
+      (curTitle ? ` title="${esc(curTitle)}"` : "") + `></span>`
+    : "";
+  const inBand = o.inBand !== false;
+  const projTitle = o.projectedTitle
+    ?? (spec.projected != null ? `projected ${spec.projected.toFixed(2)}%` : "");
+  const projMark = showProj && projP != null
+    ? `<span class="${POSITION_TRACK_SEL.projMark} ${inBand ? "in" : "out"}" style="left:${r1(projP)}%"` +
+      (projTitle ? ` title="${esc(projTitle)}"` : "") + `></span>`
+    : "";
+  const track =
+    `<div class="${POSITION_TRACK_SEL.track}" role="${role}" aria-label="${esc(spec.ariaLabel)}">` +
+    `<span class="${POSITION_TRACK_SEL.zone}" style="left:${r1(zone.left)}%;width:${r1(zone.width)}%"></span>` +
+    conn + curMark + projMark +
+    `</div>`;
+  const axis = o.showAxis
+    ? `<div class="${POSITION_TRACK_SEL.axis}"><span>0%</span><span>${spec.scaleMax}%</span></div>`
+    : "";
+  return {
+    html: track + axis,
+    refs: POSITION_TRACK_SEL,
+    geom: { curP, projP },
+  };
+}

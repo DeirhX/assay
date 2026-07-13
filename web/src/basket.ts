@@ -7,7 +7,7 @@
 //
 // Dependency-light (core only) and all DOM wiring is deferred to initBasket(),
 // called once from initShell — same import-cycle discipline as strategy/staging.
-import { $, api, esc, fmtWeight } from "./core";
+import { $, api, apiLoad, esc, fmtWeight } from "./core";
 import { tickerAnchorHtml } from "./analyses/linkify";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { pushNav, setActiveView } from "./shell";
@@ -204,15 +204,15 @@ async function draftPlan(btn: HTMLButtonElement): Promise<void> {
 }
 
 async function loadBasket(): Promise<void> {
-  const status = $("#basket-status");
-  if (status) { status.textContent = ""; status.classList.remove("err"); }
-  try {
-    const v = await api<BasketView>("/api/basket");
-    applyView(v);
-    render(v);
-  } catch (e) {
-    if (status) { status.textContent = "Could not load the basket: " + (e as Error).message; status.classList.add("err"); }
-  }
+  await apiLoad<BasketView>({
+    path: "/api/basket",
+    status: $("#basket-status"),
+    errorLabel: "Could not load the basket",
+    render: (v) => {
+      applyView(v);
+      render(v);
+    },
+  });
 }
 
 // Refresh just the symbol set + badge (no view render), e.g. on app boot so the
