@@ -1,15 +1,12 @@
 import { el, esc, fmtCZK } from "./core";
 import type {
-  RebalanceExecutionRoute, RebalanceRouteResponse,
+  RebalanceExecutionRoute, RebalanceOptionRung, RebalanceRouteResponse,
   RebalanceRouteSelection,
 } from "./api-types";
 import {
   buildRouteSelection, directRouteFor, fetchRebalanceRoute, optionRouteFor,
   pickStageableRung,
 } from "./execution-routes";
-import {
-  formatQuoteSourceLabel, liquidityChipClass, quoteFreshnessCaption, quoteSourceChipClass,
-} from "./option-quote";
 
 // ---- shared route loading with stale-response cancellation -------------------
 
@@ -40,101 +37,193 @@ export class OptionRouteLoader {
   }
 }
 
-// ---- full ladder variant (rebalance planner / what-if) -----------------------
+// ---- rebalance planner route control (cards + compact select) ----------------
+
+export interface OptionRouteControlConfig {
+  onSelection?: (selection: RebalanceRouteSelection) => void;
+  onExitNavigate?: (symbol: string) => void;
+}
 
 export interface OptionRouteControl {
   controls: HTMLElement;
+  compact: HTMLSelectElement;
   detail: HTMLElement;
   sync: (deltaCzk: number) => void;
-  autoSelectOption: () => Promise<boolean>;
-  disable: () => void;
+  selectDirect: (limitPrice?: number) => void;
+}
+
+function quoteStateLabel(rung: RebalanceOptionRung): string {
+  if (rung.quote_fresh) return "Fresh quote";
+  if (rung.stageable) return "Quote needed at preview";
+  return "Indicative only";
+}
+
+function liquidityChipTone(liquidity: string): string {
+  if (liquidity === "ok") return "good";
+  if (liquidity === "thin") return "warn";
+  return "muted";
 }
 
 export function createOptionRouteControl(
   symbol: string,
   initialDeltaCzk: number,
   selections: Map<string, RebalanceRouteSelection>,
-  onSelection?: (selection: RebalanceRouteSelection) => void,
+  config: OptionRouteControlConfig = {},
 ): OptionRouteControl {
+  const { onSelection, onExitNavigate } = config;
   const loader = new OptionRouteLoader();
   let deltaCzk = initialDeltaCzk;
-  const controls = el("div", "route-controls reb-route-controls reb-route-inline");
+  const controls = el("div", "reb-route-controls reb-route-inline");
+  const compact = document.createElement("select");
+  compact.className = "reb-route-select";
+  compact.title = "Execution route";
+  compact.setAttribute("aria-label", `${symbol} execution route`);
+  const directChoice = document.createElement("option");
+  directChoice.value = "direct";
+  const optionChoice = document.createElement("option");
+  optionChoice.value = "option";
+  const exitChoice = document.createElement("option");
+  exitChoice.value = "exit";
+  exitChoice.textContent = "Open exit plan…";
+  compact.append(directChoice, optionChoice, exitChoice);
   const direct = el("button", "ghost active");
   const option = el("button", "ghost");
   direct.type = "button";
   option.type = "button";
   controls.appendChild(direct);
   controls.appendChild(option);
+  const exit = el("button", "ghost", "Exit plan");
+  exit.type = "button";
+  exit.title = "Compare lot timing, scale-out tranches, and covered calls";
+  exit.addEventListener("click", () => onExitNavigate?.(symbol));
+  controls.appendChild(exit);
   const detail = el("div", "reb-route-detail reb-route-row-detail");
   detail.hidden = true;
+
+  const addDetailClose = () => {
+    if (detail.querySelector(".reb-route-detail-close")) return;
+    const close = el("button", "ghost reb-route-detail-close", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      detail.hidden = true;
+      detail.innerHTML = "";
+      paintCompactSelection();
+    });
+    detail.prepend(close);
+  };
 
   const resetToStock = () => {
     const route = directRouteFor(deltaCzk);
     selections.set(symbol, { symbol, route });
     direct.classList.add("active");
     option.classList.remove("active");
+    compact.value = "direct";
   };
   const paintLabels = () => {
     direct.textContent = "Shares";
-    option.textContent = deltaCzk >= 0 ? "Cash-secured put" : "Covered call";
+    option.textContent = deltaCzk >= 0 ? "Put option" : "Covered call";
+    directChoice.textContent = deltaCzk >= 0 ? "Buy shares" : "Sell shares";
+    optionChoice.textContent = deltaCzk >= 0 ? "Put option…" : "Covered call…";
+  };
+  const paintCompactSelection = () => {
+    const selected = selections.get(symbol);
+    compact.value = selected?.route === optionRouteFor(deltaCzk) ? "option" : "direct";
   };
 
-  direct.addEventListener("click", () => {
+  const selectDirect = (limitPrice?: number) => {
     resetToStock();
-    onSelection?.(selections.get(symbol)!);
+    const selection = selections.get(symbol)!;
+    if (limitPrice && limitPrice > 0) selection.limit_price = limitPrice;
+    onSelection?.(selection);
     detail.innerHTML = "";
     detail.hidden = true;
-  });
+  };
+  direct.addEventListener("click", () => selectDirect());
 
-  const renderLadder = (
+  const renderOptionCards = (
     route: RebalanceRouteResponse,
     autoSelect = false,
   ): HTMLButtonElement | null => {
     option.textContent = route.option.label;
     direct.disabled = !route.direct.eligible;
+    directChoice.disabled = !route.direct.eligible;
     if (!route.option.eligible) {
+      const rawLabel = route.option.label.replace(/^Sell\s+/i, "");
+      const unavailableLabel = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
       detail.innerHTML =
-        `<div class="ibkr-data-notice"><strong>${esc(route.option.label)} unavailable.</strong> ` +
-        `${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</div>`;
+        `<div class="reb-route-unavailable">` +
+          `<span class="reb-route-eyebrow">Option route unavailable</span>` +
+          `<strong>${esc(unavailableLabel)} unavailable</strong>` +
+          `<p>${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</p>` +
+        (route.direction === "increase" && route.option.collateral_mode !== "margin"
+          ? `<div class="reb-route-unavailable-next"><b>Next:</b> choose Buy shares, ` +
+            `or use IBKR directly for a margin-backed short put.</div>`
+          : "") +
+        `</div>`;
+      addDetailClose();
       return null;
     }
     const intro = el("div", "reb-route-option-summary");
+    const routeName = route.direction === "increase" ? "Put entry" : "Covered-call reduction";
     intro.innerHTML =
-      `<strong>Conditional ${route.direction === "increase" ? "entry" : "reduction"}</strong> · ` +
-      `${route.option.contracts} contract${route.option.contracts === 1 ? "" : "s"} / ` +
-      `${route.option.assignment_shares} shares if assigned` +
+      `<div class="reb-route-option-heading">` +
+        `<span class="reb-route-eyebrow">${routeName}</span>` +
+        `<strong>Conditional ${route.direction === "increase" ? "entry" : "reduction"}</strong>` +
+      `</div>` +
+      `<div class="reb-route-option-facts">` +
+        `<span><b>${route.option.contracts}</b> contract${route.option.contracts === 1 ? "" : "s"}</span>` +
+        `<span><b>${route.option.assignment_shares}</b> shares if assigned</span>` +
       (route.option.share_deviation
-        ? ` · ${route.option.share_deviation > 0 ? "+" : ""}${route.option.share_deviation} shares vs plan`
-        : "");
+        ? `<span class="${route.option.share_deviation > 0 ? "warn" : ""}">` +
+          `<b>${route.option.share_deviation > 0 ? "+" : ""}${route.option.share_deviation}</b> shares vs plan</span>`
+        : "") +
+      (route.option.collateral_mode === "margin"
+        ? `<span class="margin"><b>Margin</b> account</span>`
+        : "") +
+      `</div>`;
     detail.innerHTML = "";
     detail.appendChild(intro);
-    const table = el("div", "table-wrap");
-    table.innerHTML =
-      `<table class="whatif-table reb-route-ladder"><thead><tr>` +
-      `<th>Expiry / strike</th><th class="num">Bid / ask</th>` +
-      `<th class="num">Yield p.a.</th><th class="num">Effective</th>` +
-      `<th class="num">Assign.</th><th>Source / quote</th><th>Liquidity</th><th></th>` +
-      `</tr></thead><tbody></tbody></table>`;
-    const tbody = table.querySelector("tbody")!;
+    const contracts = el("div", "reb-option-contracts");
     let firstStageable: HTMLButtonElement | null = null;
     for (const rung of route.ladder) {
-      const tr = document.createElement("tr");
+      const card = el("article", "reb-option-contract");
       const effective = route.direction === "increase" ? rung.effective_entry : rung.effective_exit;
-      tr.innerHTML =
-        `<td>${esc(rung.expiry)} · ${rung.strike}${route.direction === "increase" ? "P" : "C"}</td>` +
-        `<td class="num">${rung.bid ?? "—"} / ${rung.ask ?? "—"}</td>` +
-        `<td class="num">${rung.premium_yield_annual_pct.toFixed(1)}%</td>` +
-        `<td class="num">${effective != null ? effective.toFixed(2) : "—"} ${esc(route.currency || "")}` +
-        (rung.cash_secured_czk
-          ? `<small class="muted">${fmtCZK(rung.cash_secured_czk)} CZK secured</small>`
-          : `<small class="muted">${route.option.assignment_shares} shares covered</small>`) +
-        `</td>` +
-        `<td class="num">${rung.assignment_prob_pct != null ? rung.assignment_prob_pct.toFixed(0) + "%" : "—"}</td>` +
-        `<td><span class="chip ${quoteSourceChipClass(rung.source)} tone-chip">${esc(formatQuoteSourceLabel(rung.source))}</span>` +
-        `<small class="muted">${quoteFreshnessCaption(rung)}</small></td>` +
-        `<td><span class="chip ${liquidityChipClass(rung.liquidity)} tone-chip">${esc(rung.liquidity)}</span></td>`;
-      const action = document.createElement("td");
-      const use = el("button", "ghost", rung.stageable ? "Use" : "Indicative");
+      const right = route.direction === "increase" ? "Put" : "Call";
+      const quoteState = quoteStateLabel(rung);
+      const top = el("div", "reb-option-contract-top");
+      top.innerHTML =
+        `<div class="reb-option-contract-name">` +
+          `<span>${esc(rung.expiry)}</span>` +
+          `<strong>${rung.strike} ${right}</strong>` +
+        `</div>` +
+        `<div class="reb-option-metric"><span>Bid / ask</span><strong>${rung.bid ?? "—"} / ${rung.ask ?? "—"}</strong></div>` +
+        `<div class="reb-option-metric"><span>Yield p.a.</span><strong>${rung.premium_yield_annual_pct.toFixed(1)}%</strong></div>` +
+        `<div class="reb-option-metric"><span>Effective ${route.direction === "increase" ? "entry" : "exit"}</span>` +
+          `<strong>${effective != null ? effective.toFixed(2) : "—"} <small>${esc(route.currency || "")}</small></strong></div>` +
+        `<div class="reb-option-metric"><span>Assignment chance</span>` +
+          `<strong>${rung.assignment_prob_pct != null ? rung.assignment_prob_pct.toFixed(0) + "%" : "—"}</strong></div>`;
+      const footer = el("div", "reb-option-contract-footer");
+      const backing = rung.cash_secured_czk
+        ? `<div class="reb-option-backing">` +
+            `<span>${route.option.collateral_mode === "margin" ? "Assignment notional" : "Cash reserved"}</span>` +
+            `<strong>${fmtCZK(rung.cash_secured_czk)} CZK</strong>` +
+            `<small>${route.option.collateral_mode === "margin"
+              ? "IBKR validates margin at preview"
+              : "Fully cash-secured"}</small>` +
+          `</div>`
+        : `<div class="reb-option-backing">` +
+            `<span>Share coverage</span><strong>${route.option.assignment_shares} shares</strong>` +
+            `<small>Coverage rechecked before placement</small>` +
+          `</div>`;
+      footer.innerHTML =
+        `<div class="reb-option-market-state">` +
+          `<span class="chip ${rung.source === "ibkr" ? "good" : "muted"}">${esc(rung.source.replace(/_/g, " "))}</span>` +
+          `<span class="chip ${rung.quote_fresh ? "good" : rung.stageable ? "warn" : "muted"}">${quoteState}</span>` +
+          `<span class="chip ${liquidityChipTone(rung.liquidity)}">` +
+            `${esc(rung.liquidity)} liquidity</span>` +
+        `</div>` +
+        backing;
+      const use = el("button", "reb-option-use", rung.stageable ? "Use contract" : "Indicative only");
       use.type = "button";
       use.disabled = !rung.stageable || !rung.conid;
       use.title = rung.stageable
@@ -146,29 +235,34 @@ export function createOptionRouteControl(
           route: optionRouteFor(deltaCzk),
           rung,
           contracts: route.option.contracts,
+          collateralMode: route.option.collateral_mode ?? undefined,
         });
         selections.set(symbol, selection);
         onSelection?.(selection);
         direct.classList.remove("active");
         option.classList.add("active");
-        table.querySelectorAll("button").forEach((button) => {
+        compact.value = "option";
+        contracts.querySelectorAll("button").forEach((button) => {
           button.classList.remove("active");
-          if (button !== use && !button.textContent?.includes("Indicative")) button.textContent = "Use";
+          if (button !== use && !button.textContent?.includes("Indicative")) {
+            button.textContent = "Use contract";
+          }
         });
         use.classList.add("active");
         use.textContent = "Selected ✓";
       });
-      action.appendChild(use);
+      footer.appendChild(use);
       if (!firstStageable && !use.disabled) firstStageable = use;
-      tr.appendChild(action);
-      tbody.appendChild(tr);
+      card.append(top, footer);
+      contracts.appendChild(card);
     }
-    detail.appendChild(table);
+    detail.appendChild(contracts);
     if (route.option.reasons.length) {
       const hint = el("div", "hint");
       hint.textContent = route.option.reasons.join(" · ");
       detail.appendChild(hint);
     }
+    addDetailClose();
     if (autoSelect) firstStageable?.click();
     return firstStageable;
   };
@@ -178,29 +272,55 @@ export function createOptionRouteControl(
     option.textContent = "Loading live option routes…";
     detail.hidden = false;
     detail.innerHTML = `<div class="status"><span class="spinner"></span> loading strikes and quotes…</div>`;
+    addDetailClose();
     const requestedDelta = deltaCzk;
     try {
       const result = await loader.load(symbol, requestedDelta);
       if (!result || requestedDelta !== deltaCzk) return false;
-      const selectedButton = renderLadder(result.route, autoSelect);
+      const selectedButton = renderOptionCards(result.route, autoSelect);
       return Boolean(selectedButton);
     } catch (error) {
       if (requestedDelta !== deltaCzk) return false;
       detail.innerHTML =
-        `<div class="status err">Could not load option routes: ${esc((error as Error).message)}</div>`;
+        `<div class="reb-route-unavailable error">` +
+          `<span class="reb-route-eyebrow">Option route error</span>` +
+          `<strong>Could not load option routes</strong>` +
+          `<p>${esc((error as Error).message)}</p>` +
+        `</div>`;
+      addDetailClose();
       return false;
     } finally {
       option.disabled = false;
       if (option.textContent === "Loading live option routes…") paintLabels();
     }
   };
-  option.addEventListener("click", () => { void loadOption(false); });
+  option.addEventListener("click", () => {
+    compact.value = "option";
+    void loadOption(false);
+  });
+  compact.addEventListener("change", () => {
+    const choice = compact.value;
+    if (choice === "direct") {
+      direct.click();
+      return;
+    }
+    if (choice === "exit") {
+      exit.click();
+      paintCompactSelection();
+      return;
+    }
+    compact.value = "option";
+    void loadOption(false);
+  });
 
   const sync = (nextDeltaCzk: number) => {
     const next = Math.round(nextDeltaCzk);
     const changed = next !== Math.round(deltaCzk);
     deltaCzk = next;
     controls.hidden = Math.abs(next) < 1;
+    compact.hidden = Math.abs(next) < 1;
+    exit.hidden = next >= 0;
+    exitChoice.hidden = next >= 0;
     if (changed) {
       loader.cancel();
       detail.innerHTML = "";
@@ -219,17 +339,12 @@ export function createOptionRouteControl(
       option.classList.toggle("active", selected.route === optionRouteFor(next));
     }
     paintLabels();
+    paintCompactSelection();
     detail.hidden = Math.abs(next) < 1 || !detail.innerHTML;
   };
 
-  const disable = () => {
-    controls.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
-      button.disabled = true;
-    });
-  };
-
   sync(initialDeltaCzk);
-  return { controls, detail, sync, autoSelectOption: () => loadOption(true), disable };
+  return { controls, compact, detail, sync, selectDirect };
 }
 
 // ---- compact variant (ticker order composer) ---------------------------------
@@ -264,6 +379,7 @@ export async function loadCompactOptionRoute(
     route: optionRouteFor(deltaCzk),
     rung,
     contracts: route.option.contracts,
+    collateralMode: route.option.collateral_mode ?? undefined,
   });
   return {
     selection,

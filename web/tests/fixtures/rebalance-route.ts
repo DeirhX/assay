@@ -1,0 +1,62 @@
+import type { RebalanceRouteResponse } from "../../src/api-types";
+
+export function rebalanceRoute(
+  direction: "increase" | "reduce",
+  stageable = true,
+  symbol = "NVDA",
+): RebalanceRouteResponse {
+  const put = direction === "increase";
+  return {
+    symbol,
+    delta_czk: put ? 230_000 : -230_000,
+    direction,
+    planned_shares: 100,
+    underlying: 100,
+    currency: "USD",
+    fx_to_base: 23,
+    source: stageable ? "ibkr" : "yahoo",
+    direct: {
+      kind: put ? "buy_shares" : "sell_shares",
+      label: put ? "Buy shares" : "Sell shares",
+      eligible: true,
+      reasons: [],
+    },
+    option: {
+      kind: put ? "cash_secured_put" : "covered_call",
+      label: put ? "Sell cash-secured put" : "Sell covered call",
+      eligible: true,
+      stageable,
+      reasons: stageable ? [] : ["Indicative yahoo levels; exact IBKR contract required."],
+      contracts: 1,
+      assignment_shares: 100,
+      share_deviation: 0,
+      rounded_up: false,
+      available_cash_czk: put ? 1_000_000 : null,
+      collateral_mode: put ? "cash" : null,
+    },
+    recommended: put ? "buy_shares" : "sell_shares",
+    ladder: [{
+      conid: stageable ? 556 : null,
+      strike: put ? 93 : 105,
+      expiry: "2026-08-07",
+      dte: 37,
+      premium: 2,
+      premium_czk: 4_600,
+      effective_entry: put ? 91 : undefined,
+      effective_exit: put ? undefined : 107,
+      cash_secured_czk: put ? 213_900 : undefined,
+      moneyness_pct: put ? -7 : 5,
+      premium_yield_annual_pct: 21.2,
+      assignment_prob_pct: 25,
+      open_interest: 500,
+      volume: 50,
+      spread_pct: 10,
+      liquidity: "ok",
+      source: stageable ? "ibkr" : "yahoo",
+      quote_fresh: true,
+      estimate: false,
+      stageable,
+      executable: stageable,
+    }],
+  };
+}

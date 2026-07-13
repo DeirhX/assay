@@ -70,3 +70,29 @@ def test_risk_free_rate_from_snapshot():
 def test_risk_free_rate_falls_back_on_missing():
     assert om.risk_free_rate(snapshot={"series": {}}) == om.DEFAULT_RISK_FREE
     assert om.risk_free_rate(snapshot={}) == om.DEFAULT_RISK_FREE
+
+
+def test_whole_contracts_round_up_within_deviation():
+    assert om.whole_contracts_for_shares(90) == 1
+    assert om.whole_contracts_for_shares(87) == 1
+    assert om.whole_contracts_for_shares(86) == 0
+    assert om.whole_contracts_for_shares(250) == 2
+    assert om.whole_contracts_for_shares(174) == 2
+    assert om.whole_contracts_for_shares(173) == 1
+
+
+def test_whole_contracts_capacity_cap():
+    assert om.whole_contracts_for_shares(290, capacity_contracts=2) == 2
+    assert om.whole_contracts_for_shares(290, capacity_contracts=0) == 0
+
+
+def test_whole_contracts_max_held_shares_cap():
+    assert om.whole_contracts_for_shares(89, max_held_shares=300) == 1
+    assert om.whole_contracts_for_shares(89, max_held_shares=95) == 0
+    assert om.whole_contracts_for_shares(250, max_held_shares=250) == 2
+    assert om.whole_contracts_for_shares(250, max_held_shares=200) == 2
+
+
+def test_whole_contracts_invalid_inputs_return_zero():
+    assert om.whole_contracts_for_shares("bad") == 0
+    assert om.whole_contracts_for_shares(100, max_held_shares="bad") == 0

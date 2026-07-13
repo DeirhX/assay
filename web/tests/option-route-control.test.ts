@@ -12,90 +12,37 @@ import {
   OptionRouteLoader,
 } from "../src/option-route-control";
 import type { RebalanceRouteResponse, RebalanceRouteSelection } from "../src/api-types";
+import { rebalanceRoute } from "./fixtures/rebalance-route";
 
 const apiMock = vi.mocked(api);
-
-function route(direction: "increase" | "reduce", stageable = true): RebalanceRouteResponse {
-  const put = direction === "increase";
-  return {
-    symbol: "NVDA",
-    delta_czk: put ? 230_000 : -230_000,
-    direction,
-    planned_shares: 100,
-    underlying: 100,
-    currency: "USD",
-    fx_to_base: 23,
-    source: stageable ? "ibkr" : "yahoo",
-    direct: {
-      kind: put ? "buy_shares" : "sell_shares",
-      label: put ? "Buy shares" : "Sell shares",
-      eligible: true,
-      reasons: [],
-    },
-    option: {
-      kind: put ? "cash_secured_put" : "covered_call",
-      label: put ? "Sell cash-secured put" : "Sell covered call",
-      eligible: true,
-      stageable,
-      reasons: stageable ? [] : ["Indicative yahoo levels; exact IBKR contract required."],
-      contracts: 1,
-      assignment_shares: 100,
-      share_deviation: 0,
-      rounded_up: false,
-      available_cash_czk: put ? 1_000_000 : null,
-    },
-    recommended: put ? "buy_shares" : "sell_shares",
-    ladder: [{
-      conid: stageable ? 556 : null,
-      strike: put ? 93 : 105,
-      expiry: "2026-08-07",
-      dte: 37,
-      premium: 2,
-      premium_czk: 4_600,
-      effective_entry: put ? 91 : undefined,
-      effective_exit: put ? undefined : 107,
-      cash_secured_czk: put ? 213_900 : undefined,
-      moneyness_pct: put ? -7 : 5,
-      premium_yield_annual_pct: 21.2,
-      assignment_prob_pct: 25,
-      open_interest: 500,
-      volume: 50,
-      spread_pct: 10,
-      liquidity: "ok",
-      source: stageable ? "ibkr" : "yahoo",
-      estimate: false,
-      stageable,
-      executable: stageable,
-    }],
-  };
-}
 
 describe("createOptionRouteControl", () => {
   beforeEach(() => apiMock.mockReset());
 
-  it("defaults to stock and loads the full ladder on option click", async () => {
-    apiMock.mockResolvedValue(route("increase"));
+  it("defaults to direct shares and loads card ladder on option click", async () => {
+    apiMock.mockResolvedValue(rebalanceRoute("increase"));
     const selected = new Map<string, RebalanceRouteSelection>();
     const control = createOptionRouteControl("NVDA", 230_000, selected);
     document.body.innerHTML = "";
     document.body.append(control.controls, control.detail);
 
-    expect(control.controls.className).toContain("route-controls");
     expect(selected.get("NVDA")?.route).toBe("buy_shares");
+    expect(control.compact.value).toBe("direct");
     const optionBtn = [...control.controls.querySelectorAll("button")]
-      .find((node) => node.textContent === "Cash-secured put")!;
+      .find((node) => node.textContent === "Put option")!;
     optionBtn.click();
-    await vi.waitFor(() => expect(control.detail.querySelector(".reb-route-ladder")).toBeTruthy());
-    expect(control.detail.querySelectorAll("th")).toHaveLength(8);
+    await vi.waitFor(() => expect(control.detail.querySelector(".reb-option-contract")).toBeTruthy());
 
     const use = [...control.detail.querySelectorAll("button")]
-      .find((node) => node.textContent === "Use")!;
+      .find((node) => node.textContent === "Use contract")!;
     use.click();
     expect(selected.get("NVDA")).toMatchObject({
       route: "cash_secured_put",
       conid: 556,
       strike: 93,
+      collateral_mode: "cash",
     });
+    expect(control.compact.value).toBe("option");
   });
 
   it("cancels in-flight ladder loads when sync changes the amount", async () => {
@@ -108,9 +55,41 @@ describe("createOptionRouteControl", () => {
     const control = createOptionRouteControl("NVDA", 230_000, selected);
     control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
     control.sync(0);
-    resolveRoute(route("increase"));
+    resolveRoute(rebalanceRoute("increase"));
     await pending;
-    expect(control.detail.querySelector(".reb-route-ladder")).toBeNull();
+    expect(control.detail.querySelector(".reb-option-contract")).toBeNull();
+  });
+
+  it("renders unavailable state with margin guidance for cash-secured puts", async () => {
+    const blocked = rebalanceRoute("increase");
+    blocked.option.eligible = false;
+    blocked.option.reasons = ["Insufficient cash"];
+    apiMock.mockResolvedValue(blocked);
+    const control = createOptionRouteControl("NVDA", 230_000, new Map());
+    control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() => expect(control.detail.querySelector(".reb-route-unavailable")).toBeTruthy());
+    expect(control.detail.textContent).toContain("margin-backed short put");
+  });
+
+  it("calls onExitNavigate from compact select and exit button", () => {
+    const onExitNavigate = vi.fn();
+    const control = createOptionRouteControl("NVDA", -100_000, new Map(), { onExitNavigate });
+    control.compact.value = "exit";
+    control.compact.dispatchEvent(new Event("change"));
+    expect(onExitNavigate).toHaveBeenCalledWith("NVDA");
+  });
+
+  it("renders option reason hints as literal text, not HTML", async () => {
+    const route = rebalanceRoute("increase");
+    route.option.reasons = ['<img src=x onerror="alert(1)">', "thin book"];
+    apiMock.mockResolvedValue(route);
+    const control = createOptionRouteControl("NVDA", 230_000, new Map());
+    control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() => expect(control.detail.querySelector(".hint")).toBeTruthy());
+    const hint = control.detail.querySelector(".hint")!;
+    expect(hint.textContent).toBe('<img src=x onerror="alert(1)"> · thin book');
+    expect(hint.querySelector("img")).toBeNull();
+    expect(hint.innerHTML).not.toContain("<img");
   });
 });
 
@@ -118,7 +97,7 @@ describe("loadCompactOptionRoute", () => {
   beforeEach(() => apiMock.mockReset());
 
   it("picks the first stageable rung for the composer summary", async () => {
-    apiMock.mockResolvedValue(route("increase"));
+    apiMock.mockResolvedValue(rebalanceRoute("increase"));
     const loader = new OptionRouteLoader();
     const result = await loadCompactOptionRoute(loader, "NVDA", 100_000, "increase");
     expect(result?.eligible).toBe(true);
@@ -127,7 +106,7 @@ describe("loadCompactOptionRoute", () => {
   });
 
   it("returns null when a newer load supersedes the request", async () => {
-    apiMock.mockResolvedValue(route("increase"));
+    apiMock.mockResolvedValue(rebalanceRoute("increase"));
     const loader = new OptionRouteLoader();
     const first = loadCompactOptionRoute(loader, "NVDA", 100_000, "increase");
     loader.cancel();

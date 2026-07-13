@@ -4,12 +4,16 @@ import type {
   ExecutionPlanItem, ExecutionPlanState, FundingCandidate, FundingResponse,
   Provenance, RebalancePlan as RebPlan,
   PlanRow as RebRow, PlanMember,
-  RebalanceOptionRung, RebalanceRouteResponse, RebalanceRouteSelection,
+  RebalanceRouteSelection,
   Whatif, WhatifTrade,
 } from "./api-types";
 import { stageRebalanceQueue } from "./execution-queue";
-import { patchExecutionPlanItem } from "./execution-plan-ui";
+import {
+  createExecutionLifecycleCell,
+  patchExecutionPlanItem,
+} from "./execution-plan-ui";
 import { directRouteFor, optionRouteFor } from "./execution-routes";
+import { createOptionRouteControl } from "./option-route-control";
 import { gatewayConnected, gatewayUnavailableReason, refreshGatewayStatus } from "./gateway";
 import { ruleTone, ruleWord, POSITION_TRACK_SEL, positionTrackHtml } from "./band-viz";
 import { openJournalWith } from "./journal";
@@ -522,6 +526,29 @@ function renderRebalance(plan: RebPlan) {
   const executionStatus = $("#reb-execution-status");
   const patchExecutionItem = (item: ExecutionPlanItem, changes: Partial<ExecutionPlanItem>) =>
     patchExecutionPlanItem(item, changes, executionStatus);
+  const lifecycleConfigFor = (
+    item: ExecutionPlanItem | null | undefined,
+    suggestedLimit: number | null,
+    marketReference: number | null,
+    limitCurrency = "",
+  ) => ({
+    patchItem: (changes: Partial<ExecutionPlanItem>) => {
+      if (!item) return Promise.resolve();
+      return patchExecutionItem(item, changes);
+    },
+    routeSelections,
+    suggestedLimit,
+    marketReference,
+    limitCurrency,
+    pctToCzk,
+    base: base || 0,
+    parseDelta,
+    deltaEpsilon: DELTA_EPS,
+  });
+  const routeExitNavigate = (symbol: string) => {
+    pushNav({ view: "exit", ticker: symbol });
+    setActiveView("exit");
+  };
   // Target-row name cells by symbol, so the async working-orders pass below can
   // badge names that already have an unfilled order at IBKR.
   const nameCells: Record<string, HTMLElement> = {};
@@ -559,191 +586,6 @@ function renderRebalance(plan: RebPlan) {
     return Number.isFinite(value) && value > 0 ? value : null;
   };
 
-  const executionCell = (
-    symbol: string,
-    input: HTMLInputElement,
-    route: ExecutionRouteControl,
-    suggestedLimit: number | null,
-    marketReference: number | null,
-    limitCurrency = "",
-  ): HTMLElement => {
-    const host = el("div", "reb-execution-cell");
-    const item = executionItems.get(cleanSymbol(symbol));
-    if (!item) {
-      host.classList.add("reb-execution-manual");
-      const note = el("span", "reb-execution-na");
-      const paintManual = () => {
-        const hasAmount = Math.abs(parseDelta(input.value)) > DELTA_EPS;
-        note.textContent = hasAmount ? "Manual trade" : "No new trade";
-        route.compact.hidden = !hasAmount;
-      };
-      input.addEventListener("input", paintManual);
-      host.append(note, route.compact);
-      paintManual();
-      return host;
-    }
-    const lifecycle = el("div", "reb-execution-life");
-    const execute = document.createElement("label");
-    execute.className = "reb-execute-toggle";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = item.status === "selected";
-    checkbox.disabled = item.status === "queued" || item.status === "submitted";
-    const label = el("span", "", checkbox.disabled ? item.status : "Include trade");
-    execute.title = "Include this amount in Preview impact and the order queue";
-    execute.append(checkbox, label);
-    const stateNote = el("span", "reb-execution-state");
-    const exclude = el("button", "ghost reb-execution-exclude", "Exclude");
-    exclude.type = "button";
-    exclude.title = "Keep this recommendation, but remove it from Preview impact and the order queue";
-    exclude.disabled = checkbox.disabled;
-    const more = document.createElement("details");
-    more.className = "reb-execution-more";
-    const moreSummary = el("summary", "", "…");
-    moreSummary.title = "More scheduling options";
-    moreSummary.setAttribute("aria-label", "More scheduling options");
-    const menu = el("div", "reb-execution-menu");
-    const later = el("button", "", "Skip for now");
-    later.type = "button";
-    later.title = "Keep the recommendation, but exclude it from Preview impact and the order queue";
-    later.disabled = checkbox.disabled;
-    const dismiss = el("button", "reb-dismiss", "Dismiss recommendation");
-    dismiss.type = "button";
-    dismiss.title = "Dismiss from this execution plan";
-    dismiss.disabled = checkbox.disabled;
-    menu.append(later, dismiss);
-    more.append(moreSummary, menu);
-    lifecycle.append(execute, stateNote);
-    if (!checkbox.disabled) lifecycle.appendChild(more);
-
-    const paintStatus = () => {
-      checkbox.checked = item.status === "selected";
-      host.dataset.status = item.status;
-      label.textContent = checkbox.disabled
-        ? item.status
-        : item.status === "selected"
-          ? "Included"
-          : "Include trade";
-      stateNote.textContent = item.status === "deferred"
-        ? "skipped"
-        : item.status === "dismissed"
-          ? "dismissed"
-          : "";
-      exclude.hidden = item.status !== "selected" || checkbox.disabled;
-      more.classList.toggle(
-        "has-state",
-        item.status === "deferred" || item.status === "dismissed",
-      );
-    };
-
-    const setStatus = async (status: ExecutionPlanItem["status"]) => {
-      item.status = status;
-      paintStatus();
-      await patchExecutionItem(item, { status });
-    };
-    checkbox.addEventListener("change", async () => {
-      if (!checkbox.checked) {
-        await setStatus("deferred");
-        return;
-      }
-      await setStatus("selected");
-      route.selectDirect(Number(limit.value) || undefined);
-    });
-    later.addEventListener("click", () => {
-      more.open = false;
-      void setStatus("deferred");
-    });
-    exclude.addEventListener("click", async () => {
-      await setStatus("deferred");
-      route.detail.hidden = true;
-      route.detail.innerHTML = "";
-    });
-    dismiss.addEventListener("click", () => {
-      more.open = false;
-      void setStatus("dismissed");
-    });
-    input.addEventListener("change", async () => {
-      const deltaPct = parseDelta(input.value);
-      const deltaCzk = pctToCzk(deltaPct, base || 0) || 0;
-      const direction = deltaCzk >= 0 ? "increase" : "reduce";
-      await patchExecutionItem(item, {
-        delta_pct: deltaPct,
-        delta_czk: deltaCzk,
-        desired_weight_pct: Math.max(0, Number(input.dataset.currentPct || 0) + deltaPct),
-        direction,
-        status: "selected",
-      });
-      paintStatus();
-      route.selectDirect(Number(limit.value) || undefined);
-    });
-    const limit = document.createElement("input");
-    limit.className = "reb-limit-input";
-    limit.type = "number";
-    limit.min = "0.01";
-    limit.step = "0.01";
-    limit.placeholder = "Market";
-    limit.title = marketReference
-      ? `Editable order limit; an empty market value ticks from the last ${marketReference}`
-      : "Editable order limit; option values are minimum credits";
-    const initialLimit = item.limit_price || suggestedLimit;
-    if (initialLimit) limit.value = String(initialLimit);
-    const limitLabel = el("span", "", "");
-    const paintLimitLabel = () => {
-      const value = Number(limit.value);
-      const recommended = Boolean(
-        suggestedLimit && value > 0 && Math.abs(value - suggestedLimit) < 0.000001
-      );
-      limitLabel.textContent = `Limit${limitCurrency ? ` (${limitCurrency})` : ""} · ` +
-        (recommended ? "recommended" : value > 0 ? "custom" : "market");
-    };
-    limit.addEventListener("change", () => {
-      const value = Number(limit.value);
-      void patchExecutionItem(item, { limit_price: value > 0 ? value : null });
-      const selection = routeSelections.get(cleanSymbol(symbol));
-      if (selection) {
-        if (value > 0) selection.limit_price = value;
-        else delete selection.limit_price;
-      }
-      paintLimitLabel();
-    });
-    limit.addEventListener("keydown", (event) => {
-      if (
-        limit.value.trim()
-        || marketReference == null
-        || (event.key !== "ArrowUp" && event.key !== "ArrowDown")
-      ) return;
-      event.preventDefault();
-      const direction = event.key === "ArrowUp" ? 1 : -1;
-      limit.value = String(Math.max(0.01, Math.round(
-        (marketReference + direction * Number(limit.step || 0.01)) * 100,
-      ) / 100));
-      limit.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    limit.addEventListener("pointerdown", (event) => {
-      if (limit.value.trim() || marketReference == null) return;
-      const rect = limit.getBoundingClientRect();
-      if (event.clientX < rect.right - 20) return;
-      // Seed the native number spinner before it applies its up/down step.
-      limit.value = String(marketReference);
-      paintLimitLabel();
-    });
-    const limitField = document.createElement("label");
-    limitField.className = "reb-limit-field";
-    limitField.append(limitLabel, limit);
-    paintLimitLabel();
-    const routeLine = el("div", "reb-execution-route-line");
-    routeLine.append(route.compact, exclude, limitField);
-    paintStatus();
-    host.append(lifecycle, routeLine);
-    if (checkbox.disabled) {
-      route.controls.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
-        button.disabled = true;
-      });
-      route.compact.disabled = true;
-      limit.disabled = true;
-    }
-    return host;
-  };
 
   // One per-member recommendation row inside a sleeve's drawer: order, ticker +
   // conviction, current→target share, an editable buy/trim amount, and a live
@@ -806,18 +648,21 @@ function renderRebalance(plan: RebPlan) {
     planCell.appendChild(czk);
     const executionItem = executionItems.get(cleanSymbol(m.symbol));
     const initialDeltaCzk = pctToCzk(def, base) || 0;
-    const routeChoice = executionRouteControl(
+    const routeChoice = createOptionRouteControl(
       m.symbol,
       initialDeltaCzk,
       routeSelections,
-      (selection) => {
-        if (!executionItem) return;
-        selection.execution_item_id = executionItem.id;
-        void patchExecutionItem(executionItem, {
-          route_selection: selection,
-          route_policy: selection.route,
-          ...(selection.limit_price ? { limit_price: selection.limit_price } : {}),
-        });
+      {
+        onSelection: (selection) => {
+          if (!executionItem) return;
+          selection.execution_item_id = executionItem.id;
+          void patchExecutionItem(executionItem, {
+            route_selection: selection,
+            route_policy: selection.route,
+            ...(selection.limit_price ? { limit_price: selection.limit_price } : {}),
+          });
+        },
+        onExitNavigate: routeExitNavigate,
       },
     );
     const initialSelection = routeSelections.get(cleanSymbol(m.symbol));
@@ -825,13 +670,17 @@ function renderRebalance(plan: RebPlan) {
       initialSelection.execution_item_id = executionItem.id;
       if (executionItem.limit_price) initialSelection.limit_price = executionItem.limit_price;
     }
-    const execution = executionCell(
+    const execution = createExecutionLifecycleCell(
       m.symbol,
+      executionItem,
       input,
       routeChoice,
-      recommendedLimit(m, initialDeltaCzk),
-      lastQuotePrice(m),
-      m.last_quote?.currency || m.mark_currency,
+      lifecycleConfigFor(
+        executionItem,
+        recommendedLimit(m, initialDeltaCzk),
+        lastQuotePrice(m),
+        m.last_quote?.currency || m.mark_currency,
+      ),
     );
 
     const proj = el("span", "reb-mem-proj");
@@ -956,18 +805,21 @@ function renderRebalance(plan: RebPlan) {
       planCell.appendChild(czk);
       const executionItem = executionItems.get(cleanSymbol(r.name));
       const initialDeltaCzk = pctToCzk(parseDelta(input.value), base) || 0;
-      const routeChoice = executionRouteControl(
+      const routeChoice = createOptionRouteControl(
         r.name,
         initialDeltaCzk,
         routeSelections,
-        (selection) => {
-          if (!executionItem) return;
-          selection.execution_item_id = executionItem.id;
-          void patchExecutionItem(executionItem, {
-            route_selection: selection,
-            route_policy: selection.route,
-            ...(selection.limit_price ? { limit_price: selection.limit_price } : {}),
-          });
+        {
+          onSelection: (selection) => {
+            if (!executionItem) return;
+            selection.execution_item_id = executionItem.id;
+            void patchExecutionItem(executionItem, {
+              route_selection: selection,
+              route_policy: selection.route,
+              ...(selection.limit_price ? { limit_price: selection.limit_price } : {}),
+            });
+          },
+          onExitNavigate: routeExitNavigate,
         },
       );
       const initialSelection = routeSelections.get(cleanSymbol(r.name));
@@ -976,13 +828,17 @@ function renderRebalance(plan: RebPlan) {
         if (executionItem.limit_price) initialSelection.limit_price = executionItem.limit_price;
       }
       row.appendChild(planCell);
-      row.appendChild(executionCell(
+      row.appendChild(createExecutionLifecycleCell(
         r.name,
+        executionItem,
         input,
         routeChoice,
-        recommendedLimit(r, initialDeltaCzk),
-        lastQuotePrice(r),
-        r.price_gate?.currency || r.last_quote?.currency || r.mark_currency,
+        lifecycleConfigFor(
+          executionItem,
+          recommendedLimit(r, initialDeltaCzk),
+          lastQuotePrice(r),
+          r.price_gate?.currency || r.last_quote?.currency || r.mark_currency,
+        ),
       ));
 
       const projCell = el("div", "reb-c reb-proj");
@@ -1632,300 +1488,10 @@ function setImpactPreviewOpen(open: boolean, clear = true): void {
   if (!open && clear && box) box.innerHTML = "";
 }
 
-interface ExecutionRouteControl {
-  controls: HTMLElement;
-  compact: HTMLSelectElement;
-  detail: HTMLElement;
-  sync: (deltaCzk: number) => void;
-  selectDirect: (limitPrice?: number) => void;
-}
-
-function executionRouteControl(
-  symbol: string,
-  initialDeltaCzk: number,
-  selections: Map<string, RebalanceRouteSelection>,
-  onSelection?: (selection: RebalanceRouteSelection) => void,
-): ExecutionRouteControl {
-  let deltaCzk = initialDeltaCzk;
-  const controls = el("div", "reb-route-controls reb-route-inline");
-  const compact = document.createElement("select");
-  compact.className = "reb-route-select";
-  compact.title = "Execution route";
-  compact.setAttribute("aria-label", `${symbol} execution route`);
-  const directChoice = document.createElement("option");
-  directChoice.value = "direct";
-  const optionChoice = document.createElement("option");
-  optionChoice.value = "option";
-  const exitChoice = document.createElement("option");
-  exitChoice.value = "exit";
-  exitChoice.textContent = "Open exit plan…";
-  compact.append(directChoice, optionChoice, exitChoice);
-  const direct = el("button", "ghost active");
-  const option = el("button", "ghost");
-  direct.type = "button";
-  option.type = "button";
-  controls.appendChild(direct);
-  controls.appendChild(option);
-  const exit = el("button", "ghost", "Exit plan");
-  exit.type = "button";
-  exit.title = "Compare lot timing, scale-out tranches, and covered calls";
-  exit.addEventListener("click", () => {
-    pushNav({ view: "exit", ticker: symbol });
-    setActiveView("exit");
-  });
-  controls.appendChild(exit);
-  const detail = el("div", "reb-route-detail reb-route-row-detail");
-  detail.hidden = true;
-  const addDetailClose = () => {
-    if (detail.querySelector(".reb-route-detail-close")) return;
-    const close = el("button", "ghost reb-route-detail-close", "Close");
-    close.type = "button";
-    close.addEventListener("click", () => {
-      detail.hidden = true;
-      detail.innerHTML = "";
-      paintCompactSelection();
-    });
-    detail.prepend(close);
-  };
-
-  const resetToStock = () => {
-    const route = directRouteFor(deltaCzk);
-    selections.set(symbol, { symbol, route });
-    direct.classList.add("active");
-    option.classList.remove("active");
-    compact.value = "direct";
-  };
-  const paintLabels = () => {
-    direct.textContent = "Shares";
-    option.textContent = deltaCzk >= 0 ? "Put option" : "Covered call";
-    directChoice.textContent = deltaCzk >= 0 ? "Buy shares" : "Sell shares";
-    optionChoice.textContent = deltaCzk >= 0 ? "Put option…" : "Covered call…";
-  };
-  const paintCompactSelection = () => {
-    const selected = selections.get(symbol);
-    compact.value = selected?.route === optionRouteFor(deltaCzk) ? "option" : "direct";
-  };
-
-  const selectDirect = (limitPrice?: number) => {
-    resetToStock();
-    const selection = selections.get(symbol)!;
-    if (limitPrice && limitPrice > 0) selection.limit_price = limitPrice;
-    onSelection?.(selection);
-    detail.innerHTML = "";
-    detail.hidden = true;
-  };
-  direct.addEventListener("click", () => selectDirect());
-
-  const loadOption = async (autoSelect = false): Promise<boolean> => {
-    option.disabled = true;
-    option.textContent = "Loading live option routes…";
-    detail.hidden = false;
-    detail.innerHTML = `<div class="status"><span class="spinner"></span> loading strikes and quotes…</div>`;
-    addDetailClose();
-    try {
-      const requestedDelta = deltaCzk;
-      const query = new URLSearchParams({ symbol, delta_czk: String(requestedDelta) });
-      const route = await api<RebalanceRouteResponse>(
-        `/api/rebalance/route?${query.toString()}`,
-        "GET",
-        null,
-        { timeoutMs: 60_000 },
-      );
-      if (requestedDelta !== deltaCzk) return false;
-      option.textContent = route.option.label;
-      direct.disabled = !route.direct.eligible;
-      directChoice.disabled = !route.direct.eligible;
-      if (!route.option.eligible) {
-        const rawLabel = route.option.label.replace(/^Sell\s+/i, "");
-        const unavailableLabel = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
-        detail.innerHTML =
-          `<div class="reb-route-unavailable">` +
-            `<span class="reb-route-eyebrow">Option route unavailable</span>` +
-            `<strong>${esc(unavailableLabel)} unavailable</strong>` +
-            `<p>${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</p>` +
-          (route.direction === "increase" && route.option.collateral_mode !== "margin"
-            ? `<div class="reb-route-unavailable-next"><b>Next:</b> choose Buy shares, ` +
-              `or use IBKR directly for a margin-backed short put.</div>`
-            : "") +
-          `</div>`;
-        addDetailClose();
-        return false;
-      }
-      const intro = el("div", "reb-route-option-summary");
-      const routeName = route.direction === "increase" ? "Put entry" : "Covered-call reduction";
-      intro.innerHTML =
-        `<div class="reb-route-option-heading">` +
-          `<span class="reb-route-eyebrow">${routeName}</span>` +
-          `<strong>Conditional ${route.direction === "increase" ? "entry" : "reduction"}</strong>` +
-        `</div>` +
-        `<div class="reb-route-option-facts">` +
-          `<span><b>${route.option.contracts}</b> contract${route.option.contracts === 1 ? "" : "s"}</span>` +
-          `<span><b>${route.option.assignment_shares}</b> shares if assigned</span>` +
-        (route.option.share_deviation
-          ? `<span class="${route.option.share_deviation > 0 ? "warn" : ""}">` +
-            `<b>${route.option.share_deviation > 0 ? "+" : ""}${route.option.share_deviation}</b> shares vs plan</span>`
-          : "") +
-        (route.option.collateral_mode === "margin"
-          ? `<span class="margin"><b>Margin</b> account</span>`
-          : "") +
-        `</div>`;
-      detail.innerHTML = "";
-      detail.appendChild(intro);
-      const contracts = el("div", "reb-option-contracts");
-      let firstStageable: HTMLButtonElement | null = null;
-      route.ladder.forEach((rung: RebalanceOptionRung) => {
-        const card = el("article", "reb-option-contract");
-        const effective = route.direction === "increase" ? rung.effective_entry : rung.effective_exit;
-        const right = route.direction === "increase" ? "Put" : "Call";
-        const quoteState = rung.quote_fresh ? "Fresh quote" : rung.stageable ? "Quote needed at preview" : "Indicative only";
-        const top = el("div", "reb-option-contract-top");
-        top.innerHTML =
-          `<div class="reb-option-contract-name">` +
-            `<span>${esc(rung.expiry)}</span>` +
-            `<strong>${rung.strike} ${right}</strong>` +
-          `</div>` +
-          `<div class="reb-option-metric"><span>Bid / ask</span><strong>${rung.bid ?? "—"} / ${rung.ask ?? "—"}</strong></div>` +
-          `<div class="reb-option-metric"><span>Yield p.a.</span><strong>${rung.premium_yield_annual_pct.toFixed(1)}%</strong></div>` +
-          `<div class="reb-option-metric"><span>Effective ${route.direction === "increase" ? "entry" : "exit"}</span>` +
-            `<strong>${effective != null ? effective.toFixed(2) : "—"} <small>${esc(route.currency || "")}</small></strong></div>` +
-          `<div class="reb-option-metric"><span>Assignment chance</span>` +
-            `<strong>${rung.assignment_prob_pct != null ? rung.assignment_prob_pct.toFixed(0) + "%" : "—"}</strong></div>`;
-        const footer = el("div", "reb-option-contract-footer");
-        const backing = rung.cash_secured_czk
-          ? `<div class="reb-option-backing">` +
-              `<span>${route.option.collateral_mode === "margin" ? "Assignment notional" : "Cash reserved"}</span>` +
-              `<strong>${fmtCZK(rung.cash_secured_czk)} CZK</strong>` +
-              `<small>${route.option.collateral_mode === "margin"
-                ? "IBKR validates margin at preview"
-                : "Fully cash-secured"}</small>` +
-            `</div>`
-          : `<div class="reb-option-backing">` +
-              `<span>Share coverage</span><strong>${route.option.assignment_shares} shares</strong>` +
-              `<small>Coverage rechecked before placement</small>` +
-            `</div>`;
-        footer.innerHTML =
-          `<div class="reb-option-market-state">` +
-            `<span class="chip ${rung.source === "ibkr" ? "good" : "muted"}">${esc(rung.source.replace(/_/g, " "))}</span>` +
-            `<span class="chip ${rung.quote_fresh ? "good" : rung.stageable ? "warn" : "muted"}">${quoteState}</span>` +
-            `<span class="chip ${rung.liquidity === "ok" ? "good" : rung.liquidity === "thin" ? "warn" : "muted"}">` +
-              `${esc(rung.liquidity)} liquidity</span>` +
-          `</div>` +
-          backing;
-        const use = el("button", "reb-option-use", rung.stageable ? "Use contract" : "Indicative only");
-        use.type = "button";
-        use.disabled = !rung.stageable || !rung.conid;
-        use.title = rung.stageable
-          ? "Use this exact contract in the order queue"
-          : "Staging requires an exact IBKR contract";
-        use.addEventListener("click", () => {
-          const selection: RebalanceRouteSelection = {
-            symbol,
-            route: optionRouteFor(deltaCzk),
-            ...(route.option.collateral_mode
-              ? { collateral_mode: route.option.collateral_mode }
-              : {}),
-            conid: Number(rung.conid),
-            expiry: rung.expiry,
-            strike: rung.strike,
-            contracts: route.option.contracts,
-            ...(typeof rung.limit_price === "number" ? { limit_price: rung.limit_price } : {}),
-          };
-          selections.set(symbol, selection);
-          onSelection?.(selection);
-          direct.classList.remove("active");
-          option.classList.add("active");
-          compact.value = "option";
-          contracts.querySelectorAll("button").forEach((button) => {
-            button.classList.remove("active");
-            if (button !== use && !button.textContent?.includes("Indicative")) button.textContent = "Use contract";
-          });
-          use.classList.add("active");
-          use.textContent = "Selected ✓";
-        });
-        footer.appendChild(use);
-        if (!firstStageable && !use.disabled) firstStageable = use;
-        card.append(top, footer);
-        contracts.appendChild(card);
-      });
-      detail.appendChild(contracts);
-      if (route.option.reasons.length) {
-        detail.appendChild(el("div", "hint", route.option.reasons.join(" · ")));
-      }
-      addDetailClose();
-      const selectedButton = firstStageable as HTMLButtonElement | null;
-      if (autoSelect && selectedButton) selectedButton.click();
-      return Boolean(selectedButton);
-    } catch (error) {
-      detail.innerHTML =
-        `<div class="reb-route-unavailable error">` +
-          `<span class="reb-route-eyebrow">Option route error</span>` +
-          `<strong>Could not load option routes</strong>` +
-          `<p>${esc((error as Error).message)}</p>` +
-        `</div>`;
-      addDetailClose();
-      return false;
-    } finally {
-      option.disabled = false;
-      if (option.textContent === "Loading live option routes…") paintLabels();
-    }
-  };
-  option.addEventListener("click", () => {
-    compact.value = "option";
-    void loadOption(false);
-  });
-  compact.addEventListener("change", () => {
-    const choice = compact.value;
-    if (choice === "direct") {
-      direct.click();
-      return;
-    }
-    if (choice === "exit") {
-      exit.click();
-      paintCompactSelection();
-      return;
-    }
-    // "Option…" is both a route choice and the trigger for its contract chooser.
-    // Keep that visible while the panel is open; closing without selecting a
-    // contract repaints the persisted (usually direct-share) route.
-    compact.value = "option";
-    void loadOption(false);
-  });
-
-  const sync = (nextDeltaCzk: number) => {
-    const next = Math.round(nextDeltaCzk);
-    const changed = next !== Math.round(deltaCzk);
-    deltaCzk = next;
-    controls.hidden = Math.abs(next) < 1;
-    compact.hidden = Math.abs(next) < 1;
-    exit.hidden = next >= 0;
-    exitChoice.hidden = next >= 0;
-    if (changed) {
-      detail.innerHTML = "";
-      detail.hidden = true;
-      direct.disabled = false;
-      resetToStock();
-    }
-    const selected = selections.get(symbol);
-    if (
-      !selected ||
-      (selected.route !== directRouteFor(next) && selected.route !== optionRouteFor(next))
-    ) {
-      resetToStock();
-    } else {
-      direct.classList.toggle("active", selected.route === directRouteFor(next));
-      option.classList.toggle("active", selected.route === optionRouteFor(next));
-    }
-    paintLabels();
-    paintCompactSelection();
-    detail.hidden = Math.abs(next) < 1 || !detail.innerHTML;
-  };
-  sync(initialDeltaCzk);
-  return { controls, compact, detail, sync, selectDirect };
-}
-
 export function executionRouteChoices(
   trades: WhatifTrade[],
   selections: Map<string, RebalanceRouteSelection>,
+  onExitNavigate?: (symbol: string) => void,
 ): HTMLElement {
   const host = el("div", "reb-route-card");
   host.appendChild(el("div", "whatif-title", "Choose how each position is rebalanced"));
@@ -1942,7 +1508,9 @@ export function executionRouteChoices(
       `${trade.delta_czk >= 0 ? "+" : "−"}${fmtCZK(Math.abs(trade.delta_czk))} CZK`,
     ));
     row.appendChild(head);
-    const choice = executionRouteControl(trade.symbol, trade.delta_czk, selections);
+    const choice = createOptionRouteControl(trade.symbol, trade.delta_czk, selections, {
+      onExitNavigate,
+    });
     row.appendChild(choice.controls);
     row.appendChild(choice.detail);
     host.appendChild(row);

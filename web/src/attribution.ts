@@ -1,7 +1,7 @@
 import { $, $$, apiLoad, el, esc, statTile } from "./core";
 import { fmtMoneyCcy, fmtSignedPct2 } from "./display/format";
 import { analyticsSection, caveatBanner, metaStrip } from "./display/chrome";
-import { navFromUrl, replaceViewState } from "./shell";
+import { initUrlBoundSelect } from "./url-select";
 
 // ---- process attribution ---------------------------------------------------
 // The only view that measures the *process* instead of a position: actual
@@ -189,35 +189,20 @@ function growthChart(r: AttrPayload): SVGElement | null {
 }
 
 function initAttributionControls() {
-  const rng = $<HTMLSelectElement & { _wired?: boolean }>("#attr-range");
-  const nav = navFromUrl();
-  if (rng) {
-    _attrRange = nav.range && Array.from(rng.options).some((o) => o.value === nav.range)
-      ? nav.range : "1y";
-    rng.value = _attrRange;
-  }
-  if (rng && !rng._wired) {
-    rng._wired = true;
-    rng.addEventListener("change", () => {
-      _attrRange = rng.value || "1y";
-      replaceViewState({ range: _attrRange === "1y" ? "" : _attrRange });
-      loadAttribution();
-    });
-  }
-  const bench = $<HTMLSelectElement & { _wired?: boolean }>("#attr-benchmark");
-  if (bench) {
-    _attrBenchmark = nav.benchmark && Array.from(bench.options).some((o) => o.value === nav.benchmark)
-      ? nav.benchmark : "SPY";
-    bench.value = _attrBenchmark;
-  }
-  if (bench && !bench._wired) {
-    bench._wired = true;
-    bench.addEventListener("change", () => {
-      _attrBenchmark = bench.value || "SPY";
-      replaceViewState({ benchmark: _attrBenchmark === "SPY" ? "" : _attrBenchmark });
-      loadAttribution();
-    });
-  }
+  initUrlBoundSelect({
+    select: $("#attr-range"),
+    param: "range",
+    defaultValue: "1y",
+    onValue: (v) => { _attrRange = v; },
+    reload: loadAttribution,
+  });
+  initUrlBoundSelect({
+    select: $("#attr-benchmark"),
+    param: "benchmark",
+    defaultValue: "SPY",
+    onValue: (v) => { _attrBenchmark = v; },
+    reload: loadAttribution,
+  });
 }
 
 export { loadAttribution, renderAttribution, initAttributionControls };

@@ -29,6 +29,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -232,6 +233,31 @@ def _data_status() -> dict:
         },
         "empty": not (has_holdings and has_model),
     }
+
+
+# Portfolio prerequisite messages — kept as module constants so HTTP handlers,
+# ValueError paths, and tests share one source of truth.
+MSG_HOLDINGS_REQUIRED = "no holdings snapshot — sync from IBKR first"
+MSG_MODEL_REQUIRED = "no target model — data/target-model.json missing"
+MSG_BOTH_REQUIRED = "need both a holdings snapshot and a target model"
+MSG_BOTH_VALUE_ERROR = "target model and holdings snapshot are required"
+MSG_HOLDINGS_VALUE_ERROR = "holdings snapshot is required"
+
+
+def _load_holdings_and_model() -> tuple[Any, Any]:
+    return _load(HOLDINGS_JSON), target_staging.active_model()
+
+
+def _holdings_prereq_error(holdings: Any) -> str | None:
+    return MSG_HOLDINGS_REQUIRED if not holdings else None
+
+
+def _model_prereq_error(model: Any) -> str | None:
+    return MSG_MODEL_REQUIRED if not model else None
+
+
+def _both_prereq_error(holdings: Any, model: Any) -> str | None:
+    return MSG_BOTH_REQUIRED if not holdings or not model else None
 
 
 def _is_root_static_file(clean: str) -> bool:
@@ -574,12 +600,11 @@ class Handler(BaseHTTPRequestHandler):
         # trades, and what-if reflect what the user is editing (clearly labelled
         # in the UI); otherwise the live model, exactly as before.
         has_draft = target_staging.has_draft()
-        model = target_staging.active_model()
-        holdings = _load(HOLDINGS_JSON)
-        if not model:
-            return self._send_error_json(404, "no target model — data/target-model.json missing")
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, model = _load_holdings_and_model()
+        if err := _model_prereq_error(model):
+            return self._send_error_json(404, err)
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
         _attach_research_overlay(plan, holdings)
         # Provenance + working-draft flag so the planner can badge each band's
@@ -597,17 +622,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_execution_plan(self, path, query):
         execution_plan.reconcile_queue(_basket_state().get("trades") or [])
-        model = target_staging.active_model()
-        holdings = _load(HOLDINGS_JSON)
+        holdings, model = _load_holdings_and_model()
         if model and holdings:
             plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
             return self._send_json(execution_plan.state_for_plan(plan))
         return self._send_json(execution_plan.load_plan())
 
     def _get_rebalance_route(self, path, query):
-        holdings = _load(HOLDINGS_JSON)
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, _model = _load_holdings_and_model()
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         symbol = str((query.get("symbol") or [""])[0]).strip()
         try:
             delta_czk = float((query.get("delta_czk") or [""])[0])
@@ -679,12 +703,11 @@ class Handler(BaseHTTPRequestHandler):
         # to zero), and the config knobs horizon_days/adv_slice_pct/near_exempt_days/
         # tax_rate. with_options=0 serves the fast tax/sale plan first; the UI
         # follows with the enriched option-route request.
-        model = target_staging.active_model()
-        holdings = _load(HOLDINGS_JSON)
-        if not model:
-            return self._send_error_json(404, "no target model — data/target-model.json missing")
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, model = _load_holdings_and_model()
+        if err := _model_prereq_error(model):
+            return self._send_error_json(404, err)
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         include = [s for s in (query.get("include") or [""])[0].split(",") if s.strip()]
         full = [s for s in (query.get("full") or [""])[0].split(",") if s.strip()]
         cfg = _exit_cfg_from_query(query)
@@ -700,9 +723,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(plan)
 
     def _get_risk(self, path, query):
-        holdings = _load(HOLDINGS_JSON)
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, _model = _load_holdings_and_model()
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         rng_key = (query.get("range") or ["1y"])[0].lower()
         rng = rng_key if rng_key in PRICE_HISTORY_RANGES else "1y"
         with _PULL_LOCK:
@@ -735,9 +758,9 @@ class Handler(BaseHTTPRequestHandler):
         # Forward view of every lot's Czech 3-year exemption date: gain lots going
         # tax-free (wait) and loss lots whose harvest window is closing (act).
         # Pure over the snapshot's tax lots -- no network, so no _PULL_LOCK.
-        holdings = _load(HOLDINGS_JSON)
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, _model = _load_holdings_and_model()
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         try:
             soon = int((query.get("soon_days") or ["60"])[0])
         except (TypeError, ValueError):
@@ -1372,10 +1395,9 @@ class Handler(BaseHTTPRequestHandler):
         # trims: funding_order first, then untargeted names, each capped at its
         # headroom and tax-annotated. Advice only — lands as editable inputs.
         body = self._read_body()
-        holdings = _load(HOLDINGS_JSON)
-        model = target_staging.active_model()
-        if not holdings or not model:
-            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        holdings, model = _load_holdings_and_model()
+        if err := _both_prereq_error(holdings, model):
+            return self._send_error_json(404, err)
         try:
             needed = float(body.get("needed_czk"))
         except (TypeError, ValueError):
@@ -1411,25 +1433,24 @@ class Handler(BaseHTTPRequestHandler):
             state, item = execution_plan.add_manual(body.get("item") or {})
             return self._send_json({"state": state, "item": item})
         if action == "replace_rebalance":
-            model = target_staging.active_model()
-            holdings = _load(HOLDINGS_JSON)
+            holdings, model = _load_holdings_and_model()
             if not model or not holdings:
-                raise ValueError("target model and holdings snapshot are required")
+                raise ValueError(MSG_BOTH_VALUE_ERROR)
             plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
             _attach_research_overlay(plan, holdings)
             return self._send_json(execution_plan.replace_rebalance(plan))
         if action == "queue_selected":
-            holdings = _load(HOLDINGS_JSON)
+            holdings, _model = _load_holdings_and_model()
             if not holdings:
-                raise ValueError("holdings snapshot is required")
+                raise ValueError(MSG_HOLDINGS_VALUE_ERROR)
             return self._send_json(execution_plan.queue_selected(holdings))
         raise ValueError("unsupported execution plan action")
 
     def _post_tax_plan(self, path):
         body = self._read_body()
-        holdings = _load(HOLDINGS_JSON)
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, _model = _load_holdings_and_model()
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         try:
             sym = _safe_symbol(str(body.get("symbol") or ""))
         except ValueError as exc:
@@ -1443,10 +1464,9 @@ class Handler(BaseHTTPRequestHandler):
     def _post_exit_plan_refresh_options(self, path):
         """Refresh every cached option quote for one exit-plan instrument."""
         body = self._read_body()
-        model = target_staging.active_model()
-        holdings = _load(HOLDINGS_JSON)
-        if not model or not holdings:
-            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        holdings, model = _load_holdings_and_model()
+        if err := _both_prereq_error(holdings, model):
+            return self._send_error_json(404, err)
         try:
             symbol = _safe_symbol(str(body.get("symbol") or ""))
         except ValueError as exc:
@@ -1471,10 +1491,9 @@ class Handler(BaseHTTPRequestHandler):
         # client used, then merge the requested tranche into the staged basket so
         # the trade desk picks it up. Never trusts a client-supplied share/CZK size.
         body = self._read_body()
-        model = target_staging.active_model()
-        holdings = _load(HOLDINGS_JSON)
-        if not model or not holdings:
-            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        holdings, model = _load_holdings_and_model()
+        if err := _both_prereq_error(holdings, model):
+            return self._send_error_json(404, err)
         symbol = str(body.get("symbol") or "").strip()
         if not symbol:
             return self._send_error_json(400, "symbol is required")
@@ -1516,18 +1535,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_whatif(self, path):
         body = self._read_body()
-        holdings = _load(HOLDINGS_JSON)
-        # Simulate against the working draft when one exists, matching the planner.
-        model = target_staging.active_model()
-        if not holdings or not model:
-            return self._send_error_json(404, "need both a holdings snapshot and a target model")
+        holdings, model = _load_holdings_and_model()
+        if err := _both_prereq_error(holdings, model):
+            return self._send_error_json(404, err)
         return self._send_json(whatif.simulate(holdings, model, body.get("trades")))
 
     def _post_rebalance_stage_routes(self, path):
         body = self._read_body()
-        holdings = _load(HOLDINGS_JSON)
-        if not holdings:
-            return self._send_error_json(404, "no holdings snapshot — sync from IBKR first")
+        holdings, _model = _load_holdings_and_model()
+        if err := _holdings_prereq_error(holdings):
+            return self._send_error_json(404, err)
         try:
             result = rebalance_routes.stage_routes(
                 holdings, body.get("trades"), body.get("selections"),

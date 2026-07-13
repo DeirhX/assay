@@ -1,7 +1,7 @@
 import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 import { fmtMoneyCcy } from "./display/format";
 import { metaStrip } from "./display/chrome";
-import { navFromUrl, replaceViewState } from "./shell";
+import { initUrlBoundSelect } from "./url-select";
 
 // ---- tax calendar ----------------------------------------------------------
 // The Czech 3-year exemption made proactive: every not-yet-exempt lot on a
@@ -180,19 +180,13 @@ function renderTax(r: TaxCalendar) {
 }
 
 function initTaxControls() {
-  const sel = $$<HTMLSelectElement & { _wired?: boolean }>("#tax-soon");
-  const requested = navFromUrl().soon;
-  _taxSoon = requested && Array.from(sel.options).some((o) => o.value === requested)
-    ? requested : "60";
-  sel.value = _taxSoon;
-  if (sel && !sel._wired) {
-    sel._wired = true;
-    sel.addEventListener("change", () => {
-      _taxSoon = sel.value || "60";
-      replaceViewState({ soon: _taxSoon === "60" ? "" : _taxSoon });
-      loadTax();
-    });
-  }
+  initUrlBoundSelect({
+    select: $$("#tax-soon"),
+    param: "soon",
+    defaultValue: "60",
+    onValue: (v) => { _taxSoon = v; },
+    reload: loadTax,
+  });
 }
 
 export { loadTax, renderTax, initTaxControls };

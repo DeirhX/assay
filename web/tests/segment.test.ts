@@ -11,6 +11,7 @@ vi.mock("../src/core", async (importOriginal) => {
 import { state } from "../src/core";
 import type { SegmentRec } from "../src/segment";
 import { renderSegment, SEG_COLS } from "../src/segment";
+import { flushPromises } from "./helpers/flush-promises";
 
 const REC: SegmentRec = {
   title: "AI Semiconductors",
@@ -19,10 +20,6 @@ const REC: SegmentRec = {
     { symbol: "NVDA", data_quality: "INFO", decision: "hold", sleeve: "core" },
     { symbol: "AMD", data_quality: "INFO", decision: "research", sleeve: "core" },
   ],
-};
-
-const flush = async () => {
-  for (let i = 0; i < 6; i++) await Promise.resolve();
 };
 
 beforeEach(() => {
@@ -58,7 +55,7 @@ describe("segment peer table trend column", () => {
 
   it("fills the column with one batch /api/spark call", async () => {
     renderSegment(REC);
-    await flush();
+    await flushPromises();
     expect(apiMock).toHaveBeenCalledWith(expect.stringContaining("/api/spark?symbols="));
     expect(apiMock).toHaveBeenCalledTimes(1);
   });

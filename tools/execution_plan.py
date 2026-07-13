@@ -13,6 +13,7 @@ from typing import Any
 from config import DATA_DIR
 from portfolio import clean_symbol
 from store import load, write_json
+from value_coercion import coerce_optional_limit_price
 
 EXECUTION_PLAN_JSON = DATA_DIR / "cache" / "execution-plan.json"
 SCHEMA_VERSION = 1
@@ -283,12 +284,17 @@ def patch_item(
                 if value is None and key == "limit_price":
                     target[key] = None
                     continue
-                try:
-                    value = float(value)
-                except (TypeError, ValueError):
-                    raise ValueError(f"{key} must be numeric") from None
-                if key == "limit_price" and value <= 0:
-                    raise ValueError("limit_price must be positive")
+                if key == "limit_price":
+                    value = coerce_optional_limit_price(
+                        value,
+                        numeric_error=f"{key} must be numeric",
+                        positive_error="limit_price must be positive",
+                    )
+                else:
+                    try:
+                        value = float(value)
+                    except (TypeError, ValueError):
+                        raise ValueError(f"{key} must be numeric") from None
             target[key] = value
         target["updated_at"] = _now()
         return _write(state, path)
@@ -312,10 +318,10 @@ def add_manual(
     ))
     if route not in _ROUTES:
         raise ValueError("invalid execution route policy")
-    limit_raw = payload.get("limit_price")
-    limit_price = float(limit_raw) if limit_raw is not None else None
-    if limit_price is not None and limit_price <= 0:
-        raise ValueError("limit_price must be positive")
+    limit_price = coerce_optional_limit_price(
+        payload.get("limit_price"),
+        positive_error="limit_price must be positive",
+    )
     now = _now()
     item = {
         "id": f"manual:{uuid.uuid4().hex[:12]}",

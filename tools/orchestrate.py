@@ -25,7 +25,6 @@ approve call starts the next async leg.
 
 from __future__ import annotations
 
-import datetime as dt
 import threading
 import uuid
 from enum import StrEnum
@@ -33,6 +32,7 @@ from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from store import load as _load, write_json as _write_json
+from timeutil import now_iso
 from config import DATA_DIR
 
 # Overridable so tests can point the manifest store at a temp dir, exactly like
@@ -121,10 +121,6 @@ def set_boot_token(token: str | None) -> None:
     _BOOT_TOKEN = token
 
 
-def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-
-
 def manifest_path(run_id: str) -> Path:
     return STRATEGY_DIR / f"{run_id}.json"
 
@@ -168,8 +164,8 @@ def new_run(direction: str) -> RunManifest:
         "run_id": run_id,
         "direction": direction,
         "state": None,
-        "created_at": _now(),
-        "updated_at": _now(),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
         "message": "drafting a research segment…",
         "job_id": None,
         "boot": None,
@@ -193,7 +189,7 @@ def load_run(run_id: str) -> RunManifest | None:
 
 
 def save_run(manifest: RunManifest) -> RunManifest:
-    manifest["updated_at"] = _now()
+    manifest["updated_at"] = now_iso()
     _write_json(manifest_path(manifest["run_id"]), manifest)
     return manifest
 

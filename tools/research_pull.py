@@ -40,6 +40,7 @@ from providers.common import (  # noqa: E402
     fmt_x,
 )
 from config import REPO_ROOT, RESEARCH_DIR, SEGMENT_DEF_DIR, SEGMENT_OUT_DIR  # noqa: E402
+from timeutil import now_iso  # noqa: E402
 
 CACHE_DIR = REPO_ROOT / "data" / "cache"
 HISTORY_DIR = CACHE_DIR / "research-history"
@@ -66,10 +67,6 @@ IDENTITY_TOL = 0.05
 SHARES_TOL = 0.05
 REVENUE_TOL = 0.15  # SEC TTM is an approximation; only flag real divergence
 PRICE_TOL = 0.03
-
-
-def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def _val(node: dict[str, Any] | None) -> float | None:
@@ -300,7 +297,7 @@ def pull_ticker(symbol: str, *, write: bool = True) -> dict[str, Any]:
         "profile": profile,
         "quote_type": quote_type,
         "instrument_type": instruments.classify(symbol, quote_type=quote_type, profile=profile),
-        "as_of": _now(),
+        "as_of": now_iso(),
         "currency": (y or {}).get("currency") or mo.get("currency") or "USD",
         "price": {"value": mo.get("last"), "source": "yahoo"} if mo.get("last") else (y or {}).get("price"),
         "price_history": price_history,
@@ -376,7 +373,7 @@ def pull_segment(name: str, *, write: bool = True) -> dict[str, Any]:
     record = {
         "segment": name,
         "title": definition.get("title", name.title()),
-        "as_of": _now(),
+        "as_of": now_iso(),
         "sleeves": definition.get("sleeves", []),
         "members": members,
     }
@@ -529,7 +526,7 @@ def delete_history(symbol: str, stamp: str) -> bool:
 def _write_history(symbol: str, record: dict[str, Any]) -> None:
     snapshot = dict(record)
     snapshot.pop("thesis", None)
-    stamp = _history_stamp(record.get("as_of") or _now())
+    stamp = _history_stamp(record.get("as_of") or now_iso())
     _write(HISTORY_DIR / symbol.upper() / f"{stamp}.json", snapshot)
 
 

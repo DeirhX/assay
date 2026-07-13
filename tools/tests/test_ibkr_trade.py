@@ -1292,7 +1292,7 @@ class ResolveExactCall(unittest.TestCase):
         )
         fixed = "2026-07-09T10:15:00+00:00"
         with mock.patch.object(ibt, "_request", gw), \
-                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+                mock.patch.object(ibt.timeutil, "now_iso", return_value=fixed):
             out = ibt.resolve_exact_call("NVDA", self.EXPIRY, 105)
         self.assertIsNotNone(out)
         self.assertEqual(out["symbol"], "NVDA")
@@ -1361,7 +1361,7 @@ class OptionChainMetadata(unittest.TestCase):
         gw = _FakeGateway(spot={"31": "100.0", "84": "99.5", "86": "100.5"})
         fixed = "2026-07-09T10:15:00+00:00"
         with mock.patch.object(ibt, "_request", gw), \
-                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+                mock.patch.object(ibt.timeutil, "now_iso", return_value=fixed):
             chain = ibt.option_chain("NVDA", as_of=self.AS_OF)
         self.assertEqual(chain["underlying_price"], 100.0)
         self.assertAlmostEqual(chain["underlying_bid"], 99.5)
@@ -1390,7 +1390,7 @@ class OptionChainMetadata(unittest.TestCase):
         fixed = "2026-07-09T10:15:00+00:00"
         with mock.patch.object(ibt, "_request", gw), \
                 mock.patch.object(ibt, "OPTION_SNAPSHOT_WARMUP_SECONDS", 0), \
-                mock.patch.object(ibt, "_utc_now_iso", return_value=fixed):
+                mock.patch.object(ibt.timeutil, "now_iso", return_value=fixed):
             refreshed = ibt.refresh_option_chain_quotes(chain)
         call = refreshed["expiries"][0]["calls"][0]
         self.assertEqual((call["bid"], call["ask"]), (2.4, 2.6))

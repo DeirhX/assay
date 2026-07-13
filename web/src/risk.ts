@@ -1,7 +1,7 @@
 import { $$, apiLoad, el, esc, fmtStamp, freshnessNote, simpleTable, statTile } from "./core";
 import { fmtSignedPct1 } from "./display/format";
 import { analyticsSection, caveatBanner, metaStrip } from "./display/chrome";
-import { navFromUrl, replaceViewState } from "./shell";
+import { initUrlBoundSelect } from "./url-select";
 
 // ---- portfolio risk lens ---------------------------------------------------
 // The whole point of this view: single-name bands hide correlated concentration.
@@ -300,19 +300,13 @@ function posTable(positions: RiskPosition[]) {
 }
 
 function initRiskControls() {
-  const sel = $$<HTMLSelectElement & { _wired?: boolean }>("#risk-range");
-  const requested = navFromUrl().range;
-  _riskRange = requested && Array.from(sel.options).some((o) => o.value === requested)
-    ? requested : "1y";
-  sel.value = _riskRange;
-  if (sel && !sel._wired) {
-    sel._wired = true;
-    sel.addEventListener("change", () => {
-      _riskRange = sel.value || "1y";
-      replaceViewState({ range: _riskRange === "1y" ? "" : _riskRange });
-      loadRisk();
-    });
-  }
+  initUrlBoundSelect({
+    select: $$("#risk-range"),
+    param: "range",
+    defaultValue: "1y",
+    onValue: (v) => { _riskRange = v; },
+    reload: loadRisk,
+  });
 }
 
 export { loadRisk, renderRisk, initRiskControls, corrColor };

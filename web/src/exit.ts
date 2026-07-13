@@ -725,19 +725,15 @@ function scheduleBlock(p: ExitPosition, baseCcy: string): HTMLElement {
   return box;
 }
 
-async function stageTranche(symbol: string, index: number, btn: HTMLButtonElement): Promise<void> {
+async function stageExitLeg(body: Record<string, unknown>, btn: HTMLButtonElement): Promise<void> {
   const prev = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Adding…";
   try {
-    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
-      symbol, route: "sell_shares", index, cfg,
-    });
+    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", body);
     applyStagedBasketLegs(resp.basket.slice());
     publishQueueChanged();
     btn.textContent = "Queued ✓";
-    // Projection is a pre-trade safety gate: show where the accumulated order
-    // queue lands before offering IBKR preview / placement.
     gotoWorkflowView("target-state");
   } catch (e) {
     btn.textContent = "Failed";
@@ -746,34 +742,25 @@ async function stageTranche(symbol: string, index: number, btn: HTMLButtonElemen
   }
 }
 
+async function stageTranche(symbol: string, index: number, btn: HTMLButtonElement): Promise<void> {
+  await stageExitLeg({ symbol, route: "sell_shares", index, cfg }, btn);
+}
+
 async function stageCoveredCall(
   symbol: string,
   rung: ExitCoveredCallRung,
   contracts: number,
   btn: HTMLButtonElement,
 ): Promise<void> {
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Adding…";
-  try {
-    const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
-      symbol,
-      route: "covered_call",
-      conid: rung.conid,
-      expiry: rung.expiry,
-      strike: rung.strike,
-      contracts,
-      cfg,
-    });
-    applyStagedBasketLegs(resp.basket.slice());
-    publishQueueChanged();
-    btn.textContent = "Queued ✓";
-    gotoWorkflowView("target-state");
-  } catch (e) {
-    btn.textContent = "Failed";
-    btn.title = (e as Error)?.message || "stage failed";
-    setTimeout(() => { btn.disabled = false; btn.textContent = prev; }, 1500);
-  }
+  await stageExitLeg({
+    symbol,
+    route: "covered_call",
+    conid: rung.conid,
+    expiry: rung.expiry,
+    strike: rung.strike,
+    contracts,
+    cfg,
+  }, btn);
 }
 
 function rungBlockedReasons(r: ExitCoveredCallRung): string[] {

@@ -12,6 +12,7 @@ vi.mock("../src/core", async (importOriginal) => {
 
 import type { LeaderboardPayload, LeaderboardRow } from "../src/leaderboard";
 import { exposureGaps, leaderboardTileHtml, loadLeaderboard, rankSegments } from "../src/leaderboard";
+import { flushPromises } from "./helpers/flush-promises";
 
 function row(segment: string, o: Partial<LeaderboardRow> = {}): LeaderboardRow {
   return {
@@ -32,8 +33,6 @@ function row(segment: string, o: Partial<LeaderboardRow> = {}): LeaderboardRow {
     score: o.score ?? 0,
   };
 }
-
-const flush = async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 
 describe("rankSegments", () => {
   const rows = [
@@ -171,7 +170,7 @@ describe("loadLeaderboard render", () => {
 
   it("renders one tile per segment and the overlap note", async () => {
     await loadLeaderboard();
-    await flush();
+    await flushPromises();
     expect(apiMock).toHaveBeenCalledWith("/api/segments/leaderboard");
     expect(document.querySelectorAll("#lb-body .lb-tile")).toHaveLength(2);
     expect(document.querySelector("#lb-body .lb-overlap")).not.toBeNull();
@@ -179,7 +178,7 @@ describe("loadLeaderboard render", () => {
 
   it("surfaces the hot-but-underweight callout", async () => {
     await loadLeaderboard();
-    await flush();
+    await flushPromises();
     const callout = document.querySelector("#lb-body .lb-callout-hot.banner-callout-good");
     expect(callout).not.toBeNull();
     expect(callout!.textContent).toContain("Hot");
@@ -187,7 +186,7 @@ describe("loadLeaderboard render", () => {
 
   it("switching sort re-renders, moves the active toggle, and updates the caption", async () => {
     await loadLeaderboard();
-    await flush();
+    await flushPromises();
     const momentumBtn = [...document.querySelectorAll<HTMLElement>("#lb-body .lb-sort.ui-segment-pill")]
       .find((b) => b.dataset.sort === "momentum")!;
     momentumBtn.click();
