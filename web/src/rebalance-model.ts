@@ -69,8 +69,7 @@ export function rebScaleMax(rows: Pick<PlanRow, "high" | "current_pct" | "sugges
 export const scalePct = onAxis;
 
 // The current→projected connector bar: spans between the two ticks.
-export const connectorGeom = (curP: number, projP: number) =>
-  ({ left: Math.min(curP, projP), width: Math.abs(projP - curP) });
+export { connectorGeom } from "./band-viz";
 
 // ---- the edited plan --------------------------------------------------------
 // Inputs mirror what the DOM holds (a delta per editable row); results carry

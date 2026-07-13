@@ -1,6 +1,6 @@
 import type { Job } from "./api-types";
 import { $$, api, el, esc } from "./core";
-import { pollDeepJob } from "./jobs";
+import { runHoldingsSync } from "./holdings-sync";
 
 let _wired = false;
 
@@ -100,7 +100,7 @@ interface ErrLogEntry {
 let _models: Record<string, ModelOption[]> = {};
 
 function badge(ok: unknown, text: string) {
-  return `<span class="setup-badge ${ok ? "ok" : "bad"}">${esc(text)}</span>`;
+  return `<span class="setup-badge tone-chip ${ok ? "ok" : "bad"}">${esc(text)}</span>`;
 }
 
 function toggle(id: string, label: string, checked: unknown) {
@@ -385,7 +385,7 @@ function setupSteps(st: SetupState): SetupStep[] {
 
 function stepStateBadge(step: SetupStep) {
   if (step.done) return badge(true, "OK");
-  if (step.partial) return `<span class="setup-badge warn">IN PROGRESS</span>`;
+  if (step.partial) return `<span class="setup-badge tone-chip warn">IN PROGRESS</span>`;
   return badge(false, step.required ? "TODO" : "OPTIONAL");
 }
 
@@ -474,7 +474,7 @@ async function renderErrorLog(open = false) {
   const hasError = entries.some((e) => e.level !== "warning");
   card.open = open && count > 0;
   const stateBadge = count
-    ? `<span class="setup-badge ${hasError ? "bad" : "warn"}">${count}</span>`
+    ? `<span class="setup-badge tone-chip ${hasError ? "bad" : "warn"}">${count}</span>`
     : badge(true, "CLEAN");
   card.innerHTML =
     `<summary class="setup-step-head">` +
@@ -487,7 +487,7 @@ async function renderErrorLog(open = false) {
       (count
         ? `<ul class="errlog-list">${entries.map(errLogEntryHtml).join("")}</ul>`
         : `<p class="setup-small ok">Quiet is good — nothing has failed since the last clear.</p>`) +
-      `<div class="setup-actions">` +
+      `<div class="action-row setup-actions">` +
         `<button class="ghost" id="setup-errlog-refresh" type="button">Refresh</button>` +
         (count ? `<button class="ghost" id="setup-errlog-clear" type="button">Clear log</button>` : "") +
         `<span class="status" id="setup-errlog-status"></span>` +
@@ -542,14 +542,14 @@ function renderIbkr(st: SetupState) {
     `<label class="setup-field">Flex token` +
       `<input id="setup-ibkr-token" type="password" placeholder="${esc(tokenPlaceholder)}" autocomplete="off">` +
     `</label>` +
-    `<div class="setup-actions">` +
+    `<div class="action-row setup-actions">` +
       `<button class="${k.configured ? "ghost" : "primary"}" id="setup-save-ibkr" type="button">Save credentials</button>` +
       `<span class="status" id="setup-ibkr-status"></span>` +
     `</div>` +
     `<div class="setup-row" style="margin-top:10px"><strong>History query</strong>${badge(k.history_configured, k.history_configured ? "ready" : "not set")}</div>` +
     `<div class="setup-row" style="margin-top:14px"><strong>2. Holdings snapshot</strong>${badge(hasSnapshot, hasSnapshot ? `${positions} positions` : "not pulled yet")}</div>` +
     `<p class="hint">Pulls the latest positions, cash, and tax lots directly from IBKR (read-only — the Flex query cannot trade). Same action as <strong>Resync from IBKR</strong> on the Holdings tab.</p>` +
-    `<div class="setup-actions">` +
+    `<div class="action-row setup-actions">` +
       `<button class="primary" id="setup-sync-ibkr" type="button"${canSync ? "" : " disabled"} title="${canSync ? "Re-pull holdings from IBKR (read-only)" : "Save your Flex credentials first"}">${hasSnapshot ? "Re-sync holdings" : "Sync holdings now"}</button>` +
       `<span class="status" id="setup-ibkr-sync-status">${canSync ? "" : "Save credentials first to enable syncing."}</span>` +
     `</div>` +
@@ -604,7 +604,7 @@ function renderLlmCli(st: SetupState) {
       renderBackendStatus(st, "claude", claude) +
       renderBackendStatus(st, "cursor", cursor) +
     `</div>` +
-    `<div class="setup-actions">` +
+    `<div class="action-row setup-actions">` +
       `<button class="primary" id="setup-check-llm" type="button">Run smoke checks</button>` +
       `<button class="ghost" id="setup-save-llm" type="button">Save config</button>` +
       `<span class="status" id="setup-llm-status"></span>` +
@@ -664,16 +664,16 @@ function renderPerplexity(st: SetupState) {
   wrap.innerHTML =
     `<div class="setup-row"><strong>Browser session</strong>${enabled
       ? badge(pplx.logged_in, pplx.logged_in ? "logged in" : "not logged in")
-      : `<span class="setup-badge">OFF</span>`}</div>` +
+      : `<span class="setup-badge tone-chip">OFF</span>`}</div>` +
     (enabled && pplx.logged_in
       ? `<div class="setup-row"><strong>Deep Research access</strong>${available === false
-        ? `<span class="setup-badge bad">UNAVAILABLE</span>`
+        ? `<span class="setup-badge tone-chip bad">UNAVAILABLE</span>`
         : available === true
-          ? `<span class="setup-badge ok">AVAILABLE</span>`
-          : `<span class="setup-badge warn">NOT CHECKED</span>`}</div>`
+          ? `<span class="setup-badge tone-chip ok">AVAILABLE</span>`
+          : `<span class="setup-badge tone-chip warn">NOT CHECKED</span>`}</div>`
       : "") +
     `<p class="hint"><strong>Optional.</strong> Skip this and everything else still works — you just won't get the web-sourced Deep Research crawls. Setting it up stores the Perplexity login in a dedicated local browser profile. <strong>Forget</strong> disables the integration and deletes that saved profile and its cookies.</p>` +
-    `<div class="thesis-actions">` +
+    `<div class="thesis-actions action-row">` +
       (enabled
         ? `<button class="primary" id="setup-pplx-login" type="button">Set up Perplexity login</button>` +
           `<button class="ghost" id="setup-pplx-check" type="button">Verify login</button>` +
@@ -806,26 +806,14 @@ async function saveIbkr() {
 async function syncIbkr() {
   const btn = $$<HTMLButtonElement>("#setup-sync-ibkr");
   const status = $$("#setup-ibkr-sync-status");
-  if (!btn || btn.disabled) return;
-  status.classList.remove("err");
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Syncing…";
-  status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
-  try {
-    // Registered background job: start it and poll the shared loop (also surfaces
-    // in the global task pill) instead of blocking the request for a minute.
-    const job = await api("/api/holdings/sync", "POST", {});
-    await pollDeepJob(job.id, status, async () => {
-      await loadSetup(); // re-renders with the fresh snapshot badge + position count
-    }, "IBKR sync");
-  } catch (e) {
-    status.classList.add("err");
-    status.textContent = "Sync failed: " + (e as Error).message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
+  if (!btn) return;
+  await runHoldingsSync({
+    btn,
+    status,
+    onDone: async () => {
+      await loadSetup();
+    },
+  });
 }
 
 const SETUP_ACTIONS: Record<string, () => unknown> = {

@@ -1,18 +1,25 @@
 import { starHtml } from "./basket";
-import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, state, statTile } from "./core";
+import { $, $$, api, apiLoad, el, esc, fmtCZK, fmtSignedWeight, fmtStamp, freshnessNote, isStaleToken, nextToken, sensitive, simpleTable, statTile } from "./core";
 import type {
   CoveredCallCoverageViolation, ExecutionPlanItem, ExecutionPlanState,
   FundingCandidate, FundingResponse,
   Provenance, RebalancePlan as RebPlan,
-  PlanRow as RebRow, PlanMember, RebalanceOptionRung, RebalanceRouteResponse,
-  RebalanceRouteSelection, TradeQueueState, Whatif, WhatifTrade,
+  PlanRow as RebRow, PlanMember,
+  RebalanceOptionRung, RebalanceRouteResponse, RebalanceRouteSelection,
+  TradeQueueState, Whatif, WhatifTrade,
 } from "./api-types";
+import {
+  applyStagedBasketFromQueue, publishQueueChanged, stageRebalanceQueue,
+} from "./execution-queue";
+import { patchExecutionPlanItem } from "./execution-plan-ui";
+import { directRouteFor, optionRouteFor } from "./execution-routes";
 import { gatewayConnected, gatewayUnavailableReason, refreshGatewayStatus } from "./gateway";
-import { ruleTone, ruleWord } from "./band-viz";
+import { ruleTone, ruleWord, POSITION_TRACK_SEL, positionTrackHtml } from "./band-viz";
 import { openJournalWith } from "./journal";
 import { sparkPlaceholder, hydrateSparks } from "./spark";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { cleanSymbol, pushNav, setActiveView } from "./shell";
+import { gotoWorkflowView } from "./workflow-nav";
 import {
   clampPct, computePlan, connectorGeom, deltaForProjectedWeight, DELTA_EPS,
   fundingNeededCzk, inBandAfter, parseDelta, pctToCzk, projectedCash, r1,
@@ -38,7 +45,7 @@ export function fundingCardHtml(res: FundingResponse, applied: FundingCandidate[
          (t.exempt_proceeds ? ` · ${fmtCZK(t.exempt_proceeds)} already 3y-exempt` : ""))
       : "no lot data";
     return `<div class="reb-fund-row"><strong>${esc(c.symbol)}</strong>` +
-      `<span class="chip ${isOrder ? "good" : "muted"}">${isOrder ? "funding order" : "untargeted"}</span>` +
+      `<span class="chip tone-chip ${isOrder ? "good" : "muted"}">${isOrder ? "funding order" : "untargeted"}</span>` +
       `<span>${sensitive(`−${fmtCZK(c.suggest_czk)} CZK`, "funding trim")}</span>` +
       `<small class="muted">${tax}</small></div>`;
   }).join("");
@@ -170,18 +177,14 @@ export function distributeSleeveDelta(
 // target and sleeve rows.
 function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRefs } {
   const cell = el("div", "reb-c reb-pos");
-  const toP = (v: number) => scalePct(v, scaleMax);
   const low = typeof r.low === "number" ? r.low : 0;
   const high = typeof r.high === "number" ? r.high : low;
-  const zL = toP(low);
-  const zW = Math.max(1.5, toP(high) - zL);
-  const curP = toP(r.current_pct);
   const defDelta = r.interactive ? rebDefaultDelta(r) : (r.suggest_delta_pct || 0);
   const draggable = r.interactive || r.kind === "sleeve";
   const projInit = (r.current_pct || 0) + defDelta;
-  const projP = toP(projInit);
   const inBand0 = inBandAfter(projInit, low, high);
   const moveClass = defDelta > DELTA_EPS ? "buy" : defDelta < -DELTA_EPS ? "sell" : "";
+  const connTone = moveClass === "buy" ? "buy" : moveClass === "sell" ? "sell" : "none";
 
   const bandText = `${low.toFixed(1)}–${high.toFixed(1)}%`;
   const movementHtml = (delta: number) => delta > DELTA_EPS
@@ -194,26 +197,38 @@ function posCell(r: RebRow, scaleMax: number): { cell: HTMLElement; refs: PosRef
     `<small>${sensitive(`${fmtCZK(r.current_czk)} CZK`, "position value")}</small>` +
     `<span class="reb-band-cue">Target band <b>${bandText}</b></span>`;
   const aria = `${esc(r.name)}: current ${r.current_pct.toFixed(1)}%, target band ${low.toFixed(1)} to ${high.toFixed(1)}%, ${r.status === "BELOW" ? "move right by adding" : r.status === "ABOVE" ? "move left by reducing" : "currently in band"}`;
+  const trackBuilt = positionTrackHtml({
+    scaleMax,
+    band: { low, high },
+    current: r.current_pct,
+    projected: projInit,
+    ariaLabel: aria,
+    opts: {
+      role: draggable ? "group" : "img",
+      connTone,
+      showConn: true,
+      inBand: inBand0,
+      showAxis: false,
+      currentTitle: `current ${r.current_pct.toFixed(2)}%`,
+      projectedTitle: `projected ${projInit.toFixed(2)}%`,
+    },
+  });
   cell.innerHTML =
     `<div class="reb-pos-meta">${meta}</div>` +
-    `<div class="reb-track" role="${draggable ? "group" : "img"}" aria-label="${aria}">` +
-      `<span class="reb-zone" style="left:${r1(zL)}%;width:${r1(zW)}%" title="Target band ${bandText}"></span>` +
-      `<span class="reb-conn ${moveClass}" style="left:${r1(Math.min(curP, projP))}%;width:${r1(Math.abs(projP - curP))}%"></span>` +
-      `<span class="reb-cur-mark" style="left:${r1(curP)}%" title="current ${r.current_pct.toFixed(2)}%"></span>` +
-      `<span class="reb-proj-mark ${inBand0 ? "in" : "out"}" style="left:${r1(projP)}%" title="projected ${projInit.toFixed(2)}%"></span>` +
-    `</div>` +
+    trackBuilt.html +
     `<div class="reb-track-readout">` +
       `<span class="reb-track-movement ${moveClass}">${movementHtml(defDelta)}</span>` +
       `<span class="reb-track-planned"><i></i>Planned <b>${projInit.toFixed(2)}%</b></span>` +
       `<span class="reb-track-landing ${inBand0 ? "in" : "out"}">${inBand0 ? "Inside target" : "Outside target"}</span>` +
     `</div>`;
 
-  const track = cell.querySelector(".reb-track") as HTMLElement;
-  const proj = cell.querySelector(".reb-proj-mark") as HTMLElement;
-  const conn = cell.querySelector(".reb-conn") as HTMLElement;
+  const track = cell.querySelector(`.${POSITION_TRACK_SEL.track}`) as HTMLElement;
+  const proj = cell.querySelector(`.${POSITION_TRACK_SEL.projMark}`) as HTMLElement;
+  const conn = cell.querySelector(`.${POSITION_TRACK_SEL.conn}`) as HTMLElement;
   const plannedReadout = cell.querySelector(".reb-track-planned b") as HTMLElement;
   const movementReadout = cell.querySelector(".reb-track-movement") as HTMLElement;
   const landingReadout = cell.querySelector(".reb-track-landing") as HTMLElement;
+  const curP = trackBuilt.geom.curP ?? 0;
   return {
     cell,
     refs: {
@@ -242,7 +257,7 @@ function researchLine(r: RebRow) {
   const dqTitle = dqLabels[dq] || dq;
   bits.push(`<span class="dot ${esc(dq)}" title="Data trust: ${esc(dqTitle)}"></span>`);
   if (res.thesis_action) {
-    bits.push(`<span class="chip ${thesisLean(res.thesis_lean)} reb-thesis-chip" title="Your saved thesis verdict">${esc(res.thesis_action)}</span>`);
+    bits.push(`<span class="chip tone-chip ${thesisLean(res.thesis_lean)} reb-thesis-chip" title="Your saved thesis verdict">${esc(res.thesis_action)}</span>`);
   }
   if (typeof res.momentum_3m_pct === "number") {
     const m = res.momentum_3m_pct;
@@ -257,7 +272,7 @@ function researchLine(r: RebRow) {
   // the flag doubles as a one-click escalation into the guided strategy flow,
   // which owns the human-gated path to actually change the target model.
   if (r.research_conflict) {
-    const chip = el("button", "chip bad reb-conflict-chip",
+    const chip = el("button", "chip tone-chip bad reb-conflict-chip",
       "conflict \u2192 planner");
     chip.type = "button";
     chip.title = "The suggested trade and your saved thesis disagree — open the Planner to reassess this name";
@@ -396,7 +411,7 @@ function provBadge(prov: Provenance | null | undefined) {
   } else {
     return null;
   }
-  const badge = el("span", `chip reb-prov reb-prov-${cls}`, esc(label));
+  const badge = el("span", `chip tone-chip reb-prov reb-prov-${cls}`, esc(label));
   badge.title = title;
   return badge;
 }
@@ -407,7 +422,7 @@ function stagedBannerHtml(plan: RebPlan) {
   const s = plan.staged;
   if (!s || !s.has_draft) return "";
   const n = s.pending || 0;
-  return `<div class="reb-staged-banner" id="reb-staged-banner">` +
+  return `<div class="banner banner-warn banner-row reb-staged-banner" id="reb-staged-banner">` +
     `<span><strong>${n}</strong> pending target-model change(s) — order suggestions currently use that proposal, not the live model.</span>` +
     `<button class="ghost" id="reb-open-draft" type="button">Review model changes →</button>` +
     `</div>`;
@@ -508,27 +523,8 @@ function renderRebalance(plan: RebPlan) {
     }
   }
   const executionStatus = $("#reb-execution-status");
-  const patchExecutionItem = async (
-    item: ExecutionPlanItem,
-    changes: Partial<ExecutionPlanItem>,
-  ): Promise<void> => {
-    Object.assign(item, changes);
-    try {
-      const updated = await api<ExecutionPlanState>("/api/execution-plan", "POST", {
-        action: "patch",
-        item_id: item.id,
-        changes,
-      });
-      const fresh = updated.items.find((candidate) => candidate.id === item.id);
-      if (fresh) Object.assign(item, fresh);
-      if (executionStatus) executionStatus.textContent = "plan saved ✓";
-    } catch (error) {
-      if (executionStatus) {
-        executionStatus.textContent = `plan save failed: ${(error as Error).message}`;
-        executionStatus.className = "bad";
-      }
-    }
-  };
+  const patchExecutionItem = (item: ExecutionPlanItem, changes: Partial<ExecutionPlanItem>) =>
+    patchExecutionPlanItem(item, changes, executionStatus);
   // Target-row name cells by symbol, so the async working-orders pass below can
   // badge names that already have an unfilled order at IBKR.
   const nameCells: Record<string, HTMLElement> = {};
@@ -774,13 +770,13 @@ function renderRebalance(plan: RebPlan) {
     if (m.conviction) {
       const cc = String(m.conviction).toLowerCase();
       const cls = cc === "high" ? "good" : cc === "low" ? "warn" : "muted";
-      symWrap.appendChild(el("span", `chip reb-mem-conv ${cls}`, esc(cc)));
+      symWrap.appendChild(el("span", `chip tone-chip reb-mem-conv ${cls}`, esc(cc)));
     }
     if (m.options) {
       const covers = m.options.covers;
       const cls = covers === "full" ? "warn" : "muted";
       const pct = Math.round((m.options.long_pct || 0) * 10) / 10;
-      const chip = el("span", `chip reb-mem-opt ${cls}`,
+      const chip = el("span", `chip tone-chip reb-mem-opt ${cls}`,
         covers === "full" ? "puts cover" : `puts ~${pct}%`);
       chip.title = `Short-put / long-call exposure ${esc(m.options.label)} — ~${pct}% pending on assignment, not owned shares` +
         (covers === "full" ? "; already covers this name's buy, so none staged" : "");
@@ -994,7 +990,7 @@ function renderRebalance(plan: RebPlan) {
 
       const projCell = el("div", "reb-c reb-proj");
       const projPct = el("span", "reb-proj-pct");
-      const projBand = el("span", "chip reb-proj-band");
+      const projBand = el("span", "chip tone-chip reb-proj-band");
       projCell.appendChild(projPct);
       projCell.appendChild(projBand);
       row.appendChild(projCell);
@@ -1024,7 +1020,7 @@ function renderRebalance(plan: RebPlan) {
       // editable amounts live in the expandable drawer below this row.
       const planCell = el("div", "reb-c reb-plan reb-plan-ro",
         (r.action
-          ? `<span class="chip ${rebActionClass(r.action)}">${fmtSignedWeight(r.suggest_delta_pct)}</span>`
+          ? `<span class="chip tone-chip ${rebActionClass(r.action)}">${fmtSignedWeight(r.suggest_delta_pct)}</span>`
           : `<span class="muted">in band</span>`) +
         `<small>across members ↓</small>`);
       row.appendChild(planCell);
@@ -1247,7 +1243,7 @@ function renderRebalance(plan: RebPlan) {
         const osym = cleanSymbol(o.ticker || o.symbol);
         const cell = nameCells[osym];
         if (!osym || !cell || cell.querySelector(".reb-working")) return;
-        const chip = el("span", "chip warn reb-working", "⏳ order working");
+        const chip = el("span", "chip tone-chip warn reb-working", "⏳ order working");
         chip.title = (o.orderDesc || `${o.side || ""} ${o.remainingQuantity ?? ""} ${osym} ${o.status || "working"}`.trim()) +
           " — an unfilled order at IBKR already moves this name; check the Trade tab before staging more";
         cell.appendChild(chip);
@@ -1424,7 +1420,7 @@ function renderRebalance(plan: RebPlan) {
       czk.innerHTML = plannedCzkHtml(res.delta, res.czk, "<span class=\"muted\">no change</span>");
       projPct.textContent = `${res.proj.toFixed(2)}%`;
       projBand.textContent = res.inBand ? "in band" : "out";
-      projBand.className = "chip reb-proj-band " + (res.inBand ? "good" : "warn");
+      projBand.className = "chip tone-chip reb-proj-band " + (res.inBand ? "good" : "warn");
       row.classList.toggle("planned-sell", res.delta < -DELTA_EPS);
       row.classList.toggle("planned-buy", res.delta > DELTA_EPS);
       paintTrack(pos, res.proj, res.inBand);
@@ -1440,7 +1436,7 @@ function renderRebalance(plan: RebPlan) {
         const mc = unit.members[j];
         mc.czk.innerHTML = plannedCzkHtml(mres.delta, mres.czk, "<span class=\"muted\">no change</span>");
         mc.proj.innerHTML = `${mres.proj.toFixed(2)}%` +
-          (mres.overCap ? ` <span class="chip warn" title="over its member cap">cap</span>` : "");
+          (mres.overCap ? ` <span class="chip tone-chip warn" title="over its member cap">cap</span>` : "");
         mc.proj.classList.toggle("good", mres.atTarget);
       });
       paintTrack(unit.pos, sres.proj, sres.inBand);
@@ -1646,9 +1642,6 @@ interface ExecutionRouteControl {
   sync: (deltaCzk: number) => void;
   selectDirect: (limitPrice?: number) => void;
 }
-
-const directRouteFor = (deltaCzk: number) => deltaCzk >= 0 ? "buy_shares" : "sell_shares";
-const optionRouteFor = (deltaCzk: number) => deltaCzk >= 0 ? "cash_secured_put" : "covered_call";
 
 function executionRouteControl(
   symbol: string,
@@ -2074,9 +2067,9 @@ export function renderWhatif(
         : status ? `${esc(status.name)} target` : "";
       return `<td>${nameCell}</td>` +
         `<td class="num">${sensitive(`${t.delta_czk >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(t.delta_czk))}`, "trade size")}</td>` +
-        `<td><span class="chip ${selectionFor(t).route.includes("shares") ? "muted" : "good"}">${esc(routeLabel(t))}</span></td>` +
-        `<td><span class="chip ${rebStatusClass(before)}">${esc(before)}</span></td>` +
-        `<td>${status ? `<span class="chip ${rebStatusClass(status.status)}">${esc(status.status)}</span>` : "\u2014"}</td>` +
+        `<td><span class="chip tone-chip ${selectionFor(t).route.includes("shares") ? "muted" : "good"}">${esc(routeLabel(t))}</span></td>` +
+        `<td><span class="chip tone-chip ${rebStatusClass(before)}">${esc(before)}</span></td>` +
+        `<td>${status ? `<span class="chip tone-chip ${rebStatusClass(status.status)}">${esc(status.status)}</span>` : "\u2014"}</td>` +
         `<td class="num">${status ? `${weightScope}<br><strong>${status.current_pct.toFixed(2)}%</strong>` : "\u2014"}</td>`;
     },
   }));
@@ -2134,23 +2127,18 @@ export function renderWhatif(
     try {
       // Staging is intentionally separate from simulation: a read-only preview
       // must not mutate the order queue as a hidden side effect.
-      const saved = await api<TradeQueueState>(
-        "/api/rebalance/stage",
-        "POST",
-        { trades, selections: trades.map(selectionFor), mode: queueMode },
-      );
-      state.stagedBasket = saved.trades.slice();
-      window.dispatchEvent(new Event("assay:queue-changed"));
+      const saved = await stageRebalanceQueue({
+        trades,
+        selections: trades.map(selectionFor),
+        mode: queueMode,
+      });
       stageBtn.className = "ghost";
       stageBtn.textContent = queueMode === "append" ? "Orders added ✓" : "Rebalance orders replaced ✓";
       const reviewBtn = el("button", "primary", "Review projected portfolio →");
       reviewBtn.type = "button";
       reviewBtn.title = "Approve the projected portfolio before IBKR preview";
-      reviewBtn.addEventListener("click", () => {
-        pushNav({ view: "target-state" });
-        setActiveView("target-state");
-        window.scrollTo(0, 0);
-      });
+      reviewBtn.addEventListener("click", () =>
+        gotoWorkflowView("target-state", { scrollTop: true }));
       const coverageViolations = saved.coverage_violations || [];
       if (coverageViolations.length) {
         let unresolvedCoverage = coverageViolations.length;
@@ -2176,8 +2164,8 @@ export function renderWhatif(
                 included: false,
               });
             }
-            if (updated) state.stagedBasket = updated.trades.slice();
-            window.dispatchEvent(new Event("assay:queue-changed"));
+            if (updated) applyStagedBasketFromQueue(updated);
+            publishQueueChanged();
             row.classList.add("resolved");
             row.innerHTML =
               `<strong>${esc(violation.symbol)} reconciled</strong>` +
@@ -2304,7 +2292,7 @@ function taxDetails(r: RebRow) {
     const dte = (l.days_to_exempt != null && l.days_to_exempt > 0)
       ? `<small class="muted">${l.days_to_exempt}d to exempt</small>` : "";
     list.appendChild(el("div", "reb-tax-row",
-      `<span class="chip ${b.cls}">${esc(b.label)}</span>` +
+      `<span class="chip tone-chip ${b.cls}">${esc(b.label)}</span>` +
       `<span class="reb-tax-date">opened ${esc(when)} ${dte}</span>` +
       `<span>${sensitive(`${fmtCZK(l.proceeds)} ${esc(t.currency)}`, "lot proceeds")}</span>` +
       `<span class="${(l.gain ?? 0) >= 0 ? "good" : "bad"}">gain ${sensitive(`${(l.gain ?? 0) >= 0 ? "+" : "\u2212"}${fmtCZK(Math.abs(l.gain ?? 0))}`, "lot gain")}</span>`));

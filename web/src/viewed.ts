@@ -55,12 +55,12 @@ async function renderViewedTickers() {
   out.innerHTML = "";
   $$("#dd-status").textContent = "";
   const card = el("div", "card viewed-card");
-  const head = el("div", "viewed-head");
+  const head = el("div", "page-head page-head--toolbar viewed-head");
   head.appendChild(el("h2", "section", "Viewed tickers"));
-  const sortWrap = el("div", "viewed-sort");
+  const sortWrap = el("div", "ui-segment-pills viewed-sort");
   sortWrap.appendChild(el("span", "muted", "sort:"));
   [["time", "Recent"], ["name", "Name"]].forEach(([key, label]) => {
-    const b = el("button", "chip" + (_viewedSort === key ? " active" : ""), label);
+    const b = el("button", "chip tone-chip ui-segment-pill" + (_viewedSort === key ? " active" : ""), label);
     b.type = "button";
     b.addEventListener("click", () => {
       _viewedSort = key;

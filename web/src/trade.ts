@@ -1,5 +1,6 @@
 import { $, api, el, esc, fmtCZK, isStaleToken, nextToken, sensitive, state } from "./core";
-import { pollDeepJob } from "./jobs";
+import { tickerAnchorHtml } from "./analyses/linkify";
+import { runHoldingsSync } from "./holdings-sync";
 import { openJournalWith } from "./journal";
 import { coverageConflictsHtml } from "./coverage-conflicts";
 import {
@@ -7,10 +8,15 @@ import {
   subscribeGatewayStatus,
 } from "./gateway";
 import { hydrateSparks, sparkPlaceholder } from "./spark";
-import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
+import { navFromUrl, replaceViewState } from "./shell";
+import { gotoWorkflowView } from "./workflow-nav";
 import type {
   GatewayStatus, QueuedTradeLeg, TradeLeg, TradeLegProvenance, TradeQueueState,
 } from "./api-types";
+import {
+  applyStagedBasketFromQueue, clearStagedBasket, normalizeTradeQueueState,
+  publishQueueChanged,
+} from "./execution-queue";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
   orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
@@ -157,20 +163,8 @@ let _tradeDeskTab: TradeDeskTab = "basket";
 let _gatewaySubscribed = false;
 
 function applyQueueState(saved: TradeQueueState): void {
-  const trades = Array.isArray(saved.trades) ? saved.trades : [];
-  const queueTrades: QueuedTradeLeg[] = Array.isArray(saved.queue_trades)
-    ? saved.queue_trades
-    : trades.map((trade) => ({ ...trade, included: true }));
-  state.stagedBasket = trades;
-  _queueState = {
-    ...saved,
-    trades,
-    queue_trades: queueTrades,
-    excluded_leg_ids: saved.excluded_leg_ids || [],
-    revision: saved.revision || "",
-    reviewed: !!saved.reviewed,
-    reviewed_at: saved.reviewed_at || null,
-  };
+  applyStagedBasketFromQueue(saved);
+  _queueState = normalizeTradeQueueState(saved);
 }
 
 function ensureGatewaySubscription(): void {
@@ -462,9 +456,7 @@ function basketBar(delta: number, maxAbs: number): string {
 }
 
 function openWorkflowView(view: "rebalance" | "target-state" | "exit"): void {
-  pushNav({ view });
-  setActiveView(view);
-  window.scrollTo(0, 0);
+  gotoWorkflowView(view, { scrollTop: true });
 }
 
 async function persistQueue(
@@ -477,7 +469,7 @@ async function persistQueue(
   try {
     const saved = await api<TradeQueueState>("/api/trade/basket", "POST", mutation);
     applyQueueState(saved);
-    window.dispatchEvent(new Event("assay:queue-changed"));
+    publishQueueChanged();
     _preview = null;
     stopPreviewCountdown();
     renderBasket();
@@ -630,7 +622,7 @@ function renderBasket() {
         const isPut = t.type === "cash_secured_put";
         const legId = t.leg_id || `${t.type}:${t.symbol}:${t.conid}`;
         return `<tr class="trade-basket-option${rowClass}">` +
-          `<td>${tickerLink(t.symbol)}${excludedChip}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
+          `<td>${tickerAnchorHtml(t.symbol)}${excludedChip}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
           `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
           `<td>${sideTag("SELL")} <span class="muted">to open</span></td>` +
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
@@ -650,7 +642,7 @@ function renderBasket() {
       const amt = `${buy ? "+" : "\u2212"}${fmtCZK(Math.abs(delta))} CZK`;
       const legId = t.leg_id || `stock:${t.symbol}`;
       return `<tr class="${rowClass.trim()}">` +
-        `<td>${tickerLink(t.symbol)}${excludedChip}</td>` +
+        `<td>${tickerAnchorHtml(t.symbol)}${excludedChip}</td>` +
         `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
         `<td>${sideTag(buy ? "BUY" : "SELL")}</td>` +
         `<td class="num ${buy ? "tb-buy" : "tb-sell"}">${sensitive(amt, "planned trade size")}</td>` +
@@ -789,18 +781,18 @@ function renderPreview() {
   }
   contexts.filter((c) => c.classification === "opposite_side").forEach((c) =>
     actionPanel.appendChild(el("div", "trade-action-item blocker",
-      `<strong>${tickerLink(c.symbol)}: opposite working order.</strong> ${esc(c.next_step || "")}`)));
+      `<strong>${tickerAnchorHtml(c.symbol)}: opposite working order.</strong> ${esc(c.next_step || "")}`)));
   contexts.filter((c) => c.classification === "coverage_blocked").forEach((c) =>
     actionPanel.appendChild(el("div", "trade-action-item blocker",
-      `<strong>${tickerLink(c.symbol)}: insufficient covered-call capacity.</strong> ${esc(c.next_step || "")}`)));
+      `<strong>${tickerAnchorHtml(c.symbol)}: insufficient covered-call capacity.</strong> ${esc(c.next_step || "")}`)));
   contexts.filter((c) => c.classification === "oversell_blocked").forEach((c) =>
     actionPanel.appendChild(el("div", "trade-action-item blocker",
-      `<strong>${tickerLink(c.symbol)}: sell exceeds the held position.</strong> ${esc(c.next_step || "")}`)));
+      `<strong>${tickerAnchorHtml(c.symbol)}: sell exceeds the held position.</strong> ${esc(c.next_step || "")}`)));
   contexts.filter((c) => c.classification === "quote_blocked").forEach((c) => {
     const item = el(
       "div",
       "trade-action-item blocker trade-quote-blocker",
-      `<div><strong>${tickerLink(c.symbol)}: no executable covered-call quote.</strong> ` +
+      `<div><strong>${tickerAnchorHtml(c.symbol)}: no executable covered-call quote.</strong> ` +
       `The contract remains staged, but preview and placement require a fresh, uncrossed IBKR bid/ask.</div>`,
     );
     const refresh = el("button", "ghost", `Refresh all ${c.symbol} quotes & retry`) as HTMLButtonElement;
@@ -915,7 +907,7 @@ function renderPreview() {
     if (isOption) item.classList.add("option");
     const top = el("div", "trade-order-top");
     const identity = el("div", "trade-order-identity");
-    identity.innerHTML = `<div>${tickerLink(sym)} ${sideTag(c.side)}</div>` +
+    identity.innerHTML = `<div>${tickerAnchorHtml(sym)} ${sideTag(c.side)}</div>` +
       `<span class="trade-recon-chip ${tone}">${esc(reconciliationTitle(c))}</span>`;
     top.appendChild(identity);
     if (o) {
@@ -948,11 +940,11 @@ function renderPreview() {
     if (isOption) {
       primary.innerHTML = c.classification === "quote_blocked"
         ? `<strong>Covered call is staged, waiting for a quote</strong>` +
-          `<span class="trade-option-contract">${tickerLink(sym)} · ${esc(c.expiry || "")} · ` +
+          `<span class="trade-option-contract">${tickerAnchorHtml(sym)} · ${esc(c.expiry || "")} · ` +
           `${esc(qty(c.strike))} call</span>`
         : o
         ? `<strong>${coveredCallActionLabel()} ${esc(contractsLabel(c.residual_qty))}</strong>` +
-          `<span class="trade-option-contract">${tickerLink(sym)} · ${esc(c.expiry || "")} · ` +
+          `<span class="trade-option-contract">${tickerAnchorHtml(sym)} · ${esc(c.expiry || "")} · ` +
           `${esc(qty(c.strike))} ${isPut ? "put" : "call"}</span>`
         : `<strong>No new option order</strong>`;
       if (c.current_shares != null && c.if_assigned_shares != null) {
@@ -1115,25 +1107,16 @@ function renderPreview() {
 // can clear itself: on completion we simply re-preview, and a fresh snapshot age
 // drops the gate entirely.
 async function resyncStaleSnapshot(btn: HTMLButtonElement) {
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Syncing…";
   const status = $("#trade-place-status");
-  if (status) {
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
-  }
-  try {
-    const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
-    await pollDeepJob(job.id, status, async () => {
+  await runHoldingsSync({
+    btn,
+    status,
+    freezeButtonOnSuccess: true,
+    onDone: async () => {
       if (status) status.textContent = "Holdings resynced — re-previewing from fresh marks…";
-      await requestPreview();  // fresh snapshot age -> the stale gate is gone
-    }, "IBKR sync");
-  } catch (e) {
-    if (status) { status.classList.add("err"); status.textContent = "Sync failed: " + (e as Error).message; }
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
+      await requestPreview();
+    },
+  });
 }
 
 // The last gate before real orders. Replaces window.confirm() (reflex-clickable,
@@ -1173,7 +1156,7 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
     const optionFacts = optionOrders.length
       ? `<div class="trade-cf-options"><strong>${hasPuts ? "Written options" : "Covered calls"} · sell to open</strong>` +
         optionOrders.map((o) =>
-          `<div>${tickerLink(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
+          `<div>${tickerAnchorHtml(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
           `${esc(o.expiry || "")} ${esc(o.strike)}${o.instrument_type === "cash_secured_put" ? "P" : "C"} · limit ${esc(o.price)} ${esc(o.currency || "")}` +
           (o.instrument_type === "cash_secured_put"
             ? `<span>${o.collateral_mode === "margin" ? "Assignment notional" : "Cash secured"}: ` +
@@ -1259,9 +1242,9 @@ async function doPlace(btn: HTMLButtonElement) {
     // view so the desk stops offering the just-placed basket, then append the
     // outcome + loop-closing next steps.
     if (res.staged_basket_cleared) {
-      state.stagedBasket = [];
+      clearStagedBasket();
       _queueState = { trades: [], revision: "", reviewed: false };
-      window.dispatchEvent(new Event("assay:queue-changed"));
+      publishQueueChanged();
     }
     renderBasket();
     renderPlaceResult(res);
@@ -1273,24 +1256,15 @@ async function doPlace(btn: HTMLButtonElement) {
 }
 
 async function resyncAfterPlace(btn: HTMLButtonElement, status: HTMLElement | null) {
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Syncing…";
-  if (status) {
-    status.classList.remove("err");
-    status.innerHTML = `<span class="spinner"></span> Re-pulling portfolio from IBKR (read-only, can take a minute)…`;
-  }
-  try {
-    const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
-    await pollDeepJob(job.id, status, async () => {
+  await runHoldingsSync({
+    btn,
+    status,
+    freezeButtonOnSuccess: true,
+    successButtonLabel: "Resynced ✓",
+    onDone: async () => {
       if (status) status.textContent = "Holdings resynced — the planner now sees the post-trade book.";
-      btn.textContent = "Resynced ✓";
-    }, "IBKR sync");
-  } catch (e) {
-    if (status) { status.classList.add("err"); status.textContent = "Sync failed: " + (e as Error).message; }
-    btn.disabled = false;
-    btn.textContent = prev;
-  }
+    },
+  });
 }
 
 function logPlacedToJournal(res: PlaceResult) {
@@ -1585,7 +1559,7 @@ function ordersLegend(): HTMLElement {
 function doneSummary(done: LiveOrder[]): HTMLElement {
   const names = done.map((o) => {
     const s = String(o.ticker || o.symbol || "").trim();
-    return s ? tickerLink(s) : esc(String(o.conid ?? "?"));
+    return s ? tickerAnchorHtml(s) : esc(String(o.conid ?? "?"));
   });
   const wrap = el("div", "trade-live-done hint");
   const label = done.length === 1 ? "1 recently filled/cancelled" : `${done.length} recently filled/cancelled`;
@@ -1640,17 +1614,6 @@ function px(n: number): string {
 // always two decimals, regardless of the price magnitude.
 function pxCost(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-// A ticker rendered as a deep-dive link. The global `a.tlink` click handler in
-// shell intercepts it and routes to the deep dive (live-pulling on a cache
-// miss), so this only needs the class + data-ticker; the href keeps it a real,
-// middle-clickable link. Empty for a blank symbol (e.g. a conid-only fallback).
-function tickerLink(sym: unknown): string {
-  const s = String(sym ?? "").trim();
-  if (!s) return "";
-  const e = esc(s);
-  return `<a class="tlink" data-ticker="${e}" href="?view=deepdive&ticker=${encodeURIComponent(s)}" title="Open ${e} deep-dive">${e}</a>`;
 }
 
 // A dim placeholder for a market column with nothing to show, so empty cells
@@ -1814,7 +1777,7 @@ function liveOrderRow(o: LiveOrder, peg?: PegState): HTMLElement {
     : "";
   if (peg) row.classList.add("is-pegging");
   const symRaw = String(o.ticker || o.symbol || "").trim();
-  const symCell = symRaw ? tickerLink(symRaw) : esc(String(o.conid ?? "?"));
+  const symCell = symRaw ? tickerAnchorHtml(symRaw) : esc(String(o.conid ?? "?"));
   row.innerHTML =
     `<span class="trade-live-sym">${symCell}${pegBadge}</span>` +
     `<span>${side ? sideTag(side) : ""}</span>` +

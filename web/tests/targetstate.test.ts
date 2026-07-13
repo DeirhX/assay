@@ -4,10 +4,11 @@
 // rendering with change highlighting.
 import { describe, expect, it } from "vitest";
 import {
-  compareRowHtml, compareRows, deriveSuggestionTrades, executionPlanHtml,
+  compareRowHtml, compareRows, deriveSuggestionTrades,
   queueOrdersHtml, scaleMaxOf, sourceBanner,
   violationsHtml,
 } from "../src/targetstate";
+import { executionPlanHtml } from "../src/execution-plan-ui";
 import type { PlanRow, RebalancePlan } from "../src/api-types";
 
 const row = (over: Partial<PlanRow>): PlanRow => ({

@@ -5,7 +5,7 @@
 // lives server-side in tools/optimizer.py; this module is the cockpit.
 import { bandBar, scaleMaxFor, type BandRow } from "./band-viz";
 import { tickerAnchorHtml } from "./analyses/linkify";
-import { $, api, esc, fmtWeight } from "./core";
+import { $, api, apiLoad, esc, fmtWeight, loadError, setLoading } from "./core";
 import { pushNav, setActiveView } from "./shell";
 
 interface PoolEntry {
@@ -316,23 +316,24 @@ async function loadOptimizer(): Promise<void> {
   const body = $("#opt-body");
   const status = $("#opt-status");
   if (!body) return;
-  if (status) { status.textContent = ""; status.classList.remove("err"); }
-  body.innerHTML = `<div class="hint">Loading the candidate pool…</div>`;
   const stageBtn = $<HTMLButtonElement>("#opt-stage");
   if (stageBtn) stageBtn.disabled = true;
   _lastProposal = null;
-  try {
-    const v = await api<OptimizerView>("/api/optimizer");
-    _pool = v.pool || [];
-    _constraints = v.constraints;
-    // Drop excludes for names no longer in the pool.
-    const live = new Set(_pool.map((e) => e.symbol));
-    _excluded = new Set([..._excluded].filter((s) => live.has(s)));
-    renderShell(v);
-  } catch (e) {
-    if (status) { status.textContent = "Could not load the pool: " + (e as Error).message; status.classList.add("err"); }
-    body.innerHTML = "";
-  }
+  await apiLoad<OptimizerView>({
+    path: "/api/optimizer",
+    status,
+    clear: [body],
+    loading: "Loading the candidate pool…",
+    spin: true,
+    errorLabel: "Could not load the pool",
+    render: (v) => {
+      _pool = v.pool || [];
+      _constraints = v.constraints;
+      const live = new Set(_pool.map((e) => e.symbol));
+      _excluded = new Set([..._excluded].filter((s) => live.has(s)));
+      renderShell(v);
+    },
+  });
 }
 
 async function runOptimize(): Promise<void> {
@@ -340,7 +341,7 @@ async function runOptimize(): Promise<void> {
   const btn = $<HTMLButtonElement>("#opt-run");
   const stageBtn = $<HTMLButtonElement>("#opt-stage");
   if (btn) { btn.disabled = true; }
-  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> sizing the pool…`; }
+  setLoading(status, "sizing the pool…", true);
   try {
     const res = await api<{ proposal: Proposal }>("/api/optimizer/run", "POST", readConstraints());
     _lastProposal = res.proposal;
@@ -353,7 +354,7 @@ async function runOptimize(): Promise<void> {
     if (drawer) drawer.open = false;
     document.querySelector(".opt-preview-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
-    if (status) { status.textContent = "Optimize failed: " + (e as Error).message; status.classList.add("err"); }
+    loadError(status, "Optimize failed", e);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -364,14 +365,14 @@ async function stageProposal(): Promise<void> {
   const status = $("#opt-status");
   const btn = $<HTMLButtonElement>("#opt-stage");
   if (btn) btn.disabled = true;
-  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> adding to pending model changes…`; }
+  setLoading(status, "adding to pending model changes…", true);
   try {
     await api("/api/optimizer/stage", "POST", { changes: _lastProposal.changes });
     if (status) status.textContent = "";
     pushNav({ view: "working-draft" });
     setActiveView("working-draft");
   } catch (e) {
-    if (status) { status.textContent = "Could not stage: " + (e as Error).message; status.classList.add("err"); }
+    loadError(status, "Could not stage", e);
     if (btn) btn.disabled = false;
   }
 }
@@ -380,12 +381,12 @@ async function reviewHoldings(): Promise<void> {
   const status = $("#opt-status");
   const btn = $<HTMLButtonElement>("#opt-review");
   if (btn) btn.disabled = true;
-  if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> starting a portfolio review…`; }
+  setLoading(status, "starting a portfolio review…", true);
   try {
     await api("/api/portfolio-review", "POST", {});
     if (status) status.innerHTML = `Portfolio review started — watch the Task Center. When it finishes, hit <strong>Optimize</strong> to use the fresh convictions.`;
   } catch (e) {
-    if (status) { status.textContent = "Could not start the review: " + (e as Error).message; status.classList.add("err"); }
+    loadError(status, "Could not start the review", e);
   } finally {
     if (btn) btn.disabled = false;
   }

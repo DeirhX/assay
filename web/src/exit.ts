@@ -6,19 +6,25 @@
 // an options overlay (covered call / protective-put collar). Nothing here trades
 // — adding a route only updates the shared order queue. The projected book is
 // reviewed next; placement remains a separate explicit confirmation step.
+import { applyStagedBasketLegs, publishQueueChanged } from "./execution-queue";
 import {
-  $, api, el, esc, loadError, sensitive, setLoading, state, statTile, nextToken, isStaleToken,
+  $, api, el, esc, loadError, sensitive, setLoading, statTile, nextToken, isStaleToken,
   relAge,
 } from "./core";
 import {
   gatewayUnavailableReason, getGatewayStatus, refreshGatewayStatus,
 } from "./gateway";
+import {
+  quoteBidAskCrossed, quoteBidAskMissing, quoteBidAskValid, quoteTimestampIsStale,
+  rungQuoteIsStale,
+} from "./option-quote";
 import type {
   ExitPlanResponse, ExitPosition, ExitStageResponse, ExitCoveredCall, ExitProtectivePut,
   ExitCoveredCallRoute, ExitCoveredCallRung, ExitRouteKind, ExitRoutes,
 } from "./api-types";
 import { openTicker } from "./ticker-nav";
-import { navFromUrl, pushNav, replaceViewState, setActiveView } from "./shell";
+import { navFromUrl, replaceViewState } from "./shell";
+import { gotoWorkflowView } from "./workflow-nav";
 
 // Config knobs (mirror exit_plan.py defaults); tunable from the header and sent
 // back on every (re)build and stage so the server rebuilds an identical plan.
@@ -52,7 +58,6 @@ const czk = (v: number | null | undefined) =>
   v == null ? "n/a" : sensitive(`${fmtCompactMoney(v)} CZK`);
 const pct = (v: number | null | undefined, digits = 1) => (v == null ? "n/a" : `${Number(v).toFixed(digits)}%`);
 const dash = "–";
-const EXECUTION_QUOTE_MAX_AGE_MS = 120_000;
 
 function selectedRoute(p: ExitPosition): ExitRouteKind {
   const routes = routesFor(p);
@@ -556,18 +561,6 @@ function coveredCallReco(
   return inner;
 }
 
-function quoteTimestampIsStale(timestamp: string | null | undefined): boolean {
-  const quoteTime = timestamp ? new Date(timestamp).getTime() : NaN;
-  const localAge = Date.now() - quoteTime;
-  return !Number.isFinite(quoteTime)
-    || localAge < -10_000
-    || localAge > EXECUTION_QUOTE_MAX_AGE_MS;
-}
-
-function rungQuoteIsStale(r: ExitCoveredCallRung): boolean {
-  return r.quote_fresh === false || quoteTimestampIsStale(r.quote_timestamp);
-}
-
 function instrumentQuotesAreStale(p: ExitPosition): boolean {
   const o = p.options;
   if (!o || o.source !== "ibkr") return false;
@@ -740,13 +733,12 @@ async function stageTranche(symbol: string, index: number, btn: HTMLButtonElemen
     const resp = await api<ExitStageResponse>("/api/exit-plan/stage", "POST", {
       symbol, route: "sell_shares", index, cfg,
     });
-    state.stagedBasket = resp.basket.slice() as typeof state.stagedBasket;
-    window.dispatchEvent(new Event("assay:queue-changed"));
+    applyStagedBasketLegs(resp.basket.slice());
+    publishQueueChanged();
     btn.textContent = "Queued ✓";
     // Projection is a pre-trade safety gate: show where the accumulated order
     // queue lands before offering IBKR preview / placement.
-    pushNav({ view: "target-state" });
-    setActiveView("target-state");
+    gotoWorkflowView("target-state");
   } catch (e) {
     btn.textContent = "Failed";
     btn.title = (e as Error)?.message || "stage failed";
@@ -773,11 +765,10 @@ async function stageCoveredCall(
       contracts,
       cfg,
     });
-    state.stagedBasket = resp.basket.slice() as typeof state.stagedBasket;
-    window.dispatchEvent(new Event("assay:queue-changed"));
+    applyStagedBasketLegs(resp.basket.slice());
+    publishQueueChanged();
     btn.textContent = "Queued ✓";
-    pushNav({ view: "target-state" });
-    setActiveView("target-state");
+    gotoWorkflowView("target-state");
   } catch (e) {
     btn.textContent = "Failed";
     btn.title = (e as Error)?.message || "stage failed";
@@ -787,12 +778,10 @@ async function stageCoveredCall(
 
 function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
   const locallyFresh = !quoteTimestampIsStale(r.quote_timestamp);
-  const quoteOk = typeof r.bid === "number" && typeof r.ask === "number"
-    && r.bid > 0 && r.ask > 0 && r.bid <= r.ask;
+  const quoteOk = quoteBidAskValid(r.bid, r.ask);
   if (r.executable === true && r.conid && r.quote_fresh === true && locallyFresh && quoteOk) return [];
-  const missingQuote = r.bid == null || r.ask == null || r.bid <= 0 || r.ask <= 0;
-  const crossedQuote = typeof r.bid === "number" && typeof r.ask === "number"
-    && r.bid > 0 && r.ask > 0 && r.bid > r.ask;
+  const missingQuote = quoteBidAskMissing(r.bid, r.ask);
+  const crossedQuote = quoteBidAskCrossed(r.bid, r.ask);
   const staleQuote = rungQuoteIsStale(r);
   if (r.stageable === true && r.conid && !crossedQuote && (missingQuote || staleQuote)) return [];
   const reasons: string[] = [];
@@ -808,7 +797,7 @@ function rungBlockedReasons(r: ExitCoveredCallRung): string[] {
 }
 
 function rungStageWarning(r: ExitCoveredCallRung): string | null {
-  const missingQuote = r.bid == null || r.ask == null || r.bid <= 0 || r.ask <= 0;
+  const missingQuote = quoteBidAskMissing(r.bid, r.ask);
   if (r.stageable !== true || !r.conid) return null;
   if (missingQuote) {
     return r.staging_warning

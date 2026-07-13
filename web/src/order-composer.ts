@@ -1,8 +1,14 @@
-import { api, el, esc, fmtCZK } from "./core";
+import { api, el, esc } from "./core";
 import type {
-  ExecutionPlanItem, ExecutionPlanState, RebalanceOptionRung,
-  RebalanceRouteResponse, RebalanceRouteSelection, TradeQueueState,
+  ExecutionPlanItem, ExecutionPlanState, RebalanceRouteSelection,
 } from "./api-types";
+import { stageRebalanceQueue } from "./execution-queue";
+import { directRouteFor, optionRouteFor } from "./execution-routes";
+import {
+  buildDirectRouteSelection,
+  loadCompactOptionRoute,
+  OptionRouteLoader,
+} from "./option-route-control";
 import { cleanSymbol } from "./shell";
 
 interface ComposerOptions {
@@ -46,15 +52,15 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
   body.append(fields, routeBox, actions, status);
   root.appendChild(body);
 
+  const loader = new OptionRouteLoader();
   let optionSelection: RebalanceRouteSelection | null = null;
-  let routeLoad = 0;
 
   const deltaCzk = () => {
     const value = Math.abs(Number(amount.value) || 0);
     return direction.value === "increase" ? value : -value;
   };
-  const directRoute = () => direction.value === "increase" ? "buy_shares" : "sell_shares";
-  const optionRoute = () => direction.value === "increase" ? "cash_secured_put" : "covered_call";
+  const directRoute = () => directRouteFor(deltaCzk());
+  const optionRoute = () => optionRouteFor(deltaCzk());
   const selectedRoute = () => routeSelect.value;
   const selectedLimit = () => {
     const value = Number(limit.value);
@@ -62,53 +68,37 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
   };
 
   const paintDirect = () => {
+    loader.cancel();
     optionSelection = null;
     routeBox.innerHTML =
-      `<span class="chip good">Shares</span> ` +
+      `<span class="chip good tone-chip">Shares</span> ` +
       `<span class="muted">Immediate ${direction.value === "increase" ? "increase" : "reduction"}.</span>`;
     if (!limit.value && options.currentPrice) limit.value = String(options.currentPrice);
     queue.disabled = false;
   };
 
   const loadOption = async () => {
-    const token = ++routeLoad;
+    loader.cancel();
     optionSelection = null;
     queue.disabled = true;
     routeBox.innerHTML = `<span class="spinner"></span> Loading executable contracts…`;
     try {
-      const query = new URLSearchParams({ symbol, delta_czk: String(deltaCzk()) });
-      const route = await api<RebalanceRouteResponse>(
-        `/api/rebalance/route?${query.toString()}`, "GET", null, { timeoutMs: 60_000 },
-      );
-      if (token !== routeLoad) return;
-      const rung = route.ladder.find((candidate: RebalanceOptionRung) =>
-        candidate.stageable && candidate.conid);
-      if (!route.option.eligible || !rung) {
-        routeBox.innerHTML =
-          `<span class="chip warn">${esc(route.option.label)} unavailable</span> ` +
-          `<span class="muted">${esc(route.option.reasons.join(" · ") || "No executable contract.")}</span>`;
-        return;
-      }
-      optionSelection = {
+      const result = await loadCompactOptionRoute(
+        loader,
         symbol,
-        route: optionRoute(),
-        ...(route.option.collateral_mode
-          ? { collateral_mode: route.option.collateral_mode }
-          : {}),
-        conid: Number(rung.conid),
-        expiry: rung.expiry,
-        strike: rung.strike,
-        contracts: route.option.contracts,
-        ...(typeof rung.limit_price === "number" ? { limit_price: rung.limit_price } : {}),
-      };
-      if (typeof rung.limit_price === "number") limit.value = String(rung.limit_price);
-      routeBox.innerHTML =
-        `<span class="chip good">${esc(route.option.label)}</span> ` +
-        `<strong>${esc(rung.expiry)} · ${rung.strike}${direction.value === "increase" ? "P" : "C"}</strong> ` +
-        `<span class="muted">${route.option.contracts} contract(s) · ${fmtCZK(Math.abs(deltaCzk()))} CZK plan</span>`;
-      queue.disabled = false;
+        deltaCzk(),
+        direction.value === "increase" ? "increase" : "reduce",
+      );
+      if (!result || selectedRoute() !== optionRoute()) return;
+      routeBox.innerHTML = result.html;
+      if (result.eligible && result.selection) {
+        optionSelection = result.selection;
+        const rungLimit = result.selection.limit_price;
+        if (typeof rungLimit === "number") limit.value = String(rungLimit);
+        queue.disabled = false;
+      }
     } catch (error) {
-      if (token !== routeLoad) return;
+      if (selectedRoute() !== optionRoute()) return;
       routeBox.innerHTML = `<span class="status err">${esc((error as Error).message)}</span>`;
     }
   };
@@ -137,11 +127,11 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
   const createItem = async (forQueue: boolean): Promise<ExecutionPlanItem> => {
     if (!deltaCzk()) throw new Error("Enter a non-zero CZK amount");
     const isOption = selectedRoute() === optionRoute();
-    const selection = isOption ? optionSelection : {
+    const selection = isOption ? optionSelection : buildDirectRouteSelection(
       symbol,
-      route: directRoute(),
-      ...(selectedLimit() ? { limit_price: selectedLimit() } : {}),
-    } as RebalanceRouteSelection;
+      directRoute(),
+      selectedLimit(),
+    );
     if (forQueue && isOption && !selection) throw new Error("No executable option contract selected");
     const response = await api<{ state: ExecutionPlanState; item: ExecutionPlanItem }>(
       "/api/execution-plan", "POST", {
@@ -181,20 +171,19 @@ export function renderOrderComposer(options: ComposerOptions): HTMLElement {
     status.textContent = "Adding to queue…";
     try {
       const item = await createItem(true);
-      const selection = item.route_selection || {
+      const selection = item.route_selection || buildDirectRouteSelection(
         symbol,
-        route: directRoute(),
-        ...(selectedLimit() ? { limit_price: selectedLimit() } : {}),
-      };
+        directRoute(),
+        selectedLimit(),
+      );
       selection.execution_item_id = item.id;
       if (selectedLimit()) selection.limit_price = selectedLimit();
-      await api<TradeQueueState>("/api/rebalance/stage", "POST", {
+      await stageRebalanceQueue({
         trades: [{ symbol, delta_czk: deltaCzk() }],
         selections: [selection],
         mode: "append",
         source: "ticker",
       });
-      window.dispatchEvent(new Event("assay:queue-changed"));
       status.textContent = "Added to the order queue ✓";
     } catch (error) {
       status.className = "status err";

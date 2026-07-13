@@ -167,16 +167,16 @@ function calloutHtml(kind: "hot" | "cold", rows: LeaderboardRow[]): string {
     : "weak-promise segments you're heavy in";
   const items = rows.map((r) => {
     const dir = kind === "hot" ? `add exposure to ${r.title}` : `reduce exposure to ${r.title}`;
-    return `<div class="lb-callout-row">` +
+    return `<div class="lb-callout-row action-row">` +
       `<span class="lb-callout-name">${esc(r.title)}</span>` +
       `<span class="lb-callout-meta">score ${r.score} · 3M <span class="${pctClass(r.momentum_3m_med)}">${fmtPct(r.momentum_3m_med)}</span> · own ${sensitive(fmtWeight(r.exposure_pct), "segment exposure")}</span>` +
-      `<span class="lb-callout-actions">` +
+      `<span class="lb-callout-actions action-row">` +
         `<button class="linklike" type="button" data-segment="${esc(r.segment)}">Open segment</button>` +
         `<button class="linklike" type="button" data-plan="${esc(dir)}">Explore in Plan →</button>` +
       `</span>` +
     `</div>`;
   }).join("");
-  return `<div class="lb-callout lb-callout-${kind}"><div class="lb-callout-head">` +
+  return `<div class="banner banner-callout lb-callout lb-callout-${kind}${kind === "hot" ? " banner-callout-good" : " banner-callout-bad"}"><div class="banner-callout-head lb-callout-head">` +
     `<strong>${heading}</strong><span class="hint">${hint}</span></div>${items}</div>`;
 }
 
@@ -195,7 +195,7 @@ function draw(): void {
   const gaps = exposureGaps(rows);
   const ordered = rankSegments(rows, _sort);
   const toolbar = SORTS.map((s) =>
-    `<button class="lb-sort${s.mode === _sort ? " active" : ""}" type="button" data-sort="${s.mode}">` +
+    `<button class="lb-sort ui-segment-pill${s.mode === _sort ? " active" : ""}" type="button" data-sort="${s.mode}">` +
       `${esc(s.label)}${s.mode === _sort ? " \u2193" : ""}</button>`
   ).join("");
   // With few segments the promise/momentum/breadth orders often coincide, so a
@@ -210,7 +210,7 @@ function draw(): void {
   body.innerHTML =
     calloutHtml("hot", gaps.hot) +
     calloutHtml("cold", gaps.cold) +
-    `<div class="lb-toolbar"><div class="lb-sorts">${toolbar}</div>${rankedBy}${overlapNote}</div>` +
+    `<div class="lb-toolbar"><div class="ui-segment-pills lb-sorts">${toolbar}</div>${rankedBy}${overlapNote}</div>` +
     `<div class="lb-grid">${ordered.map((r, i) => leaderboardTileHtml(r, i + 1, _sort)).join("")}</div>`;
   flipReorder(body, prev);
 }
