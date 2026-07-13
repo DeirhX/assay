@@ -39,6 +39,7 @@ beforeEach(() => {
 
 describe("stageForView", () => {
   it("maps the three execution stages without treating model planning as execution", () => {
+    expect(stageForView("orders")).toBe(0);
     expect(stageForView("rebalance")).toBe(1);
     expect(stageForView("exit")).toBe(1);
     expect(stageForView("target-state")).toBe(2);
@@ -47,7 +48,7 @@ describe("stageForView", () => {
 });
 
 describe("updateFlowBar visibility", () => {
-  it("is execution navigation, so it hides after leaving the Rebalance group", () => {
+  it("is execution navigation, so it hides after leaving the Orders group", () => {
     document.body.innerHTML = '<nav id="flowbar" hidden></nav>';
     const host = document.getElementById("flowbar") as HTMLElement;
     updateFlowBar("rebalance", "rebalance");
@@ -164,6 +165,11 @@ describe("flowStages", () => {
 });
 
 describe("flowBarHtml", () => {
+  it("shows the execution path without highlighting a stage on the Orders index", () => {
+    const html = flowBarHtml(data(), 0);
+    expect((html.match(/ active"/g) || []).length).toBe(0);
+  });
+
   it("highlights the active stage and wires click targets", () => {
     const html = flowBarHtml(data(), 2);
     expect(html).toContain('data-flow-view="trade"');

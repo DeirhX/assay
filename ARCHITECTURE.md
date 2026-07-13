@@ -440,22 +440,30 @@ with `happy-dom`; Playwright e2e mock `/api/**` (port overridable via `E2E_PORT`
 
 ### 7.3 Navigation model
 
-Five workflow-ordered top-level groups, landing on the guided flow:
-**Plan → Research → Rebalance → Portfolio → Watchlist** (plus the Settings gear).
+Five workflow-ordered top-level groups:
+**Today → Plan → Research → Orders → Portfolio**. Watchlist and Activity are
+utility destinations; Settings remains the gear.
 `VIEW_GROUP` / `VIEW_SUBTAB` / `GROUP_DEFAULT` map flat views to groups and
 sub-tabs; `lastViewByGroup` remembers where you were per group.
 
 | Group | Default view | Sub-tabs |
 | --- | --- | --- |
-| **Plan** | `strategy` | — (single guided view) |
-| **Research** | `deepdive` | Ticker (`deepdive`), Reports (`analyses`), Segments (`segment`); `pipeline` is a sub-page |
-| **Rebalance** | `rebalance` | Rebalance, Optimizer, Working draft, Exit, Trade (+ `target-state` in-group) |
-| **Portfolio** | `today` | Today (`overview`), Positions (`holdings`), History, Risk, Tax, Journal |
-| **Watchlist** | `basket` | — |
+| **Today** | `today` | — |
+| **Plan** | `strategy` | Guided plan, Optimizer, Pending model changes |
+| **Research** | `leaderboard` | Explore, Ticker, Deep Research; `pipeline` and `segment` are sub-pages |
+| **Orders** | `orders` | Stable Order pipeline index; the flowbar links Build (`rebalance`/`exit`) → Review (`target-state`) → Preview & place (`trade`) |
+| **Portfolio** | `holdings` | Positions, History, Analytics (Risk / Attribution / Tax lenses) |
+| **Watchlist / Activity** | `basket` / `activity` | Utility destinations; Activity also contains Decisions |
 
 The URL is the persistence layer: `?view=`, `?ticker=`, `?segment=`, `?run=`
-round-trip through `navFromUrl`/`urlForNav` (bare `/` = Plan). `api-types.ts` is
+round-trip through `navFromUrl`/`urlForNav` (bare `/` = Today). `api-types.ts` is
 the hand-written JSON contract shared across views.
+
+`orders.ts` is intentionally a read-oriented index over three independent
+sources: `execution-plan.json` (selected/deferred intent),
+`staged-basket.json` (exact local queue + projection approval), and live CPAPI
+working orders. It does not infer fills from an execution-plan `submitted`
+status; completed executions remain broker/Flex truth under Portfolio History.
 
 ### 7.4 Cross-cutting
 

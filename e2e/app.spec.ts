@@ -15,7 +15,7 @@ test.describe("app shell + navigation", () => {
     await expect(page.locator("#gateway-indicator")).toContainText("IBKR: offline");
   });
 
-  test("the persistent IBKR indicator attempts reconnect and opens Trade", async ({ page }) => {
+  test("the persistent IBKR indicator attempts reconnect and opens Orders", async ({ page }) => {
     await installApi(page, {
       "/api/trade/status": {
         trading_enabled: false, authenticated: false, connected: false, accounts: [],
@@ -34,15 +34,17 @@ test.describe("app shell + navigation", () => {
     await page.locator("#gateway-indicator").click();
     await reconnect;
 
-    await expect(page.locator("#view-trade")).toHaveClass(/active/);
-    await expect(page.locator("#trade-banner")).toContainText("Gateway not connected");
+    await expect(page.locator("#view-orders")).toHaveClass(/active/);
+    await expect(page.locator("#orders-body")).toContainText("Working at IBKR");
   });
 
-  test("the Rebalance workflow bar is the only local execution navigation", async ({ page }) => {
+  test("Orders lands on the pipeline index with the guarded execution flow", async ({ page }) => {
     await installApi(page);
     await page.goto("/");
 
     await page.locator('.group[data-group="rebalance"]').click();
+    await expect(page.locator("#view-orders")).toHaveClass(/active/);
+    await expect(page.locator("#orders-body")).toContainText("Planned trades");
     await expect(page.locator("#flowbar")).toBeVisible();
     await expect(page.locator('.subtabs[data-group="rebalance"]')).toHaveCount(0);
     // The impact gate appears before the execution surface in the workflow.

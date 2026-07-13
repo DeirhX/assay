@@ -36,8 +36,8 @@ renderErrorCenter();
 initShell();
 applyPrivacyMode(state.privacyMode);
 startGatewayMonitor(() => {
-  pushNav({ view: "trade" });
-  setActiveView("trade");
+  pushNav({ view: "orders" });
+  setActiveView("orders");
   window.scrollTo(0, 0);
 });
 // Wire the pipeline's needs-login recovery into the shared job poller now that
