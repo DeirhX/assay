@@ -16,9 +16,9 @@ import options_overlay
 import portfolio
 from value_coercion import coerce_optional_limit_price
 
-OPTION_MULTIPLIER = 100
-ROUND_UP_MAX_DEVIATION_PCT = 0.15
-QUOTE_MAX_AGE_SECONDS = 120.0
+OPTION_MULTIPLIER = ibkr_trade.OPTION_MULTIPLIER
+ROUND_UP_MAX_DEVIATION_PCT = options_math.DEFAULT_ROUND_UP_MAX_DEVIATION_PCT
+QUOTE_MAX_AGE_SECONDS = ibkr_trade.OPTION_QUOTE_MAX_AGE_SECONDS
 _UNSET = object()
 
 

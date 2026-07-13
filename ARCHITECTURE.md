@@ -521,8 +521,9 @@ CI runs two workflows. `.github/workflows/tests.yml` has four jobs (the
 
 - **Python lint (ruff + mypy):** pinned `ruff check tools` (rules frozen in
   `ruff.toml`) + pinned `mypy tools` (lenient baseline in `mypy.ini`).
-- **Python tests:** `python -m unittest discover -s tools/tests` (stdlib-only,
-  offline, ~1s). Split from lint so a red check names its own cause.
+- **Python tests:** pinned `pytest` runs `python -m pytest tools/tests -q`
+  (offline; production remains stdlib-only). Split from lint so a red check
+  names its own cause.
 - **Frontend typecheck + tests + build:** `npm ci && npm run lint && npm run
   typecheck && npm test && npm run build`.
 - **Playwright e2e (hermetic):** `npm run e2e` — the suite intercepts `/api/**`,
@@ -533,7 +534,7 @@ CI runs two workflows. `.github/workflows/tests.yml` has four jobs (the
 All jobs are least-privilege (`permissions: contents: read`) and time-boxed.
 
 **Local mirror:** `pwsh tools/check.ps1` (or `npm run check:all`) runs the exact
-gating steps CI runs (ruff, mypy, unittest, eslint, tsc, vitest, build, leak
+gating steps CI runs (ruff, mypy, pytest, eslint, tsc, vitest, build, leak
 scan) and prints a pass/fail table. `mypy` is a **gate**, but under a lenient
 `mypy.ini` baseline — a green run means "no errors under those settings", not
 "type-safe" (tighten incrementally). `-E2E` adds the Playwright suite; `-Data`

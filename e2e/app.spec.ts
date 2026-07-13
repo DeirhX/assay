@@ -15,7 +15,7 @@ test.describe("app shell + navigation", () => {
     await expect(page.locator("#gateway-indicator")).toContainText("IBKR: offline");
   });
 
-  test("the persistent IBKR indicator attempts reconnect and shows recovery", async ({ page }) => {
+  test("the persistent IBKR indicator attempts reconnect and opens its connection panel", async ({ page }) => {
     await installApi(page, {
       "/api/trade/status": {
         trading_enabled: false, authenticated: false, connected: false, accounts: [],
@@ -34,8 +34,8 @@ test.describe("app shell + navigation", () => {
     await page.locator("#gateway-indicator").click();
     await reconnect;
 
+    await expect(page.locator("#gateway-indicator")).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#gateway-panel")).toBeVisible();
-    await expect(page.locator("#gateway-panel-content")).toContainText("Connection unavailable");
     await expect(page.locator("#gateway-panel-content")).toContainText("login required");
   });
 
