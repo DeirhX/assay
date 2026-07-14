@@ -304,4 +304,17 @@ describe("placeResultHtml (post-placement loop close)", () => {
     expect(html).toContain("trade-bnr warn");
     expect(html).not.toContain("placed twice");
   });
+
+  it("makes a partial-basket failure impossible to mistake for full success", () => {
+    const html = placeResultHtml({
+      kind: "paper",
+      account: "DU1",
+      placed: [{ order_id: "1" }],
+      placement_incomplete: true,
+      warnings: ["Review working orders before rebuilding the remainder."],
+    });
+    expect(html).toContain("Placement stopped early");
+    expect(html).toContain("trade-bnr bad");
+    expect(html).toContain("Review working orders");
+  });
 });

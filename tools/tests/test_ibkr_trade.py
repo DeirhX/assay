@@ -239,6 +239,47 @@ class ReplyLoop(unittest.TestCase):
         for call in req.call_args_list:
             self.assertEqual(len(call.args[2]["orders"]), 1)
 
+    def test_ack_carries_exact_sent_order_context_when_coid_is_present(self):
+        ack = [{"order_id": "1", "order_status": "Submitted"}]
+        order = {
+            "conid": 222, "side": "BUY", "quantity": 3,
+            "orderType": "MKT", "tif": "DAY", "symbol": "AMD",
+            "cOID": "assay-token-AMD-3",
+        }
+        with mock.patch.object(ibt, "_request", return_value=ack):
+            out = ibt.place_orders("DU1", [order])
+        self.assertEqual(out[0]["assay_order"]["cOID"], "assay-token-AMD-3")
+        self.assertEqual(out[0]["assay_order"]["symbol"], "AMD")
+        self.assertEqual(out[0]["assay_order"]["quantity"], 3)
+
+    def test_rejects_response_without_broker_order_id(self):
+        with mock.patch.object(ibt, "_request", return_value=[{"error": "rejected"}]):
+            with self.assertRaises(ibt.CPAPIError):
+                ibt.place_orders("DU1", [{
+                    "conid": 222, "side": "BUY", "quantity": 1,
+                    "orderType": "MKT", "tif": "DAY", "symbol": "AMD",
+                }])
+
+    def test_partial_failure_carries_prior_accepted_acknowledgements(self):
+        first = [{"order_id": "1", "order_status": "Submitted"}]
+        orders = [
+            {
+                "conid": 1, "side": "BUY", "quantity": 1, "orderType": "MKT",
+                "tif": "DAY", "symbol": "AMD", "cOID": "assay-amd",
+            },
+            {
+                "conid": 2, "side": "BUY", "quantity": 1, "orderType": "MKT",
+                "tif": "DAY", "symbol": "NVDA", "cOID": "assay-nvda",
+            },
+        ]
+        failure = ibt.CPAPIError("gateway failed", status=502)
+        with mock.patch.object(ibt, "_request", side_effect=[first, failure]):
+            with self.assertRaises(ibt.CPAPIError) as caught:
+                ibt.place_orders("DU1", orders)
+        placed = getattr(caught.exception, "placed")
+        self.assertEqual(placed[0]["order_id"], "1")
+        self.assertEqual(placed[0]["assay_order"]["cOID"], "assay-amd")
+
 
 class PreviewAggregation(unittest.TestCase):
     ORDERS = [
@@ -774,6 +815,36 @@ class TradeServiceGuards(unittest.TestCase):
         self.assertEqual(res["placed"], [{"order_id": "1"}])
         self.assertTrue(res["staged_basket_cleared"])
         place.assert_called_once()
+
+    def test_partial_gateway_failure_returns_accepted_subset_and_clears_basket(self):
+        import tempfile
+        from pathlib import Path
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("DU1", basket)
+        failure = ibt.CPAPIError("second order failed", status=502)
+        failure.placed = [{
+            "order_id": "1",
+            "assay_order": {
+                "cOID": "assay-amd-1", "symbol": "AMD", "side": "BUY", "quantity": 1,
+            },
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(trade_service, "STAGED_BASKET_JSON", staged), \
+                    mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                    mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                    mock.patch.object(ibt, "live_orders", return_value=[]), \
+                    mock.patch.object(ibt, "place_orders", side_effect=failure):
+                trade_service.save_basket(basket)
+                self._arm_preview(token)
+                result = trade_service._trade_place({
+                    "trades": basket, "account": "DU1", "confirm": True, "token": token,
+                })
+                self.assertFalse(staged.exists())
+        self.assertTrue(result["placement_incomplete"])
+        self.assertEqual(result["orders"][0]["cOID"], "assay-amd-1")
+        self.assertTrue(result["staged_basket_cleared"])
+        self.assertNotIn(token, trade_service._preview_issued)
 
     def test_failed_place_keeps_staged_basket(self):
         import tempfile

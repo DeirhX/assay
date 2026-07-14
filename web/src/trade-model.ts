@@ -393,10 +393,12 @@ export function basketMoneyFacts(trades?: TradeLeg[]): {
 }
 
 export interface PlaceResult {
-  placed?: Array<Record<string, any>>;
+  placed?: Array<Record<string, unknown>>;
   kind?: string;
   account?: string;
   staged_basket_cleared?: boolean;
+  placement_incomplete?: boolean;
+  warnings?: string[];
 }
 
 // Pure HTML for the placement-outcome card: an acknowledgement banner, the
@@ -405,8 +407,12 @@ export interface PlaceResult {
 export function placeResultHtml(res: PlaceResult): string {
   const placed = res.placed || [];
   const ok = placed.filter((o) => o && (o.order_id || o.orderId || o.order_status)).length;
-  const banner = `<div class="trade-bnr ${ok ? "paper" : "warn"}">` +
-    `${ok} order(s) acknowledged by IBKR on ${esc(res.kind)} account ${sensitive(esc(res.account), "account id")}.</div>`;
+  const banner = `<div class="trade-bnr ${res.placement_incomplete ? "bad" : ok ? "paper" : "warn"}">` +
+    `${res.placement_incomplete ? "Placement stopped early: " : ""}${ok} order(s) acknowledged by IBKR on ` +
+    `${esc(res.kind)} account ${sensitive(esc(res.account), "account id")}.</div>`;
+  const warnings = (res.warnings || [])
+    .map((warning) => `<div class="trade-warn">\u26a0 ${esc(warning)}</div>`)
+    .join("");
   const cleared = res.staged_basket_cleared
     ? `<span class="muted">The order queue was cleared so it can't be placed twice.</span>` : "";
   const next = `<div class="trade-next">
@@ -421,5 +427,5 @@ export function placeResultHtml(res: PlaceResult): string {
   </div>`;
   const raw = `<details class="trade-raw-det"><summary>Raw IBKR response</summary>` +
     `<pre class="trade-raw">${esc(JSON.stringify(placed, null, 2))}</pre></details>`;
-  return banner + next + raw;
+  return banner + warnings + next + raw;
 }

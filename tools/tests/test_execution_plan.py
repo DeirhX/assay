@@ -165,6 +165,22 @@ class ExecutionPlanStore(unittest.TestCase):
                 "queued",
             )
 
+    def test_failed_correlated_submission_returns_to_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "execution-plan.json"
+            state = execution_plan.state_for_plan(_plan(), path=path)
+            item_id = state["items"][0]["id"]
+            execution_plan.mark_queued(
+                [item_id],
+                [{"leg_id": "stock:NVDA", "provenance": [{"execution_item_id": item_id}]}],
+                path=path,
+            )
+            execution_plan.mark_submitted([item_id], path=path)
+            reopened = execution_plan.reopen_broker_failed([item_id], path=path)
+            item = reopened["items"][0]
+            self.assertEqual(item["status"], "selected")
+            self.assertIsNone(item["queued_leg_id"])
+
     def test_queue_selected_consolidates_sources_by_symbol(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "execution-plan.json"
