@@ -277,22 +277,27 @@ export function tradeTable(trades: Trade[], baseCcy: string): HTMLElement {
     page = pg.page;
     body.innerHTML = "";
     pg.items.forEach((t) => {
-      const tr = el("tr");
+      const provisional = !!t.provisional || t.source === "live";
+      const tr = el("tr", provisional ? "hist-trade-live" : "");
       const buy = t.side === "BUY";
       const pnlCls = t.realized_pnl > 0 ? "good" : t.realized_pnl < 0 ? "bad" : "muted";
       // Options: show the readable contract ("AMD 19APR24 7.5 P") not the cryptic
       // symbol, and leave it un-linked (it's a contract, not a ticker). Equities
       // link their ticker to the dossier.
       const nameHtml = t.is_option ? esc(t.description || t.symbol) : tickerSpan(t.symbol);
+      const liveBadge = provisional
+        ? ` <span class="hist-livebadge" title="Live execution; cash flow and realized P&L arrive with the next finalized Flex statement">live</span>`
+        : "";
+      const pendingMoney = `<span class="muted" title="Pending finalized Flex statement">\u2014</span>`;
       // Price + realized P&L are NATIVE currency (per ticker); cash flow is base.
       tr.innerHTML =
         `<td>${esc(t.date)}</td>` +
         `<td class="${buy ? "good" : "bad"}">${esc(t.side)}</td>` +
-        `<td class="risk-pos-sym">${nameHtml}</td>` +
+        `<td class="risk-pos-sym">${nameHtml}${liveBadge}</td>` +
         `<td class="num">${esc(Math.abs(Number(t.quantity)))}</td>` +
         `<td class="num">${esc(t.price)}${ccyTag(t.currency)}</td>` +
-        `<td class="num">${sensitive(fmtSigned(t.base_cash_flow), "cash flow")}</td>` +
-        `<td class="num ${pnlCls}">${t.realized_pnl ? sensitive(fmtSigned(t.realized_pnl), "realized pnl") + ccyTag(t.currency) : "\u2014"}</td>`;
+        `<td class="num">${provisional ? pendingMoney : sensitive(fmtSigned(t.base_cash_flow), "cash flow")}</td>` +
+        `<td class="num ${pnlCls}">${provisional ? pendingMoney : t.realized_pnl ? sensitive(fmtSigned(t.realized_pnl), "realized pnl") + ccyTag(t.currency) : "\u2014"}</td>`;
       body.appendChild(tr);
       wireTickers(tr);
     });

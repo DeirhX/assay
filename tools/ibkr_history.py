@@ -39,6 +39,7 @@ returns reports and can never place a trade. Standard library only.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -232,6 +233,75 @@ def parse_trade(t: ET.Element) -> dict:
         "put_call": (t.get("putCall") or "").upper(),
         "strike": _dec(t.get("strike")) or None,
         "expiry": _iso_date(t.get("expiry")) if t.get("expiry") else "",
+    }
+
+
+def normalize_live_trade(row: dict) -> dict:
+    """Map one CPAPI /iserver/account/trades row into the Flex ledger shape.
+
+    Live executions deliberately carry no cash-flow or realized-P&L estimate:
+    CPAPI does not provide the per-execution base-currency FX and FIFO fields
+    that Flex does. The UI labels these rows provisional until Flex replaces
+    them on the next finalized statement.
+    """
+    side_raw = str(row.get("side") or "").strip().upper()
+    side = "BUY" if side_raw in {"B", "BOT", "BUY"} else "SELL"
+    size = abs(_dec(str(row.get("size") or "0")))
+    quantity = size if side == "BUY" else -size
+    price = _dec(str(row.get("price") or "0"))
+    asset_class = str(row.get("sec_type") or "").strip().upper()
+    underlying = str(row.get("symbol") or "").strip().upper()
+    local_symbol = str(row.get("contract_description_1") or "").strip()
+    symbol = local_symbol if asset_class in _OPTION_CLASSES and local_symbol else underlying
+
+    stamp = ""
+    raw_epoch = row.get("trade_time_r")
+    if isinstance(raw_epoch, (int, float)) and not isinstance(raw_epoch, bool):
+        stamp = datetime.fromtimestamp(float(raw_epoch) / 1000, timezone.utc).isoformat(
+            timespec="seconds"
+        )
+    if not stamp:
+        raw_stamp = str(row.get("trade_time") or "").strip()
+        try:
+            stamp = datetime.strptime(raw_stamp, "%Y%m%d-%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            ).isoformat(timespec="seconds")
+        except ValueError:
+            stamp = raw_stamp
+    trade_date = stamp[:10] if len(stamp) >= 10 else ""
+    execution_id = str(row.get("execution_id") or "").strip()
+    return {
+        "trade_id": execution_id,
+        "transaction_id": "",
+        "execution_id": execution_id,
+        "datetime": stamp,
+        "date": trade_date,
+        "symbol": symbol,
+        "asset_class": asset_class,
+        "currency": "",
+        "side": side,
+        "quantity": quantity,
+        "price": price,
+        "proceeds": 0.0,
+        "commission": -abs(_dec(str(row.get("commission") or "0"))),
+        "net_cash": 0.0,
+        "fx_rate_to_base": 1.0,
+        "base_cash_flow": 0.0,
+        "base_value": 0.0,
+        "realized_pnl": 0.0,
+        "open_close": "",
+        "description": local_symbol or str(row.get("company_name") or "").strip(),
+        "listing_exchange": str(
+            row.get("listing_exchange") or row.get("exchange") or ""
+        ),
+        "underlying_symbol": underlying if asset_class in _OPTION_CLASSES else "",
+        "underlying": underlying or symbol,
+        "put_call": "",
+        "strike": None,
+        "expiry": "",
+        "conid": row.get("conid"),
+        "source": "live",
+        "provisional": True,
     }
 
 
@@ -548,6 +618,104 @@ def normalize(account: str, trades: dict[str, dict], nav: dict[str, dict],
     return enriched
 
 
+def _rebuild_payload(payload: dict, trades: list[dict], *, end: date) -> dict:
+    """Re-run aggregates after adding/removing provisional live executions."""
+    rebuilt = normalize(
+        str(payload.get("account") or ""),
+        {_trade_key(t): t for t in trades},
+        {r["date"]: r for r in payload.get("nav_series", []) if r.get("date")},
+        {_cash_key(c): c for c in payload.get("cash_transactions", [])},
+        end=end,
+        windows_done=int((payload.get("summary") or {}).get("windows") or 0),
+    )
+    if payload.get("base_currency") and not rebuilt.get("base_currency"):
+        rebuilt["base_currency"] = payload["base_currency"]
+    update = (payload.get("summary") or {}).get("update")
+    if update:
+        rebuilt.setdefault("summary", {})["update"] = copy.deepcopy(update)
+    return rebuilt
+
+
+def strip_live_executions(payload: dict | None) -> dict | None:
+    """Remove the previous provisional tail before the next Flex top-up.
+
+    This prevents yesterday's live rows from being seeded into Flex and then
+    duplicated when the finalized statement arrives.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    trades = [t for t in payload.get("trades", []) if t.get("source") != "live"]
+    flex_to = str(
+        (payload.get("history_sources") or {}).get("flex_to_date")
+        or payload.get("flex_to_date")
+        or payload.get("to_date")
+        or ""
+    )
+    end = _parse_date(flex_to)
+    if end is None:
+        return copy.deepcopy(payload)
+    rebuilt = _rebuild_payload(payload, trades, end=end)
+    rebuilt["flex_to_date"] = flex_to
+    return rebuilt
+
+
+def merge_live_executions(
+    payload: dict,
+    rows: list[dict],
+    *,
+    fetched_at: datetime | None = None,
+    window_days: int = 7,
+) -> dict:
+    """Append executions newer than Flex's finalized coverage.
+
+    Monetary fields remain provisional/blank until Flex catches up. Date
+    coverage is the deduplication boundary: the finalized Flex statement wins
+    for every date it covers; CPAPI only fills the newer tail.
+    """
+    base = strip_live_executions(payload) or copy.deepcopy(payload)
+    flex_to = str(base.get("flex_to_date") or base.get("to_date") or "")
+    flex_day = _parse_date(flex_to)
+    account = str(base.get("account") or "")
+    seen: set[str] = set()
+    live: list[dict] = []
+    for raw in rows:
+        row_account = str(raw.get("account") or raw.get("accountCode") or "")
+        if account and row_account and row_account != account:
+            continue
+        trade = normalize_live_trade(raw)
+        trade_day = _parse_date(trade.get("date"))
+        if not trade_day or (flex_day and trade_day <= flex_day):
+            continue
+        key = _trade_key(trade)
+        if key in seen:
+            continue
+        seen.add(key)
+        live.append(trade)
+
+    all_trades = list(base.get("trades") or []) + live
+    end = max(
+        [d for d in [flex_day, *(_parse_date(t.get("date")) for t in live)] if d],
+        default=datetime.now(timezone.utc).date(),
+    )
+    merged = _rebuild_payload(base, all_trades, end=end)
+    stamp = (fetched_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    merged["flex_to_date"] = flex_to
+    merged["history_sources"] = {
+        "flex_to_date": flex_to,
+        "live_as_of": stamp,
+        "live_window_days": max(1, min(7, int(window_days))),
+        "live_trade_count": len(live),
+        "live_available": True,
+    }
+    merged.setdefault("summary", {})["live_trades"] = len(live)
+    update = merged["summary"].get("update")
+    if isinstance(update, dict):
+        update["live_trades"] = len(live)
+    return merged
+
+
 def enrich_history_payload(payload: dict | None) -> dict | None:
     """Idempotently attach the grouping + currency fields the UI needs.
 
@@ -642,9 +810,10 @@ def _seed_from_payload(payload: dict) -> dict:
 def _covered_through(payload: dict) -> date | None:
     """The last date the cached payload is known to cover (its ``to_date``, with
     NAV / last-trade dates as fallbacks)."""
-    for key in ("to_date",):
-        if payload.get(key):
-            d = _parse_date(payload[key])
+    source_flex = (payload.get("history_sources") or {}).get("flex_to_date")
+    for value in (source_flex, payload.get("flex_to_date"), payload.get("to_date")):
+        if value:
+            d = _parse_date(value)
             if d:
                 return d
     candidates = [r["date"] for r in payload.get("nav_series", []) if r.get("date")]

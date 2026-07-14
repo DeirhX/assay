@@ -3256,6 +3256,22 @@ a.tlink:hover { border-bottom-style: solid; }
 .hist-key.sell { background: rgba(225, 90, 80, .9); }
 
 .hist-trades td, .hist-trades th { font-size: 13px; }
+.hist-trade-live > td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.hist-livebadge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  line-height: 1.3;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
 
 /* Per-day trade markers + hover card */
 .hist-dot.mixed { fill: rgba(245, 199, 107, .95); }

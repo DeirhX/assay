@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import unittest
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest import mock
 
 import _support  # noqa: F401
@@ -455,6 +455,85 @@ class EnrichPayload(unittest.TestCase):
 
     def test_none_passes_through(self):
         self.assertIsNone(H.enrich_history_payload(None))
+
+
+class LiveExecutionTail(unittest.TestCase):
+    def _flex_payload(self):
+        return H.normalize(
+            "U123",
+            {"flex-1": {
+                "trade_id": "flex-1", "transaction_id": "txn-1",
+                "datetime": "2026-07-13T15:00:00+00:00", "date": "2026-07-13",
+                "symbol": "AMD", "asset_class": "STK", "currency": "USD",
+                "side": "BUY", "quantity": 2.0, "price": 150.0,
+                "proceeds": -300.0, "commission": -1.0, "net_cash": -301.0,
+                "fx_rate_to_base": 1.0, "base_cash_flow": -301.0,
+                "base_value": -300.0, "realized_pnl": 0.0, "open_close": "O",
+                "description": "AMD", "listing_exchange": "NASDAQ",
+                "underlying_symbol": "", "underlying": "AMD", "put_call": "",
+                "strike": None, "expiry": "",
+            }},
+            {"2026-07-13": {"date": "2026-07-13", "nav": 1000.0, "cash": 100.0,
+                            "stock": 900.0}},
+            {},
+            end=date(2026, 7, 13),
+            windows_done=1,
+        )
+
+    @staticmethod
+    def _live(execution_id, stamp, symbol="EEFT", sec_type="STK"):
+        return {
+            "execution_id": execution_id,
+            "symbol": symbol,
+            "side": "S",
+            "trade_time_r": stamp,
+            "size": 3,
+            "price": "75.50",
+            "commission": "1.25",
+            "net_amount": 225.25,
+            "account": "U123",
+            "contract_description_1": symbol,
+            "sec_type": sec_type,
+            "listing_exchange": "NASDAQ",
+            "conid": 99,
+        }
+
+    def test_only_appends_executions_after_flex_coverage(self):
+        old_ms = int(datetime(2026, 7, 13, 16, tzinfo=timezone.utc).timestamp() * 1000)
+        today_ms = int(datetime(2026, 7, 14, 8, tzinfo=timezone.utc).timestamp() * 1000)
+        merged = H.merge_live_executions(
+            self._flex_payload(),
+            [self._live("old", old_ms), self._live("today", today_ms)],
+            fetched_at=datetime(2026, 7, 14, 8, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(merged["summary"]["n_trades"], 2)
+        live = next(t for t in merged["trades"] if t.get("source") == "live")
+        self.assertEqual(live["execution_id"], "today")
+        self.assertTrue(live["provisional"])
+        self.assertEqual(live["base_cash_flow"], 0.0)
+        self.assertEqual(merged["flex_to_date"], "2026-07-13")
+        self.assertEqual(merged["to_date"], "2026-07-14")
+        self.assertEqual(merged["history_sources"]["live_trade_count"], 1)
+        # Provisional live rows must not invent base-currency cash/P&L.
+        self.assertEqual(merged["summary"]["realized_pnl_total"], 0.0)
+
+    def test_stripping_live_tail_restores_flex_coverage(self):
+        today_ms = int(datetime(2026, 7, 14, 8, tzinfo=timezone.utc).timestamp() * 1000)
+        merged = H.merge_live_executions(
+            self._flex_payload(), [self._live("today", today_ms)]
+        )
+        stripped = H.strip_live_executions(merged)
+        self.assertEqual(stripped["summary"]["n_trades"], 1)
+        self.assertEqual(stripped["to_date"], "2026-07-13")
+        self.assertEqual(H._covered_through(merged), date(2026, 7, 13))
+
+    def test_option_uses_underlying_for_grouping(self):
+        row = self._live("opt", 1784016000000, symbol="PYPL", sec_type="OPT")
+        row["contract_description_1"] = "PYPL 17JUL26 80 C"
+        trade = H.normalize_live_trade(row)
+        self.assertEqual(trade["symbol"], "PYPL 17JUL26 80 C")
+        self.assertEqual(trade["underlying"], "PYPL")
+        self.assertEqual(trade["quantity"], -3.0)
 
 
 class MultiCurrency(unittest.TestCase):
