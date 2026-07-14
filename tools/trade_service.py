@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -2552,21 +2553,44 @@ def _held_avg_cost() -> dict[str, float]:
     return out
 
 
-def _attach_avg_cost(orders: list[dict]) -> list[dict]:
-    """Fold each working order's average purchase price (from the local holdings
-    snapshot, matched by symbol) onto the order so the UI can show a SELL's
-    limit-vs-cost gain/loss. A cheap file read -- no gateway round-trip -- so it
-    doesn't reintroduce the latency the async quote split just removed."""
+def _held_quantities() -> dict[str, float]:
+    """Current position quantity by exact broker symbol for order-edit context."""
+    holdings = _load(HOLDINGS_JSON) or {}
+    out: dict[str, float] = {}
+    for position in holdings.get("positions") or []:
+        if str(position.get("asset_class") or "").upper() not in {"", "STK"}:
+            continue
+        sym = str(position.get("symbol") or "").strip().upper()
+        qty = position.get("quantity")
+        if sym and isinstance(qty, (int, float)) and not isinstance(qty, bool):
+            out[sym] = out.get(sym, 0.0) + float(qty)
+    return out
+
+
+def _attach_holding_context(orders: list[dict]) -> list[dict]:
+    """Attach held quantity and average cost to stock working orders.
+
+    This is a cheap local snapshot read with no gateway round-trip. Option
+    orders are deliberately excluded: their ticker is often the underlying,
+    which must not be mislabeled as held option contracts or option cost."""
     costs = _held_avg_cost()
-    if not costs:
+    quantities = _held_quantities()
+    if not costs and not quantities:
         return orders
     for o in orders:
         if _order_terminal(o):
             continue
         sym = str(o.get("ticker") or o.get("symbol") or "").strip().upper()
+        is_option = (
+            str(o.get("secType") or o.get("assetClass") or "").upper() == "OPT"
+            or bool(o.get("right"))
+        )
         cost = costs.get(sym)
-        if cost is not None:
+        if cost is not None and not is_option:
             o["avg_cost"] = cost
+        held_quantity = quantities.get(sym)
+        if held_quantity is not None and not is_option:
+            o["held_quantity"] = held_quantity
     return orders
 
 
@@ -2606,11 +2630,12 @@ def _trade_orders() -> dict:
     try:
         # Fold in the active pegs so the UI can badge which working orders are
         # being kept at the top of book (and offer a Stop) in a single call, plus
-        # each order's average purchase price (local holdings snapshot -- cheap)
-        # so a SELL can be read against its cost. Quotes are deliberately NOT
+        # each stock order's held quantity and average purchase price (local
+        # holdings snapshot -- cheap) so edits have context and a SELL can be
+        # read against its cost. Quotes are deliberately NOT
         # attached here -- they're a separate, slower snapshot call the client
         # fetches asynchronously (see _trade_quotes).
-        orders = _attach_avg_cost(ibkr_trade.live_orders())
+        orders = _attach_holding_context(ibkr_trade.live_orders())
         return {"orders": orders, "pegs": order_peg.active_pegs()}
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
@@ -2625,6 +2650,92 @@ def _trade_cancel(body: dict) -> dict:
     account_id = _resolve_trade_account(body.get("account"))
     try:
         return {"cancelled": ibkr_trade.cancel_order(account_id, order_id)}
+    except ibkr_trade.CPAPIError as exc:
+        raise _BadGateway(str(exc)) from exc
+
+
+def _positive_order_number(raw: Any, label: str) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a number") from None
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{label} must be greater than zero")
+    return value
+
+
+def _trade_modify(body: dict) -> dict:
+    """Modify the price and/or remaining quantity of one live working order."""
+    if not ibkr_trade.trading_enabled():
+        raise _Forbidden("trading is disabled")
+    if body.get("confirm") is not True:
+        raise ValueError("confirm must be true to modify a working order")
+    order_id = str(body.get("order_id") or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required")
+    price_supplied = body.get("price") not in (None, "")
+    quantity_supplied = body.get("remaining_quantity") not in (None, "")
+    if not price_supplied and not quantity_supplied:
+        raise ValueError("price or remaining_quantity is required")
+
+    account_id = _resolve_trade_account(body.get("account"))
+    if not ibkr_trade.is_paper_account(account_id) and not ibkr_trade.live_allowed():
+        raise _Forbidden(
+            "live account modification is locked — set IBKR_ALLOW_LIVE to enable live orders"
+        )
+    try:
+        order = order_peg.find_live_order(order_id)
+        if order is None or _order_terminal(order):
+            raise _Conflict("working order is no longer available — refresh orders")
+        conid = order.get("conid")
+        side = str(order.get("side") or "").strip().upper()
+        order_type = str(
+            order.get("orderType") or order.get("order_type") or ""
+        ).strip().upper()
+        if conid in (None, "") or side not in {"BUY", "SELL"} or not order_type:
+            raise _Conflict("working order is missing executable contract details")
+        if price_supplied and order_type not in {"LMT", "LIMIT"}:
+            raise ValueError("price can only be changed on a limit order")
+
+        filled = max(
+            0.0,
+            _number(order.get("filledQuantity") or order.get("filled")),
+        )
+        remaining = _number(
+            order.get("remainingQuantity")
+            or order.get("totalSize")
+            or order.get("quantity")
+        )
+        new_remaining = (
+            _positive_order_number(body.get("remaining_quantity"), "remaining_quantity")
+            if quantity_supplied
+            else remaining
+        )
+        if new_remaining <= 0:
+            raise _Conflict("working order has no remaining quantity — refresh orders")
+        price = (
+            _positive_order_number(body.get("price"), "price")
+            if price_supplied
+            else _number(order.get("price"))
+        )
+        changes: dict[str, Any] = {
+            "conid": conid,
+            "orderType": order_type,
+            "side": side,
+            # CPAPI expects total quantity; the UI edits what remains open.
+            "quantity": filled + new_remaining,
+            "tif": str(order.get("tif") or order.get("timeInForce") or "GTC"),
+        }
+        if price > 0:
+            changes["price"] = price
+        order_peg.stop_peg(order_id)
+        modified = ibkr_trade.modify_order(account_id, order_id, changes)
+        return {
+            "modified": modified,
+            "order_id": order_id,
+            "remaining_quantity": new_remaining,
+            "price": changes.get("price"),
+        }
     except ibkr_trade.CPAPIError as exc:
         raise _BadGateway(str(exc)) from exc
 

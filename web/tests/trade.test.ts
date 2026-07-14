@@ -15,6 +15,7 @@ vi.mock("../src/core", async (importOriginal) => {
 });
 
 import { state } from "../src/core";
+import { publishGatewayStatus } from "../src/gateway";
 import { loadTrade } from "../src/trade";
 import type { TradeLeg } from "../src/api-types";
 
@@ -398,6 +399,24 @@ describe("trade desk working orders", () => {
     expect(apiMock).toHaveBeenCalledWith("/api/trade/orders", "GET", null, { timeoutMs: 20_000 });
   });
 
+  it("keeps the working-orders DOM mounted during automatic gateway refreshes", async () => {
+    document.getElementById("view-trade")?.classList.add("active");
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-9", ticker: "NVDA", side: "SELL", remainingQuantity: 10,
+        orderType: "LMT", price: 180, tif: "GTC", status: "Submitted" },
+    ]);
+    const card = document.querySelector(".trade-live-card");
+    const orderReads = () => apiMock.mock.calls
+      .filter(([path]) => path === "/api/trade/orders").length;
+    const readsBefore = orderReads();
+
+    publishGatewayStatus({ ...PAPER_STATUS, competing: true });
+    await flush();
+
+    expect(document.querySelector(".trade-live-card")).toBe(card);
+    expect(orderReads()).toBe(readsBefore);
+  });
+
   it("shows an empty state when connected with no working orders", async () => {
     await loadWith(PAPER_STATUS, []);
     const card = document.querySelector(".trade-live-card");
@@ -423,6 +442,46 @@ describe("trade desk working orders", () => {
       "/api/trade/cancel", "POST",
       expect.objectContaining({ order_id: "o-1", account: "DU1" }),
     );
+  });
+
+  it("edits price and open quantity with current order and holding context", async () => {
+    await loadWith(PAPER_STATUS, [{
+      orderId: "o-1", ticker: "AMD", side: "SELL", status: "Submitted",
+      orderType: "LMT", price: 100, remainingQuantity: 80, filledQuantity: 20,
+      held_quantity: 100,
+    }]);
+    document.querySelector<HTMLButtonElement>(
+      '.trade-live-card [aria-label="Modify price or quantity"]',
+    )!.click();
+
+    const modal = document.querySelector(".trade-modify-modal")!;
+    expect(document.querySelector(".trade-live-row .num [data-sensitive]")!.textContent)
+      .toBe("80");
+    expect(modal.textContent).toContain("Currently open80 shares");
+    expect(modal.textContent).toContain("Already filled20 shares");
+    expect(modal.textContent).toContain("You currently hold100 shares");
+    const price = modal.querySelector<HTMLInputElement>("#trade-modify-price")!;
+    const quantity = modal.querySelector<HTMLInputElement>("#trade-modify-qty")!;
+    expect(quantity.hasAttribute("data-sensitive")).toBe(true);
+    expect(modal.querySelectorAll(".trade-modify-facts [data-sensitive]")).toHaveLength(3);
+    price.value = "101.5";
+    price.dispatchEvent(new Event("input"));
+    quantity.value = "120";
+    quantity.dispatchEvent(new Event("input"));
+    expect(modal.querySelector<HTMLElement>(".trade-modify-warning")!.hidden).toBe(false);
+
+    [...modal.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Update working order")!.click();
+    await flush();
+
+    expect(apiMock).toHaveBeenCalledWith("/api/trade/modify", "POST", {
+      order_id: "o-1",
+      account: "DU1",
+      price: 101.5,
+      remaining_quantity: 120,
+      confirm: true,
+    });
+    expect(document.querySelector(".trade-modify-modal")).toBeNull();
   });
 
   it("keeps filled/cancelled orders out of the working list, in a muted summary", async () => {
@@ -456,7 +515,7 @@ describe("trade desk working orders", () => {
     expect(cell.querySelector(".trade-live-age")!.textContent).toBe("2d");
   });
 
-  it("shows bid × ask, spread, last, and the limit-vs-touch gap as a meter", async () => {
+  it("centers execution distance and moves the exact spread to the quote tooltip", async () => {
     await loadWith(PAPER_STATUS, [
       { orderId: "o-1", ticker: "AMD", side: "SELL", orderType: "LMT", price: 102, status: "Submitted",
         quote: { bid: 100, ask: 100.5, last: 100.2 } },
@@ -464,11 +523,24 @@ describe("trade desk working orders", () => {
     const mkt = document.querySelector(".trade-live-row")!;
     expect(mkt.textContent).toContain("100.00");   // bid
     expect(mkt.textContent).toContain("100.50");   // ask
-    expect(mkt.querySelector(".trade-live-spread")!.textContent).toContain("0.50");
+    expect(mkt.querySelector(".trade-live-spread")).toBeNull();
+    expect(mkt.querySelector(".trade-live-quote")!.getAttribute("title"))
+      .toContain("Bid-ask spread: 0.50%");
+    expect(document.querySelector('[data-osort="lastdist"]')!.textContent).toContain("Distance");
     expect(mkt.querySelector(".trade-live-last")!.textContent).toContain("100.20");
     // sell limit 102 sits 2% above the 100 bid — direction in the tooltip, figure beside the bar
     expect(mkt.querySelector(".edge-num")!.textContent).toBe("2.0%");
     expect(mkt.querySelector(".trade-live-edge")!.getAttribute("title")).toContain("above bid");
+  });
+
+  it("flags an unusually wide bid-ask spread without adding another column", async () => {
+    await loadWith(PAPER_STATUS, [
+      { orderId: "o-1", ticker: "AMD", side: "SELL", orderType: "LMT", price: 103,
+        status: "Submitted", quote: { bid: 100, ask: 102.5, last: 101 } },
+    ]);
+    const quote = document.querySelector(".trade-live-quote")!;
+    expect(quote.querySelector(".trade-live-spread-hint")!.textContent).toBe("wide");
+    expect(quote.getAttribute("title")).toContain("Unusually wide spread");
   });
 
   it("draws the limit-vs-touch gap as a log-scaled, colour-graded meter", async () => {
@@ -574,7 +646,7 @@ describe("trade desk working orders", () => {
     expect(done.dataset.ticker).toBe("GEV");
   });
 
-  it("sorts the working list by age and by distance-from-last, clearing on the third click", async () => {
+  it("defaults to execution distance and still supports age and explicit sort cycling", async () => {
     const now = Date.now();
     const q = { bid: 99, ask: 101, last: 100 };
     await loadWith(PAPER_STATUS, [
@@ -589,7 +661,7 @@ describe("trade desk working orders", () => {
       .map((e) => (e.textContent || "").trim().slice(0, 3));
     const click = (k: string) => document.querySelector<HTMLButtonElement>(`[data-osort="${k}"]`)!.click();
 
-    expect(syms()).toEqual(["AAA", "BBB", "CCC"]);   // IBKR order
+    expect(syms()).toEqual(["AAA", "CCC", "BBB"]);   // nearest execution first
     click("age");                                     // desc: oldest first
     expect(syms()).toEqual(["BBB", "CCC", "AAA"]);
     click("age");                                     // asc: newest first

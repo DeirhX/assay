@@ -167,17 +167,24 @@ class AttachAvgCost(unittest.TestCase):
             {"orderId": "o-1", "ticker": "AMD", "side": "SELL", "status": "Submitted"},
             {"orderId": "o-2", "ticker": "AMD", "side": "SELL", "status": "Filled"},     # terminal -> skipped
             {"orderId": "o-3", "ticker": "ZZZ", "side": "SELL", "status": "Submitted"},  # not held
+            {"orderId": "o-4", "ticker": "AMD", "side": "SELL", "status": "Submitted",
+             "secType": "OPT"},  # ticker is underlying; stock context would be false
         ]
-        with mock.patch.object(trade_service, "_held_avg_cost", return_value={"AMD": 95.0}):
-            out = trade_service._attach_avg_cost(orders)
+        with mock.patch.object(trade_service, "_held_avg_cost", return_value={"AMD": 95.0}), \
+             mock.patch.object(trade_service, "_held_quantities", return_value={"AMD": 30.0}):
+            out = trade_service._attach_holding_context(orders)
         self.assertEqual(out[0]["avg_cost"], 95.0)
+        self.assertEqual(out[0]["held_quantity"], 30.0)
         self.assertNotIn("avg_cost", out[1])
         self.assertNotIn("avg_cost", out[2])
+        self.assertNotIn("held_quantity", out[3])
+        self.assertNotIn("avg_cost", out[3])
 
     def test_no_holdings_leaves_orders_untouched(self):
         orders = [{"orderId": "o", "ticker": "AMD", "side": "SELL", "status": "Submitted"}]
-        with mock.patch.object(trade_service, "_held_avg_cost", return_value={}):
-            out = trade_service._attach_avg_cost(orders)
+        with mock.patch.object(trade_service, "_held_avg_cost", return_value={}), \
+             mock.patch.object(trade_service, "_held_quantities", return_value={}):
+            out = trade_service._attach_holding_context(orders)
         self.assertNotIn("avg_cost", out[0])
 
 
@@ -222,10 +229,59 @@ class TradeQuotes(unittest.TestCase):
         working = [{"orderId": "o-1", "ticker": "AMD", "status": "Submitted"}]
         with mock.patch.object(ibkr_trade, "trading_enabled", return_value=False), \
              mock.patch.object(ibkr_trade, "live_orders", return_value=working), \
-             mock.patch.object(trade_service, "_attach_avg_cost", side_effect=lambda rows: rows), \
+             mock.patch.object(trade_service, "_attach_holding_context", side_effect=lambda rows: rows), \
              mock.patch.object(trade_service.order_peg, "active_pegs", return_value=[]):
             out = trade_service._trade_orders()
         self.assertEqual(out["orders"], working)
+
+
+class TradeModify(unittest.TestCase):
+    ORDER = {
+        "orderId": "o-1",
+        "conid": 123,
+        "ticker": "AMD",
+        "side": "SELL",
+        "orderType": "LMT",
+        "price": 100.0,
+        "tif": "GTC",
+        "remainingQuantity": 80,
+        "filledQuantity": 20,
+        "status": "Submitted",
+    }
+
+    def test_modifies_limit_and_desired_remaining_quantity(self):
+        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=True), \
+             mock.patch.object(trade_service, "_resolve_trade_account", return_value="DU1"), \
+             mock.patch.object(ibkr_trade, "is_paper_account", return_value=True), \
+             mock.patch.object(trade_service.order_peg, "find_live_order",
+                               return_value=self.ORDER), \
+             mock.patch.object(trade_service.order_peg, "stop_peg") as stop, \
+             mock.patch.object(ibkr_trade, "modify_order",
+                               return_value=[{"order_id": "o-1"}]) as modify:
+            out = trade_service._trade_modify({
+                "order_id": "o-1",
+                "price": 101.5,
+                "remaining_quantity": 50,
+                "confirm": True,
+            })
+
+        stop.assert_called_once_with("o-1")
+        modify.assert_called_once_with("DU1", "o-1", {
+            "conid": 123,
+            "orderType": "LMT",
+            "side": "SELL",
+            "quantity": 70.0,  # 20 already filled + 50 still wanted
+            "tif": "GTC",
+            "price": 101.5,
+        })
+        self.assertEqual(out["remaining_quantity"], 50.0)
+
+    def test_requires_explicit_confirmation(self):
+        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=True):
+            with self.assertRaisesRegex(ValueError, "confirm must be true"):
+                trade_service._trade_modify({
+                    "order_id": "o-1", "price": 101.5,
+                })
 
 
 class DropBlockedBuys(unittest.TestCase):
