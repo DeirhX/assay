@@ -2,6 +2,7 @@
 // the chart, option-folding for "activity by name", and pagination.
 import { describe, expect, it } from "vitest";
 import { contractLabel, dayGroups, groupActivity, groupBySector, paginate } from "../src/history";
+import { tradeTable } from "../src/history/tables";
 
 describe("dayGroups", () => {
   it("folds trades into ascending days and drops dateless rows", () => {
@@ -141,5 +142,27 @@ describe("paginate", () => {
     const pg = paginate([], 1, 10);
     expect(pg.pages).toBe(1);
     expect(pg.items).toEqual([]);
+  });
+});
+
+describe("live execution rows", () => {
+  it("marks provisional fills and withholds incomplete monetary fields", () => {
+    const table = tradeTable([{
+      date: "2026-07-14",
+      side: "SELL",
+      symbol: "EEFT",
+      quantity: -3,
+      price: 75.5,
+      base_cash_flow: 0,
+      realized_pnl: 0,
+      source: "live",
+      provisional: true,
+    }], "CZK");
+    const row = table.querySelector(".hist-trade-live");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".hist-livebadge")?.textContent).toBe("live");
+    expect(row?.textContent).toContain("EEFT");
+    expect(row?.textContent).not.toContain("+0");
+    expect(row?.querySelectorAll('[title="Pending finalized Flex statement"]')).toHaveLength(2);
   });
 });

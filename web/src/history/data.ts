@@ -6,6 +6,8 @@
 
 export interface Trade {
   date?: string;
+  source?: "flex" | "live" | string;
+  provisional?: boolean;
   [k: string]: any;
 }
 

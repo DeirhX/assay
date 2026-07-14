@@ -1753,6 +1753,31 @@ def live_orders() -> list[dict]:
     return res if isinstance(res, list) else []
 
 
+def recent_trades(days: int = 7) -> list[dict]:
+    """Executions from the live brokerage session, including the current day.
+
+    CPAPI caps this endpoint at seven calendar days. Like live_orders(), recover
+    once from the common half-initialized brokerage-session states.
+    """
+    window = max(1, min(7, int(days)))
+    endpoint = f"/iserver/account/trades?days={window}"
+
+    def _fetch() -> Any:
+        return _request("GET", endpoint)
+
+    try:
+        res = _fetch()
+    except CPAPIError as exc:
+        if not _orders_session_recoverable(exc):
+            raise
+        prime_iserver_session()
+        res = _fetch()
+    if isinstance(res, dict):
+        rows = res.get("trades")
+        return rows if isinstance(rows, list) else []
+    return res if isinstance(res, list) else []
+
+
 def cancel_order(account_id: str, order_id: str) -> dict:
     return _request("DELETE",
                     f"/iserver/account/{urllib.parse.quote(account_id)}/order/{urllib.parse.quote(str(order_id))}")

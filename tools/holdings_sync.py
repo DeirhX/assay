@@ -284,20 +284,50 @@ IBKR_HISTORY_JSON = IBKR_CACHE_DIR / "portfolio-history.json"
 
 
 def _sync_history(progress=None, *, full: bool = False) -> dict:
-    """Reconstruct or top up the trade + NAV history via the vendored Flex reader
-    and cache the normalized payload. Read-only. Credentials resolve from the
-    gitignored tools/secrets.env (IBKR_FLEX_HISTORY_QUERY_ID, falling back to
-    IBKR_FLEX_QUERY_ID).
+    """Top up finalized history from Flex, then append today's live executions.
+
+    Flex remains authoritative for base-currency cash flow, realized P&L, and
+    back-to-inception NAV. CPAPI fills the unsettled tail that Flex cannot yet
+    serve; those rows are explicitly provisional and replaced on the next sync.
 
     Incremental by default: if a cache already exists it fetches only the days
     since it was last covered and merges them in (usually a single Flex request).
     ``full=True`` forces a complete rebuild back to inception. Returns the payload."""
     token, query_id = ibkr_history.resolve_history_credentials()
-    existing = None if full else history_payload()
+    existing = None if full else ibkr_history.strip_live_executions(history_payload())
     if existing:
         payload = ibkr_history.extend_history(existing, token, query_id, progress=progress)
     else:
         payload = ibkr_history.build_history(token, query_id, progress=progress)
+    flex_to = str(payload.get("to_date") or "")
+    payload["flex_to_date"] = flex_to
+
+    def _p(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    try:
+        status = ibkr_trade.auth_status()
+        live_ready = bool(
+            status.get("authenticated") and status.get("connected") is not False
+        )
+        if live_ready:
+            _p("reading the latest seven days of live IBKR executions…")
+            payload = ibkr_history.merge_live_executions(
+                payload, ibkr_trade.recent_trades(days=7), window_days=7
+            )
+        else:
+            payload["history_sources"] = {
+                "flex_to_date": flex_to,
+                "live_available": False,
+                "live_error": "IBKR live session is not connected",
+            }
+    except ibkr_trade.CPAPIError as exc:
+        payload["history_sources"] = {
+            "flex_to_date": flex_to,
+            "live_available": False,
+            "live_error": str(exc),
+        }
     IBKR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _write_json(IBKR_HISTORY_JSON, payload, sort_keys=False)
     return payload

@@ -7,10 +7,9 @@ import { legend, navChart, type NavPoint } from "./history/nav-chart";
 import { activityTable, sectorTable, tradeTable } from "./history/tables";
 
 // ---- portfolio history -----------------------------------------------------
-// Reconstructed from read-only Flex: the full executed-trade ledger plus the
-// day-by-day NAV series. The headline is one chart — portfolio value over time
-// with every buy/sell marked — because that's the thing single snapshots can't
-// show: the shape of the journey, not just where it ended.
+// Finalized history comes from read-only Flex; the authenticated Client Portal
+// session appends executions newer than Flex's last statement. Live rows are
+// provisional until the next Flex sync supplies authoritative cash flow/P&L.
 
 // Cheap credential probe (/api/ibkr/status) used to guide setup before a pull.
 interface IbkrStatus {
@@ -38,6 +37,13 @@ interface HistoryPayload {
   sectors_updated_at?: string | null;
   nav_series?: NavPoint[];
   trades?: Trade[];
+  history_sources?: {
+    flex_to_date?: string | null;
+    live_as_of?: string | null;
+    live_trade_count?: number;
+    live_available?: boolean;
+    live_error?: string | null;
+  };
 }
 
 let _wired = false;
@@ -117,12 +123,17 @@ function renderHistory(h: HistoryPayload) {
   const out = $$("#hist-result");
   out.innerHTML = "";
   const s = h.summary || {};
+  const sources = h.history_sources;
+  const liveCount = Number(sources?.live_trade_count) || 0;
 
   out.appendChild(metaStrip([
     `account ${sensitive(esc(h.account || "n/a"), "account id")}`,
     `${esc(h.from_date || "?")} → ${esc(h.to_date || "?")}`,
     `${esc(s.n_trades ?? 0)} trades · ${esc(s.n_nav_points ?? 0)} NAV points`,
     `${esc(s.windows ?? 0)} Flex window(s)`,
+    ...(sources?.live_available
+      ? [`${liveCount} provisional live execution${liveCount === 1 ? "" : "s"}`]
+      : []),
     ...(h.base_currency ? [`base ${esc(h.base_currency)}`] : []),
     `pulled ${freshnessNote(h.generated_at) || esc(fmtStamp(h.generated_at))}`,
   ]));
@@ -281,9 +292,14 @@ async function runSync(full: boolean) {
     onDone: async (done) => {
       await loadHistory();
       const r = ((done.result as Record<string, unknown>)?.summary || {}) as Record<string, unknown>;
-      const u = r.update as { new_trades?: number; new_nav_points?: number } | undefined;
+      const u = r.update as {
+        new_trades?: number;
+        new_nav_points?: number;
+        live_trades?: number;
+      } | undefined;
       status.textContent = u
-        ? `Done — +${u.new_trades} trades, +${u.new_nav_points} NAV points since the last pull.`
+        ? `Done — +${u.new_trades} finalized trades, ${u.live_trades ?? 0} provisional live executions, ` +
+          `+${u.new_nav_points} NAV points since the last pull.`
         : `Done — ${r.n_trades ?? 0} trades reconstructed.`;
     },
   });

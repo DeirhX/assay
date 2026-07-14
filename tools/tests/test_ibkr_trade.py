@@ -471,6 +471,19 @@ class LiveOrders(unittest.TestCase):
         req.assert_called_once_with("GET", "/iserver/account/orders")
 
 
+class RecentTrades(unittest.TestCase):
+    def test_requests_maximum_seven_day_execution_window(self):
+        rows = [{"execution_id": "exec-1"}]
+        with mock.patch.object(ibt, "_request", return_value=rows) as req:
+            self.assertEqual(ibt.recent_trades(days=99), rows)
+        req.assert_called_once_with("GET", "/iserver/account/trades?days=7")
+
+    def test_accepts_wrapped_trade_payload(self):
+        rows = [{"execution_id": "exec-2"}]
+        with mock.patch.object(ibt, "_request", return_value={"trades": rows}):
+            self.assertEqual(ibt.recent_trades(), rows)
+
+
 class TradeServiceGuards(unittest.TestCase):
     def setUp(self):
         ibt._conid_cache.clear()
