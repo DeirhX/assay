@@ -1,13 +1,14 @@
 import { esc } from "./core";
 import type { LiveOrder, PegState } from "./trade-types";
 
-export function orderLastDist(order: LiveOrder): number | null {
-  const last = order.quote && typeof order.quote.last === "number" ? order.quote.last : null;
+export function orderExecutionDistance(order: LiveOrder): number | null {
+  const side = String(order.side || "").toUpperCase();
+  const reference = side === "BUY" ? order.quote?.ask : order.quote?.bid;
   const limit = typeof order.price === "number"
     ? order.price
     : order.price != null && order.price !== "" ? Number(order.price) : NaN;
-  if (last == null || last === 0 || !Number.isFinite(limit)) return null;
-  return Math.abs(limit - last) / last;
+  if (typeof reference !== "number" || reference === 0 || !Number.isFinite(limit)) return null;
+  return Math.abs(limit - reference) / reference;
 }
 
 function px(value: number): string {
@@ -32,7 +33,7 @@ function edgeMeter(gapPct: number, label: string): string {
   const fraction = Math.min(1, Math.log1p(magnitude) / Math.log1p(cap));
   const fill = Math.max(6, Math.round(fraction * 100));
   const hue = Math.round((1 - fraction) * 130);
-  return `<span class="trade-live-edge" title="limit ${esc(label)}">` +
+  return `<span class="trade-live-edge" title="Distance from execution: limit ${esc(label)}">` +
     `<span class="edge-meter"><span class="edge-fill" ` +
     `style="width:${fill}%;background:hsl(${hue}, 68%, 52%)"></span></span>` +
     `<span class="edge-num">${magnitude.toFixed(1)}%</span></span>`;
@@ -64,23 +65,23 @@ export function marketCells(order: LiveOrder, quotesPending: boolean): string {
   const cold = bid == null && ask == null && last == null;
 
   let quoteCell: string;
+  let quoteTitle = "";
+  let quoteWide = false;
   if (cold) {
     quoteCell = quotesPending
       ? `<span class="trade-live-quoteload"><span class="spinner"></span> quote\u2026</span>`
       : `<span class="muted">no quote</span>`;
   } else if (bid != null && ask != null) {
-    quoteCell = `${px(bid)} <span class="muted">\u00d7</span> ${px(ask)}`;
-  } else {
-    quoteCell = EMPTY_CELL;
-  }
-
-  let spreadCell = EMPTY_CELL;
-  if (bid != null && ask != null) {
     const spread = ask - bid;
     const mid = (ask + bid) / 2;
     const spreadPct = mid > 0 ? (spread / mid) * 100 : 0;
-    spreadCell = `<span class="trade-live-spread${spreadPct >= 0.5 ? " wide" : ""}" ` +
-      `title="bid-ask spread \u0394${esc(px(spread))}">${spreadPct.toFixed(2)}%</span>`;
+    quoteWide = spreadPct >= 1;
+    quoteTitle = `Bid-ask spread: ${spreadPct.toFixed(2)}% (\u0394${px(spread)})` +
+      (quoteWide ? ". Unusually wide spread; execution may be costly or slow." : "");
+    quoteCell = `${px(bid)} <span class="muted">\u00d7</span> ${px(ask)}` +
+      (quoteWide ? ` <span class="trade-live-spread-hint">wide</span>` : "");
+  } else {
+    quoteCell = EMPTY_CELL;
   }
 
   const lastCell = last != null ? px(last) : EMPTY_CELL;
@@ -105,10 +106,10 @@ export function marketCells(order: LiveOrder, quotesPending: boolean): string {
     }
   }
 
-  return `<span class="trade-live-last num">${lastCell}</span>` +
-    `<span class="trade-live-quote">${quoteCell}</span>` +
-    `<span class="num">${spreadCell}</span>` +
-    `<span class="trade-live-edge-c">${edgeCell}</span>` +
+  return `<span class="trade-live-edge-c">${edgeCell}</span>` +
+    `<span class="trade-live-last num">${lastCell}</span>` +
+    `<span class="trade-live-quote${quoteWide ? " wide" : ""}"` +
+      `${quoteTitle ? ` title="${esc(quoteTitle)}"` : ""}>${quoteCell}</span>` +
     `<span class="trade-live-cost-c">${costCell(order)}</span>`;
 }
 

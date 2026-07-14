@@ -129,7 +129,7 @@ from ticker_directory import (  # noqa: E402  -- known-symbol universe, recents 
     ticker_index as _ticker_index,
 )
 from trade_service import (  # noqa: E402  -- gated live-trading service (thin handlers below)
-    _trade_cancel, _trade_orders, _trade_peg_start, _trade_peg_stop,
+    _trade_cancel, _trade_modify, _trade_orders, _trade_peg_start, _trade_peg_stop,
     _trade_place, _trade_preview, _trade_quotes, _trade_reconnect, _trade_status,
     _trade_tickle, basket_state as _basket_state,
     queue_working_conflicts as _queue_working_conflicts,
@@ -411,6 +411,7 @@ _POST_EXACT = {
     "/api/trade/preview": "_post_trade_preview",
     "/api/trade/place": "_post_trade_place",
     "/api/trade/cancel": "_post_trade_cancel",
+    "/api/trade/modify": "_post_trade_modify",
     "/api/trade/peg": "_post_trade_peg",
     "/api/trade/peg/stop": "_post_trade_peg_stop",
     "/api/trade/basket": "_post_trade_basket",
@@ -1627,6 +1628,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_trade_cancel(self, path):
         return self._send_json(_trade_cancel(self._read_body()))
+
+    def _post_trade_modify(self, path):
+        return self._send_json(_trade_modify(self._read_body()))
 
     def _post_trade_peg(self, path):
         return self._send_json(_trade_peg_start(self._read_body()))

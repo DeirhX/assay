@@ -3808,6 +3808,32 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
 .trade-cf-arm { margin-top: 14px; font-size: 13px; display: flex; flex-direction: column; gap: 7px; }
 .trade-cf-arm code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 12.5px; }
 .trade-cf-input { padding: 7px 10px; font-size: 14px; letter-spacing: .02em; }
+.trade-modify-modal { max-width: 520px; }
+.trade-modify-facts {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1px 18px;
+  margin: 8px 0 16px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--panel-2);
+}
+.trade-modify-facts > div {
+  display: flex; justify-content: space-between; gap: 10px; padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 12.5px;
+}
+.trade-modify-facts span { color: var(--muted); }
+.trade-modify-facts strong { font-variant-numeric: tabular-nums; }
+.trade-modify-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.trade-modify-fields label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.trade-modify-fields input { font-size: 16px; font-variant-numeric: tabular-nums; }
+.trade-modify-help { margin: 11px 0 0; line-height: 1.45; }
+.trade-modify-warning {
+  margin-top: 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  border-radius: 7px; background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--warn); font-size: 12px; line-height: 1.4;
+}
+.trade-modify-status { min-height: 20px; margin-top: 8px; }
+@media (max-width: 620px) {
+  .trade-modify-facts, .trade-modify-fields { grid-template-columns: 1fr; }
+}
 .trade-raw { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; max-height: 320px; }
 /* Post-placement loop-close: the next steps lead; the raw response collapses. */
 .trade-next { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-soft); background: rgba(130,170,255,.05); padding: 12px 14px; margin: 12px 0; }
@@ -3823,10 +3849,9 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
     auto                  /* side */
     minmax(38px, auto)    /* qty */
     minmax(74px, 1fr)     /* order (limit · tif) */
+    minmax(132px, 1.55fr) /* distance from execution */
     minmax(52px, 0.7fr)   /* last (headline) */
-    minmax(96px, 1.1fr)   /* bid × ask */
-    minmax(46px, 0.55fr)  /* spread */
-    minmax(84px, 1.05fr)  /* edge meter */
+    minmax(112px, 1.15fr) /* bid × ask */
     minmax(80px, 0.95fr)  /* cost */
     minmax(44px, 0.5fr)   /* age */
     auto;                 /* actions (hover) */
@@ -3857,8 +3882,13 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
 
 /* market columns — each its own grid cell so figures align down the column */
 .trade-live-quote { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.trade-live-spread { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.trade-live-spread.wide { color: var(--warn); }
+.trade-live-quote.wide { color: var(--warn); }
+.trade-live-spread-hint {
+  display: inline-block; margin-left: 3px; padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: 4px; color: var(--warn); font-size: 9px; font-weight: 700;
+  letter-spacing: .03em; text-transform: uppercase; vertical-align: 1px;
+}
 .trade-live-last { font-weight: 600; font-variant-numeric: tabular-nums; }
 .trade-live-quoteload { color: var(--muted); font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
 .trade-live-quoteload .spinner { width: 11px; height: 11px; border-width: 2px; }
@@ -3867,13 +3897,13 @@ button.trade-workspace-tab:disabled { opacity: .38; cursor: default; }
 .trade-live-cost .gain { color: var(--good); font-weight: 600; }
 .trade-live-cost .loss { color: var(--bad); font-weight: 600; }
 .trade-live-edge-c { min-width: 0; }
-.trade-live-edge { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+.trade-live-edge { display: inline-flex; align-items: center; gap: 7px; color: var(--text); font-size: 13px; }
 .trade-live-dim { color: var(--border); }   /* intentionally-empty market cell */
-.edge-meter { position: relative; flex: 0 0 auto; width: 46px; height: 6px; border-radius: 3px;
-  background: var(--border); overflow: hidden; }
+.edge-meter { position: relative; flex: 0 0 auto; width: 82px; height: 8px; border-radius: 4px;
+  background: var(--border); overflow: hidden; box-shadow: inset 0 0 0 1px rgba(255,255,255,.025); }
 /* fill colour is set inline (continuous green->red by log distance) */
 .edge-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--muted); }
-.edge-num { font-variant-numeric: tabular-nums; }
+.edge-num { color: var(--text); font-weight: 750; font-variant-numeric: tabular-nums; }
 
 /* sortable column header row (display:contents, aligns to the row grid) */
 .trade-live-headrow { display: contents; }
@@ -3884,6 +3914,7 @@ button.trade-live-h.sortable { background: none; cursor: pointer; text-align: le
   font: inherit; font-size: 11px; letter-spacing: 0.03em; text-transform: uppercase; }
 button.trade-live-h.sortable:hover { color: var(--text); }
 button.trade-live-h.sortable.active { color: var(--accent); }
+button.trade-live-h.sortable.distance { color: var(--text); font-weight: 750; }
 
 /* icon actions: hidden until the row is hovered/focused, so 19 rows stay clean.
    A pegging row keeps them visible so its Stop is always reachable. */

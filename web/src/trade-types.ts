@@ -93,6 +93,10 @@ export interface LiveOrder {
   lastExecutionTime_r?: number;
   quote?: Quote;
   avg_cost?: number;
+  held_quantity?: number;
+  filled?: number | string;
+  secType?: string;
+  assetClass?: string;
 }
 
 export interface PegState {
