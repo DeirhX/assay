@@ -151,6 +151,45 @@ class NormalizeTargets(unittest.TestCase):
         self.assertTrue(ch.get("challenges_pin"))
         self.assertIn("TSM", meta["challenges_pins"])
 
+    def test_exit_pins_override_bullish_reports_for_pypl_and_eeft(self):
+        rows = [_row("PYPL", held=3.5), _row("EEFT", held=5.7)]
+        convictions = self._convictions({"PYPL": "high", "EEFT": "medium"})
+        model = {
+            "targets": {
+                "PYPL": {"low": 0, "high": 0, "rule": "avoid"},
+                "EEFT": {"low": 0, "high": 0, "rule": "avoid"},
+            },
+            "provenance": {
+                symbol: {
+                    "source": "user-pin",
+                    "locked": True,
+                    "stance": "avoid",
+                    "floor_pct": 0,
+                    "ceiling_pct": 0,
+                    "rationale": f"Exit {symbol}",
+                }
+                for symbol in ("PYPL", "EEFT")
+            },
+        }
+
+        changes, meta = tc.normalize_targets(
+            convictions, rows, model, segment_budget_pct=20.0
+        )
+        by_symbol = {change["symbol"]: change for change in changes}
+
+        for symbol in ("PYPL", "EEFT"):
+            change = by_symbol[symbol]
+            self.assertEqual(change["proposed_target"]["low"], 0.0)
+            self.assertEqual(change["proposed_target"]["high"], 0.0)
+            self.assertEqual(change["proposed_target"]["rule"], "avoid")
+            self.assertEqual(change["conviction_source"], "user-pin")
+            self.assertIn("standing exit intent overrides", change["resolution"])
+        self.assertEqual(
+            {row["symbol"] for row in meta["conflict_resolutions"]},
+            {"PYPL", "EEFT"},
+        )
+        self.assertEqual(meta["sized_midpoint_total_pct"], 0.0)
+
     def test_drop_mode_removes_unpinned_avoid_held(self):
         rows = [_row("XYZ", held=4.0)]
         convictions = self._convictions({"XYZ": "avoid"})

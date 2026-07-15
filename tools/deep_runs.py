@@ -122,6 +122,59 @@ def discovered_for(stem: str) -> list[dict]:
     return cands
 
 
+def _symbol_key(symbol: object) -> str:
+    """Comparison key shared by provider, segment, and report spellings."""
+    return re.sub(r"[^A-Z0-9]", "", str(symbol or "").upper())
+
+
+def deep_runs_for_symbol(symbol: str) -> list[dict]:
+    """Sector Deep Research runs that define or explicitly mention ``symbol``.
+
+    A ticker can belong to several overlapping research narratives. Preserve
+    whether it was an intended segment member, discovered in the report prose,
+    or both; ticker-specific runs stay in their existing dedicated card.
+    """
+    wanted = _symbol_key(symbol)
+    if not wanted:
+        return []
+    related: list[dict] = []
+    for run in deep_runs():
+        if run.get("kind") != "segment" or "report" not in (run.get("files") or {}):
+            continue
+        segment = str(run.get("segment") or "")
+        seg_def = _load(SEGMENT_DEF_DIR / f"{segment}.json") or {}
+        member = any(
+            _symbol_key(node.get("symbol")) == wanted
+            for node in (seg_def.get("members") or [])
+            if isinstance(node, dict)
+        )
+        try:
+            report_text = (DEEP_DIR / f"{run['stem']}.md").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        mentioned = any(
+            _symbol_key(candidate) == wanted
+            for candidate in report_tickers.harvest_symbols(report_text)
+        )
+        if not member and not mentioned:
+            continue
+        relation = "member+mentioned" if member and mentioned else (
+            "member" if member else "mentioned"
+        )
+        related.append({
+            "stem": run["stem"],
+            "segment": segment,
+            "title": run.get("title") or segment,
+            "date": run.get("date") or "",
+            "source_count": run.get("source_count") or 0,
+            "has_review": bool(run.get("has_review")),
+            "relationship": relation,
+            "member": member,
+            "mentioned": mentioned,
+        })
+    return sorted(related, key=lambda row: (str(row["date"]), str(row["stem"])), reverse=True)
+
+
 def _looks_like_json_doc(text: str) -> bool:
     """True if `text` is really a JSON object/array rather than a narrative.
 

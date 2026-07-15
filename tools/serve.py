@@ -48,6 +48,7 @@ from portfolio import decision_label, holdings_payload, portfolio_context  # noq
 from providers import yahoo  # noqa: E402
 import research_pull  # noqa: E402
 import review_deep_research  # noqa: E402
+import target_construct  # noqa: E402
 import ticker_analysis  # noqa: E402
 import rebalance  # noqa: E402
 import rebalance_routes  # noqa: E402
@@ -97,6 +98,7 @@ import optimizer  # noqa: E402  -- whole-book global sizer over the candidate po
 from target_model import preview_plan_for_proposal as _preview_plan  # noqa: E402
 from deep_runs import (  # noqa: E402  -- Deep Research run artifacts (list/save/delete)
     delete_deep_run as _delete_deep_run, deep_runs as _deep_runs,
+    deep_runs_for_symbol as _deep_runs_for_symbol,
     discovered_for as _discovered_for,
     save_deep_artifact as _save_deep_artifact,
 )
@@ -387,6 +389,7 @@ _POST_EXACT = {
     "/api/deep-research/import": "_post_deep_import",
     "/api/deep-research/verify-login": "_post_verify_login",
     "/api/deep-research/review": "_post_review",
+    "/api/deep-research/construct": "_post_construct",
     "/api/target-proposal/apply": "_post_proposal_apply",
     "/api/staging/commit": "_post_staging_commit",
     "/api/staging/discard": "_post_staging_discard",
@@ -999,6 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
         rec = dict(rec)
         rec["portfolio"] = portfolio_context(provider_sym)
         rec["decision"] = decision_label(rec["portfolio"])
+        rec["deep_analyses"] = _deep_runs_for_symbol(provider_sym)
         return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
     def _get_analysis(self, path, query):
@@ -1248,14 +1252,51 @@ class Handler(BaseHTTPRequestHandler):
         except SystemExit as exc:
             return self._send_error_json(400, str(exc) or "missing report for this segment + date")
 
+    def _post_construct(self, path):
+        """Review one saved run and turn it into a sized, stageable proposal.
+
+        The manual Pipeline used to persist review-only proposal scraps and then
+        label them "Apply". Guided Strategy already performed this sizing pass.
+        Keep the endpoint synchronous and deterministic so Step 4 has one honest
+        action with no hidden LLM/login dependency.
+        """
+        body = self._read_body()
+        segment = str(body.get("segment") or "")
+        date = str(body.get("date") or "")
+        if not segment or not date:
+            return self._send_error_json(400, "segment and date are required")
+        try:
+            review = review_deep_research.review(segment, date)
+            holdings = _load(HOLDINGS_JSON)
+            proposal = target_construct.construct(
+                segment,
+                date,
+                review,
+                use_llm=False,
+                holdings=holdings if isinstance(holdings, dict) else None,
+            )
+            return self._send_json({**review, "proposal": proposal})
+        except SystemExit as exc:
+            return self._send_error_json(
+                400, str(exc) or "missing report for this segment + date"
+            )
+
     def _post_proposal_apply(self, path):
         # Now stages into the working draft instead of writing the live model;
         # the user reviews and commits the draft once. The endpoint name is kept
         # for the Pipeline UI's existing call site.
         body = self._read_body()
+        segment = str(body.get("segment") or "")
+        date = str(body.get("date") or "")
+        proposal = _load(target_construct.proposal_path(segment, date)) or {}
+        if not proposal.get("construct_meta"):
+            return self._send_error_json(
+                409,
+                "proposal has not been portfolio-sized; run evidence review and sizing first",
+            )
         staged = target_staging.stage_proposal(
-            str(body.get("segment") or ""),
-            str(body.get("date") or ""),
+            segment,
+            date,
             source="pipeline",
             allow_blocked=bool(body.get("allow_blocked")),
         )
@@ -1702,6 +1743,7 @@ class Handler(BaseHTTPRequestHandler):
         provider_sym = _resolve_symbol(sym)
         with _PULL_LOCK:
             rec = research_pull.pull_ticker(provider_sym)
+        rec["deep_analyses"] = _deep_runs_for_symbol(provider_sym)
         return self._send_json(_annotate_symbol_record(rec, sym, provider_sym))
 
     def _post_pull_segment(self, path):

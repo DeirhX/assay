@@ -48,6 +48,61 @@ class RequestGuards(ServeHttpCase):
         self.assertIn("missing job id", payload["error"])  # ...not by the body guard
 
 
+class ResearchConstructEndpoint(ServeHttpCase):
+    def test_review_and_sizing_returns_one_stageable_proposal(self):
+        review = {
+            "rows": [{"symbol": "NVDA", "report_action": "accumulate"}],
+            "findings": [],
+            "blocked_symbols": [],
+            "report": "full report",
+        }
+        proposal = {
+            "schema_version": 2,
+            "changes": [{"symbol": "NVDA", "action": "add_target"}],
+            "construct_meta": {"book_reconciliation": {"over_allocated": False}},
+        }
+        with mock.patch.object(
+            serve.review_deep_research, "review", return_value=review
+        ) as review_call, mock.patch.object(
+            serve.target_construct, "construct", return_value=proposal
+        ) as construct_call, mock.patch.object(
+            serve, "_load", return_value={"positions": [{"symbol": "NVDA"}]}
+        ):
+            status, payload = self.post_json(
+                "/api/deep-research/construct",
+                {"segment": "semis", "date": "2026-07-15"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["proposal"], proposal)
+        review_call.assert_called_once_with("semis", "2026-07-15")
+        self.assertFalse(construct_call.call_args.kwargs["use_llm"])
+        self.assertEqual(
+            construct_call.call_args.kwargs["holdings"]["positions"][0]["symbol"],
+            "NVDA",
+        )
+
+    def test_construct_requires_segment_and_date(self):
+        status, payload = self.post_json(
+            "/api/deep-research/construct", {"segment": "semis"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("segment and date", payload["error"])
+
+    def test_pipeline_apply_refuses_review_only_proposal(self):
+        with mock.patch.object(
+            serve, "_load", return_value={"changes": [{"symbol": "NVDA"}]}
+        ), mock.patch.object(serve.target_staging, "stage_proposal") as stage:
+            status, payload = self.post_json(
+                "/api/target-proposal/apply",
+                {"segment": "semis", "date": "2026-07-15"},
+            )
+
+        self.assertEqual(status, 409)
+        self.assertIn("portfolio-sized", payload["error"])
+        stage.assert_not_called()
+
+
 class HoldingsSyncJob(unittest.TestCase):
     """The IBKR sync runs as a registered background job, not a blocking request.
     The underlying Flex pull (_sync_holdings) is mocked so these stay offline."""

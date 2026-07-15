@@ -281,6 +281,43 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
     pins = _pins(model)
     aliases = sleeve_aliases.load_aliases()
     by_symbol = {str(r.get("symbol") or "").upper(): r for r in rows}
+    # A standing avoid pin is a hard human exit mandate. Research may disagree,
+    # but it must not turn that name back into a buy merely because this run was
+    # bullish. Keep the disagreement visible and resolve it deterministically.
+    convictions = {sym: dict(node) for sym, node in convictions.items()}
+    conflict_resolutions: list[dict[str, Any]] = []
+    exit_pins = {
+        sym for sym, pin in pins.items()
+        if str(pin.get("stance") or "").lower() == "avoid"
+    }
+    for sym in sorted(exit_pins & set(by_symbol)):
+        prior = convictions.get(sym)
+        prior_conviction = str((prior or {}).get("conviction") or "")
+        pin = pins[sym]
+        rationale = (
+            str(pin.get("rationale") or "").strip()
+            or "Standing exit decision; keep the target at zero."
+        )
+        resolution = ""
+        if prior_conviction and prior_conviction != "avoid":
+            resolution = (
+                "Resolved automatically: standing exit intent overrides this "
+                "report. Target remains 0% until the pin is changed."
+            )
+            conflict_resolutions.append({
+                "symbol": sym,
+                "report_conviction": prior_conviction,
+                "standing_intent": "avoid",
+                "outcome": "keep_zero",
+                "message": resolution,
+            })
+        convictions[sym] = {
+            "conviction": "avoid",
+            "rationale": rationale,
+            "source": "user-pin",
+            "report_conviction": prior_conviction,
+            "resolution": resolution,
+        }
 
     held: dict[str, float] = {}
     for sym, row in by_symbol.items():
@@ -344,9 +381,16 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
         cur = held.get(sym, 0.0)
         if cur <= 0:
             continue  # nothing to trim and we won't buy it -> no target needed
-        pin = pins.get(sym)
-        challenges = bool(pin and str(pin.get("stance") or "") in _OWN_STANCES)
-        if drop_mode and not pin:
+        pin_rec = pins.get(sym)
+        exit_pin = sym in exit_pins
+        challenges = bool(pin_rec and str(pin_rec.get("stance") or "") in _OWN_STANCES)
+        if exit_pin:
+            changes.append(_change(
+                sym, by_symbol.get(sym), node, existing_targets,
+                low=0.0, high=0.0, rule="avoid", aliases=aliases,
+            ))
+            continue
+        if drop_mode and not pin_rec:
             changes.append(_change(sym, by_symbol.get(sym), node, existing_targets,
                                    low=0.0, high=0.0, rule="avoid", aliases=aliases,
                                    action="remove_target"))
@@ -358,7 +402,7 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
         else:
             low = 0.0
             high = _round1(max(MIN_BAND_WIDTH, cur * 0.5))
-        if pin:  # never trim a pinned name below its own floor
+        if pin_rec:  # never trim a pinned name below its own floor
             low, high = clamp_to_pin(sym, low, high)
         changes.append(_change(sym, by_symbol.get(sym), node, existing_targets,
                                low=low, high=high, rule="trim_only", aliases=aliases,
@@ -373,6 +417,7 @@ def normalize_targets(convictions: dict[str, dict[str, str]], rows: list[dict[st
         "pinned_count": sum(1 for c in changes if c.get("symbol") in pins),
         "challenges_pins": sorted(c["symbol"] for c in changes if c.get("challenges_pin")),
         "sleeve_managed_skipped": sleeve_managed_skipped,
+        "conflict_resolutions": conflict_resolutions,
     }
     if isinstance(holdings, dict):
         meta["book_reconciliation"] = _book_reconciliation(model, changes)
@@ -434,6 +479,10 @@ def _change(sym: str, row: dict[str, Any] | None, conviction: dict[str, str] | N
         "proposed_target": proposed,
         "rationale": (conviction or {}).get("rationale") or "",
     }
+    if (conviction and conviction.get("resolution")):
+        change["resolution"] = conviction["resolution"]
+        change["report_conviction"] = conviction.get("report_conviction")
+        change["standing_intent"] = "avoid"
     if challenges_pin:
         change["challenges_pin"] = True
     return change
@@ -472,6 +521,11 @@ def construct(segment: str, date: str, review: dict[str, Any], *,
     # WARN channel as the existing rule/report mismatches, so the gate shows them.
     findings = list(review.get("findings") or [])
     for ch in changes:
+        if ch.get("resolution"):
+            findings.append({
+                "level": "INFO", "symbol": ch["symbol"],
+                "message": f"{ch['symbol']}: {ch['resolution']}",
+            })
         if ch.get("challenges_pin"):
             findings.append({
                 "level": "WARN", "symbol": ch["symbol"],

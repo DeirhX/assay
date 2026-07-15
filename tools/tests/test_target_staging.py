@@ -161,6 +161,27 @@ class Pins(_StagingCase):
         self.assertEqual(ts.clear_pin("TSM")["cleared"], True)
         self.assertNotIn("TSM", ts.load_pins())
 
+    def test_avoid_pin_sets_live_and_existing_draft_to_zero(self):
+        self._seed_live()
+        ts.load_staged(create=True)
+
+        pin = ts.set_pin("TSM", stance="avoid", rationale="Exit permanently")
+
+        self.assertEqual(pin["floor_pct"], 0.0)
+        self.assertEqual(pin["ceiling_pct"], 0.0)
+        for path in (self.live, self.staged):
+            model = _load(path)
+            self.assertEqual(
+                model["targets"]["TSM"],
+                {
+                    "low": 0.0,
+                    "high": 0.0,
+                    "rule": "avoid",
+                    "note": "Exit permanently",
+                },
+            )
+            self.assertEqual(model["provenance"]["TSM"]["stance"], "avoid")
+
     def test_pinned_drop_is_blocked_without_override(self):
         self._seed_live()
         ts.set_pin("TSM", stance="accumulate")
