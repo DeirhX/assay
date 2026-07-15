@@ -361,7 +361,7 @@ function setActiveView(view: string) {
   if (active === "strategy") loadStrategy();
   if (active === "leaderboard") loadLeaderboard();
   if (active === "today") loadOverview();
-  if (active === "holdings") loadHoldings();
+  if (active === "holdings") loadHoldings({ autoSync: true });
   if (active === "history") { initHistoryControls(); loadHistory(); }
   if (active === "activity") loadActivity();
   if (active === "pipeline") loadPipeline();
@@ -571,7 +571,7 @@ function initShell() {
       btn,
       status,
       onDone: async (done) => {
-        await loadHoldings();
+        await loadHoldings({ autoSync: false, quiet: true });
         const result = done.result as Record<string, any>;
         const source = result?.sync_source === "live" ? "live IBKR connection" : "IBKR Flex";
         status.textContent = `Synced from ${source}. ` + siteMsg(result?.site);

@@ -5,11 +5,17 @@ vi.mock("../src/core", async (importOriginal) => ({
   api: vi.fn(),
 }));
 
+vi.mock("../src/holdings-sync", () => ({
+  runQuietHoldingsSync: vi.fn(),
+}));
+
 import { api } from "../src/core";
-import { groupHoldingPositions, loadHoldings } from "../src/holdings";
+import { runQuietHoldingsSync } from "../src/holdings-sync";
+import { groupHoldingPositions, groupHoldingsBySector, loadHoldings } from "../src/holdings";
 import type { HoldingPosition } from "../src/api-types";
 
 const apiMock = vi.mocked(api);
+const quietSyncMock = vi.mocked(runQuietHoldingsSync);
 
 const position = (over: Partial<HoldingPosition>): HoldingPosition => ({
   symbol: "PYPL",
@@ -102,6 +108,20 @@ describe("holdings grouping", () => {
     expect(groups[0].optionPnlPct).toBeCloseTo(25);
     expect(groups[0].unrealizedPnlPct).toBeCloseTo(20.1923);
   });
+
+  it("groups underlyings by sector and keeps Unknown last", () => {
+    const sectors = groupHoldingsBySector(groupHoldingPositions([
+      position({ symbol: "AMD", provider_symbol: "AMD", sector: "Technology", percent_of_nav: 6 }),
+      position({ symbol: "NVDA", provider_symbol: "NVDA", sector: "Technology", percent_of_nav: 4 }),
+      position({ symbol: "PYPL", provider_symbol: "PYPL", sector: "Financial Services", percent_of_nav: 3 }),
+      position({ symbol: "MYST", provider_symbol: "MYST", sector: "", percent_of_nav: 8 }),
+    ]));
+
+    expect(sectors.map((group) => group.sector))
+      .toEqual(["Technology", "Financial Services", "Unknown"]);
+    expect(sectors[0].stockWeight).toBe(10);
+    expect(sectors[0].rows.map((row) => row.symbol)).toEqual(["AMD", "NVDA"]);
+  });
 });
 
 describe("holdings live-data provenance", () => {
@@ -110,6 +130,7 @@ describe("holdings live-data provenance", () => {
       '<div id="hold-status"></div><div id="hold-synced"></div>' +
       '<div id="hold-gateway-notice"></div><div id="hold-result"></div>';
     apiMock.mockReset();
+    quietSyncMock.mockReset();
     localStorage.clear();
   });
 
@@ -142,6 +163,48 @@ describe("holdings live-data provenance", () => {
       .toContain("not authenticated");
     expect(document.getElementById("hold-result")!.textContent)
       .toContain("Net asset value");
+  });
+
+  it("auto-resyncs on navigation and reconciles only changed rows", async () => {
+    const initial = {
+      net_asset_value: 10_000,
+      invested_value: 9_000,
+      generated_at: "2026-07-13T20:00:00Z",
+      sizing_legend: {},
+      positions: [
+        position({ symbol: "AMD", provider_symbol: "AMD", mark_price: 100 }),
+        position({ symbol: "PYPL", provider_symbol: "PYPL", mark_price: 50 }),
+      ],
+    };
+    const refreshed = {
+      ...initial,
+      generated_at: "2026-07-14T21:00:00Z",
+      positions: [
+        position({ symbol: "AMD", provider_symbol: "AMD", mark_price: 101 }),
+        position({ symbol: "PYPL", provider_symbol: "PYPL", mark_price: 50 }),
+      ],
+    };
+    let holdingsReads = 0;
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/holdings") {
+        holdingsReads += 1;
+        return Promise.resolve(holdingsReads === 1 ? initial : refreshed);
+      }
+      return Promise.resolve({});
+    });
+    let syncOpts: any;
+    quietSyncMock.mockImplementation(async (opts) => { syncOpts = opts; });
+
+    await loadHoldings({ autoSync: true });
+    const unchanged = document.querySelector<HTMLElement>('[data-hold-key="position:PYPL"]');
+    expect(unchanged).not.toBeNull();
+    expect(document.getElementById("hold-synced")?.textContent).toContain("refreshing from IBKR");
+
+    await syncOpts.onDone({ state: "done", result: { sync_source: "live" } });
+
+    expect(apiMock).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[data-hold-key="position:PYPL"]')).toBe(unchanged);
+    expect(document.getElementById("hold-synced")?.textContent).toContain("Live");
   });
 
   it("shows stock and option prices with unrealized percentages beside values", async () => {
@@ -244,5 +307,51 @@ describe("holdings live-data provenance", () => {
     (document.querySelector("#hold-pnl-order") as HTMLButtonElement).click();
     expect(document.querySelector(".pos-sym-main")?.textContent).toContain("GAIN");
     expect(localStorage.getItem("holdings.pnlOrder")).toBe("gains");
+  });
+
+  it("optionally groups the position rows under sector headings", async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path === "/api/holdings") {
+        return Promise.resolve({
+          net_asset_value: 10_000,
+          invested_value: 9_000,
+          generated_at: "2026-07-13T20:00:00Z",
+          sectors_updated_at: "2026-07-14T20:00:00Z",
+          sizing_legend: {},
+          positions: [
+            position({
+              symbol: "AMD", provider_symbol: "AMD",
+              sector: "Technology", percent_of_nav: 6,
+            }),
+            position({
+              symbol: "NVDA", provider_symbol: "NVDA",
+              sector: "Technology", percent_of_nav: 4,
+            }),
+            position({
+              symbol: "PYPL", provider_symbol: "PYPL",
+              sector: "Financial Services", percent_of_nav: 3,
+            }),
+          ],
+        });
+      }
+      if (path === "/api/holdings/live") {
+        return Promise.resolve({ available: false, reason: "offline" });
+      }
+      return Promise.resolve({});
+    });
+
+    await loadHoldings();
+    expect(document.querySelectorAll(".pos-sector-head")).toHaveLength(0);
+    (document.querySelector('[data-hold-group="sector"]') as HTMLButtonElement).click();
+
+    expect(localStorage.getItem("holdings.groupBy")).toBe("sector");
+    expect([...document.querySelectorAll(".pos-sector-head")].map((node) => node.textContent))
+      .toEqual([
+        expect.stringContaining("Technology"),
+        expect.stringContaining("Financial Services"),
+      ]);
+    expect(document.querySelectorAll(".pos-row")).toHaveLength(3);
+    expect(document.querySelector('[data-hold-group="sector"]')?.getAttribute("aria-pressed"))
+      .toBe("true");
   });
 });

@@ -46,6 +46,16 @@ interface HistoryPayload {
   };
 }
 
+type HistoryDetailView = "sector" | "name" | "trades";
+export interface HistoryDetailPanel {
+  id: HistoryDetailView;
+  label: string;
+  count: number;
+  body: HTMLElement;
+  hint: string;
+}
+
+const HISTORY_DETAIL_VIEW_KEY = "assay.history.detailView";
 let _wired = false;
 
 // Cheap, token-free credential check so we can guide setup *before* a pull fails.
@@ -155,6 +165,7 @@ function renderHistory(h: HistoryPayload) {
   }
   out.appendChild(chartSec);
 
+  const detailPanels: HistoryDetailPanel[] = [];
   if (s.by_symbol && s.by_symbol.length) {
     const bcy = h.base_currency || "";
     const secGroups = groupBySector(s.by_symbol);
@@ -163,13 +174,14 @@ function renderHistory(h: HistoryPayload) {
     const body = el("div");
     body.appendChild(sectorToolbar(h, unknown ? (unknown.names ?? 0) : 0));
     body.appendChild(sectorTable(secGroups, bcy));
-    out.appendChild(section(
-      `By sector (${known})`,
+    detailPanels.push({
+      id: "sector",
+      label: "By sector",
+      count: known,
       body,
-      `Sectors come from research dossiers + Yahoo; names we couldn't resolve sit in "Unknown". ` +
+      hint: `Sectors come from research dossiers + Yahoo; names we couldn't resolve sit in "Unknown". ` +
       `Click a ${"\u25B8"} sector to expand its names. Cash flow & P&L are base${bcy ? " " + bcy : ""}.`,
-      false,
-    ));
+    });
   }
 
   if (s.by_symbol && s.by_symbol.length) {
@@ -179,35 +191,116 @@ function renderHistory(h: HistoryPayload) {
     const foldHint = optGroups
       ? `Option contracts are folded under their underlying — click a ${"\u25B8"} row to expand its contracts. `
       : "";
-    out.appendChild(section(
-      `Activity by name (${groups.length})`,
-      activityTable(groups, bcy),
-      foldHint + `Ccy is each name's trading currency; cash flow & P&L are in base${bcy ? " " + bcy : ""} so they sum across names.`,
-    ));
+    detailPanels.push({
+      id: "name",
+      label: "By name",
+      count: groups.length,
+      body: activityTable(groups, bcy),
+      hint: foldHint + `Ccy is each name's trading currency; cash flow & P&L are in base${bcy ? " " + bcy : ""} so they sum across names.`,
+    });
   }
 
   if (h.trades && h.trades.length) {
     const bcy = h.base_currency || "";
-    out.appendChild(section(
-      `Trade ledger (${h.trades.length})`,
-      tradeTable(h.trades, bcy),
-      `Newest first. Price is in each trade's native currency; cash flow is base${bcy ? " " + bcy : ""} ` +
+    detailPanels.push({
+      id: "trades",
+      label: "Trade history",
+      count: h.trades.length,
+      body: tradeTable(h.trades, bcy),
+      hint: `Newest first. Price is in each trade's native currency; cash flow is base${bcy ? " " + bcy : ""} ` +
       `(negative for buys, positive for sells).`,
-    ));
+    });
   }
+  if (detailPanels.length) out.appendChild(createHistoryDetailSwitcher(detailPanels));
 }
 
-// Collapsible section: the heading is a <summary> so a long page can be folded
-// down to just the parts you care about. Open by default.
-function section(title: string, bodyNode: HTMLElement, hint?: string, open = true) {
-  const d = el("details", "risk-section hist-section");
-  d.open = open;
-  const sum = el("summary", "hist-section-sum");
-  sum.innerHTML = `<span>${esc(title)}</span>`;
-  d.appendChild(sum);
-  if (hint) d.appendChild(el("p", "hint", hint));
-  d.appendChild(bodyNode);
-  return d;
+export function createHistoryDetailSwitcher(panels: HistoryDetailPanel[]): HTMLElement {
+  const available = panels.filter((panel) => panel.body);
+  const workspace = el("section", "hist-detail-workspace");
+  workspace.setAttribute("aria-label", "Portfolio history details");
+  const tabs = el("div", "hist-detail-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "Group portfolio history by");
+  const panelWrap = el("div", "hist-detail-panels");
+  workspace.appendChild(tabs);
+  workspace.appendChild(panelWrap);
+
+  const buttons = new Map<HistoryDetailView, HTMLButtonElement>();
+  const panelNodes = new Map<HistoryDetailView, HTMLElement>();
+  available.forEach((panel) => {
+    const tab = el("button", "hist-detail-tab") as HTMLButtonElement;
+    const tabId = `hist-detail-tab-${panel.id}`;
+    const panelId = `hist-detail-panel-${panel.id}`;
+    tab.type = "button";
+    tab.id = tabId;
+    tab.dataset.historyDetail = panel.id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panelId);
+    tab.innerHTML = `<span>${esc(panel.label)}</span>` +
+      `<span class="hist-detail-count">${esc(panel.count)}</span>`;
+    tabs.appendChild(tab);
+    buttons.set(panel.id, tab);
+
+    const content = el("div", "hist-detail-panel risk-section");
+    content.id = panelId;
+    content.dataset.historyPanel = panel.id;
+    content.setAttribute("role", "tabpanel");
+    content.setAttribute("aria-labelledby", tabId);
+    content.appendChild(el("p", "hint hist-detail-hint", panel.hint));
+    content.appendChild(panel.body);
+    panelWrap.appendChild(content);
+    panelNodes.set(panel.id, content);
+  });
+
+  const ids = available.map((panel) => panel.id);
+  let stored = "";
+  try {
+    stored = localStorage.getItem(HISTORY_DETAIL_VIEW_KEY) || "";
+  } catch {
+    // Storage can be unavailable in hardened/private browser contexts.
+  }
+  const initial = ids.includes(stored as HistoryDetailView)
+    ? stored as HistoryDetailView
+    : ids[0];
+
+  const activate = (id: HistoryDetailView, persist = true): void => {
+    if (!buttons.has(id)) return;
+    buttons.forEach((button, candidate) => {
+      const active = candidate === id;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
+    panelNodes.forEach((panel, candidate) => {
+      panel.hidden = candidate !== id;
+    });
+    if (persist) {
+      try {
+        localStorage.setItem(HISTORY_DETAIL_VIEW_KEY, id);
+      } catch {
+        // The visible switch still works when persistence is blocked.
+      }
+    }
+  };
+
+  buttons.forEach((button, id) => {
+    button.addEventListener("click", () => activate(id));
+    button.addEventListener("keydown", (event) => {
+      const current = ids.indexOf(id);
+      let next: number;
+      if (event.key === "ArrowRight") next = (current + 1) % ids.length;
+      else if (event.key === "ArrowLeft") next = (current - 1 + ids.length) % ids.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = ids.length - 1;
+      else return;
+      event.preventDefault();
+      const nextId = ids[next];
+      activate(nextId);
+      buttons.get(nextId)?.focus();
+    });
+  });
+  if (initial) activate(initial, false);
+  return workspace;
 }
 
 // Toolbar above the sector table: how fresh the sector map is + a button to

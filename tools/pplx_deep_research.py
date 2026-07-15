@@ -32,6 +32,7 @@ disables the automated path and leaves the manual paste flow working.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -119,6 +120,15 @@ _DEEP_MENU_JS = """() => {
 _MODE_PILL_NAMES = ("Search", "Deep research", "Research", "Auto", "Pro Search", "Labs", "Best")
 
 _REPORT_JS = "() => (document.querySelector('main')?.innerText || '')"
+
+# A clarification acknowledgement can itself carry Perplexity's "Prepared with
+# Deep Research" footer and a Links tab. That makes generic completion markers
+# insufficient: require a report-sized body before the worker may persist it.
+def _report_looks_finished(report: str) -> bool:
+    text = (report or "").strip()
+    headings = len(re.findall(r"(?m)^#{1,6}\s+\S", text))
+    return len(text) >= 4000 or (len(text) >= 1200 and headings >= 3)
+
 
 # Serialize the answer body to Markdown so headings, bold, lists, and the
 # comparison table survive (innerText flattens all of that into a wall of text,
@@ -220,6 +230,8 @@ _OPEN_LINKS_JS = """() => {
   t.click();
   return true;
 }"""
+
+_ANSWER_COUNT_JS = "() => document.querySelectorAll('[id^=\"markdown-content-\"]').length"
 
 def default_profile_dir() -> Path:
     return Path(os.environ.get("PPLX_PROFILE_DIR") or (Path.home() / ".cursor" / "pplx-automation-profile"))
@@ -559,10 +571,8 @@ def check_login(profile_dir: Optional[Path] = None,
             ctx.close()
 
 
-def _scrape(page):
-    """Pull the report (as Markdown, preserving headings/lists/tables) and the
-    de-duped external citations from the open run. Falls back to flat innerText
-    only if the Markdown serializer comes back empty (DOM changed)."""
+def _scrape_report(page) -> str:
+    """Pull the best report candidate without changing the active answer tab."""
     try:
         page.wait_for_selector("main h2, #markdown-content-0", timeout=6000)
     except Exception:
@@ -574,11 +584,24 @@ def _scrape(page):
         report = ""
     if len(report.strip()) < 400:
         report = page.evaluate(_REPORT_JS)
+    return report
+
+
+def _scrape(page):
+    """Pull the report and citations from the open run.
+
+    Multi-answer clarification threads expose one global Links tab that can
+    belong to the short acknowledgement rather than the final report. In that
+    ambiguous shape, withhold citations instead of attaching unrelated sources.
+    """
+    report = _scrape_report(page)
     citations = []
     try:
-        if page.evaluate(_OPEN_LINKS_JS):
-            time.sleep(2)
-        citations = page.evaluate(_LINKS_JS)
+        answer_count = int(page.evaluate(_ANSWER_COUNT_JS) or 0)
+        if answer_count <= 1:
+            if page.evaluate(_OPEN_LINKS_JS):
+                time.sleep(2)
+            citations = page.evaluate(_LINKS_JS)
     except Exception:
         pass
     return report, citations
@@ -644,7 +667,7 @@ def fetch_by_url(url: str, *, window_mode: str = "offscreen",
                 stable = stable + 1 if (not st["running"] and st["len"] > 800) else 0
                 time.sleep(3)
             report, citations = _scrape(page)
-            if len((report or "").strip()) < 800:
+            if not _report_looks_finished(report):
                 return {"status": "error",
                         "detail": "no finished report found at that URL"}
             return {"status": "done", "source_url": page.url,
@@ -802,7 +825,16 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                 # it can never be mistaken for a finished report.
                 if st["done"] and st["len"] > 800:
                     if st["len"] == last_len:
-                        break  # marker present AND text settled -> finished
+                        candidate = _scrape_report(page)
+                        if _report_looks_finished(candidate):
+                            break  # marker present AND a report-sized answer settled
+                        progress(
+                            "Completion marker belongs to an interim response; "
+                            "waiting for the full report..."
+                        )
+                        last_len = -1
+                        time.sleep(poll_interval_s)
+                        continue
                     last_len = st["len"]
                     idle = 0
                     time.sleep(_DONE_SETTLE_S)
@@ -842,7 +874,7 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
                 report, citations = _scrape(page)
                 report_len = len((report or "").strip())
                 if ("/search/" in page.url and not final_st.get("awaiting")
-                        and (report_len >= 4000 or citations)):
+                        and _report_looks_finished(report)):
                     progress("Recovered a finished-looking report after timeout; saving it.")
                     return {
                         "status": "done",
@@ -855,6 +887,15 @@ def run_deep_research(prompt: str, *, window_mode: str = "offscreen",
 
             progress("Scraping report and citations...")
             report, citations = _scrape(page)
+            if not _report_looks_finished(report):
+                return {
+                    "status": "error",
+                    "source_url": page.url,
+                    "detail": (
+                        "Perplexity showed a completion marker, but the scraped "
+                        "answer was only an interim clarification response"
+                    ),
+                }
             return {
                 "status": "done",
                 "source_url": page.url,

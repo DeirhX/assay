@@ -1,6 +1,8 @@
 import type { HoldingPosition, HoldingsLiveResponse, HoldingsPayload, RebalancePlan } from "./api-types";
 import { $$, api, copyToClipboard, el, esc, fmtStamp, freshnessNote, loadError, sensitive, state } from "./core";
 import { gatewayUnavailableReason, getGatewayStatus } from "./gateway";
+import { runDeepJobAction } from "./deep-job-action";
+import { runQuietHoldingsSync } from "./holdings-sync";
 import { analyzeFromAnywhere } from "./ticker-nav";
 import { buildPortfolioPrompt } from "./prompt-export";
 
@@ -27,10 +29,23 @@ export async function copyPortfolioPrompt(btn: HTMLButtonElement, holdings: Hold
 // already navigated away from (or a newer snapshot load).
 let _holdToken = 0;
 
-interface RenderOpts { live: boolean; asOf?: string | null; coverage?: { live: number; eligible: number; total: number }; }
+interface RenderOpts {
+  live: boolean;
+  asOf?: string | null;
+  coverage?: { live: number; eligible: number; total: number };
+  quiet?: boolean;
+}
+
+interface LoadHoldingsOpts {
+  /** Navigation loads refresh IBKR automatically; internal reloads can opt out. */
+  autoSync?: boolean;
+  /** Reconcile changed rows instead of replacing the complete holdings view. */
+  quiet?: boolean;
+}
 
 export interface HoldingGroup {
   symbol: string;
+  sector: string;
   stocks: HoldingPosition[];
   options: HoldingPosition[];
   stockWeight: number;
@@ -39,6 +54,12 @@ export interface HoldingGroup {
   stockPnlPct: number | null;
   optionPnlPct: number | null;
   unrealizedPnlPct: number | null;
+}
+
+export interface HoldingSectorGroup {
+  sector: string;
+  stockWeight: number;
+  rows: HoldingGroup[];
 }
 
 function optionUnderlying(position: HoldingPosition): string {
@@ -80,6 +101,7 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
     if (!group) {
       group = {
         symbol: position.symbol,
+        sector: String(position.sector || "").trim(),
         stocks: [],
         options: [],
         stockWeight: 0,
@@ -92,6 +114,7 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
       groups.set(key, group);
       stocksByRoot.set(key, group);
     }
+    if (!group.sector && position.sector) group.sector = String(position.sector).trim();
     group.stocks.push(position);
     group.stockWeight += Number(position.percent_of_nav) || 0;
     group.baseMarketValue = (group.baseMarketValue || 0)
@@ -105,6 +128,7 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
     if (!group) {
       group = {
         symbol: underlying || position.symbol,
+        sector: String(position.sector || "").trim(),
         stocks: [],
         options: [],
         stockWeight: 0,
@@ -116,6 +140,7 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
       };
       groups.set(key, group);
     }
+    if (!group.sector && position.sector) group.sector = String(position.sector).trim();
     group.options.push(position);
     group.optionExercisePct += Number(position.option?.exercise_pct) || 0;
     group.baseMarketValue = (group.baseMarketValue || 0)
@@ -130,6 +155,27 @@ export function groupHoldingPositions(positions: HoldingPosition[]): HoldingGrou
     (b.stockWeight - a.stockWeight)
     || (Math.abs(b.optionExercisePct) - Math.abs(a.optionExercisePct))
     || a.symbol.localeCompare(b.symbol));
+}
+
+export function groupHoldingsBySector(groups: HoldingGroup[]): HoldingSectorGroup[] {
+  const grouped = new Map<string, HoldingSectorGroup>();
+  for (const row of groups) {
+    const name = row.sector || "Unknown";
+    let group = grouped.get(name);
+    if (!group) {
+      group = { sector: name, stockWeight: 0, rows: [] };
+      grouped.set(name, group);
+    }
+    group.stockWeight += row.stockWeight;
+    group.rows.push(row);
+  }
+  return [...grouped.values()].sort((a, b) => {
+    const aUnknown = a.sector === "Unknown";
+    const bUnknown = b.sector === "Unknown";
+    if (aUnknown !== bUnknown) return aUnknown ? 1 : -1;
+    return Math.abs(b.stockWeight) - Math.abs(a.stockWeight)
+      || a.sector.localeCompare(b.sector);
+  });
 }
 
 function optionLegLabel(position: HoldingPosition): string {
@@ -172,21 +218,52 @@ function marketLineHtml(position: HoldingPosition): string {
     `<em class="${pnlClass}">P/L ${esc(pnlText)}</em></span>`;
 }
 
-async function loadHoldings() {
+async function loadHoldings(opts: LoadHoldingsOpts = {}) {
   const status = $$("#hold-status");
   const token = ++_holdToken;
   renderLiveNotice(null);
-  status.textContent = "Loading portfolio snapshot...";
+  if (!opts.quiet) status.textContent = "Loading portfolio snapshot...";
   try {
     const h = await api<HoldingsPayload>("/api/holdings");
     if (token !== _holdToken) return;
     status.textContent = "";
-    // Paint the delayed Flex snapshot immediately, then overlay live marks when
-    // the gateway answers (the user chose fast-first-paint over one blocking call).
-    renderHoldings(h, { live: false });
-    overlayLive(token);
+    // Paint the cached snapshot immediately. A navigation then starts a read-only
+    // IBKR refresh in the background and reconciles only changed cards/rows.
+    renderHoldings(h, { live: false, quiet: opts.quiet });
+    if (opts.autoSync === true) {
+      void autoSyncHoldings(token);
+    } else {
+      overlayLive(token);
+    }
   } catch (e) {
     loadError(status, "Could not load holdings", e);
+  }
+}
+
+async function autoSyncHoldings(token: number): Promise<void> {
+  const synced = $$("#hold-synced");
+  if (synced) synced.insertAdjacentHTML(
+    "beforeend",
+    ` <span class="muted"><span class="spinner"></span> refreshing from IBKR\u2026</span>`,
+  );
+  try {
+    await runQuietHoldingsSync({
+      onDone: async (done) => {
+        if (token !== _holdToken) return;
+        const h = await api<HoldingsPayload>("/api/holdings");
+        if (token !== _holdToken) return;
+        const result = (done.result || {}) as Record<string, unknown>;
+        const live = result.sync_source === "live";
+        renderLiveNotice(null);
+        renderHoldings(h, { live, asOf: h.generated_at, quiet: true });
+      },
+    });
+  } catch (e) {
+    if (token !== _holdToken) return;
+    renderLiveNotice(`automatic resync failed: ${(e as Error).message}`);
+    // A direct live overlay is still useful if the durable sync failed during
+    // site generation or Flex fallback after live marks were available.
+    overlayLive(token);
   }
 }
 
@@ -221,8 +298,40 @@ async function overlayLive(token: number) {
   }
 }
 
+function holdingsNodeKey(node: Element, index: number): string {
+  const explicit = (node as HTMLElement).dataset.holdKey;
+  if (explicit) return explicit;
+  const primaryClass = [...node.classList][0];
+  return primaryClass ? `${node.tagName}:${primaryClass}` : `${node.tagName}:${index}`;
+}
+
+function reconcileHoldingsChildren(current: HTMLElement, desired: HTMLElement): void {
+  const existing = new Map(
+    [...current.children].map((node, index) => [holdingsNodeKey(node, index), node as HTMLElement]),
+  );
+  const children = [...desired.children].map((next, index) => {
+    const key = holdingsNodeKey(next, index);
+    const previous = existing.get(key);
+    if (!previous) return next;
+    existing.delete(key);
+    if (previous.classList.contains("pos-list") && next.classList.contains("pos-list")) {
+      previous.className = next.className;
+      reconcileHoldingsChildren(previous, next as HTMLElement);
+      return previous;
+    }
+    // Control listeners close over the payload used to render them (copy prompt,
+    // metric/group toggles), so always refresh this small strip with the new book.
+    if (previous.classList.contains("pos-controls")) return next;
+    return previous.outerHTML === next.outerHTML ? previous : next;
+  });
+  // Existing nodes that did not change keep their listeners and focus state;
+  // changed rows are replaced individually rather than blanking the whole view.
+  current.replaceChildren(...children);
+}
+
 function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
   const out = $$("#hold-result");
+  const target = opts.quiet ? el("div") : out;
   {
     state.nav = h.net_asset_value;
     state.holdings = {};
@@ -237,10 +346,11 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     // transient #hold-status, so a "Synced…" message can't overwrite it.
     const synced = $$("#hold-synced");
     if (synced) synced.innerHTML = freshnessLabel(h, opts);
-    out.innerHTML = "";
+    if (!opts.quiet) out.innerHTML = "";
 
     const metric = localStorage.getItem("holdings.barMetric") === "pnl" ? "pnl" : "size";
     const pnlOrder = localStorage.getItem("holdings.pnlOrder") === "gains" ? "gains" : "losses";
+    const groupMode = localStorage.getItem("holdings.groupBy") === "sector" ? "sector" : "position";
     const rows = groupHoldingPositions(h.positions || []);
     if (metric === "pnl") {
       const direction = pnlOrder === "losses" ? 1 : -1;
@@ -264,11 +374,11 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     );
     const cum = (n: number) => weights.slice(0, n).reduce((s, w) => s + w, 0);
 
-    out.appendChild(portfolioHero(h, rows.length, cum));
+    target.appendChild(portfolioHero(h, rows.length, cum));
     // Legend goes above the list: with 40+ positions it was below the fold, so
     // the colour coding (its whole point) was invisible until you scrolled past
     // everything it explains.
-    out.appendChild(el("div", "hint pos-legend", metric === "pnl"
+    target.appendChild(el("div", "hint pos-legend", metric === "pnl"
       ? "Bars show unrealized return on cost: green is a gain, red is a loss. Shares use the solid upper bar; held options use the striped lower bar. Rows are ordered from " +
         (pnlOrder === "losses" ? "largest loss to largest gain." : "largest gain to largest loss.") +
         " A brighter inner band marks returns beyond the shared bar scale. Click a row to deep-dive."
@@ -287,6 +397,10 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
         `<button type="button" data-hold-metric="size" class="${metric === "size" ? "active" : ""}" aria-pressed="${metric === "size"}">Position size</button>` +
         `<button type="button" data-hold-metric="pnl" class="${metric === "pnl" ? "active" : ""}" aria-pressed="${metric === "pnl"}">P/L return</button>` +
       `</div>` +
+      `<div class="pos-group-switch" role="group" aria-label="Group positions by">` +
+        `<button type="button" data-hold-group="position" class="${groupMode === "position" ? "active" : ""}" aria-pressed="${groupMode === "position"}">Positions</button>` +
+        `<button type="button" data-hold-group="sector" class="${groupMode === "sector" ? "active" : ""}" aria-pressed="${groupMode === "sector"}">Sectors</button>` +
+      `</div>` +
       (metric === "pnl"
         ? `<button type="button" class="ghost pos-pnl-order" id="hold-pnl-order" title="Reverse P/L order">${pnlOrder === "losses" ? "Losses first" : "Gains first"}</button>`
         : "") +
@@ -302,15 +416,47 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
     copyBtn.title = "Copy a compact, weight-based portfolio summary (no absolute values) to paste into an LLM";
     copyBtn.addEventListener("click", () => copyPortfolioPrompt(copyBtn, h, null));
     controls.appendChild(copyBtn);
-    out.appendChild(controls);
+    if (groupMode === "sector") {
+      const sectorBtn = el("button", "ghost pos-sector-fetch", "Fetch sectors") as HTMLButtonElement;
+      sectorBtn.type = "button";
+      sectorBtn.title = h.sectors_updated_at
+        ? `Sector map updated ${fmtStamp(h.sectors_updated_at)}`
+        : "Resolve unknown sectors from research and Yahoo";
+      sectorBtn.addEventListener("click", async () => {
+        const status = $$("#hold-status");
+        await runDeepJobAction({
+          buttons: [sectorBtn],
+          status,
+          pendingStatusHtml: `<span class="spinner"></span> resolving sectors from Yahoo\u2026`,
+          activeButton: sectorBtn,
+          activeLabel: "Resolving\u2026",
+          startJob: () => api("/api/portfolio-history/sectors", "POST", {}),
+          jobLabel: "sector lookup",
+          failPrefix: "Sector lookup failed: ",
+          onDone: async (done) => {
+            await loadHoldings({ autoSync: false, quiet: true });
+            const result = (done.result || {}) as Record<string, unknown>;
+            status.textContent =
+              `Done \u2014 resolved ${result.resolved ?? 0} new, ${result.unresolved ?? 0} still unknown.`;
+          },
+        });
+      });
+      controls.appendChild(sectorBtn);
+    }
+    target.appendChild(controls);
 
-    const list = el("div", "pos-list metric-" + metric + (showValues ? " show-values" : ""));
+    const list = el(
+      "div",
+      "pos-list metric-" + metric + (showValues ? " show-values" : "")
+        + (groupMode === "sector" ? " grouped-sectors" : ""),
+    );
     const listHead = el("div", "pos-list-head");
+    listHead.dataset.holdKey = "list-head";
     listHead.innerHTML =
       `<span>Underlying</span><span>${metric === "pnl" ? "Return on cost" : "Exposure"}</span><span>${metric === "pnl" ? "Unrealized P/L" : "Weight"}</span>` +
       `<span class="pos-head-values">Value · current price · unrealized P/L</span>`;
     list.appendChild(listHead);
-    rows.forEach((group) => {
+    const appendPositionRow = (group: HoldingGroup) => {
       const stock = group.stocks[0] || null;
       const hasOptions = group.options.length > 0;
       const researchable = stock
@@ -373,6 +519,7 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
       const valText = `<span class="pos-val-total"><b>Value</b><span>${totalValue}</span></span>` +
         [...group.stocks, ...group.options].map(marketLineHtml).join("");
       const row = el("div", "pos-row tier-" + tier);
+      row.dataset.holdKey = `position:${groupKey(group.symbol)}`;
       row.innerHTML =
         `<span class="pos-sym"><span class="pos-sym-main">${esc(displaySymbol)}${tag}${delayTag}</span>` +
           (hasOptions ? `<span class="pos-option-summary">${esc(optionSummary)}</span>` : "") +
@@ -401,8 +548,22 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
         row.title += " \u00b7 not a researchable ticker";
       }
       list.appendChild(row);
-    });
-    out.appendChild(list);
+    };
+    if (groupMode === "sector") {
+      groupHoldingsBySector(rows).forEach((sector) => {
+        const header = el("div", "pos-sector-head");
+        header.dataset.holdKey = `sector:${sector.sector}`;
+        header.innerHTML =
+          `<span>${esc(sector.sector)}</span>` +
+          `<span>${sector.rows.length} ${sector.rows.length === 1 ? "underlying" : "underlyings"}</span>` +
+          `<strong>${sector.stockWeight.toFixed(1)}%</strong>`;
+        list.appendChild(header);
+        sector.rows.forEach(appendPositionRow);
+      });
+    } else {
+      rows.forEach(appendPositionRow);
+    }
+    target.appendChild(list);
 
     const valToggle = controls.querySelector<HTMLInputElement>("#hold-show-values");
     valToggle?.addEventListener("change", () => {
@@ -415,10 +576,20 @@ function renderHoldings(h: HoldingsPayload, opts: RenderOpts) {
         renderHoldings(h, opts);
       });
     });
+    controls.querySelectorAll<HTMLButtonElement>("[data-hold-group]").forEach((button) => {
+      button.addEventListener("click", () => {
+        localStorage.setItem(
+          "holdings.groupBy",
+          button.dataset.holdGroup === "sector" ? "sector" : "position",
+        );
+        renderHoldings(h, opts);
+      });
+    });
     controls.querySelector<HTMLButtonElement>("#hold-pnl-order")?.addEventListener("click", () => {
       localStorage.setItem("holdings.pnlOrder", pnlOrder === "losses" ? "gains" : "losses");
       renderHoldings(h, opts);
     });
+    if (opts.quiet) reconcileHoldingsChildren(out, target);
   }
 }
 

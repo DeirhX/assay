@@ -16,6 +16,41 @@ interface RiskPosition {
   ann_vol_pct: number | null;
 }
 
+type RiskPositionSortKey = keyof RiskPosition;
+interface RiskPositionSort { key: RiskPositionSortKey; dir: "asc" | "desc"; }
+
+const RISK_POSITION_SORT_VALUE: Record<
+  RiskPositionSortKey,
+  (position: RiskPosition) => string | number | null
+> = {
+  symbol: (position) => String(position.symbol || "").toUpperCase(),
+  weight_pct: (position) => position.weight_pct,
+  norm_weight_pct: (position) => position.norm_weight_pct,
+  ann_vol_pct: (position) => position.ann_vol_pct,
+};
+
+/** Sort a copy, keeping unavailable values last in either direction. */
+function sortRiskPositions(
+  positions: RiskPosition[],
+  sort: RiskPositionSort,
+): RiskPosition[] {
+  const value = RISK_POSITION_SORT_VALUE[sort.key];
+  const direction = sort.dir === "asc" ? 1 : -1;
+  return [...positions].sort((a, b) => {
+    const left = value(a);
+    const right = value(b);
+    if (left == null && right == null) return a.symbol.localeCompare(b.symbol);
+    if (left == null) return 1;
+    if (right == null) return -1;
+    const compared = typeof left === "string"
+      ? left.localeCompare(String(right))
+      : Number(left) - Number(right);
+    return compared !== 0
+      ? compared * direction
+      : a.symbol.localeCompare(b.symbol);
+  });
+}
+
 const fmtPct1 = (v: number | null | undefined) => (v == null ? "n/a" : Number(v).toFixed(1) + "%");
 const fmtNum = (v: number | null | undefined, d = 2) => (v == null ? "n/a" : Number(v).toFixed(d));
 
@@ -280,23 +315,80 @@ function volClass(v: number | null | undefined) {
 function posTable(positions: RiskPosition[]) {
   const vols = positions.map((p) => p.ann_vol_pct).filter((v) => v != null);
   const maxVol = vols.length ? Math.max(...vols) : 0;
-  return simpleTable({
-    className: "risk-pos-table",
-    head: `<tr><th>Name</th><th class="num">Weight</th><th class="num">Norm. weight</th><th>Ann. vol</th></tr>`,
-    rows: positions,
-    cells: (p) => {
+  const table = el("table", "risk-pos-table");
+  const body = el("tbody");
+  let sort: RiskPositionSort = { key: "weight_pct", dir: "desc" };
+  let head: HTMLElement;
+  const columns: Array<{ key: RiskPositionSortKey; label: string; num?: boolean }> = [
+    { key: "symbol", label: "Name" },
+    { key: "weight_pct", label: "Weight", num: true },
+    { key: "norm_weight_pct", label: "Norm. weight", num: true },
+    { key: "ann_vol_pct", label: "Ann. vol" },
+  ];
+
+  const drawBody = () => {
+    body.innerHTML = "";
+    sortRiskPositions(positions, sort).forEach((p) => {
       const v = p.ann_vol_pct;
       const cls = volClass(v);
       const fill = maxVol > 0 && v != null ? Math.max(3, Math.round((v / maxVol) * 100)) : 0;
-      return `<td class="risk-pos-sym">${esc(p.symbol)}</td>` +
+      const row = el("tr");
+      row.innerHTML = `<td class="risk-pos-sym">${esc(p.symbol)}</td>` +
         `<td class="num">${fmtPct1(p.weight_pct)}</td>` +
         `<td class="num muted">${fmtPct1(p.norm_weight_pct)}</td>` +
         `<td class="risk-vol-cell">` +
           `<span class="risk-vol-track"><span class="risk-vol-bar ${cls}" style="width:${fill}%"></span></span>` +
           `<span class="risk-vol-val ${cls}">${fmtPct1(v)}</span>` +
         `</td>`;
-    },
-  });
+      body.appendChild(row);
+    });
+  };
+
+  const makeHead = () => {
+    const thead = el("thead");
+    const row = el("tr");
+    columns.forEach((column) => {
+      const active = sort.key === column.key;
+      const th = el(
+        "th",
+        `${column.num ? "num " : ""}hist-sortable${active ? " active" : ""}`,
+      );
+      th.dataset.riskSort = column.key;
+      th.tabIndex = 0;
+      th.setAttribute("role", "button");
+      th.setAttribute(
+        "aria-sort",
+        active ? (sort.dir === "asc" ? "ascending" : "descending") : "none",
+      );
+      th.title = `Sort by ${column.label}`;
+      th.innerHTML = `<span class="hist-sort-lbl">${esc(column.label)}</span>` +
+        `<span class="hist-sort-ind">${active ? (sort.dir === "asc" ? "\u2191" : "\u2193") : ""}</span>`;
+      const applySort = () => {
+        sort = sort.key === column.key
+          ? { key: column.key, dir: sort.dir === "asc" ? "desc" : "asc" }
+          : { key: column.key, dir: column.key === "symbol" ? "asc" : "desc" };
+        const next = makeHead();
+        table.replaceChild(next, head);
+        head = next;
+        drawBody();
+        head.querySelector<HTMLElement>(`[data-risk-sort="${column.key}"]`)?.focus();
+      };
+      th.addEventListener("click", applySort);
+      th.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        applySort();
+      });
+      row.appendChild(th);
+    });
+    thead.appendChild(row);
+    return thead;
+  };
+
+  head = makeHead();
+  table.append(head, body);
+  drawBody();
+  return table;
 }
 
 function initRiskControls() {
@@ -309,4 +401,4 @@ function initRiskControls() {
   });
 }
 
-export { loadRisk, renderRisk, initRiskControls, corrColor };
+export { loadRisk, renderRisk, initRiskControls, corrColor, sortRiskPositions };
