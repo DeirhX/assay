@@ -1,7 +1,10 @@
 // Tests for the history page's pure data-shaping helpers: per-day grouping for
 // the chart, option-folding for "activity by name", and pagination.
-import { describe, expect, it } from "vitest";
-import { contractLabel, dayGroups, groupActivity, groupBySector, paginate } from "../src/history";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  contractLabel, createHistoryDetailSwitcher, dayGroups, groupActivity, groupBySector, paginate,
+  type HistoryDetailPanel,
+} from "../src/history";
 import { tradeTable } from "../src/history/tables";
 
 describe("dayGroups", () => {
@@ -164,5 +167,67 @@ describe("live execution rows", () => {
     expect(row?.textContent).toContain("EEFT");
     expect(row?.textContent).not.toContain("+0");
     expect(row?.querySelectorAll('[title="Pending finalized Flex statement"]')).toHaveLength(2);
+  });
+});
+
+describe("history detail view switcher", () => {
+  const makePanel = (
+    id: HistoryDetailPanel["id"],
+    label: string,
+    count: number,
+  ): HistoryDetailPanel => {
+    const body = document.createElement("div");
+    body.textContent = `${label} body`;
+    return { id, label, count, body, hint: `${label} hint` };
+  };
+  const allPanels = () => [
+    makePanel("sector", "By sector", 10),
+    makePanel("name", "By name", 143),
+    makePanel("trades", "Trade history", 890),
+  ];
+
+  beforeEach(() => localStorage.clear());
+
+  it("shows only Sector by default and switches without rebuilding", () => {
+    const switcher = createHistoryDetailSwitcher(allPanels());
+    const tabs = [...switcher.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const panels = [...switcher.querySelectorAll<HTMLElement>('[role="tabpanel"]')];
+    expect(tabs).toHaveLength(3);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+    expect(panels.filter((panel) => !panel.hidden).map((panel) => panel.dataset.historyPanel))
+      .toEqual(["sector"]);
+
+    tabs[1].click();
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(panels.filter((panel) => !panel.hidden).map((panel) => panel.dataset.historyPanel))
+      .toEqual(["name"]);
+    expect(localStorage.getItem("assay.history.detailView")).toBe("name");
+  });
+
+  it("restores the last view and falls back when it is unavailable", () => {
+    localStorage.setItem("assay.history.detailView", "trades");
+    const restored = createHistoryDetailSwitcher(allPanels());
+    expect(restored.querySelector<HTMLButtonElement>('[data-history-detail="trades"]')
+      ?.getAttribute("aria-selected")).toBe("true");
+
+    localStorage.setItem("assay.history.detailView", "name");
+    const fallback = createHistoryDetailSwitcher([
+      makePanel("sector", "By sector", 10),
+      makePanel("trades", "Trade history", 890),
+    ]);
+    expect(fallback.querySelector<HTMLButtonElement>('[data-history-detail="sector"]')
+      ?.getAttribute("aria-selected")).toBe("true");
+    expect([...fallback.querySelectorAll<HTMLElement>('[role="tabpanel"]')]
+      .filter((panel) => !panel.hidden)).toHaveLength(1);
+  });
+
+  it("supports arrow-key navigation across the tabs", () => {
+    const switcher = createHistoryDetailSwitcher(allPanels());
+    document.body.appendChild(switcher);
+    const sector = switcher.querySelector<HTMLButtonElement>('[data-history-detail="sector"]')!;
+    const name = switcher.querySelector<HTMLButtonElement>('[data-history-detail="name"]')!;
+    sector.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(name.getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(name);
   });
 });

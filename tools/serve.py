@@ -82,6 +82,7 @@ from segments_service import (  # noqa: E402  -- segment validate/prompt/list
     validate_definition as _validate_segment_definition,
 )
 from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin handlers below)
+    attach_position_sectors as _attach_position_sectors,
     history_payload as _history_payload, ibkr_status as _ibkr_status,
     save_ibkr_secrets as _save_ibkr_secrets,
     start_history_sync as _start_history_sync, start_holdings_sync as _start_holdings_sync,
@@ -561,7 +562,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({"enabled": _RELOAD, "version": devreload.assets_version(_BOOT_TOKEN)})
 
     def _get_holdings(self, path, query):
-        return self._send_json(holdings_payload())
+        return self._send_json(_attach_position_sectors(holdings_payload()))
 
     def _get_holdings_live(self, path, query):
         # Best-effort live-mark overlay: the delayed Flex snapshot stays the base
@@ -577,6 +578,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"available": False, "reason": f"{type(exc).__name__}"})
         if not res:
             return self._send_json({"available": False, "reason": "live gateway unavailable"})
+        res["payload"] = _attach_position_sectors(res.get("payload"))
         return self._send_json(res)
 
     def _get_portfolio_history(self, path, query):

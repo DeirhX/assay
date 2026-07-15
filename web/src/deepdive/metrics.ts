@@ -94,7 +94,8 @@ export function peerBar(key: string, m: PeerMetric): HTMLElement {
   const wrap = el("div", reliable ? "metric-peer" : "metric-peer sparse");
   wrap.title = tip;
   wrap.innerHTML =
-    `<div class="mp-track"><span class="mp-median"></span>` +
+    `<div class="mp-track"><span class="mp-fill" style="width:${(pct * 100).toFixed(1)}%"></span>` +
+    `<span class="mp-median"></span>` +
     `<span class="mp-marker" style="left:${(pct * 100).toFixed(1)}%"></span></div>` +
     `<div class="mp-cap">${esc(cap)}</div>`;
   return wrap;

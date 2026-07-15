@@ -136,3 +136,35 @@ def test_history_sync_keeps_flex_when_live_session_is_offline():
         recent.assert_not_called()
         assert result["history_sources"]["flex_to_date"] == "2026-07-13"
         assert result["history_sources"]["live_available"] is False
+
+
+def test_position_sector_enrichment_uses_stock_symbol_and_option_underlying():
+    payload = {
+        "positions": [
+            {"symbol": "AMD", "provider_symbol": "AMD", "option": None},
+            {
+                "symbol": "PYPL  260814C00047000",
+                "provider_symbol": "PYPL  260814C00047000",
+                "option": {"underlying": "PYPL"},
+            },
+        ]
+    }
+    cache = {"updated_at": "2026-07-14T20:00:00Z", "map": {}}
+    with mock.patch.object(
+        holdings_sync.sectors, "load_cache", return_value=cache,
+    ), mock.patch.object(
+        holdings_sync.sectors, "seed_from_research",
+    ), mock.patch.object(
+        holdings_sync.sectors,
+        "sector_of",
+        side_effect=lambda symbol, _cache: {
+            "AMD": "Technology",
+            "PYPL": "Financial Services",
+        }.get(symbol, ""),
+    ) as sector_of:
+        enriched = holdings_sync.attach_position_sectors(payload)
+
+    assert enriched["positions"][0]["sector"] == "Technology"
+    assert enriched["positions"][1]["sector"] == "Financial Services"
+    assert enriched["sectors_updated_at"] == "2026-07-14T20:00:00Z"
+    assert [call.args[0] for call in sector_of.call_args_list] == ["AMD", "PYPL"]

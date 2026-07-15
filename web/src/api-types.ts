@@ -41,6 +41,7 @@ export interface HoldingPosition {
   unrealized_pnl_pct?: number | null;
   base_unrealized_pnl?: number | null;
   issuer_country_code: string | null;
+  sector?: string | null;
   option: OptionExposure | null;
   // Set only on the /api/holdings/live payload: true when this row's mark was
   // refreshed from the live CPAPI feed, false when it's still on the delayed
@@ -52,6 +53,7 @@ export interface HoldingsPayload {
   net_asset_value: number | null;
   invested_value: number;
   generated_at: string | null;
+  sectors_updated_at?: string | null;
   sizing_legend: Record<string, number>;
   positions: HoldingPosition[];
 }

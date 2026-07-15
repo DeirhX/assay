@@ -381,6 +381,27 @@ def start_history_sync(full: bool = False) -> dict:
 SECTORS_JSON = IBKR_CACHE_DIR / "sectors.json"  # gitignored (mirrors trade ledger)
 
 
+def _position_sector_symbol(position: dict) -> str:
+    option = position.get("option")
+    if isinstance(option, dict) and option.get("underlying"):
+        return str(option["underlying"])
+    return str(position.get("provider_symbol") or position.get("symbol") or "")
+
+
+def attach_position_sectors(payload: dict | None) -> dict | None:
+    """Attach the shared research/Yahoo sector taxonomy to holdings rows."""
+    if not payload:
+        return payload
+    cache = sectors.load_cache(SECTORS_JSON)
+    sectors.seed_from_research(cache, RESEARCH_DIR)
+    for position in payload.get("positions") or []:
+        position["sector"] = sectors.sector_of(
+            _position_sector_symbol(position), cache
+        )
+    payload["sectors_updated_at"] = cache.get("updated_at")
+    return payload
+
+
 def _attach_sectors(payload: dict | None) -> dict | None:
     """Tag each ``by_symbol`` row with a sector for the "By sector" view.
 
@@ -416,12 +437,22 @@ def _run_sectors_job(job_id: str) -> None:
     """Seed the sector map from research dossiers, then resolve the still-unknown
     traded underlyings via Yahoo (cached, so this is a one-time-ish cost)."""
     _update_job(job_id, state="running", message="loading traded names…")
-    payload = ibkr_history.enrich_history_payload(_load(IBKR_HISTORY_JSON))
-    if not payload:
-        _update_job(job_id, state="error", error="no portfolio history yet — pull it first")
+    history = ibkr_history.enrich_history_payload(_load(IBKR_HISTORY_JSON)) or {}
+    history_rows = (history.get("summary") or {}).get("by_symbol") or []
+    holdings = holdings_payload()
+    holding_rows = holdings.get("positions") or []
+    symbols = [
+        r.get("underlying") or r.get("symbol") or ""
+        for r in history_rows
+    ]
+    symbols.extend(_position_sector_symbol(r) for r in holding_rows)
+    if not any(symbols):
+        _update_job(
+            job_id,
+            state="error",
+            error="no portfolio positions or history available for sector lookup",
+        )
         return
-    rows = (payload.get("summary") or {}).get("by_symbol") or []
-    symbols = [r.get("underlying") or r.get("symbol") or "" for r in rows]
     cache = sectors.load_cache(SECTORS_JSON)
     sectors.seed_from_research(cache, RESEARCH_DIR)
     sectors.save_cache(SECTORS_JSON, cache)  # persist the free research seeds first

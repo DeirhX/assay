@@ -35,6 +35,11 @@ export interface HoldingsSyncOpts {
   successButtonLabel?: string;
 }
 
+export interface QuietHoldingsSyncOpts {
+  status?: HTMLElement | null;
+  onDone: (job: Job) => void | Promise<void>;
+}
+
 function setSyncPending(status: HTMLElement | null | undefined): void {
   if (!status) return;
   status.classList.remove("err");
@@ -45,6 +50,36 @@ function setSyncError(status: HTMLElement | null | undefined, err: unknown): voi
   if (!status) return;
   status.textContent = "Sync failed: " + (err as Error).message;
   status.classList.add("err");
+}
+
+let _activeSync: Promise<Job> | null = null;
+
+function performHoldingsSync(status?: HTMLElement | null): Promise<Job> {
+  if (_activeSync) return _activeSync;
+  _activeSync = (async () => {
+    const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
+    let completed: Job | null = null;
+    await pollDeepJob(job.id, status ?? null, (done) => {
+      completed = done;
+    }, HOLDINGS_SYNC_JOB_LABEL);
+    if (!completed) throw new Error("IBKR sync ended without a result");
+    return completed;
+  })().finally(() => {
+    _activeSync = null;
+  });
+  return _activeSync;
+}
+
+/** Join the same in-flight sync used by the button flow, without requiring UI chrome. */
+export async function runQuietHoldingsSync(opts: QuietHoldingsSyncOpts): Promise<void> {
+  const { status, onDone } = opts;
+  setSyncPending(status);
+  try {
+    await onDone(await performHoldingsSync(status));
+  } catch (e) {
+    setSyncError(status, e);
+    throw e;
+  }
 }
 
 export async function runHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
@@ -58,10 +93,7 @@ export async function runHoldingsSync(opts: HoldingsSyncOpts): Promise<void> {
     successLabel: successButtonLabel,
     run: async () => {
       try {
-        const job = await api<{ id: string }>("/api/holdings/sync", "POST", {});
-        await pollDeepJob(job.id, status ?? null, async (done) => {
-          await onDone(done);
-        }, HOLDINGS_SYNC_JOB_LABEL);
+        await onDone(await performHoldingsSync(status));
       } catch (e) {
         setSyncError(status, e);
         throw e;
