@@ -14,6 +14,7 @@ import {
   parseStem,
   pipeLockReason,
   pipeStem,
+  proposalReadiness,
   reviewTagClass,
   segDraftValid,
   segSlugify,
@@ -198,5 +199,45 @@ describe("reviewTagClass", () => {
   it("is neutral for anything else", () => {
     expect(reviewTagClass("INFO")).toBe("");
     expect(reviewTagClass(undefined)).toBe("");
+  });
+});
+
+describe("proposalReadiness", () => {
+  it("refuses review-only proposal scraps that were never sized", () => {
+    expect(proposalReadiness({
+      changes: [{ symbol: "NVDA" }],
+      blocked_symbols: [],
+    })).toMatchObject({
+      phase: "needs_sizing",
+      constructed: false,
+      total: 1,
+      applicable: 1,
+    });
+  });
+
+  it("marks a constructed proposal ready when at least one change is applicable", () => {
+    expect(proposalReadiness({
+      construct_meta: { book_reconciliation: {} },
+      changes: [{ symbol: "NVDA" }, { symbol: "NU" }],
+      blocked_symbols: ["NU"],
+    })).toEqual({
+      phase: "ready",
+      constructed: true,
+      total: 2,
+      applicable: 1,
+      blocked: ["NU"],
+    });
+  });
+
+  it("distinguishes fully blocked and empty constructed proposals", () => {
+    expect(proposalReadiness({
+      construct_meta: {},
+      changes: [{ symbol: "NU" }],
+      blocked_symbols: ["NU"],
+    }).phase).toBe("blocked");
+    expect(proposalReadiness({
+      construct_meta: {},
+      changes: [],
+    }).phase).toBe("empty");
   });
 });

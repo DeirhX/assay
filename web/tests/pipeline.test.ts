@@ -4,7 +4,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { DeepRun } from "../src/api-types";
 import { $, state } from "../src/core";
-import { latestReportForSegment, pipeCurrentStem, pipeHasSavedReport, pipeLockReason, pipeUnlockedMax } from "../src/pipeline";
+import {
+  latestReportForSegment,
+  pipeCurrentStem,
+  pipeHasSavedReport,
+  pipeLockReason,
+  pipeUnlockedMax,
+  renderReviewGate,
+} from "../src/pipeline";
 
 const setSlug = (slug: string) => {
   // "new" mode reads #pipe-slug, which avoids needing <option> entries in the
@@ -100,5 +107,87 @@ describe("latestReportForSegment", () => {
     expect(latestReportForSegment("")).toBeNull();
     state.deepRuns = [run("other-2026-06-01")];
     expect(latestReportForSegment("semis")).toBeNull();
+  });
+});
+
+describe("Step 4 decision gate", () => {
+  beforeEach(() => {
+    ($("#pipe-review-output") as HTMLElement).innerHTML = "";
+    ($("#pipe-report") as HTMLTextAreaElement).value = "Saved report";
+    ($("#pipe-apply-status") as HTMLElement).textContent = "";
+  });
+
+  it("refuses to stage a legacy review-only proposal", () => {
+    renderReviewGate({
+      proposal: {
+        changes: [{
+          symbol: "NVDA",
+          action: "add_target",
+          proposed_target: { low: 4, high: 5.4, rule: "accumulate" },
+        }],
+      },
+      rows: [{ symbol: "NVDA" }],
+    });
+
+    const apply = $("#pipe-apply-proposal") as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    expect(apply.hidden).toBe(true);
+    expect($("#pipe-next-action")!.textContent).toMatch(/legacy review/i);
+    expect(($("#pipe-run-review") as HTMLButtonElement).textContent).toMatch(/sized proposal/i);
+  });
+
+  it("makes a constructed proposal's next action and target bands explicit", () => {
+    renderReviewGate({
+      proposal: {
+        construct_meta: {
+          book_reconciliation: {
+            targeted_mid_pct: 74.7,
+            cash_target_pct: 5,
+            over_allocated: false,
+          },
+        },
+        changes: [{
+          symbol: "NVDA",
+          action: "add_target",
+          rationale: "Below the approved strategic floor.",
+          proposed_target: { low: 4, high: 5.4, rule: "accumulate" },
+        }],
+      },
+      rows: [{ symbol: "NVDA" }],
+    });
+
+    const apply = $("#pipe-apply-proposal") as HTMLButtonElement;
+    expect(apply.disabled).toBe(false);
+    expect(apply.hidden).toBe(false);
+    expect(apply.textContent).toBe("Add 1 sized change to Pending model");
+    expect($("#pipe-next-action")!.textContent).toMatch(/review 1 sized change/i);
+    expect($("#pipe-review-output")!.textContent).toContain("4–5.4%");
+    expect($("#pipe-review-output")!.textContent).toContain("Fits budget");
+  });
+
+  it("shows how a standing exit decision resolves bullish research", () => {
+    renderReviewGate({
+      proposal: {
+        construct_meta: {},
+        changes: [{
+          symbol: "PYPL",
+          action: "modify_target",
+          rationale: "Standing exit decision.",
+          resolution: "Resolved automatically: standing exit intent overrides this report.",
+          report_conviction: "high",
+          standing_intent: "avoid",
+          proposed_target: { low: 0, high: 0, rule: "avoid" },
+        }],
+      },
+      rows: [{ symbol: "PYPL", report_action: "add" }],
+    });
+
+    const output = $("#pipe-review-output")!;
+    expect(output.textContent).toContain("0–0%");
+    expect(output.textContent).toContain("avoid");
+    expect(output.textContent).toContain(
+      "Resolved automatically: standing exit intent overrides this report.",
+    );
+    expect(output.querySelector(".proposal-resolution")).not.toBeNull();
   });
 });

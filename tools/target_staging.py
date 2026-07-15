@@ -117,7 +117,13 @@ def set_pin(key: str, *, stance: str, floor_pct=None, ceiling_pct=None,
             rationale: str = "") -> dict:
     """Pin a conviction: durable human intent that anchors future runs. Writes
     the live model directly (with a backup) so it takes effect immediately, and
-    mirrors into the working draft if one exists."""
+    mirrors into the working draft if one exists.
+
+    ``avoid`` is a hard exit mandate rather than a vague bearish opinion: it
+    also sets the governed target/sleeve to a 0%-0% avoid band. That makes the
+    current planner work toward zero and prevents later bullish research from
+    silently resurrecting the position.
+    """
     key = _norm_key(key)
     stance = str(stance or "").strip().lower() or "hold"
     if stance not in _VALID_STANCES:
@@ -136,11 +142,39 @@ def set_pin(key: str, *, stance: str, floor_pct=None, ceiling_pct=None,
         rec["floor_pct"] = float(floor_pct)
     if ceiling_pct is not None and ceiling_pct != "":
         rec["ceiling_pct"] = float(ceiling_pct)
+    if stance == "avoid":
+        rec["floor_pct"] = 0.0
+        rec["ceiling_pct"] = 0.0
+
+    def apply_exit_band(dst: dict) -> None:
+        if stance != "avoid":
+            return
+        if key.startswith("["):
+            bands = dst.setdefault("sleeves", {})
+            band_key = key[1:-1]
+        else:
+            bands = dst.setdefault("targets", {})
+            band_key = key
+        current = bands.get(band_key)
+        band = copy.deepcopy(current) if isinstance(current, dict) else {}
+        band.update({
+            "low": 0.0,
+            "high": 0.0,
+            "rule": "avoid",
+            "note": (
+                str(rationale or "").strip()
+                or "Standing exit decision; do not re-add from research."
+            ),
+        })
+        bands[band_key] = band
+
     _backup_target_model()
+    apply_exit_band(model)
     model.setdefault("provenance", {})[key] = rec
     _write_json(TARGET_MODEL_JSON, model)
     staged = _load(STAGED_JSON)
     if isinstance(staged, dict):
+        apply_exit_band(staged)
         staged.setdefault("provenance", {})[key] = rec
         _write_json(STAGED_JSON, staged)
     return rec

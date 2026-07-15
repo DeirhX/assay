@@ -163,7 +163,7 @@
           <li class="step-pill active" data-step="1"><span class="step-dot">1</span><span class="step-name">Segment</span></li>
           <li class="step-pill" data-step="2"><span class="step-dot">2</span><span class="step-name">Deep Research</span></li>
           <li class="step-pill" data-step="3"><span class="step-dot">3</span><span class="step-name">Report</span></li>
-          <li class="step-pill" data-step="4"><span class="step-dot">4</span><span class="step-name">Review &amp; apply</span></li>
+          <li class="step-pill" data-step="4"><span class="step-dot">4</span><span class="step-name">Decide &amp; stage</span></li>
         </ol>
         <div class="step-lock-note" id="pipe-lock-note" hidden></div>
 
@@ -350,19 +350,24 @@
         <section class="wizard-step card" data-step="4">
           <div class="step-head">
             <span class="step-index">Step 4 of 4</span>
-            <h2>Review &amp; apply</h2>
-            <p>Run the review gate to cross-check the narrative against deterministic data, then apply the target-model proposal if it holds up.</p>
+            <h2>Verify evidence, size targets, stage the draft</h2>
+            <p>This step checks the report, turns its conclusions into portfolio-sized target bands, and only then lets you add them to Pending model changes.</p>
           </div>
           <div class="step-body">
             <div class="pipe-report-link" id="pipe-report-view" hidden></div>
-            <div class="hint">The review gate reads the saved report for this segment + date, cross-checks every claim against the deterministic per-ticker data, and emits a target-model proposal. Run it first; applying only becomes available if it produces concrete changes.</div>
+            <div class="pipe-gate-progress" id="pipe-gate-progress" aria-label="Decision pipeline progress"></div>
+            <div class="pipe-next-action pending" id="pipe-next-action">
+              <span class="pipe-next-kicker">Next action</span>
+              <strong>Review the evidence and build sized targets</strong>
+              <span>The report is saved. Cross-check it against deterministic data and the current portfolio before staging anything.</span>
+            </div>
             <div class="action-row thesis-actions">
-              <button class="primary" id="pipe-run-review">Run review gate</button>
+              <button class="primary" id="pipe-run-review">Review evidence &amp; build sized proposal</button>
             </div>
             <div class="status" id="pipe-review-status"></div>
             <div id="pipe-review-output"></div>
             <div class="proposal-box">
-              <button class="ghost danger" id="pipe-apply-proposal" disabled>Apply current proposal</button>
+              <button class="primary" id="pipe-apply-proposal" disabled hidden>Add sized changes to Pending model</button>
               <span class="status" id="pipe-apply-status"></span>
             </div>
           </div>

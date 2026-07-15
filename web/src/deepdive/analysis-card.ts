@@ -19,6 +19,7 @@ interface Rec {
   price?: { value?: number | null } | null;
   sources?: Record<string, unknown> | null;
   as_of?: string | null;
+  deep_analyses?: RelatedDeepAnalysis[];
 }
 
 interface Job {
@@ -37,6 +38,13 @@ interface DeepRun {
   symbol?: string;
 }
 
+interface RelatedDeepAnalysis extends DeepRun {
+  title?: string;
+  segment?: string;
+  relationship?: "member" | "mentioned" | "member+mentioned";
+  has_review?: boolean;
+}
+
 interface ProviderCfg {
   id: string;
   enabled?: boolean;
@@ -47,6 +55,59 @@ interface BackendConfig {
   providers: ProviderCfg[];
   allow_web?: boolean;
   timeout_sec?: number;
+}
+
+export function deepAnalysisRelationLabel(
+  relationship: RelatedDeepAnalysis["relationship"],
+): string {
+  if (relationship === "member+mentioned") return "segment member · discussed";
+  if (relationship === "member") return "segment member";
+  return "mentioned in report";
+}
+
+export function renderRelatedDeepAnalyses(
+  runs: RelatedDeepAnalysis[],
+  openRun: (stem: string) => void,
+): HTMLElement | null {
+  if (!runs.length) return null;
+  const section = el("section", "dr-related");
+  section.innerHTML =
+    `<div class="dr-related-head"><strong>Appears in ${runs.length} sector ` +
+    `analys${runs.length === 1 ? "is" : "es"}</strong>` +
+    `<span>Overlapping reports can carry different theses — open each for context.</span></div>`;
+  const list = el("div", "dr-runs dr-related-runs");
+  const appendRun = (run: RelatedDeepAnalysis) => {
+    const btn = el("button", "dr-run-row dr-related-row");
+    btn.type = "button";
+    btn.title = `Open ${run.title || run.segment || run.stem} in Reports`;
+    const relation = deepAnalysisRelationLabel(run.relationship);
+    const sourceText = run.source_count
+      ? `${run.source_count} source${run.source_count === 1 ? "" : "s"}`
+      : "sources unavailable";
+    btn.innerHTML =
+      `<span class="dr-related-main"><strong>${esc(run.title || run.segment || run.stem)}</strong>` +
+      `<span>${esc(relation)} · ${esc(run.date || "saved report")}</span></span>` +
+      `<span class="dr-related-meta">${esc(sourceText)}${run.has_review ? " · reviewed" : ""}</span>` +
+      `<span class="sx-go" aria-hidden="true">\u2197</span>`;
+    btn.addEventListener("click", () => openRun(run.stem));
+    list.appendChild(btn);
+  };
+  runs.slice(0, 4).forEach(appendRun);
+  section.appendChild(list);
+  if (runs.length > 4) {
+    const more = el(
+      "button",
+      "ghost dr-related-more",
+      `Show ${runs.length - 4} more sector analyses`,
+    );
+    more.type = "button";
+    more.addEventListener("click", () => {
+      runs.slice(4).forEach(appendRun);
+      more.remove();
+    });
+    section.appendChild(more);
+  }
+  return section;
 }
 
 async function runningAnalysisJob(symbol: string): Promise<Job | null> {
@@ -243,6 +304,7 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
   // run's slug-derived symbol "TUI1-DE" without reimplementing the backend slug.
   const norm = (s: unknown) => String(s || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
   const want = norm(sym);
+  const relatedRuns = rec.deep_analyses || [];
 
   function openRun(stem: string) {
     pushNav({ view: "analyses", run: stem });
@@ -291,13 +353,16 @@ export function renderDeepResearchCard(rec: Rec): HTMLElement {
     status.textContent = "";
     status.classList.remove("err");
     body.innerHTML = "";
+    const related = renderRelatedDeepAnalyses(relatedRuns, openRun);
+    if (related) body.appendChild(related);
     if (runs.length) {
+      body.appendChild(el("div", "dr-own-head", "Ticker-specific Deep Research"));
       const list = el("div", "dr-runs");
       runs.forEach((r) => list.appendChild(runRowEl(r)));
       body.appendChild(list);
     } else {
       body.appendChild(el("p", "hint",
-        `No Deep Research for <strong>${esc(sym)}</strong> yet. The in-depth analysis ` +
+        `No ticker-specific Deep Research for <strong>${esc(sym)}</strong> yet. The in-depth analysis ` +
         `above reasons over the data on this page; this spends a Perplexity Deep ` +
         `Research crawl for a fuller, web-sourced single-name report &mdash; a few ` +
         `minutes, and quota-limited, so it's opt-in.`));

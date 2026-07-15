@@ -7,6 +7,7 @@ import {
   parseStem,
   pipeLockReason,
   pipeStem,
+  proposalReadiness,
   reviewTagClass,
   segDraftValid as isSegDraftValid,
   segSlugify,
@@ -24,7 +25,7 @@ import { navFromUrl, pushNav, replaceViewState, setActiveView, setSegmentControl
 // data, so it stays honest no matter how you got here (URL, reload, back/fwd).
 //   1 Segment      -> always available
 //   2 Deep Research, 3 Report  -> need a chosen/approved segment
-//   4 Review & apply           -> need a saved or loaded report artifact
+//   4 Decide & stage           -> verify evidence, size targets, then stage draft
 function pipeCurrentStem() {
   return pipeStem(pipeSegment(), $$<HTMLInputElement>("#pipe-date").value);
 }
@@ -75,7 +76,10 @@ function setPipeStep(n: number, { silent = false, persist = true }: { silent?: b
   });
   if (n === 2) { updateStep2LoginGate(); refreshLoginStatus(); updateExistingReportNotice(); }
   if (n === 3) updateRepSubstate();
-  if (n === 4) renderPipeReport();
+  if (n === 4) {
+    renderPipeReport();
+    if (!$$("#pipe-review-output").childElementCount) setPipeDecisionState("needs_review");
+  }
   const w = $$("#pipe-wizard");
   if (w && !silent) w.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -109,12 +113,18 @@ $$("#pipe-restart").addEventListener("click", () => {
     if (elx) elx.value = "";
   });
   updateStep2Actions();
+  $$("#pipe-review-output").innerHTML = "";
+  $$("#pipe-review-status").textContent = "";
+  $$("#pipe-apply-status").textContent = "";
+  setPipeDecisionState("needs_review");
   setRepMode("current");
   pushNav({ view: "pipeline", segment: pipeSegment(), run: "", step: "", repmode: "" }, { replace: true });
   setPipeStep(1);
 });
 
 $$<HTMLSelectElement>("#pipe-segment-select").addEventListener("change", () => {
+  $$("#pipe-review-output").innerHTML = "";
+  setPipeDecisionState("needs_review");
   pushNav({ view: "pipeline", segment: pipeSegment() }, { replace: true });
   refreshPipeLocks();
   updateExistingReportNotice();
@@ -708,18 +718,23 @@ $$("#pipe-save-report").addEventListener("click", async () => {
 $$("#pipe-run-review").addEventListener("click", async () => {
   const status = $$("#pipe-review-status");
   status.classList.remove("err");
-  status.textContent = "running review gate...";
+  status.innerHTML = `<span class="spinner"></span> checking evidence and sizing target bands…`;
   try {
     const segment = pipeSegment();
     const date = $$<HTMLInputElement>("#pipe-date").value.trim();
-    const rec = await api("/api/deep-research/review", "POST", { segment, date });
+    const rec = await api("/api/deep-research/construct", "POST", { segment, date });
     state.currentDeepRun = `${segment}-${date}`;
     pushNav({ view: "pipeline", segment, run: state.currentDeepRun });
-    status.textContent = `review generated: ${rec.warnings.length} warning(s), ${rec.proposal.changes.length} proposal change(s)`;
+    const findings = rec.findings || rec.proposal?.findings || [];
+    const blockers = (rec.blocked_symbols || rec.proposal?.blocked_symbols || []).length;
+    const changes = rec.proposal?.changes?.length || 0;
+    status.textContent = blockers
+      ? `Sizing finished with ${blockers} blocked name${blockers === 1 ? "" : "s"} and ${changes} proposed change${changes === 1 ? "" : "s"}.`
+      : `Evidence checked and ${changes} target change${changes === 1 ? "" : "s"} sized (${findings.length} finding${findings.length === 1 ? "" : "s"}).`;
     renderReviewGate(rec);
     await refreshDeepRuns();
   } catch (e) {
-    status.textContent = "review failed: " + (e as Error).message;
+    status.textContent = "review and sizing failed: " + (e as Error).message;
     status.classList.add("err");
   }
 });
@@ -771,13 +786,18 @@ async function loadDeepRun(stem: string, { push = true }: { push?: boolean } = {
   if (rec.report) $$<HTMLTextAreaElement>("#pipe-report").value = rec.report;
   if (rec.sources) $$<HTMLTextAreaElement>("#pipe-sources").value = JSON.stringify(rec.sources.citations || [], null, 2);
   if (rec.sources && rec.sources.source_url) $$<HTMLInputElement>("#pipe-source-url").value = rec.sources.source_url;
-  if (rec.markdown || rec.review || rec.proposal) renderReviewGate({
-    markdown: rec.review || "",
-    proposal: rec.proposal || { changes: [], warnings: [] },
-    warnings: (rec.proposal && rec.proposal.warnings) || [],
-    rows: [],
-    source_summary: rec.proposal ? null : undefined,
-  });
+  $$("#pipe-review-output").innerHTML = "";
+  if (rec.markdown || rec.review || rec.proposal) {
+    renderReviewGate({
+      markdown: rec.review || "",
+      proposal: rec.proposal || { changes: [], warnings: [] },
+      warnings: (rec.proposal && rec.proposal.warnings) || [],
+      rows: [],
+      source_summary: rec.proposal ? null : undefined,
+    });
+  } else {
+    setPipeDecisionState("needs_review");
+  }
   setRepMode("current");
   refreshPipeLocks();
 }
@@ -797,7 +817,7 @@ function renderPipeReport() {
   if (stem) {
     box.appendChild(el("span", "pipe-report-link-text",
       "Full report, sources & follow-up Q&A live in the reader."));
-    const btn = el("button", "primary", "Open report & Q&A in Reports \u2197");
+    const btn = el("button", "ghost", "Open report & Q&A in Reports \u2197");
     btn.type = "button";
     btn.addEventListener("click", () => openRunInAnalyses(stem));
     box.appendChild(btn);
@@ -825,6 +845,16 @@ interface ReviewRow {
 
 interface ReviewChange {
   symbol?: string;
+  action?: string;
+  rationale?: string;
+  resolution?: string;
+  report_conviction?: string;
+  standing_intent?: string;
+  proposed_target?: {
+    low?: unknown;
+    high?: unknown;
+    rule?: unknown;
+  };
   [key: string]: unknown;
 }
 
@@ -833,6 +863,13 @@ interface ReviewProposal {
   blocked_symbols?: string[];
   findings?: ReviewFinding[];
   warnings?: string[];
+  construct_meta?: {
+    book_reconciliation?: {
+      targeted_mid_pct?: unknown;
+      cash_target_pct?: unknown;
+      over_allocated?: unknown;
+    };
+  };
 }
 
 interface ReviewGate {
@@ -847,10 +884,110 @@ interface ReviewGate {
   review?: string;
 }
 
+type PipeDecisionPhase = "needs_review" | "needs_sizing" | "blocked" | "empty" | "ready" | "staged";
+
+function setPipeDecisionState(
+  phase: PipeDecisionPhase,
+  opts: { changes?: number; blocked?: string[] } = {},
+) {
+  const progress = $$("#pipe-gate-progress");
+  const next = $$("#pipe-next-action");
+  const run = $$<HTMLButtonElement>("#pipe-run-review");
+  const apply = $$<HTMLButtonElement>("#pipe-apply-proposal");
+  if (!progress || !next || !run || !apply) return;
+
+  const verifyState = phase === "needs_review" || phase === "needs_sizing"
+    ? "active"
+    : phase === "blocked" ? "blocked" : "done";
+  const stageState = phase === "ready" ? "active" : phase === "staged" ? "done" : "locked";
+  progress.innerHTML = [
+    ["done", "1", "Report saved"],
+    [verifyState, "2", phase === "needs_sizing" ? "Sizing required" : "Evidence + sizing"],
+    [stageState, "3", "Pending model"],
+  ].map(([stateName, number, label]) =>
+    `<div class="pipe-gate-stage ${stateName}"><span>${number}</span><strong>${label}</strong></div>`,
+  ).join("");
+
+  const blocked = opts.blocked || [];
+  const content: Record<PipeDecisionPhase, [string, string]> = {
+    needs_review: [
+      "Review the evidence and build sized targets",
+      "Cross-check the saved report against deterministic data, then convert its stance into portfolio-sized target bands.",
+    ],
+    needs_sizing: [
+      "Rebuild this legacy review as a sized proposal",
+      "The saved artifact contains review hints, not portfolio-sized targets. It cannot be staged safely.",
+    ],
+    blocked: [
+      "Fix blocked data, then rerun this step",
+      blocked.length
+        ? `${blocked.join(", ")} ${blocked.length === 1 ? "is" : "are"} blocked by ERROR-level evidence.`
+        : "Every proposed change is blocked by ERROR-level evidence.",
+    ],
+    empty: [
+      "No allocation change is justified",
+      "The review completed, but it produced no sized target changes. Keep the report or start another segment.",
+    ],
+    ready: [
+      `Review ${opts.changes || 0} sized change${opts.changes === 1 ? "" : "s"}, then stage the draft`,
+      "This updates Pending model changes only. It does not alter live targets, holdings, or broker orders.",
+    ],
+    staged: [
+      "Review Pending model changes",
+      "The sized proposal is now part of the working draft. Reconcile it with other research before committing the target model.",
+    ],
+  };
+  const [title, detail] = content[phase];
+  next.className = `pipe-next-action ${phase}`;
+  next.innerHTML =
+    `<span class="pipe-next-kicker">${phase === "staged" ? "Next destination" : "Next action"}</span>` +
+    `<strong>${esc(title)}</strong><span>${esc(detail)}</span>`;
+
+  run.hidden = phase === "ready" || phase === "staged";
+  run.textContent = phase === "needs_sizing"
+    ? "Build sized proposal"
+    : phase === "blocked"
+      ? "Re-run review & sizing"
+      : "Review evidence & build sized proposal";
+  apply.disabled = phase !== "ready";
+  apply.hidden = phase !== "ready";
+  apply.textContent = phase === "ready"
+    ? `Add ${opts.changes || 0} sized change${opts.changes === 1 ? "" : "s"} to Pending model`
+    : "Add sized changes to Pending model";
+}
+
+function proposalTable(changes: ReviewChange[], blocked: string[]) {
+  const blockedSet = new Set(blocked);
+  const table = el("table", "review-table proposal-table");
+  table.innerHTML =
+    "<thead><tr><th>Name</th><th>Decision</th><th>Proposed target</th><th>Why</th></tr></thead>" +
+    "<tbody>" + changes.map((change) => {
+      const target = change.proposed_target || {};
+      const low = target.low == null ? "—" : String(target.low);
+      const high = target.high == null ? "—" : String(target.high);
+      const band = low === "—" && high === "—" ? "—" : `${low}–${high}%`;
+      const rule = String(target.rule || "");
+      const symbol = String(change.symbol || "—");
+      const isBlocked = blockedSet.has(symbol);
+      const why = change.rationale || "No rationale recorded.";
+      const resolution = change.resolution
+        ? `<span class="proposal-resolution">${esc(change.resolution)}</span>`
+        : "";
+      return `<tr class="${isBlocked ? "proposal-blocked" : ""}">` +
+        `<td class="rev-sym">${esc(symbol)}</td>` +
+        `<td><span class="rev-tag ${isBlocked ? "bad" : "good"}">${esc(isBlocked ? "blocked" : change.action || "change")}</span></td>` +
+        `<td><strong>${esc(band)}</strong>${rule ? `<small>${esc(rule)}</small>` : ""}</td>` +
+        `<td>${esc(why)}${resolution}</td></tr>`;
+    }).join("") + "</tbody>";
+  const wrap = el("div", "pipe-proposal-table-wrap");
+  wrap.appendChild(table);
+  return wrap;
+}
+
 function renderReviewGate(rec: ReviewGate) {
   const out = $$("#pipe-review-output");
   out.innerHTML = "";
-  const card = sectionCard("Review gate output");
+  const card = sectionCard("Evidence review & sized target proposal");
   if (rec.source_summary) {
     const b: Record<string, number> = rec.source_summary.buckets || {};
     card.appendChild(el("div", "badges",
@@ -890,21 +1027,38 @@ function renderReviewGate(rec: ReviewGate) {
   const proposal: ReviewProposal = rec.proposal || {};
   const changes = proposal.changes || [];
   const blocked = rec.blocked_symbols || proposal.blocked_symbols || [];
-  const applicable = changes.filter((c) => !blocked.includes(c.symbol || ""));
   const noMembers = !(rec.rows && rec.rows.length);
-  card.appendChild(el("h2", "section", "Target-model proposal"));
-  if (changes.length) {
-    const pre = el("pre", "json-preview", esc(JSON.stringify(changes, null, 2)));
-    card.appendChild(pre);
+  const readiness = proposalReadiness(proposal as Record<string, unknown>);
+  card.appendChild(el("h2", "section", "Portfolio-sized target proposal"));
+  if (!readiness.constructed) {
+    card.appendChild(el("div", "pipe-proposal-warning",
+      "<strong>Sizing is missing.</strong><span>This is a legacy review-only artifact. Rebuild it before staging.</span>"));
+  } else if (changes.length) {
+    const book = proposal.construct_meta?.book_reconciliation;
+    if (book) {
+      const targeted = book.targeted_mid_pct == null ? "—" : `${book.targeted_mid_pct}%`;
+      const cash = book.cash_target_pct == null ? "—" : `${book.cash_target_pct}%`;
+      card.appendChild(el(
+        "div",
+        `pipe-book-summary${book.over_allocated ? " warn" : ""}`,
+        `<span><small>Managed targets</small><strong>${esc(targeted)}</strong></span>` +
+        `<span><small>Cash target</small><strong>${esc(cash)}</strong></span>` +
+        `<span><small>Book check</small><strong>${book.over_allocated ? "Needs funding" : "Fits budget"}</strong></span>`,
+      ));
+    }
+    card.appendChild(proposalTable(changes, blocked));
+    const raw = el("details", "proposal-raw");
+    raw.innerHTML = `<summary>Show raw proposal JSON</summary><pre class="json-preview">${esc(JSON.stringify(changes, null, 2))}</pre>`;
+    card.appendChild(raw);
     if (blocked.length) {
       card.appendChild(el("div", "hint",
-        `Apply is blocked for ${blocked.map(esc).join(", ")} (ERROR-level data). Re-pull and fix the data first.`));
+        `Staging excludes ${blocked.map(esc).join(", ")} because their deterministic data has ERROR-level findings.`));
     }
   } else if (noMembers) {
     card.appendChild(el("div", "hint err",
-      "This segment has no members, so there's nothing to review or apply. Add tickers to the segment definition, then re-pull and re-review."));
+      "This segment has no members. Add tickers to the segment definition, then rerun evidence review and sizing."));
   } else {
-    card.appendChild(el("div", "hint", "No target-model changes proposed."));
+    card.appendChild(el("div", "hint", "The evidence review produced no target-model changes."));
   }
   if (rec.markdown) {
     const det = el("details", "review-notes");
@@ -918,10 +1072,10 @@ function renderReviewGate(rec: ReviewGate) {
   // read but the gate's verdict. The review payload carries the report text.
   if (rec.report && $$<HTMLTextAreaElement>("#pipe-report")) $$<HTMLTextAreaElement>("#pipe-report").value = rec.report;
   renderPipeReport();
-  // Apply only becomes available once the review produced a change we're allowed
-  // to apply -- i.e. at least one proposed symbol that isn't data-blocked.
-  const applyBtn = $$<HTMLButtonElement>("#pipe-apply-proposal");
-  if (applyBtn) applyBtn.disabled = !applicable.length;
+  setPipeDecisionState(readiness.phase, {
+    changes: readiness.applicable,
+    blocked: readiness.blocked,
+  });
 }
 
 $$("#pipe-apply-proposal").addEventListener("click", async () => {
@@ -944,6 +1098,7 @@ $$("#pipe-apply-proposal").addEventListener("click", async () => {
     const n = rec.staged_count ?? (rec.applied ? rec.applied.length : 0);
     const skipped = (rec.skipped && rec.skipped.length) ? ` (${rec.skipped.length} skipped)` : "";
     status.textContent = `Added ${n} change${n === 1 ? "" : "s"} to Pending model changes${skipped}. `;
+    setPipeDecisionState("staged", { changes: n });
     const go = el("button", "linklike") as HTMLButtonElement;
     go.type = "button";
     go.textContent = "Review model changes →";

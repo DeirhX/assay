@@ -121,3 +121,35 @@ export function reviewTagClass(v: unknown): string {
   if (s.includes("ok") || s.includes("good") || s.includes("primary") || s.includes("strong")) return "good";
   return "";
 }
+
+export type ProposalPhase = "needs_sizing" | "blocked" | "empty" | "ready";
+
+export interface ProposalReadiness {
+  phase: ProposalPhase;
+  constructed: boolean;
+  total: number;
+  applicable: number;
+  blocked: string[];
+}
+
+/** Decide the single next action for Step 4 from the persisted proposal itself.
+ *
+ * Older/manual review artifacts may contain `changes` but no `construct_meta`;
+ * those are review hints, not sized portfolio targets, and must never be staged.
+ */
+export function proposalReadiness(proposal: Record<string, unknown> | null | undefined): ProposalReadiness {
+  const changes = Array.isArray(proposal?.changes) ? proposal.changes as Record<string, unknown>[] : [];
+  const blocked = Array.isArray(proposal?.blocked_symbols)
+    ? (proposal.blocked_symbols as unknown[]).map((s) => String(s))
+    : [];
+  const blockedSet = new Set(blocked);
+  const applicable = changes.filter((change: Record<string, unknown>) =>
+    !blockedSet.has(String(change?.symbol || ""))).length;
+  const constructed = !!proposal?.construct_meta;
+  let phase: ProposalPhase;
+  if (!constructed) phase = "needs_sizing";
+  else if (!changes.length) phase = "empty";
+  else if (!applicable) phase = "blocked";
+  else phase = "ready";
+  return { phase, constructed, total: changes.length, applicable, blocked };
+}
