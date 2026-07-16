@@ -113,6 +113,21 @@ def test_premium_converted_to_base_currency():
     assert cc["premium_czk"] == 50_600.0
 
 
+def test_cash_secured_put_ladder_refuses_synthetic_when_disallowed():
+    ladder = ov.cash_secured_put_ladder(
+        380.7, 0.30, 0.04, AS_OF.date(),
+        {
+            "source": "ibkr",
+            "expiries": [{
+                "expiry": "2026-08-21",
+                "puts": [{"strike": 570.0, "conid": 1, "bid": 1, "ask": 2}],
+            }],
+        },
+        contracts=1, fx=21.0, allow_synthetic=False,
+    )
+    assert ladder == []
+
+
 def test_cash_secured_put_ladder_ranks_effective_entry_and_secured_cash():
     chain = _chain()
     put = chain["expiries"][0]["puts"][0]

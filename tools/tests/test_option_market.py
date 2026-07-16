@@ -191,6 +191,116 @@ class MarketCaches(unittest.TestCase):
         refresh.assert_called_once()
         fetch.assert_not_called()
 
+    def test_force_refresh_rebuilds_despite_fresh_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            now = timeutil.now_iso()
+            stale = {
+                "source": "ibkr",
+                "underlying_price": 100.0,
+                "quote_timestamp": now,
+                "expiries": [{
+                    "expiry": "2026-08-21",
+                    "calls": [],
+                    "puts": [{"strike": 93.0, "conid": 1}],
+                }],
+            }
+            store.write_json(cache_dir / "NVDA-route-p.json", {
+                "symbol": "NVDA",
+                "fetched_at": now,
+                "reference_fetched_at": now,
+                "chain": stale,
+            })
+            rebuilt = {
+                **stale,
+                "expiries": [{
+                    "expiry": "2026-08-21",
+                    "calls": [],
+                    "puts": [{"strike": 90.0, "conid": 9}],
+                }],
+            }
+            with mock.patch.object(option_market, "session_ready", return_value=True), \
+                    mock.patch.object(
+                        option_market, "fetch_option_chain", return_value=rebuilt,
+                    ) as fetch:
+                out = option_market.cached_option_chain(
+                    "NVDA", cache_dir=cache_dir, right="P", force_refresh=True,
+                )
+        self.assertEqual(out["expiries"][0]["puts"][0]["strike"], 90.0)
+        fetch.assert_called_once()
+
+    def test_force_refresh_falls_back_to_cache_when_live_fetch_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            now = timeutil.now_iso()
+            cached = {
+                "source": "ibkr",
+                "underlying_price": 100.0,
+                "quote_timestamp": now,
+                "expiries": [{
+                    "expiry": "2026-08-21",
+                    "calls": [],
+                    "puts": [{"strike": 93.0, "conid": 1}],
+                }],
+            }
+            store.write_json(cache_dir / "NVDA-route-p.json", {
+                "symbol": "NVDA",
+                "fetched_at": now,
+                "reference_fetched_at": now,
+                "chain": cached,
+            })
+            with mock.patch.object(option_market, "session_ready", return_value=True), \
+                    mock.patch.object(
+                        option_market, "fetch_option_chain",
+                        side_effect=RuntimeError("gateway down"),
+                    ) as fetch, \
+                    mock.patch.object(
+                        ibkr_trade, "refresh_option_chain_quotes", return_value=cached,
+                    ):
+                out = option_market.cached_option_chain(
+                    "NVDA", cache_dir=cache_dir, right="P", force_refresh=True,
+                )
+        self.assertEqual(out["expiries"][0]["puts"][0]["strike"], 93.0)
+        fetch.assert_called_once()
+
+    def test_incoherent_ibkr_put_cache_is_rebuilt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            now = timeutil.now_iso()
+            store.write_json(cache_dir / "ADI-route-p.json", {
+                "symbol": "ADI",
+                "fetched_at": now,
+                "reference_fetched_at": now,
+                "chain": {
+                    "source": "ibkr",
+                    "underlying_price": 380.7,
+                    "quote_timestamp": now,
+                    "expiries": [{
+                        "expiry": "2026-08-21",
+                        "calls": [],
+                        "puts": [{"strike": 570.0, "conid": 1}],
+                    }],
+                },
+            })
+            rebuilt = {
+                "source": "ibkr",
+                "underlying_price": 380.7,
+                "quote_timestamp": now,
+                "expiries": [{
+                    "expiry": "2026-08-21",
+                    "calls": [],
+                    "puts": [{"strike": 360.0, "conid": 9}],
+                }],
+            }
+            with mock.patch.object(
+                option_market, "fetch_option_chain", return_value=rebuilt,
+            ) as fetch:
+                out = option_market.cached_option_chain(
+                    "ADI", cache_dir=cache_dir, right="P",
+                )
+        self.assertEqual(out["expiries"][0]["puts"][0]["strike"], 360.0)
+        fetch.assert_called_once()
+
     def test_forced_refresh_bypasses_fresh_quote_ttl_for_entire_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)

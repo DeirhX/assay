@@ -570,8 +570,11 @@ def _targeted_strikes(
     vals = sorted({float(s) for s in strikes if isinstance(s, (int, float))})
     if not vals or count <= 0:
         return []
+    # Without a spot we cannot tell OTM from deep ITM. Sampling the extreme of
+    # the catalog (old behavior) produced put ladders at 570+ on a 380 stock
+    # that quote-refresh then kept forever. Prefer an empty chain over fiction.
     if spot is None or spot <= 0:
-        return vals[:count] if right == "C" else list(reversed(vals[-count:]))
+        return []
     lo, hi = spot * (1.0 - window_pct), spot * (1.0 + window_pct)
     eligible = [s for s in vals if spot < s <= hi] if right == "C" else [
         s for s in vals if lo <= s < spot

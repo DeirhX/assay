@@ -1353,6 +1353,18 @@ class OptionChain(unittest.TestCase):
         self.assertNotIn(40.0, strikes)
         self.assertNotIn(200.0, strikes)
 
+    def test_targeted_strikes_require_a_spot(self):
+        catalog = [215.0, 360.0, 370.0, 570.0, 630.0]
+        self.assertEqual(
+            ibt._targeted_strikes(catalog, None, 0.25, 4, "P"),
+            [],
+        )
+        picked = ibt._targeted_strikes(catalog, 380.0, 0.25, 4, "P")
+        self.assertTrue(picked)
+        self.assertTrue(all(strike < 380.0 for strike in picked))
+        self.assertNotIn(570.0, picked)
+        self.assertNotIn(630.0, picked)
+
     def test_directional_chain_skips_the_unused_option_right(self):
         gw = _FakeGateway(spot="100.0")
         with mock.patch.object(ibt, "_request", gw):

@@ -54,7 +54,33 @@ def _chain_spot(chain: dict[str, Any] | None) -> float:
     for raw in candidates:
         if isinstance(raw, (int, float)) and raw > 0:
             return float(raw)
+    bid = nested.get("bid") if isinstance(nested, dict) else chain.get("underlying_bid")
+    ask = nested.get("ask") if isinstance(nested, dict) else chain.get("underlying_ask")
+    if (
+        isinstance(bid, (int, float)) and bid > 0
+        and isinstance(ask, (int, float)) and ask > 0
+    ):
+        return (float(bid) + float(ask)) / 2.0
     return 0.0
+
+
+def _chain_currency(chain: dict[str, Any] | None, position: dict[str, Any] | None) -> str:
+    """Instrument currency for FX sizing.
+
+    IBKR secdef chains often omit currency; US equity option sources are USD.
+    """
+    if position:
+        from_position = str(position.get("currency") or "").strip().upper()
+        if from_position:
+            return from_position
+    if isinstance(chain, dict):
+        from_chain = str(chain.get("currency") or "").strip().upper()
+        if from_chain:
+            return from_chain
+        source = str(chain.get("source") or "").strip().lower()
+        if source in {"ibkr", "yahoo", "alpaca"}:
+            return "USD"
+    return ""
 
 
 def _fx_for_currency(
@@ -63,11 +89,24 @@ def _fx_for_currency(
     if position:
         return portfolio.position_fx_to_base(position)
     wanted = str(currency or "").upper()
+    if wanted:
+        for row in holdings.get("positions") or []:
+            if str(row.get("currency") or "").upper() == wanted:
+                fx = portfolio.position_fx_to_base(row)
+                if fx > 0:
+                    return fx
+    # Unheld names with a blank currency still need a book FX; prefer USD.
+    preferred: list[float] = []
     for row in holdings.get("positions") or []:
-        if str(row.get("currency") or "").upper() == wanted:
-            fx = portfolio.position_fx_to_base(row)
-            if fx > 0:
-                return fx
+        ccy = str(row.get("currency") or "").upper()
+        fx = portfolio.position_fx_to_base(row)
+        if not ccy or fx <= 0:
+            continue
+        if ccy == "USD" or ccy == wanted:
+            return fx
+        preferred.append(fx)
+    if preferred:
+        return preferred[0]
     return 1.0
 
 
@@ -122,21 +161,25 @@ def build_route(
         and position_fx > 0
         and preflight_contracts < 1
     )
+    option_right = "P" if direction == "increase" else "C"
+    # Opening the option route table always attempts a live IBKR rebuild so
+    # stale contract samples cannot masquerade as the current ladder.
     chain_data = (
         None
         if skip_chain
         else option_market.cached_option_chain(
             sym,
-            right="P" if direction == "increase" else "C",
+            right=option_right,
+            force_refresh=True,
         ) if chain is _UNSET
         else chain
     )
     spot = _chain_spot(chain_data)
     if spot <= 0:
         spot = position_spot
-    currency = (
-        str((chain_data or {}).get("currency") or position.get("currency") or "")
-        if position else str((chain_data or {}).get("currency") or "")
+    currency = _chain_currency(
+        chain_data if isinstance(chain_data, dict) else None,
+        position,
     )
     fx = _fx_for_currency(holdings, currency, position)
     planned_shares = int(round(abs(delta) / (spot * fx))) if spot > 0 and fx > 0 else 0
@@ -155,9 +198,10 @@ def build_route(
     import trade_service
 
     cash_capacity = trade_service.cash_secured_put_capacity(holdings)
+    # Margin capability is an account property. Do not require a sized contract
+    # first — a missing mark must not demote the route to cash-secured copy.
     margin_enabled = (
         direction == "increase"
-        and theoretical_contracts > 0
         and trade_service.margin_account_enabled()
     )
     available_cash = float(cash_capacity["available_cash_czk"])
@@ -203,7 +247,7 @@ def build_route(
         use_rate = float(rate) if isinstance(rate, (int, float)) else 0.04
         ladder = options_overlay.covered_call_ladder(
             spot, options_overlay.DEFAULT_VOL, use_rate, as_of, chain_data,
-            contracts=contracts, fx=fx, guard_after=None,
+            contracts=contracts, fx=fx, guard_after=None, allow_synthetic=False,
         )
         option_kind = "covered_call"
         option_label = "Sell covered call"
@@ -212,7 +256,7 @@ def build_route(
         use_rate = float(rate) if isinstance(rate, (int, float)) else 0.04
         ladder = options_overlay.cash_secured_put_ladder(
             spot, options_overlay.DEFAULT_VOL, use_rate, as_of, chain_data,
-            contracts=contracts, fx=fx,
+            contracts=contracts, fx=fx, allow_synthetic=False,
         )
         option_kind = "cash_secured_put"
         option_label = "Sell put (margin)" if margin_enabled else "Sell cash-secured put"
@@ -222,7 +266,14 @@ def build_route(
     reasons: list[str] = []
     reasons.extend(capacity_notes)
     if planned_shares < 1:
-        reasons.append("The planned amount cannot be converted to shares from the available mark.")
+        if spot <= 0:
+            reasons.append(
+                "No usable underlying quote or holdings mark is available to size this option."
+            )
+        else:
+            reasons.append(
+                "The planned amount cannot be converted to shares from the available mark."
+            )
     elif contracts < 1:
         if theoretical_contracts < 1:
             reasons.append(
@@ -255,7 +306,13 @@ def build_route(
             reasons.append("The option contract exceeds the available capacity.")
     if contracts > 0:
         if not ladder:
-            reasons.append("No suitable option strike ladder is available.")
+            source = str((chain_data or {}).get("source") or "").strip().lower()
+            if source == "ibkr":
+                reasons.append(
+                    "IBKR listed no usable OTM option strikes near the mark for this window."
+                )
+            else:
+                reasons.append("No suitable option strike ladder is available.")
         elif not exact:
             source = str((chain_data or {}).get("source") or "modeled").replace("_", " ")
             reasons.append(

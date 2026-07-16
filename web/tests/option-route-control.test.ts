@@ -63,12 +63,29 @@ describe("createOptionRouteControl", () => {
   it("renders unavailable state with margin guidance for cash-secured puts", async () => {
     const blocked = rebalanceRoute("increase");
     blocked.option.eligible = false;
-    blocked.option.reasons = ["Insufficient cash"];
+    blocked.option.reasons = [
+      "One cash-secured put needs about 230,000 CZK; 100,000 CZK remains after held, working, and queued obligations.",
+    ];
     apiMock.mockResolvedValue(blocked);
     const control = createOptionRouteControl("NVDA", 230_000, new Map());
     control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
     await vi.waitFor(() => expect(control.detail.querySelector(".reb-route-unavailable")).toBeTruthy());
     expect(control.detail.textContent).toContain("margin-backed short put");
+  });
+
+  it("does not suggest IBKR margin when the failure is a missing mark", async () => {
+    const blocked = rebalanceRoute("increase");
+    blocked.option.eligible = false;
+    blocked.option.collateral_mode = "cash";
+    blocked.option.reasons = [
+      "No usable underlying quote or holdings mark is available to size this option.",
+    ];
+    apiMock.mockResolvedValue(blocked);
+    const control = createOptionRouteControl("ADI", 1_122_062, new Map());
+    control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() => expect(control.detail.querySelector(".reb-route-unavailable")).toBeTruthy());
+    expect(control.detail.textContent).toContain("underlying quote");
+    expect(control.detail.textContent).not.toContain("margin-backed short put");
   });
 
   it("calls onExitNavigate from compact select and exit button", () => {
