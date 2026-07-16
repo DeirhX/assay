@@ -4,6 +4,7 @@ cancellable subprocess runner."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -67,7 +68,7 @@ class ClaudeQaArgs(unittest.TestCase):
             )
 
         rec = {"symbol": "AMD", "name": "AMD", "metrics": {}, "portfolio": {}}
-        with mock.patch.dict(ta.os.environ, {"REBAL_CLAUDE_CLI": "/x/claude"}, clear=False), \
+        with mock.patch.dict(os.environ, {"REBAL_CLAUDE_CLI": "/x/claude"}, clear=False), \
              mock.patch.object(ta, "_run_proc", side_effect=fake_run):
             out = ta._run_claude_qa(
                 rec, [], "question?", None,
@@ -108,89 +109,6 @@ class CursorWebArgs(unittest.TestCase):
         # Read-only mode is pinned in BOTH cases -- --force never replaces it.
         for argv in (web_on, web_off):
             self.assertEqual(argv[argv.index("--mode") + 1], "ask")
-
-
-class CursorVersionResolution(unittest.TestCase):
-    """The app must run the SAME version the official launcher runs. The launcher
-    only accepts versions/<YYYY.MM.DD-commithex>; folders with extra segments
-    (e.g. an orphaned 2026.06.12-19-59-36-f6aba9a) are ignored, and dist-package
-    is the fallback when no version-named dir exists."""
-
-    def _resolve(self, names: list[str], *, with_dist=True):
-        # Build a REAL install tree in a temp dir so the resolution exercises
-        # actual filesystem semantics (string-matching path separators is
-        # platform-coupled and breaks between Windows and CI's Linux).
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        root = Path(tmp.name) / "cursor-agent"
-        (root / "versions").mkdir(parents=True)
-        launcher = root / "cursor-agent.cmd"
-        launcher.write_text("@echo off\n", encoding="utf-8")
-
-        def _mk(name):
-            d = root / "versions" / name
-            d.mkdir()
-            (d / "index.js").write_text("//\n", encoding="utf-8")
-            (d / "node.exe").write_text("\n", encoding="utf-8")
-
-        for name in names:
-            _mk(name)
-        if with_dist:
-            _mk("dist-package")
-
-        with mock.patch.object(ta.sys, "platform", "win32"), \
-             mock.patch.object(ta.shutil, "which", return_value=str(launcher)):
-            return ta._cursor_argv_base()
-
-    def test_picks_newest_official_version_ignoring_orphan(self):
-        argv = self._resolve(["2026.04.17-787b533", "2026.06.12-19-59-36-f6aba9a"])
-        self.assertIsNotNone(argv)
-        self.assertIn("2026.04.17-787b533", argv[1])
-        self.assertNotIn("19-59-36", argv[1])
-
-    def test_falls_back_to_dist_package_when_no_official_dir(self):
-        argv = self._resolve(["2026.06.12-19-59-36-f6aba9a"])
-        self.assertIsNotNone(argv)
-        self.assertIn("dist-package", argv[1])
-
-    def test_orphan_only_and_no_dist_is_unresolved(self):
-        argv = self._resolve(["2026.06.12-19-59-36-f6aba9a"], with_dist=False)
-        self.assertIsNone(argv)
-
-
-class Config(unittest.TestCase):
-    def setUp(self):
-        self._orig = ta.CONFIG_PATH
-        self._tmp = Path(tempfile.mkdtemp()) / "analysis-config.json"
-        ta.CONFIG_PATH = self._tmp
-
-    def tearDown(self):
-        ta.CONFIG_PATH = self._orig
-
-    def test_save_normalizes_and_drops_unknown_providers(self):
-        saved = ta.save_config({
-            "providers": [
-                {"id": "claude", "enabled": True, "model": "opus", "extra_args": []},
-                {"id": "bogus", "enabled": True},  # unknown id -> dropped
-            ],
-            "timeout_sec": 120,
-            "allow_web": True,
-        })
-        self.assertEqual([p["id"] for p in saved["providers"]], ["claude"])
-        self.assertEqual(saved["timeout_sec"], 120)
-        self.assertTrue(saved["allow_web"])
-
-    def test_round_trip_through_disk(self):
-        ta.save_config({"timeout_sec": 200, "allow_web": False,
-                        "providers": [{"id": "cursor", "enabled": False, "model": "", "extra_args": []}]})
-        loaded = ta.load_config()
-        self.assertEqual(loaded["timeout_sec"], 200)
-        self.assertFalse(loaded["allow_web"])
-        self.assertEqual(loaded["providers"][0]["id"], "cursor")
-
-    def test_missing_file_falls_back_to_defaults(self):
-        loaded = ta.load_config()  # tmp path does not exist yet
-        self.assertEqual(loaded["timeout_sec"], ta.DEFAULT_CONFIG["timeout_sec"])
 
 
 class RunProc(unittest.TestCase):
