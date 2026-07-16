@@ -1,6 +1,6 @@
 import { el, esc, fmtCZK } from "./core";
 import type {
-  RebalanceExecutionRoute, RebalanceRouteResponse,
+  OptionExpiryMode, RebalanceExecutionRoute, RebalanceRouteResponse,
   RebalanceRouteSelection,
 } from "./api-types";
 import {
@@ -8,6 +8,10 @@ import {
   pickStageableRung,
 } from "./execution-routes";
 import { liquidityChipClass, quoteFreshnessLabel } from "./option-quote";
+
+export type { OptionExpiryMode };
+
+const EXPIRY_MODE_KEY = "assay.optionExpiryMode";
 
 /** True when the server refused a put for cash collateral, not mark/quote sizing. */
 export function isCashCapacityFailure(reasons: string[] | undefined): boolean {
@@ -17,6 +21,24 @@ export function isCashCapacityFailure(reasons: string[] | undefined): boolean {
     || text.includes("uncommitted snapshot cash")
     || text.includes("no uncommitted snapshot cash")
   );
+}
+
+export function readOptionExpiryMode(): OptionExpiryMode {
+  try {
+    const raw = localStorage.getItem(EXPIRY_MODE_KEY);
+    if (raw === "nearest" || raw === "monthly") return raw;
+  } catch {
+    // Hardened / private contexts may block storage.
+  }
+  return "monthly";
+}
+
+export function writeOptionExpiryMode(mode: OptionExpiryMode): void {
+  try {
+    localStorage.setItem(EXPIRY_MODE_KEY, mode);
+  } catch {
+    // Visible toggle still works when persistence is blocked.
+  }
 }
 
 // ---- shared route loading with stale-response cancellation -------------------
@@ -32,13 +54,17 @@ export class OptionRouteLoader {
     return token === this.token;
   }
 
-  async load(symbol: string, deltaCzk: number): Promise<{
+  async load(
+    symbol: string,
+    deltaCzk: number,
+    expiryMode: OptionExpiryMode = readOptionExpiryMode(),
+  ): Promise<{
     route: RebalanceRouteResponse;
     token: number;
   } | null> {
     const token = ++this.token;
     try {
-      const route = await fetchRebalanceRoute(symbol, deltaCzk);
+      const route = await fetchRebalanceRoute(symbol, deltaCzk, expiryMode);
       if (!this.isCurrent(token)) return null;
       return { route, token };
     } catch (error) {
@@ -99,8 +125,28 @@ export function createOptionRouteControl(
   const detail = el("div", "reb-route-detail reb-route-row-detail");
   detail.hidden = true;
 
-  const addDetailClose = () => {
-    if (detail.querySelector(".reb-route-detail-close")) return;
+  const attachDetailChrome = (active: OptionExpiryMode) => {
+    const chrome = el("div", "reb-route-detail-chrome");
+    const bar = el("div", "reb-expiry-mode");
+    const label = el("span", "reb-expiry-mode-label", "Expiry");
+    bar.appendChild(label);
+    (["monthly", "nearest"] as const).forEach((mode) => {
+      const btn = el(
+        "button",
+        `ghost reb-expiry-mode-btn${mode === active ? " active" : ""}`,
+        mode === "monthly" ? "Monthly" : "Nearest",
+      );
+      btn.type = "button";
+      btn.title = mode === "monthly"
+        ? "Target ~30–45 days to expiration"
+        : "Soonest weekly expiry with usable OTM contracts";
+      btn.addEventListener("click", () => {
+        if (readOptionExpiryMode() === mode) return;
+        writeOptionExpiryMode(mode);
+        void loadOption(false);
+      });
+      bar.appendChild(btn);
+    });
     const close = el("button", "ghost reb-route-detail-close", "Close");
     close.type = "button";
     close.addEventListener("click", () => {
@@ -108,7 +154,8 @@ export function createOptionRouteControl(
       detail.innerHTML = "";
       paintCompactSelection();
     });
-    detail.prepend(close);
+    chrome.append(bar, close);
+    detail.appendChild(chrome);
   };
 
   const resetToStock = () => {
@@ -139,6 +186,8 @@ export function createOptionRouteControl(
   };
   direct.addEventListener("click", () => selectDirect());
 
+  let loadOption: (autoSelect?: boolean) => Promise<boolean> = async () => false;
+
   const renderOptionCards = (
     route: RebalanceRouteResponse,
     autoSelect = false,
@@ -146,6 +195,12 @@ export function createOptionRouteControl(
     option.textContent = route.option.label;
     direct.disabled = !route.direct.eligible;
     directChoice.disabled = !route.direct.eligible;
+    const activeMode =
+      route.expiry_mode === "nearest" || route.expiry_mode === "monthly"
+        ? route.expiry_mode
+        : readOptionExpiryMode();
+    detail.innerHTML = "";
+    attachDetailChrome(activeMode);
     if (!route.option.eligible) {
       const rawLabel = route.option.label.replace(/^Sell\s+/i, "");
       const unavailableLabel = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
@@ -155,17 +210,16 @@ export function createOptionRouteControl(
         route.direction === "increase"
         && route.option.collateral_mode !== "margin"
         && isCashCapacityFailure(route.option.reasons);
-      detail.innerHTML =
-        `<div class="reb-route-unavailable">` +
+      const unavailable = el("div", "reb-route-unavailable");
+      unavailable.innerHTML =
           `<span class="reb-route-eyebrow">Option route unavailable</span>` +
           `<strong>${esc(unavailableLabel)} unavailable</strong>` +
           `<p>${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</p>` +
         (showMarginNextStep
           ? `<div class="reb-route-unavailable-next"><b>Next:</b> choose Buy shares, ` +
             `or use IBKR directly for a margin-backed short put.</div>`
-          : "") +
-        `</div>`;
-      addDetailClose();
+          : "");
+      detail.appendChild(unavailable);
       return null;
     }
     const intro = el("div", "reb-route-option-summary");
@@ -186,7 +240,6 @@ export function createOptionRouteControl(
         ? `<span class="margin"><b>Margin</b> account</span>`
         : "") +
       `</div>`;
-    detail.innerHTML = "";
     detail.appendChild(intro);
     const contracts = el("div", "reb-option-contracts");
     let firstStageable: HTMLButtonElement | null = null;
@@ -267,32 +320,36 @@ export function createOptionRouteControl(
       hint.textContent = route.option.reasons.join(" · ");
       detail.appendChild(hint);
     }
-    addDetailClose();
     if (autoSelect) firstStageable?.click();
     return firstStageable;
   };
 
-  const loadOption = async (autoSelect = false): Promise<boolean> => {
+  loadOption = async (autoSelect = false): Promise<boolean> => {
     option.disabled = true;
     option.textContent = "Loading live option routes…";
     detail.hidden = false;
-    detail.innerHTML = `<div class="status"><span class="spinner"></span> loading strikes and quotes…</div>`;
-    addDetailClose();
+    const mode = readOptionExpiryMode();
+    detail.innerHTML = "";
+    attachDetailChrome(mode);
+    const status = el("div", "status");
+    status.innerHTML = `<span class="spinner"></span> loading strikes and quotes…`;
+    detail.appendChild(status);
     const requestedDelta = deltaCzk;
     try {
-      const result = await loader.load(symbol, requestedDelta);
+      const result = await loader.load(symbol, requestedDelta, mode);
       if (!result || requestedDelta !== deltaCzk) return false;
       const selectedButton = renderOptionCards(result.route, autoSelect);
       return Boolean(selectedButton);
     } catch (error) {
       if (requestedDelta !== deltaCzk) return false;
-      detail.innerHTML =
-        `<div class="reb-route-unavailable error">` +
+      detail.innerHTML = "";
+      attachDetailChrome(readOptionExpiryMode());
+      const unavailable = el("div", "reb-route-unavailable error");
+      unavailable.innerHTML =
           `<span class="reb-route-eyebrow">Option route error</span>` +
           `<strong>Could not load option routes</strong>` +
-          `<p>${esc((error as Error).message)}</p>` +
-        `</div>`;
-      addDetailClose();
+          `<p>${esc((error as Error).message)}</p>`;
+      detail.appendChild(unavailable);
       return false;
     } finally {
       option.disabled = false;
@@ -366,7 +423,7 @@ export async function loadCompactOptionRoute(
   deltaCzk: number,
   direction: "increase" | "reduce",
 ): Promise<CompactOptionRouteResult | null> {
-  const result = await loader.load(symbol, deltaCzk);
+  const result = await loader.load(symbol, deltaCzk, readOptionExpiryMode());
   if (!result) return null;
   const { route } = result;
   const rung = pickStageableRung(route.ladder);

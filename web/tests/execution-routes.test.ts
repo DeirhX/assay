@@ -52,7 +52,7 @@ describe("execution-routes", () => {
     apiMock.mockResolvedValue(response);
     await expect(fetchRebalanceRoute("NVDA", 230_000)).resolves.toBe(response);
     expect(apiMock).toHaveBeenCalledWith(
-      "/api/rebalance/route?symbol=NVDA&delta_czk=230000",
+      "/api/rebalance/route?symbol=NVDA&delta_czk=230000&expiry_mode=monthly",
       "GET",
       null,
       { timeoutMs: 60_000 },

@@ -2,9 +2,9 @@
 """Option-market acquisition and caching for advisory exit analysis.
 
 This module owns the slow, provider-specific boundary: IBKR session probing,
-time-boxed chain retrieval, Alpaca/Yahoo fallback, disk caches, and the cached
-risk-free rate. Exit planning consumes these values but does not decide how they
-are fetched.
+time-boxed chain retrieval, Alpaca/Yahoo only when the gateway is disconnected,
+disk caches, and the cached risk-free rate. Exit planning consumes these values
+but does not decide how they are fetched.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import ibkr_trade
+import options_overlay
 import portfolio
 import store
 import timeutil
@@ -29,6 +30,7 @@ IBKR_CHAIN_BUDGET_SECONDS = 8.0
 SESSION_READY_TTL_SECONDS = 20.0
 ROUTE_CHAIN_MAX_EXPIRIES = 2
 ROUTE_CHAIN_STRIKES_PER_SIDE = 4
+ROUTE_CHAIN_STRIKES_NEAREST = 8
 
 _session_ready_cache: tuple[float, bool] | None = None
 _session_ready_lock = threading.Lock()
@@ -143,6 +145,7 @@ def chain_within_budget(
     max_expiries: int = 4,
     strikes_per_side: int = 6,
     rights: tuple[str, ...] = ("C", "P"),
+    target_dte: int = 37,
 ) -> dict[str, Any] | None:
     """Fetch a cooperative, deadline-bounded IBKR chain.
 
@@ -152,13 +155,12 @@ def chain_within_budget(
     """
     deadline = time.monotonic() + max(0.05, budget)
     try:
-        if max_expiries == 4 and strikes_per_side == 6 and rights == ("C", "P"):
-            return ibkr_trade.option_chain(symbol, deadline_monotonic=deadline)
         return ibkr_trade.option_chain(
             symbol,
             max_expiries=max_expiries,
             strikes_per_side=strikes_per_side,
             rights=rights,
+            target_dte=target_dte,
             deadline_monotonic=deadline,
         )
     except Exception:  # noqa: BLE001 -- caller falls through to other providers
@@ -171,18 +173,23 @@ def fetch_option_chain(
     max_expiries: int = 4,
     strikes_per_side: int = 6,
     rights: tuple[str, ...] = ("C", "P"),
+    target_dte: int = 37,
 ) -> dict[str, Any] | None:
-    """Live chain from IBKR, then Alpaca, then Yahoo; ``None`` on total miss."""
+    """Live chain from IBKR when connected; Alpaca/Yahoo only when disconnected.
+
+    A connected gateway that returns nothing (timeout, empty chain, quote miss)
+    must not silently hand the UI an Alpaca/Yahoo book — those lack IBKR conids
+    and look like “quotes” while staging is impossible.
+    """
     if session_ready():
-        chain = chain_within_budget(
+        return chain_within_budget(
             symbol,
             IBKR_CHAIN_BUDGET_SECONDS,
             max_expiries=max_expiries,
             strikes_per_side=strikes_per_side,
             rights=rights,
+            target_dte=target_dte,
         )
-        if chain and chain.get("expiries"):
-            return chain
     try:
         from providers import alpaca
 
@@ -222,15 +229,31 @@ def _write_option_chain_cache(
     })
 
 
-def _fetch_route_option_chain(symbol: str, requested_right: str) -> dict[str, Any] | None:
+def _route_strikes_per_side(expiry_mode: str) -> int:
+    mode = options_overlay.normalize_expiry_mode(expiry_mode)
+    return (
+        ROUTE_CHAIN_STRIKES_NEAREST
+        if mode == "nearest"
+        else ROUTE_CHAIN_STRIKES_PER_SIDE
+    )
+
+
+def _fetch_route_option_chain(
+    symbol: str,
+    requested_right: str,
+    *,
+    target_dte: int,
+    expiry_mode: str = "monthly",
+) -> dict[str, Any] | None:
     if requested_right:
         return fetch_option_chain(
             symbol,
             max_expiries=ROUTE_CHAIN_MAX_EXPIRIES,
-            strikes_per_side=ROUTE_CHAIN_STRIKES_PER_SIDE,
+            strikes_per_side=_route_strikes_per_side(expiry_mode),
             rights=(requested_right,),
+            target_dte=target_dte,
         )
-    return fetch_option_chain(symbol)
+    return fetch_option_chain(symbol, target_dte=target_dte)
 
 
 def _serve_cached_ibkr_chain(
@@ -281,6 +304,7 @@ def cached_option_chain(
     force_quotes: bool = False,
     force_refresh: bool = False,
     right: str | None = None,
+    expiry_mode: str = "monthly",
 ) -> dict[str, Any] | None:
     """Cached provider-selected option chain for a canonical ticker.
 
@@ -290,20 +314,30 @@ def cached_option_chain(
 
     ``force_refresh`` attempts a full provider rebuild (used when the option
     route table is opened). On failure, a coherent cache entry is returned.
+
+    ``expiry_mode`` selects month/expiry targeting and a separate cache file so
+    monthly and nearest-weekly ladders do not clobber each other.
     """
     requested_right = str(right or "").strip().upper()
     if requested_right not in {"", "C", "P"}:
         raise ValueError("right must be C or P")
+    mode = options_overlay.normalize_expiry_mode(expiry_mode)
+    target_dte = options_overlay.expiry_target_dte(mode)
     directory = cache_dir or OPT_CACHE_DIR
     safe = "".join(ch for ch in symbol.upper() if ch.isalnum() or ch in "-._=")
-    suffix = f"-route-{requested_right.lower()}" if requested_right else ""
+    if requested_right:
+        suffix = f"-route-{requested_right.lower()}-{mode}"
+    else:
+        suffix = f"-{mode}" if mode != "monthly" else ""
     path = directory / f"{safe}{suffix}.json"
     cached = store.load(path)
     cached_chain = cached.get("chain") if isinstance(cached, dict) else None
 
     if force_refresh and session_ready():
         try:
-            chain = _fetch_route_option_chain(symbol, requested_right)
+            chain = _fetch_route_option_chain(
+                symbol, requested_right, target_dte=target_dte, expiry_mode=mode,
+            )
         except Exception:  # noqa: BLE001 -- fall back to coherent cache below
             chain = None
         if (
@@ -326,10 +360,7 @@ def cached_option_chain(
                 )
                 if fallback is not None:
                     return fallback
-            elif timeutil.cache_fresh(
-                cached.get("fetched_at"), FALLBACK_CACHE_TTL_SECONDS,
-            ):
-                return cached_chain
+            # Connected: never revive Alpaca/Yahoo disk leftovers.
         return chain if isinstance(chain, dict) else None
 
     if isinstance(cached, dict) and isinstance(cached_chain, dict):
@@ -343,8 +374,13 @@ def cached_option_chain(
             )
             if served is not None:
                 return served
-        elif timeutil.cache_fresh(cached.get("fetched_at"), FALLBACK_CACHE_TTL_SECONDS):
+        elif (
+            not session_ready()
+            and timeutil.cache_fresh(cached.get("fetched_at"), FALLBACK_CACHE_TTL_SECONDS)
+        ):
             return cached_chain
-    chain = _fetch_route_option_chain(symbol, requested_right)
+    chain = _fetch_route_option_chain(
+        symbol, requested_right, target_dte=target_dte, expiry_mode=mode,
+    )
     _write_option_chain_cache(path, symbol, chain)
     return chain

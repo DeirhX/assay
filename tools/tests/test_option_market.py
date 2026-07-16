@@ -74,43 +74,63 @@ class ChainSelection(unittest.TestCase):
         alpaca_fn.assert_called_once()
         yahoo_fn.assert_not_called()
 
-    def test_falls_through_provider_misses_to_yahoo(self):
+    def test_connected_ibkr_miss_does_not_fall_back(self):
         with mock.patch.object(option_market, "session_ready", return_value=True), \
                 mock.patch.object(ibkr_trade, "option_chain", return_value=None), \
+                mock.patch.object(alpaca, "enabled", return_value=True), \
+                mock.patch.object(alpaca, "option_chain",
+                                  return_value=_chain("alpaca")) as alpaca_fn, \
+                mock.patch.object(yahoo, "option_chain",
+                                  return_value=_chain("yahoo")) as yahoo_fn:
+            out = option_market.fetch_option_chain("NVDA")
+        self.assertIsNone(out)
+        alpaca_fn.assert_not_called()
+        yahoo_fn.assert_not_called()
+
+    def test_connected_ibkr_error_does_not_fall_back(self):
+        with mock.patch.object(option_market, "session_ready", return_value=True), \
+                mock.patch.object(ibkr_trade, "option_chain",
+                                  side_effect=RuntimeError("gateway hiccup")), \
+                mock.patch.object(alpaca, "enabled", return_value=True), \
+                mock.patch.object(alpaca, "option_chain",
+                                  return_value=_chain("alpaca")) as alpaca_fn, \
+                mock.patch.object(yahoo, "option_chain",
+                                  return_value=_chain("yahoo")) as yahoo_fn:
+            out = option_market.fetch_option_chain("NVDA")
+        self.assertIsNone(out)
+        alpaca_fn.assert_not_called()
+        yahoo_fn.assert_not_called()
+
+    def test_disconnected_falls_through_provider_misses_to_yahoo(self):
+        with mock.patch.object(option_market, "session_ready", return_value=False), \
+                mock.patch.object(ibkr_trade, "option_chain") as ibkr_fn, \
                 mock.patch.object(alpaca, "enabled", return_value=True), \
                 mock.patch.object(alpaca, "option_chain", return_value=None), \
                 mock.patch.object(yahoo, "option_chain",
                                   return_value=_chain("yahoo")) as yahoo_fn:
             out = option_market.fetch_option_chain("NVDA")
         self.assertEqual(out["source"], "yahoo")
+        ibkr_fn.assert_not_called()
         yahoo_fn.assert_called_once()
-
-    def test_ibkr_error_falls_through_to_yahoo(self):
-        with mock.patch.object(option_market, "session_ready", return_value=True), \
-                mock.patch.object(ibkr_trade, "option_chain",
-                                  side_effect=RuntimeError("gateway down")), \
-                mock.patch.object(alpaca, "enabled", return_value=False), \
-                mock.patch.object(yahoo, "option_chain",
-                                  return_value=_chain("yahoo")):
-            out = option_market.fetch_option_chain("NVDA")
-        self.assertEqual(out["source"], "yahoo")
 
     def test_ibkr_budget_is_passed_as_cooperative_deadline(self):
         seen: dict[str, float] = {}
 
-        def bounded_chain(_symbol, *, deadline_monotonic):
-            seen["deadline"] = deadline_monotonic
+        def bounded_chain(_symbol, **kwargs):
+            seen["deadline"] = kwargs.get("deadline_monotonic")
             return None
 
         with mock.patch.object(option_market, "session_ready", return_value=True), \
                 mock.patch.object(ibkr_trade, "option_chain", side_effect=bounded_chain), \
-                mock.patch.object(alpaca, "enabled", return_value=False), \
-                mock.patch.object(yahoo, "option_chain", return_value=_chain("yahoo")), \
+                mock.patch.object(alpaca, "option_chain") as alpaca_fn, \
+                mock.patch.object(yahoo, "option_chain") as yahoo_fn, \
                 mock.patch.object(option_market, "IBKR_CHAIN_BUDGET_SECONDS", 0.05):
             started = time.perf_counter()
             out = option_market.fetch_option_chain("NVDA")
             elapsed = time.perf_counter() - started
-        self.assertEqual(out["source"], "yahoo")
+        self.assertIsNone(out)
+        alpaca_fn.assert_not_called()
+        yahoo_fn.assert_not_called()
         self.assertLess(elapsed, 1.0)
         self.assertGreaterEqual(seen["deadline"], started + 0.04)
 
@@ -126,7 +146,7 @@ class MarketCaches(unittest.TestCase):
                 second = option_market.cached_option_chain("NVDA", cache_dir=cache_dir)
         self.assertEqual(first["source"], "ibkr")
         self.assertEqual(second["source"], "ibkr")
-        fetch.assert_called_once_with("NVDA")
+        fetch.assert_called_once_with("NVDA", target_dte=37)
 
     def test_directional_route_chain_has_a_small_separate_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +160,7 @@ class MarketCaches(unittest.TestCase):
                 second = option_market.cached_option_chain(
                     "NVDA", cache_dir=cache_dir, right="P",
                 )
-                cache_exists = (cache_dir / "NVDA-route-p.json").exists()
+                cache_exists = (cache_dir / "NVDA-route-p-monthly.json").exists()
         self.assertEqual(first, second)
         self.assertTrue(cache_exists)
         fetch.assert_called_once_with(
@@ -148,6 +168,7 @@ class MarketCaches(unittest.TestCase):
             max_expiries=option_market.ROUTE_CHAIN_MAX_EXPIRIES,
             strikes_per_side=option_market.ROUTE_CHAIN_STRIKES_PER_SIDE,
             rights=("P",),
+            target_dte=37,
         )
 
     def test_fallback_chain_uses_short_cache_before_retrying_ibkr(self):
@@ -164,7 +185,7 @@ class MarketCaches(unittest.TestCase):
                     ) as fetch:
                 out = option_market.cached_option_chain("NVDA", cache_dir=cache_dir)
         self.assertEqual(out["source"], "ibkr")
-        fetch.assert_called_once_with("NVDA")
+        fetch.assert_called_once_with("NVDA", target_dte=37)
 
     def test_stale_ibkr_quotes_refresh_without_rebuilding_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -205,7 +226,7 @@ class MarketCaches(unittest.TestCase):
                     "puts": [{"strike": 93.0, "conid": 1}],
                 }],
             }
-            store.write_json(cache_dir / "NVDA-route-p.json", {
+            store.write_json(cache_dir / "NVDA-route-p-monthly.json", {
                 "symbol": "NVDA",
                 "fetched_at": now,
                 "reference_fetched_at": now,
@@ -228,6 +249,29 @@ class MarketCaches(unittest.TestCase):
                 )
         self.assertEqual(out["expiries"][0]["puts"][0]["strike"], 90.0)
         fetch.assert_called_once()
+        self.assertEqual(fetch.call_args.kwargs.get("target_dte"), 37)
+
+    def test_nearest_mode_uses_separate_cache_and_target_dte(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            with mock.patch.object(option_market, "session_ready", return_value=True), \
+                    mock.patch.object(
+                        option_market, "fetch_option_chain", return_value=_chain("ibkr"),
+                    ) as fetch:
+                option_market.cached_option_chain(
+                    "NVDA",
+                    cache_dir=cache_dir,
+                    right="P",
+                    force_refresh=True,
+                    expiry_mode="nearest",
+                )
+            self.assertTrue((cache_dir / "NVDA-route-p-nearest.json").exists())
+            self.assertFalse((cache_dir / "NVDA-route-p-monthly.json").exists())
+            self.assertEqual(fetch.call_args.kwargs.get("target_dte"), 7)
+            self.assertEqual(
+                fetch.call_args.kwargs.get("strikes_per_side"),
+                option_market.ROUTE_CHAIN_STRIKES_NEAREST,
+            )
 
     def test_force_refresh_falls_back_to_cache_when_live_fetch_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -243,7 +287,7 @@ class MarketCaches(unittest.TestCase):
                     "puts": [{"strike": 93.0, "conid": 1}],
                 }],
             }
-            store.write_json(cache_dir / "NVDA-route-p.json", {
+            store.write_json(cache_dir / "NVDA-route-p-monthly.json", {
                 "symbol": "NVDA",
                 "fetched_at": now,
                 "reference_fetched_at": now,
@@ -263,11 +307,33 @@ class MarketCaches(unittest.TestCase):
         self.assertEqual(out["expiries"][0]["puts"][0]["strike"], 93.0)
         fetch.assert_called_once()
 
+    def test_connected_refuses_non_ibkr_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            store.write_json(cache_dir / "ENTG-route-p-nearest.json", {
+                "symbol": "ENTG",
+                "fetched_at": timeutil.now_iso(),
+                "chain": _chain("alpaca"),
+            })
+            with mock.patch.object(option_market, "session_ready", return_value=True), \
+                    mock.patch.object(
+                        option_market, "fetch_option_chain", return_value=None,
+                    ) as fetch:
+                out = option_market.cached_option_chain(
+                    "ENTG",
+                    cache_dir=cache_dir,
+                    right="P",
+                    force_refresh=True,
+                    expiry_mode="nearest",
+                )
+        self.assertIsNone(out)
+        fetch.assert_called_once()
+
     def test_incoherent_ibkr_put_cache_is_rebuilt(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)
             now = timeutil.now_iso()
-            store.write_json(cache_dir / "ADI-route-p.json", {
+            store.write_json(cache_dir / "ADI-route-p-monthly.json", {
                 "symbol": "ADI",
                 "fetched_at": now,
                 "reference_fetched_at": now,

@@ -845,6 +845,8 @@ export interface RebalanceOptionRung extends ExitQuoteFields {
   estimate: boolean;
 }
 
+export type OptionExpiryMode = "monthly" | "nearest";
+
 export interface RebalanceRouteResponse {
   symbol: string;
   delta_czk: number;
@@ -853,6 +855,7 @@ export interface RebalanceRouteResponse {
   underlying?: number | null;
   currency?: string | null;
   fx_to_base: number;
+  expiry_mode?: OptionExpiryMode;
   source: string;
   direct: {
     kind: "buy_shares" | "sell_shares";

@@ -1426,6 +1426,40 @@ class OptionChain(unittest.TestCase):
         ]
         self.assertGreater(len(info_endpoints), 4)
 
+    def test_nearest_target_backfills_soonest_selected_expiry(self):
+        jul17 = "20260717"
+        jul24 = "20260724"
+        gw = _FakeGateway(
+            spot="100.0",
+            strikes={
+                "call": [105],
+                "put": [90, 92, 93, 94, 95],
+            },
+            maturities=[jul17, jul24],
+            maturities_by_strike={
+                95.0: [jul17, jul24],
+                94.0: [jul17],
+                93.0: [jul17],
+                92.0: [jul17],
+                90.0: [jul17, jul24],
+            },
+        )
+        with mock.patch.object(ibt, "_request", gw):
+            chain = ibt.option_chain(
+                "NVDA",
+                as_of=dt.date(2026, 7, 16),
+                max_expiries=2,
+                strikes_per_side=4,
+                rights=("P",),
+                target_dte=7,
+            )
+
+        soonest = next(
+            expiry for expiry in chain["expiries"]
+            if expiry["expiry"] == "2026-07-17"
+        )
+        self.assertGreaterEqual(len(soonest["puts"]), 4)
+
     def test_preserves_weekly_expiries_and_drops_expired_rows(self):
         gw = _FakeGateway(
             months="JUL26",

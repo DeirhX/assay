@@ -139,7 +139,9 @@ def test_route_fetches_only_the_option_side_needed_for_its_direction():
     ), mock.patch.object(trade_service, "load_basket", return_value=[]):
         rebalance_routes.build_route(_holdings(), "NVDA", 230_000, now=NOW)
 
-    chain.assert_called_once_with("NVDA", right="P", force_refresh=True)
+    chain.assert_called_once_with(
+        "NVDA", right="P", force_refresh=True, expiry_mode="monthly",
+    )
 
 
 @mock.patch.object(trade_service, "load_basket", return_value=[])
@@ -356,9 +358,51 @@ def test_route_table_access_requests_live_ibkr_refresh():
     ), mock.patch.object(trade_service, "load_basket", return_value=[]):
         route = rebalance_routes.build_route(_holdings(), "ADI", 230_000, now=NOW)
 
-    chain.assert_called_once_with("ADI", right="P", force_refresh=True)
+    chain.assert_called_once_with(
+        "ADI", right="P", force_refresh=True, expiry_mode="monthly",
+    )
+    assert route["expiry_mode"] == "monthly"
     assert route["planned_shares"] == 100
     assert route["option"]["eligible"] is True
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_nearest_expiry_mode_picks_soonest_otm_put(_basket):
+    chain = {
+        "source": "ibkr",
+        "currency": "USD",
+        "underlying_price": 100.0,
+        "quote_timestamp": NOW.isoformat(),
+        "expiries": [
+            {
+                "expiry": "2026-07-10",
+                "calls": [],
+                "puts": [{
+                    "strike": 93.0, "bid": 1.5, "ask": 1.7, "last": 1.6,
+                    "conid": 700, "delta": -0.3, "open_interest": 500, "volume": 40,
+                }],
+            },
+            {
+                "expiry": "2026-08-07",
+                "calls": [],
+                "puts": [{
+                    "strike": 93.0, "bid": 1.8, "ask": 2.0, "last": 1.9,
+                    "conid": 556, "delta": -0.25, "open_interest": 500, "volume": 50,
+                }],
+            },
+        ],
+    }
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={"available_cash_czk": 1_000_000},
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=False):
+        route = rebalance_routes.build_route(
+            _holdings(), "NVDA", 230_000, chain=chain, now=NOW, expiry_mode="nearest",
+        )
+    assert route["expiry_mode"] == "nearest"
+    assert route["ladder"][0]["expiry"] == "2026-07-10"
+    assert route["ladder"][0]["conid"] == 700
 
 
 def test_route_capacity_reserves_working_puts_and_unrelated_staged_buys():

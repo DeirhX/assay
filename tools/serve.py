@@ -644,9 +644,12 @@ class Handler(BaseHTTPRequestHandler):
         if err := _holdings_prereq_error(holdings):
             return self._send_error_json(404, err)
         symbol = str((query.get("symbol") or [""])[0]).strip()
+        expiry_mode = str((query.get("expiry_mode") or ["monthly"])[0]).strip()
         try:
             delta_czk = float((query.get("delta_czk") or [""])[0])
-            route = rebalance_routes.build_route(holdings, symbol, delta_czk)
+            route = rebalance_routes.build_route(
+                holdings, symbol, delta_czk, expiry_mode=expiry_mode,
+            )
         except (TypeError, ValueError) as exc:
             return self._send_error_json(400, str(exc))
         return self._send_json(route)

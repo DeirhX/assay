@@ -126,6 +126,7 @@ def build_route(
     *,
     chain: Any = _UNSET,
     now: dt.datetime | None = None,
+    expiry_mode: str = "monthly",
 ) -> dict[str, Any]:
     """Build stock and conditional option alternatives for one exact trade."""
     sym = portfolio.clean_symbol(symbol)
@@ -135,6 +136,7 @@ def build_route(
         raise ValueError("delta_czk must be a number") from None
     if not sym or abs(delta) < 1:
         raise ValueError("symbol and a non-zero delta_czk are required")
+    mode = options_overlay.normalize_expiry_mode(expiry_mode)
 
     current = now or dt.datetime.now(dt.timezone.utc)
     position = _position(holdings, sym)
@@ -171,6 +173,7 @@ def build_route(
             sym,
             right=option_right,
             force_refresh=True,
+            expiry_mode=mode,
         ) if chain is _UNSET
         else chain
     )
@@ -248,6 +251,7 @@ def build_route(
         ladder = options_overlay.covered_call_ladder(
             spot, options_overlay.DEFAULT_VOL, use_rate, as_of, chain_data,
             contracts=contracts, fx=fx, guard_after=None, allow_synthetic=False,
+            expiry_mode=mode,
         )
         option_kind = "covered_call"
         option_label = "Sell covered call"
@@ -257,6 +261,7 @@ def build_route(
         ladder = options_overlay.cash_secured_put_ladder(
             spot, options_overlay.DEFAULT_VOL, use_rate, as_of, chain_data,
             contracts=contracts, fx=fx, allow_synthetic=False,
+            expiry_mode=mode,
         )
         option_kind = "cash_secured_put"
         option_label = "Sell put (margin)" if margin_enabled else "Sell cash-secured put"
@@ -332,6 +337,7 @@ def build_route(
         "underlying": spot or None,
         "currency": currency or None,
         "fx_to_base": fx,
+        "expiry_mode": mode,
         "source": str((chain_data or {}).get("source") or "black_scholes"),
         "direct": {
             "kind": direct_kind,

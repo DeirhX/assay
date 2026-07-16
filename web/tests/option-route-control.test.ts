@@ -88,6 +88,29 @@ describe("createOptionRouteControl", () => {
     expect(control.detail.textContent).not.toContain("margin-backed short put");
   });
 
+  it("persists expiry mode and reloads with expiry_mode query", async () => {
+    localStorage.removeItem("assay.optionExpiryMode");
+    const monthly = rebalanceRoute("increase");
+    monthly.expiry_mode = "monthly";
+    const nearest = rebalanceRoute("increase");
+    nearest.expiry_mode = "nearest";
+    nearest.ladder[0] = { ...nearest.ladder[0], expiry: "2026-07-10", strike: 95 };
+    apiMock.mockResolvedValueOnce(monthly).mockResolvedValueOnce(nearest);
+    const control = createOptionRouteControl("NVDA", 230_000, new Map());
+    control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() => expect(control.detail.querySelector(".reb-option-contract")).toBeTruthy());
+    expect(String(apiMock.mock.calls[0]?.[0])).toContain("expiry_mode=monthly");
+    const nearestBtn = [...control.detail.querySelectorAll("button")]
+      .find((node) => node.textContent === "Nearest")!;
+    nearestBtn.click();
+    await vi.waitFor(() => expect(localStorage.getItem("assay.optionExpiryMode")).toBe("nearest"));
+    await vi.waitFor(() => {
+      const last = apiMock.mock.calls[apiMock.mock.calls.length - 1];
+      expect(String(last?.[0])).toContain("expiry_mode=nearest");
+    });
+    await vi.waitFor(() => expect(control.detail.textContent).toContain("2026-07-10"));
+  });
+
   it("calls onExitNavigate from compact select and exit button", () => {
     const onExitNavigate = vi.fn();
     const control = createOptionRouteControl("NVDA", -100_000, new Map(), { onExitNavigate });

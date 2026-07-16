@@ -3193,16 +3193,34 @@ a.tlink:hover { border-bottom-style: solid; }
   padding: 14px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
   border-radius: 10px; background: color-mix(in srgb, var(--panel-2) 82%, var(--panel));
 }
+.reb-route-detail-chrome {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 0 0 12px;
+}
 .reb-route-detail-close {
-  position: absolute; top: 12px; right: 12px; z-index: 2;
-  min-height: 28px; padding: 3px 10px; font-size: 10.5px;
+  flex: 0 0 auto; min-height: 28px; padding: 3px 10px; font-size: 10.5px;
 }
 .reb-route-row-detail[hidden] { display: none; }
 .reb-mem-plan .reb-route-inline { flex: 1 1 100%; }
 .reb-mem-row > .reb-route-row-detail { grid-column: 1 / -1; }
+.reb-expiry-mode {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0;
+}
+.reb-expiry-mode-label {
+  color: var(--muted); font-size: 9px; font-weight: 750;
+  letter-spacing: .04em; text-transform: uppercase;
+}
+.reb-expiry-mode-btn {
+  min-height: 26px; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 750;
+}
+.reb-expiry-mode-btn.active {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--accent);
+}
 .reb-route-option-summary {
   display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
-  min-height: 36px; margin: 0 76px 12px 0;
+  min-height: 36px; margin: 0 0 12px;
 }
 .reb-route-option-heading { display: flex; flex-direction: column; gap: 3px; }
 .reb-route-option-heading strong { color: var(--text); font-size: 14px; }
@@ -3223,7 +3241,7 @@ a.tlink:hover { border-bottom-style: solid; }
 }
 .reb-route-option-facts .margin b { color: var(--good); }
 .reb-route-unavailable {
-  display: grid; gap: 6px; margin-right: 74px; padding: 12px;
+  display: grid; gap: 6px; padding: 12px;
   border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
   border-radius: 8px; background: color-mix(in srgb, var(--warn) 5%, var(--panel));
 }
@@ -3304,7 +3322,6 @@ a.tlink:hover { border-bottom-style: solid; }
   .reb-option-market-state { grid-column: 1 / -1; }
   .reb-option-backing { grid-template-columns: auto auto; }
   .reb-option-backing small { grid-column: 1 / -1; }
-  .reb-route-unavailable { margin-right: 0; padding-top: 44px; }
 }
 .reb-queue-mode {
   display: flex; flex: 1 1 100%; gap: 8px; flex-wrap: wrap;

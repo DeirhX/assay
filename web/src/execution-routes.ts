@@ -1,8 +1,10 @@
 import { api } from "./core";
 import type {
-  RebalanceExecutionRoute, RebalanceOptionRung, RebalanceRouteResponse,
-  RebalanceRouteSelection,
+  OptionExpiryMode, RebalanceExecutionRoute, RebalanceOptionRung,
+  RebalanceRouteResponse, RebalanceRouteSelection,
 } from "./api-types";
+
+export type { OptionExpiryMode };
 
 export function directRouteFor(deltaCzk: number): RebalanceExecutionRoute {
   return deltaCzk >= 0 ? "buy_shares" : "sell_shares";
@@ -15,8 +17,13 @@ export function optionRouteFor(deltaCzk: number): RebalanceExecutionRoute {
 export async function fetchRebalanceRoute(
   symbol: string,
   deltaCzk: number,
+  expiryMode: OptionExpiryMode = "monthly",
 ): Promise<RebalanceRouteResponse> {
-  const query = new URLSearchParams({ symbol, delta_czk: String(deltaCzk) });
+  const query = new URLSearchParams({
+    symbol,
+    delta_czk: String(deltaCzk),
+    expiry_mode: expiryMode,
+  });
   return api<RebalanceRouteResponse>(
     `/api/rebalance/route?${query.toString()}`,
     "GET",

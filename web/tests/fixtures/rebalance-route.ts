@@ -14,6 +14,7 @@ export function rebalanceRoute(
     underlying: 100,
     currency: "USD",
     fx_to_base: 23,
+    expiry_mode: "monthly",
     source: stageable ? "ibkr" : "yahoo",
     direct: {
       kind: put ? "buy_shares" : "sell_shares",

@@ -50,8 +50,8 @@ def test_covered_call_from_live_chain():
     assert cc["source"] == "yahoo"
     assert cc["contracts"] == 10                 # 1000 shares / 100
     assert cc["strike"] == 105.0                 # first strike >= 5% OTM
-    assert cc["premium"] == 2.2                  # mid of 2.0/2.4
-    assert cc["effective_exit"] == 107.2
+    assert cc["premium"] == 2.0                  # short credit = bid, not mid of 2.0/2.4
+    assert cc["effective_exit"] == 107.0
     assert cc["premium_yield_annual_pct"] and cc["premium_yield_annual_pct"] > 0
     assert cc["estimate"] is False
 
@@ -109,8 +109,86 @@ def test_protective_put_appears_only_when_deferring():
 def test_premium_converted_to_base_currency():
     out = ov.suggest_for_position("TEST", _pos(fx=23.0), _no_defer(), as_of=AS_OF, chain=_chain(), rate=0.04)
     cc = out["covered_call"]
-    # 2.2 premium * 100 * 10 contracts * 23 fx = 50,600.
-    assert cc["premium_czk"] == 50_600.0
+    # 2.0 bid * 100 * 10 contracts * 23 fx = 46,000.
+    assert cc["premium_czk"] == 46_000.0
+
+
+def test_pick_expiry_nearest_prefers_soonest_in_band():
+    expiries = [
+        {
+            "expiry": "2026-07-10",
+            "puts": [{"strike": 93.0}] * 4,
+        },
+        {
+            "expiry": "2026-08-07",
+            "puts": [{"strike": 93.0}] * 4,
+        },
+    ]
+    nearest = ov._pick_expiry(
+        expiries, AS_OF.date(), dte_min=1, dte_max=21, side="puts", prefer_soonest=True,
+    )
+    monthly = ov._pick_expiry(
+        expiries, AS_OF.date(), dte_min=30, dte_max=45, side="puts", prefer_soonest=False,
+    )
+    assert nearest["expiry"] == "2026-07-10"
+    assert monthly["expiry"] == "2026-08-07"
+
+
+def test_cash_secured_put_ladder_nearest_mode_uses_near_expiry():
+    chain = {
+        "source": "ibkr",
+        "underlying_price": 100.0,
+        "expiries": [
+            {
+                "expiry": "2026-07-10",
+                "puts": [{
+                    "strike": 93.0, "bid": 1.5, "ask": 1.7, "conid": 1,
+                    "delta": -0.3, "open_interest": 200, "volume": 20,
+                }],
+            },
+            {
+                "expiry": "2026-08-07",
+                "puts": [{
+                    "strike": 93.0, "bid": 1.8, "ask": 2.0, "conid": 2,
+                    "delta": -0.25, "open_interest": 200, "volume": 20,
+                }],
+            },
+        ],
+    }
+    ladder = ov.cash_secured_put_ladder(
+        100.0, 0.30, 0.04, AS_OF.date(), chain,
+        contracts=1, fx=23.0, allow_synthetic=False, expiry_mode="nearest",
+    )
+    assert ladder[0]["expiry"] == "2026-07-10"
+
+
+def test_short_credit_uses_bid_not_mid():
+    assert ov._short_credit({"bid": 1.5, "ask": 1.7, "last": 1.6}) == 1.5
+    assert ov._short_credit({"bid": None, "ask": 2.15, "last": None}) == 2.15
+    assert ov._long_debit({"bid": 1.5, "ask": 1.7, "last": 1.6}) == 1.7
+
+
+def test_cash_secured_put_ladder_keeps_ask_only_nearest_range():
+    """Weeklies often quote ask-only; that must not collapse the ladder to one rung."""
+    chain = {
+        "source": "ibkr",
+        "underlying_price": 380.0,
+        "expiries": [{
+            "expiry": "2026-07-10",
+            "puts": [
+                {"strike": 360.0, "bid": None, "ask": 3.4, "conid": 1, "delta": -0.25},
+                {"strike": 350.0, "bid": None, "ask": 2.1, "conid": 2, "delta": -0.18},
+                {"strike": 337.5, "bid": None, "ask": 1.2, "conid": 3, "delta": -0.12},
+                {"strike": 310.0, "bid": None, "ask": 0.35, "conid": 4, "delta": -0.05},
+            ],
+        }],
+    }
+    ladder = ov.cash_secured_put_ladder(
+        380.0, 0.30, 0.04, AS_OF.date(), chain,
+        contracts=1, fx=21.0, allow_synthetic=False, expiry_mode="nearest",
+    )
+    assert [rung["strike"] for rung in ladder] == [360.0, 350.0, 337.5, 310.0]
+    assert all(rung["premium"] > 0 for rung in ladder)
 
 
 def test_cash_secured_put_ladder_refuses_synthetic_when_disallowed():
@@ -138,8 +216,8 @@ def test_cash_secured_put_ladder_ranks_effective_entry_and_secured_cash():
     assert len(ladder) == 1
     rung = ladder[0]
     assert rung["strike"] == 93.0
-    assert rung["premium"] == 2.0
-    assert rung["effective_entry"] == 91.0
+    assert rung["premium"] == 1.8  # bid; mid/last would be 2.0
+    assert rung["effective_entry"] == 91.2
     assert rung["cash_secured_czk"] == 427_800.0
     assert rung["assignment_prob_pct"] == 28.0
     assert rung["premium_yield_annual_pct"] > 0
