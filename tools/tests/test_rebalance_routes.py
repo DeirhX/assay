@@ -106,7 +106,9 @@ def test_sub_contract_trade_skips_chain_session_and_rate_fetches():
             "held_short_put_collateral_czk": 0,
             "available_cash_czk": 1_000_000,
         },
-    ), mock.patch.object(trade_service, "margin_account_enabled") as margin:
+    ), mock.patch.object(
+        trade_service, "margin_account_enabled", return_value=False,
+    ) as margin:
         route = rebalance_routes.build_route(
             _holdings(), "NVDA", 100_000, now=NOW,
         )
@@ -114,10 +116,11 @@ def test_sub_contract_trade_skips_chain_session_and_rate_fetches():
     assert route["planned_shares"] == 43
     assert route["option"]["contracts"] == 0
     assert "43-share trade" in route["option"]["reasons"][0]
+    assert route["option"]["collateral_mode"] == "cash"
     chain.assert_not_called()
     session.assert_not_called()
     rate.assert_not_called()
-    margin.assert_not_called()
+    margin.assert_called_once_with()
 
 
 def test_route_fetches_only_the_option_side_needed_for_its_direction():
@@ -136,7 +139,7 @@ def test_route_fetches_only_the_option_side_needed_for_its_direction():
     ), mock.patch.object(trade_service, "load_basket", return_value=[]):
         rebalance_routes.build_route(_holdings(), "NVDA", 230_000, now=NOW)
 
-    chain.assert_called_once_with("NVDA", right="P")
+    chain.assert_called_once_with("NVDA", right="P", force_refresh=True)
 
 
 @mock.patch.object(trade_service, "load_basket", return_value=[])
@@ -184,6 +187,38 @@ def test_fallback_ladder_is_visible_but_not_stageable(_basket):
     assert route["option"]["eligible"] is True
     assert route["option"]["stageable"] is False
     assert "exact IBKR" in route["option"]["reasons"][0]
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_rebalance_put_route_refuses_synthetic_strikes(_basket):
+    """Wrong-side IBKR puts must not be replaced with Black-Scholes inventions."""
+    chain = {
+        "source": "ibkr",
+        "currency": "USD",
+        "underlying_price": 100.0,
+        "quote_timestamp": NOW.isoformat(),
+        "expiries": [{
+            "expiry": "2026-08-07",
+            "calls": [],
+            "puts": [
+                {"strike": 150.0, "conid": 1, "bid": 50.0, "ask": 52.0},
+                {"strike": 160.0, "conid": 2, "bid": 60.0, "ask": 62.0},
+            ],
+        }],
+    }
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={"available_cash_czk": 5_000_000},
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+        route = rebalance_routes.build_route(
+            _holdings(), "NVDA", 230_000, chain=chain, now=NOW,
+        )
+    assert route["planned_shares"] == 100
+    assert route["option"]["eligible"] is False
+    assert route["ladder"] == []
+    assert any("IBKR listed no usable OTM" in reason
+               for reason in route["option"]["reasons"])
 
 
 @mock.patch.object(trade_service, "load_basket", return_value=[])
@@ -246,6 +281,84 @@ def test_margin_account_put_route_is_not_capped_by_snapshot_cash(_basket):
     assert route["option"]["collateral_mode"] == "margin"
     assert route["option"]["label"] == "Sell put (margin)"
     assert route["option"]["available_cash_czk"] is None
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_missing_mark_keeps_margin_label_and_explains_quote_gap(_basket):
+    """Unheld names with a quote-less chain must not masquerade as cash fails."""
+    chain = {
+        "source": "ibkr",
+        "currency": None,
+        "underlying_price": None,
+        "expiries": [],
+    }
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={
+            "cash_czk": 0,
+            "held_short_put_collateral_czk": 0,
+            "available_cash_czk": 0,
+        },
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+        route = rebalance_routes.build_route(
+            _holdings(), "ADI", 1_122_062, chain=chain, now=NOW,
+        )
+    assert route["planned_shares"] == 0
+    assert route["option"]["eligible"] is False
+    assert route["option"]["collateral_mode"] == "margin"
+    assert route["option"]["label"] == "Sell put (margin)"
+    assert any("underlying quote" in reason for reason in route["option"]["reasons"])
+    assert not any("cash-secured" in reason.lower() for reason in route["option"]["reasons"])
+
+
+@mock.patch.object(trade_service, "load_basket", return_value=[])
+def test_unheld_ibkr_chain_assumes_usd_fx_from_book(_basket):
+    chain = _chain()
+    chain["currency"] = None
+    with mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={"available_cash_czk": 5_000_000},
+    ), mock.patch.object(trade_service, "margin_account_enabled", return_value=True):
+        route = rebalance_routes.build_route(
+            _holdings(), "ADI", 230_000, chain=chain, now=NOW,
+        )
+    assert route["currency"] == "USD"
+    assert route["fx_to_base"] == 23.0
+    assert route["planned_shares"] == 100
+    assert route["option"]["contracts"] == 1
+    assert route["option"]["collateral_mode"] == "margin"
+
+
+def test_chain_spot_falls_back_to_bid_ask_mid():
+    assert rebalance_routes._chain_spot({
+        "underlying_bid": 99.0,
+        "underlying_ask": 101.0,
+    }) == 100.0
+
+
+def test_route_table_access_requests_live_ibkr_refresh():
+    warm = _chain()
+    warm["currency"] = None
+    with mock.patch.object(
+        rebalance_routes.option_market, "session_ready", return_value=True,
+    ), mock.patch.object(
+        rebalance_routes.option_market, "cached_option_chain", return_value=warm,
+    ) as chain, mock.patch.object(
+        rebalance_routes.option_market, "cached_risk_free_rate", return_value=0.04,
+    ), mock.patch.object(
+        trade_service,
+        "cash_secured_put_capacity",
+        return_value={"available_cash_czk": 5_000_000},
+    ), mock.patch.object(
+        trade_service, "margin_account_enabled", return_value=True,
+    ), mock.patch.object(trade_service, "load_basket", return_value=[]):
+        route = rebalance_routes.build_route(_holdings(), "ADI", 230_000, now=NOW)
+
+    chain.assert_called_once_with("ADI", right="P", force_refresh=True)
+    assert route["planned_shares"] == 100
+    assert route["option"]["eligible"] is True
 
 
 def test_route_capacity_reserves_working_puts_and_unrelated_staged_buys():

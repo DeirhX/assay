@@ -9,6 +9,16 @@ import {
 } from "./execution-routes";
 import { liquidityChipClass, quoteFreshnessLabel } from "./option-quote";
 
+/** True when the server refused a put for cash collateral, not mark/quote sizing. */
+export function isCashCapacityFailure(reasons: string[] | undefined): boolean {
+  const text = (reasons ?? []).join(" ").toLowerCase();
+  return (
+    text.includes("cash-secured put needs")
+    || text.includes("uncommitted snapshot cash")
+    || text.includes("no uncommitted snapshot cash")
+  );
+}
+
 // ---- shared route loading with stale-response cancellation -------------------
 
 export class OptionRouteLoader {
@@ -139,12 +149,18 @@ export function createOptionRouteControl(
     if (!route.option.eligible) {
       const rawLabel = route.option.label.replace(/^Sell\s+/i, "");
       const unavailableLabel = rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1);
+      // Only cash-capacity failures should push users to IBKR margin. Missing
+      // marks / quotes are a local sizing problem, not a collateral-mode choice.
+      const showMarginNextStep =
+        route.direction === "increase"
+        && route.option.collateral_mode !== "margin"
+        && isCashCapacityFailure(route.option.reasons);
       detail.innerHTML =
         `<div class="reb-route-unavailable">` +
           `<span class="reb-route-eyebrow">Option route unavailable</span>` +
           `<strong>${esc(unavailableLabel)} unavailable</strong>` +
           `<p>${esc(route.option.reasons.join(" · ") || "No suitable contract route.")}</p>` +
-        (route.direction === "increase" && route.option.collateral_mode !== "margin"
+        (showMarginNextStep
           ? `<div class="reb-route-unavailable-next"><b>Next:</b> choose Buy shares, ` +
             `or use IBKR directly for a margin-backed short put.</div>`
           : "") +

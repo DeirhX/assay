@@ -281,13 +281,18 @@ def _call_candidate(
 def covered_call_ladder(
     spot: float, vol: float, rate: float, as_of: dt.date, chain: dict[str, Any] | None,
     *, contracts: int, fx: float, guard_after: dt.date | None,
+    allow_synthetic: bool = True,
 ) -> list[dict[str, Any]]:
     """Yield-ranked ladder of OTM covered-call strikes for the recommended expiry
     -- the tradeoff view: near-the-money rungs pay the fattest annualized yield but
     carry the highest assignment odds. Uses listed strikes when a chain resolves
     one, else models a ladder off spot. Ranked richest-yield first; each rung
     carries its own source/liquidity so a wide, illiquid quote is visibly demoted.
-    Empty when there's no whole contract to write."""
+    Empty when there's no whole contract to write.
+
+    ``allow_synthetic=False`` keeps execution UIs honest: no Black-Scholes
+    strike inventions when the chain has nothing stageable near the mark.
+    """
     if contracts < 1 or spot <= 0:
         return []
     otm = GUARD_CALL_OTM_PCT if guard_after else CALL_OTM_PCT
@@ -308,10 +313,14 @@ def covered_call_ladder(
             calls.sort(key=lambda c: c["strike"])
 
     if edate is None:
+        if not allow_synthetic:
+            return []
         # No chain (or no expiry after the tax guard): model an expiry + ladder.
         edate = (guard_after + dt.timedelta(days=14)) if guard_after else as_of + dt.timedelta(days=37)
         expiry_iso = edate.isoformat()
     if not calls:
+        if not allow_synthetic:
+            return []
         # Thin window or modeled path: synthesize evenly-spaced OTM strikes.
         calls = [{"strike": round(spot * (1.0 + otm + i * LADDER_STEP_PCT), 2)}
                  for i in range(LADDER_SIZE)]
@@ -380,9 +389,12 @@ def _put_entry_candidate(
 
 def cash_secured_put_ladder(
     spot: float, vol: float, rate: float, as_of: dt.date, chain: dict[str, Any] | None,
-    *, contracts: int, fx: float,
+    *, contracts: int, fx: float, allow_synthetic: bool = True,
 ) -> list[dict[str, Any]]:
-    """Yield-ranked OTM puts for a conditional, cash-secured stock entry."""
+    """Yield-ranked OTM puts for a conditional, cash-secured stock entry.
+
+    ``allow_synthetic=False`` refuses invented strikes (rebalance/execution path).
+    """
     if contracts < 1 or spot <= 0:
         return []
     cap_strike = spot * (1.0 - CSP_OTM_PCT)
@@ -405,9 +417,13 @@ def cash_secured_put_ladder(
             ]
             puts.sort(key=lambda p: p["strike"], reverse=True)
     if edate is None:
+        if not allow_synthetic:
+            return []
         edate = as_of + dt.timedelta(days=37)
         expiry_iso = edate.isoformat()
     if not puts:
+        if not allow_synthetic:
+            return []
         puts = [
             {"strike": round(spot * (1.0 - CSP_OTM_PCT - i * LADDER_STEP_PCT), 2)}
             for i in range(LADDER_SIZE)
