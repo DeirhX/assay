@@ -723,9 +723,14 @@ def _quote_contracts(
     return contracts
 
 
-def _prioritized_months(months: list[str], as_of: dt.date) -> list[str]:
-    """Listed months nearest the covered-call target date, rather than merely now."""
-    target = as_of + dt.timedelta(days=37)
+def _prioritized_months(
+    months: list[str],
+    as_of: dt.date,
+    *,
+    target_dte: int = 37,
+) -> list[str]:
+    """Listed months nearest the requested target DTE, rather than merely now."""
+    target = as_of + dt.timedelta(days=max(1, int(target_dte)))
     target_index = target.year * 12 + target.month
 
     def distance(token: str) -> tuple[int, int]:
@@ -797,6 +802,7 @@ def option_chain(
     strikes_per_side: int = 6,
     rights: tuple[str, ...] = ("C", "P"),
     as_of: dt.date | None = None,
+    target_dte: int = 37,
     deadline_monotonic: float | None = None,
 ) -> dict[str, Any] | None:
     """Yahoo-shaped option chain sourced from IBKR CPAPI, or None when the name
@@ -807,8 +813,9 @@ def option_chain(
     We therefore resolve a sampled OTM call ladder first, preserve all returned
     expiries, and reserve enough of the optional deadline for one bulk quote
     snapshot. ``rights`` lets direction-specific callers avoid resolving the
-    unused half of the chain. This produces executable contracts instead of
-    timing out while exhaustively resolving irrelevant contracts."""
+    unused half of the chain. ``target_dte`` steers month/expiry ranking
+    (monthly ~37, nearest-weekly ~7). This produces executable contracts instead
+    of timing out while exhaustively resolving irrelevant contracts."""
     sym = str(symbol or "").strip().upper()
     if not sym:
         return None
@@ -820,6 +827,7 @@ def option_chain(
     if not wanted_rights:
         return None
     today = as_of or dt.datetime.now(dt.timezone.utc).date()
+    use_target_dte = max(1, int(target_dte))
     conid, months = option_months(sym, timeout=_deadline_timeout(deadline_monotonic))
     if conid is None or not months:
         return None
@@ -841,7 +849,7 @@ def option_chain(
     groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
     strike_catalogs: dict[str, dict[str, list[float]]] = {}
     attempted: dict[tuple[str, str], set[float]] = {}
-    for month in _prioritized_months(months, today):
+    for month in _prioritized_months(months, today, target_dte=use_target_dte):
         if not _has_chain_budget(deadline_monotonic, _CHAIN_QUOTE_RESERVE_SECONDS):
             break
         strikes = option_strikes(
@@ -894,7 +902,7 @@ def option_chain(
     if not groups:
         return None
 
-    target_expiry = today + dt.timedelta(days=37)
+    target_expiry = today + dt.timedelta(days=use_target_dte)
     ranked_expiries = sorted(
         groups,
         key=lambda expiry: (
@@ -908,8 +916,17 @@ def option_chain(
     # a sparse sample can accidentally leave the best expiry with one contract.
     # Directional route chains adaptively probe nearby, untried strikes until
     # that chosen expiry has the requested ladder depth.
+    #
+    # Nearest-weekly mode (low target_dte) later picks the soonest in-band
+    # expiry, so backfill that date — not the one closest to the DTE midpoint.
+    # Otherwise the UI ladder starved on a thin front weekly while we densified
+    # a later expiry nobody shows.
     if len(wanted_rights) == 1 and selected_expiries:
-        primary_expiry = selected_expiries[0]
+        primary_expiry = (
+            min(selected_expiries)
+            if use_target_dte <= 14
+            else selected_expiries[0]
+        )
         primary_date = dt.date.fromisoformat(primary_expiry)
         right = next(iter(wanted_rights))
         side = "calls" if right == "C" else "puts"

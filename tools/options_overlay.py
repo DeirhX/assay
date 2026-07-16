@@ -42,12 +42,32 @@ _UNSET = object()  # "fetch the chain yourself"; None means "force the BS path".
 
 # Config defaults.
 COVERED_CALL_DTE = (30, 45)
+NEAREST_EXPIRY_DTE = (1, 21)
+MONTHLY_TARGET_DTE = 37
+NEAREST_TARGET_DTE = 7
+EXPIRY_MODES = frozenset({"monthly", "nearest"})
 CALL_OTM_PCT = 0.05        # baseline OTM cushion for a covered call
 GUARD_CALL_OTM_PCT = 0.15  # far-OTM cushion when guarding a near-exempt lot
 PUT_OTM_PCT = 0.07         # protective-put strike below the mark
 CSP_OTM_PCT = 0.05         # baseline discount for a cash-secured entry put
 DEFAULT_VOL = 0.35         # fallback annualized vol when no series is usable
 CONTRACT_SIZE = ibkr_trade.OPTION_MULTIPLIER
+
+
+def normalize_expiry_mode(raw: Any) -> str:
+    """``monthly`` (30–45 DTE) or ``nearest`` (soonest usable weekly)."""
+    mode = str(raw or "monthly").strip().lower()
+    if mode not in EXPIRY_MODES:
+        raise ValueError("expiry_mode must be 'monthly' or 'nearest'")
+    return mode
+
+
+def expiry_target_dte(mode: str) -> int:
+    return NEAREST_TARGET_DTE if normalize_expiry_mode(mode) == "nearest" else MONTHLY_TARGET_DTE
+
+
+def expiry_dte_band(mode: str) -> tuple[int, int]:
+    return NEAREST_EXPIRY_DTE if normalize_expiry_mode(mode) == "nearest" else COVERED_CALL_DTE
 
 # Covered-call strike ladder (the StrikePeek-style yield-vs-assignment view).
 LADDER_SIZE = 6            # OTM strikes to surface, cheapest cushion first
@@ -78,14 +98,27 @@ def _vol_from_series(series: list[dict[str, Any]] | None) -> tuple[float, bool]:
     return DEFAULT_VOL, True
 
 
-def _mid(contract: dict[str, Any]) -> float | None:
-    """Mid of bid/ask, falling back to last. None on a totally empty quote."""
-    bid, ask, last = contract.get("bid"), contract.get("ask"), contract.get("last")
-    if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and bid > 0 and ask > 0:
-        return (bid + ask) / 2.0
-    if isinstance(last, (int, float)) and last > 0:
-        return float(last)
+def _quote_side(contract: dict[str, Any], *keys: str) -> float | None:
+    """First positive numeric quote field among ``keys`` (e.g. bid, last, ask)."""
+    for key in keys:
+        value = contract.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
     return None
+
+
+def _short_credit(contract: dict[str, Any]) -> float | None:
+    """Premium credit for a short put/call: best bid, not mid.
+
+    Midpoint flatters yield. A marketable sell is paid the bid; last/ask are
+    fallbacks only when the bid is missing (common on thin weeklies).
+    """
+    return _quote_side(contract, "bid", "last", "ask")
+
+
+def _long_debit(contract: dict[str, Any]) -> float | None:
+    """Premium debit for a long put/call: best ask (offer), not mid."""
+    return _quote_side(contract, "ask", "last", "bid")
 
 
 def _chain_source(chain: dict[str, Any] | None) -> str:
@@ -237,20 +270,22 @@ def _call_candidate(
     contracts: int, fx: float,
 ) -> dict[str, Any] | None:
     """One covered-call ladder rung for a listed (or synthetic) call strike:
-    premium (chain mid, else Black-Scholes), annualized yield, assignment
-    probability (chain delta when present, else modeled), and a liquidity tag."""
+    premium (short credit = bid, else Black-Scholes), annualized yield,
+    assignment probability (chain delta when present, else modeled), and a
+    liquidity tag."""
     strike = call.get("strike")
     if not isinstance(strike, (int, float)) or strike <= 0:
         return None
     t_years = _years_between(edate, as_of)
     iv = call.get("implied_vol")
     use_vol = iv if isinstance(iv, (int, float)) and iv > 0 else vol
-    premium = _mid(call)
+    premium = _short_credit(call)
     source = chain_source if premium is not None else "black_scholes"
     if premium is None:
         premium = options_math.bs_price(spot, strike, t_years, use_vol, rate=rate, kind="call")
-    if premium is None or premium <= 0:
+    if premium is None or round(float(premium), 4) <= 0:
         return None
+    premium = round(float(premium), 4)
     raw_delta = call.get("delta")
     delta = (float(raw_delta) if isinstance(raw_delta, (int, float)) and 0.0 < abs(raw_delta) <= 1.0
              else options_math.bs_delta(spot, strike, t_years, use_vol, rate=rate, kind="call"))
@@ -260,7 +295,7 @@ def _call_candidate(
     estimate = source == "black_scholes"
     out = {
         "strike": round(float(strike), 2),
-        "premium": round(premium, 4),
+        "premium": premium,
         "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
         "effective_exit": round(strike + premium, 4),
         "moneyness_pct": round((strike / spot - 1.0) * 100.0, 2),
@@ -282,6 +317,7 @@ def covered_call_ladder(
     spot: float, vol: float, rate: float, as_of: dt.date, chain: dict[str, Any] | None,
     *, contracts: int, fx: float, guard_after: dt.date | None,
     allow_synthetic: bool = True,
+    expiry_mode: str = "monthly",
 ) -> list[dict[str, Any]]:
     """Yield-ranked ladder of OTM covered-call strikes for the recommended expiry
     -- the tradeoff view: near-the-money rungs pay the fattest annualized yield but
@@ -295,16 +331,21 @@ def covered_call_ladder(
     """
     if contracts < 1 or spot <= 0:
         return []
+    mode = normalize_expiry_mode(expiry_mode)
     otm = GUARD_CALL_OTM_PCT if guard_after else CALL_OTM_PCT
     floor_strike = spot * (1.0 + otm)
     chain_source = _chain_source(chain)
+    dte_min, dte_max = expiry_dte_band(mode)
 
     edate: dt.date | None = None
     expiry_iso: str | None = None
     calls: list[dict[str, Any]] = []
     if chain and chain.get("expiries"):
-        exp = _pick_expiry(chain["expiries"], as_of, dte_min=COVERED_CALL_DTE[0],
-                           dte_max=COVERED_CALL_DTE[1], after=guard_after, side="calls")
+        exp = _pick_expiry(
+            chain["expiries"], as_of,
+            dte_min=dte_min, dte_max=dte_max, after=guard_after, side="calls",
+            prefer_soonest=mode == "nearest",
+        )
         if exp:
             expiry_iso = exp["expiry"]
             edate = dt.date.fromisoformat(expiry_iso)
@@ -316,7 +357,10 @@ def covered_call_ladder(
         if not allow_synthetic:
             return []
         # No chain (or no expiry after the tax guard): model an expiry + ladder.
-        edate = (guard_after + dt.timedelta(days=14)) if guard_after else as_of + dt.timedelta(days=37)
+        edate = (
+            (guard_after + dt.timedelta(days=14)) if guard_after
+            else as_of + dt.timedelta(days=expiry_target_dte(mode))
+        )
         expiry_iso = edate.isoformat()
     if not calls:
         if not allow_synthetic:
@@ -349,12 +393,13 @@ def _put_entry_candidate(
     t_years = _years_between(edate, as_of)
     iv = put.get("implied_vol")
     use_vol = iv if isinstance(iv, (int, float)) and iv > 0 else vol
-    premium = _mid(put)
+    premium = _short_credit(put)
     source = chain_source if premium is not None else "black_scholes"
     if premium is None:
         premium = options_math.bs_price(spot, strike, t_years, use_vol, rate=rate, kind="put")
-    if premium is None or premium <= 0:
+    if premium is None or round(float(premium), 4) <= 0:
         return None
+    premium = round(float(premium), 4)
     raw_delta = put.get("delta")
     delta = (
         float(raw_delta)
@@ -367,7 +412,7 @@ def _put_entry_candidate(
     estimate = source == "black_scholes"
     out = {
         "strike": round(float(strike), 2),
-        "premium": round(premium, 4),
+        "premium": premium,
         "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
         "effective_entry": round(float(strike) - premium, 4),
         "cash_secured_czk": round(float(strike) * CONTRACT_SIZE * contracts * fx, 2),
@@ -390,6 +435,7 @@ def _put_entry_candidate(
 def cash_secured_put_ladder(
     spot: float, vol: float, rate: float, as_of: dt.date, chain: dict[str, Any] | None,
     *, contracts: int, fx: float, allow_synthetic: bool = True,
+    expiry_mode: str = "monthly",
 ) -> list[dict[str, Any]]:
     """Yield-ranked OTM puts for a conditional, cash-secured stock entry.
 
@@ -397,16 +443,19 @@ def cash_secured_put_ladder(
     """
     if contracts < 1 or spot <= 0:
         return []
+    mode = normalize_expiry_mode(expiry_mode)
     cap_strike = spot * (1.0 - CSP_OTM_PCT)
     chain_source = _chain_source(chain)
+    dte_min, dte_max = expiry_dte_band(mode)
     edate: dt.date | None = None
     expiry_iso: str | None = None
     puts: list[dict[str, Any]] = []
     if chain and chain.get("expiries"):
         exp = _pick_expiry(
             chain["expiries"], as_of,
-            dte_min=COVERED_CALL_DTE[0], dte_max=COVERED_CALL_DTE[1],
+            dte_min=dte_min, dte_max=dte_max,
             side="puts",
+            prefer_soonest=mode == "nearest",
         )
         if exp:
             expiry_iso = exp["expiry"]
@@ -419,7 +468,7 @@ def cash_secured_put_ladder(
     if edate is None:
         if not allow_synthetic:
             return []
-        edate = as_of + dt.timedelta(days=37)
+        edate = as_of + dt.timedelta(days=expiry_target_dte(mode))
         expiry_iso = edate.isoformat()
     if not puts:
         if not allow_synthetic:
@@ -451,8 +500,14 @@ def _pick_expiry(
     after: dt.date | None = None,
     side: str | None = None,
     min_contracts: int = 4,
+    prefer_soonest: bool = False,
 ) -> dict[str, Any] | None:
-    """Nearest useful expiry, preferring a real ladder over a sparse exact date."""
+    """Useful expiry in the DTE band, preferring a real ladder over a sparse date.
+
+    ``prefer_soonest`` (nearest-weekly mode) ranks in-band candidates by DTE
+    ascending after the sparse penalty; monthly mode ranks by distance to the
+    band midpoint.
+    """
     target_dte = (dte_min + dte_max) / 2.0
     scored: list[tuple[int, float, dict[str, Any]]] = []
     fallback: list[tuple[int, int, dict[str, Any]]] = []
@@ -470,7 +525,8 @@ def _pick_expiry(
         sparse = int(bool(side) and len(contracts or []) < min_contracts)
         fallback.append((sparse, dte, e))
         if dte_min <= dte <= dte_max:
-            scored.append((sparse, abs(dte - target_dte), e))
+            rank = float(dte) if prefer_soonest else abs(dte - target_dte)
+            scored.append((sparse, rank, e))
     if scored:
         return min(scored, key=lambda item: (item[0], item[1]))[2]
     if fallback:
@@ -519,7 +575,7 @@ def _covered_call(
                 call_contract = call
                 expiry_iso = exp["expiry"]
                 strike = call["strike"]
-                premium = _mid(call)
+                premium = _short_credit(call)
                 iv = call.get("implied_vol")
                 if premium is not None:
                     source = chain_source
@@ -590,7 +646,7 @@ def _protective_put(
             if put:
                 expiry_iso = exp["expiry"]
                 strike = put["strike"]
-                put_premium = _mid(put)
+                put_premium = _long_debit(put)
                 iv = put.get("implied_vol")
                 if put_premium is not None:
                     source = chain_source
@@ -616,7 +672,7 @@ def _protective_put(
             call = _nearest_call(exp.get("calls") or [], call_strike)
             if call:
                 call_strike = call["strike"]
-                call_prem = _mid(call)
+                call_prem = _short_credit(call)
     if call_prem is None:
         call_prem = options_math.bs_price(spot, call_strike, t_years, use_vol, rate=rate, kind="call")
 
