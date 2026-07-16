@@ -133,7 +133,7 @@ describe("trade desk placement gating", () => {
     // Opening the desk Place button raises the modal; cancelling it must not place.
     place.click();
     await flush();
-    let modal = document.querySelector(".trade-confirm-modal")!;
+    const modal = document.querySelector(".trade-confirm-modal")!;
     expect(modal).toBeTruthy();
     modalBtn("Cancel")!.click();
     await flush();
@@ -766,7 +766,7 @@ describe("trade desk staged basket", () => {
     apiMock.mockImplementation((
       path: string,
       method?: string,
-      body?: { toggle_leg_id?: string; included?: boolean },
+      _body?: { toggle_leg_id?: string; included?: boolean },
     ) => {
       if (path === "/api/trade/status") return Promise.resolve(PAPER_STATUS);
       if (path === "/api/trade/basket" && method === "POST") {

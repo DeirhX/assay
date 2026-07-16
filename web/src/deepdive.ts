@@ -44,8 +44,15 @@ interface Rec {
 const tickerInput = () => $$<HTMLInputElement>("#ticker-input");
 
 // ---- deep dive ------------------------------------------------------------
-$$("#ticker-go").addEventListener("click", () => pullTicker(tickerInput().value));
-$$("#ticker-input").addEventListener("keydown", (e) => { if (e.key === "Enter") pullTicker(tickerInput().value); });
+let _initialized = false;
+function initDeepdive(): void {
+  if (_initialized) return;
+  _initialized = true;
+  $$("#ticker-go").addEventListener("click", () => pullTicker(tickerInput().value));
+  $$("#ticker-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") pullTicker(tickerInput().value);
+  });
+}
 // Return to the viewed-tickers overview (the deep-dive landing list).
 function goToOverview() {
   tickerInput().value = "";
@@ -696,6 +703,7 @@ async function hydrateHistory(rec: Rec): Promise<void> {
 }
 
 export {
+  initDeepdive,
   loadTickerFromCache,
   pullTicker,
   renderDeepDive,

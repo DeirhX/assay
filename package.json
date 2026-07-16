@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Frontend toolchain for the local rebalancing research console. The Python server (tools/serve.py) still owns the API, jobs, and auth.",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,7 +15,7 @@
     "e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "typecheck:py": "mypy tools",
-    "lint": "eslint web/src",
+    "lint": "eslint web/src web/tests e2e",
     "check:all": "pwsh tools/check.ps1"
   },
   "devDependencies": {

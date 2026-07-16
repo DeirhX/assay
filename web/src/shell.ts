@@ -1,7 +1,7 @@
 import { loadAnalyses, startPipeline } from "./analyses";
 import { initBasket, loadBasket } from "./basket";
 import { $$, api, applyPrivacyMode, el, esc, instrumentBadge, state } from "./core";
-import { loadTickerFromCache } from "./deepdive";
+import { initDeepdive, loadTickerFromCache } from "./deepdive";
 import { runHoldingsSync, siteMsg } from "./holdings-sync";
 import { loadDeepRun } from "./pipeline";
 import { initFlowBar, updateFlowBar } from "./flowbar";
@@ -21,7 +21,7 @@ import { openTicker } from "./ticker-nav";
 import { initRiskControls, loadRisk } from "./risk";
 import { initAttributionControls, loadAttribution } from "./attribution";
 import { loadExit } from "./exit";
-import { loadCachedSegment, loadSegmentList } from "./segment";
+import { initSegment, loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
 import { initStaging, loadStaging } from "./staging";
 import { initStrategy, loadStrategy } from "./strategy";
@@ -149,7 +149,55 @@ function wireTickerSearch(input: HTMLInputElement) {
 }
 
 // ---- location state --------------------------------------------------------
-const VIEWS = new Set(["strategy", "leaderboard", "deepdive", "segment", "pipeline", "analyses", "today", "optimizer", "orders", "rebalance", "working-draft", "target-state", "exit", "trade", "risk", "attribution", "tax", "journal", "holdings", "history", "activity", "basket", "setup"]);
+interface ViewDefinition {
+  group: string;
+  subtab?: string;
+  load?: () => unknown;
+}
+
+// Validation, navigation metadata, and activation live together. Adding a view
+// should require one definition, not edits to three maps plus a dispatch chain.
+const VIEW_DEFINITIONS: Record<string, ViewDefinition> = {
+  today: { group: "today", load: loadOverview },
+  leaderboard: { group: "research", subtab: "leaderboard", load: loadLeaderboard },
+  segment: { group: "research", subtab: "leaderboard", load: loadRegime },
+  deepdive: { group: "research", subtab: "deepdive" },
+  analyses: { group: "research", subtab: "analyses", load: loadAnalyses },
+  pipeline: { group: "research", subtab: "analyses", load: loadPipeline },
+  strategy: { group: "strategy", subtab: "strategy", load: loadStrategy },
+  optimizer: { group: "strategy", subtab: "optimizer", load: loadOptimizer },
+  "working-draft": { group: "strategy", subtab: "working-draft", load: loadStaging },
+  orders: { group: "rebalance", load: loadOrders },
+  rebalance: { group: "rebalance", load: loadRebalance },
+  "target-state": { group: "rebalance", load: loadTargetState },
+  exit: { group: "rebalance", load: loadExit },
+  trade: { group: "rebalance", load: loadTrade },
+  holdings: { group: "portfolio", subtab: "holdings", load: () => loadHoldings({ autoSync: true }) },
+  history: {
+    group: "portfolio", subtab: "history",
+    load: () => { initHistoryControls(); return loadHistory(); },
+  },
+  risk: {
+    group: "portfolio", subtab: "risk",
+    load: () => { initRiskControls(); return loadRisk(); },
+  },
+  attribution: {
+    group: "portfolio", subtab: "risk",
+    load: () => { initAttributionControls(); return loadAttribution(); },
+  },
+  tax: {
+    group: "portfolio", subtab: "risk",
+    load: () => { initTaxControls(); return loadTax(); },
+  },
+  activity: { group: "activity", subtab: "activity", load: loadActivity },
+  journal: {
+    group: "activity", subtab: "journal",
+    load: () => { initJournalControls(); return loadJournal(); },
+  },
+  basket: { group: "basket", load: loadBasket },
+  setup: { group: "setup", load: loadSetup },
+};
+const VIEWS = new Set(Object.keys(VIEW_DEFINITIONS));
 
 // Today is the app-level cockpit, so a bare "/" lands there. Workflow tools keep
 // explicit views in the URL.
@@ -162,31 +210,14 @@ const DEFAULT_VIEW = "today";
 // `pipeline` is intentionally absent from any sub-tab bar -- it's the "New run"
 // sub-page of Research, reached via a button and left via its Back button.
 // `setup` (the gear) sits outside the group bar entirely.
-const VIEW_GROUP: Record<string, string> = {
-  today: "today",
-  leaderboard: "research", deepdive: "research", analyses: "research", pipeline: "research", segment: "research",
-  strategy: "strategy", optimizer: "strategy", "working-draft": "strategy",
-  orders: "rebalance", rebalance: "rebalance", "target-state": "rebalance", exit: "rebalance", trade: "rebalance",
-  holdings: "portfolio", history: "portfolio", risk: "portfolio", attribution: "portfolio", tax: "portfolio",
-  basket: "basket",
-  // Activity is a global audit log (tickers viewed + tasks run), not part of any
-  // one workflow, so it's its own top-level group rather than a Portfolio sub-tab.
-  activity: "activity", journal: "activity",
-  setup: "setup",
-};
-// Which sub-tab lights up for a given view. With History promoted to its own
-// sub-tab, the data-view of each sub-tab button maps 1:1 to its key here.
-const VIEW_SUBTAB: Record<string, string> = {
-  // Segment is the drill-down behind Explore, and the new-run pipeline is the
-  // creation path behind Deep Research — neither needs a duplicate subtab.
-  leaderboard: "leaderboard", segment: "leaderboard", deepdive: "deepdive",
-  analyses: "analyses", pipeline: "analyses",
-  strategy: "strategy", optimizer: "optimizer", "working-draft": "working-draft",
-  holdings: "holdings", history: "history",
-  // Risk/Attribution/Tax are three lenses inside one Analytics destination.
-  risk: "risk", attribution: "risk", tax: "risk",
-  activity: "activity", journal: "journal",
-};
+const VIEW_GROUP = Object.fromEntries(
+  Object.entries(VIEW_DEFINITIONS).map(([view, def]) => [view, def.group]),
+);
+const VIEW_SUBTAB = Object.fromEntries(
+  Object.entries(VIEW_DEFINITIONS)
+    .filter(([, def]) => def.subtab)
+    .map(([view, def]) => [view, def.subtab as string]),
+);
 const GROUP_DEFAULT: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "orders", portfolio: "holdings", basket: "basket", activity: "activity" };
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
@@ -358,28 +389,7 @@ function setActiveView(view: string) {
   updateChrome(active);
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   $$("#view-" + active).classList.add("active");
-  if (active === "strategy") loadStrategy();
-  if (active === "leaderboard") loadLeaderboard();
-  if (active === "today") loadOverview();
-  if (active === "holdings") loadHoldings({ autoSync: true });
-  if (active === "history") { initHistoryControls(); loadHistory(); }
-  if (active === "activity") loadActivity();
-  if (active === "pipeline") loadPipeline();
-  if (active === "analyses") loadAnalyses();
-  if (active === "optimizer") loadOptimizer();
-  if (active === "orders") loadOrders();
-  if (active === "rebalance") loadRebalance();
-  if (active === "working-draft") loadStaging();
-  if (active === "target-state") loadTargetState();
-  if (active === "exit") loadExit();
-  if (active === "trade") loadTrade();
-  if (active === "segment") loadRegime();
-  if (active === "risk") { initRiskControls(); loadRisk(); }
-  if (active === "attribution") { initAttributionControls(); loadAttribution(); }
-  if (active === "tax") { initTaxControls(); loadTax(); }
-  if (active === "journal") { initJournalControls(); loadJournal(); }
-  if (active === "basket") loadBasket();
-  if (active === "setup") loadSetup();
+  void VIEW_DEFINITIONS[active].load?.();
   return active;
 }
 
@@ -521,6 +531,8 @@ function initShell() {
   initOverview();
   initFlowBar();
   initTargetState();
+  initDeepdive();
+  initSegment();
 
   window.addEventListener("popstate", (event) => {
     restoreNav(event.state || navFromUrl());

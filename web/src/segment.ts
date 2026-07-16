@@ -41,18 +41,6 @@ async function loadSegmentList() {
   }
 }
 
-$$("#segment-select")?.addEventListener("change", () => {
-  if ($$("#view-segment")?.classList.contains("active")) {
-    pushNav({ view: "segment", segment: $$<HTMLSelectElement>("#segment-select")?.value }, { replace: true });
-  }
-});
-
-$$("#pipe-segment-select")?.addEventListener("change", () => {
-  if ($$("#view-pipeline")?.classList.contains("active")) {
-    pushNav({ view: "pipeline", segment: $$<HTMLSelectElement>("#pipe-segment-select")?.value }, { replace: true });
-  }
-});
-
 async function runSegmentPull(name: string, { push = true }: { push?: boolean } = {}) {
   const status = $$("#seg-status");
   name = cleanSlug(name);
@@ -108,19 +96,35 @@ async function loadCachedSegment(name: string, { push = false }: { push?: boolea
   }
 }
 
-$$("#segment-run")?.addEventListener("click", () => runSegmentPull($$<HTMLSelectElement>("#segment-select")?.value));
-$$("#segment-load")?.addEventListener("click", () => loadCachedSegment($$<HTMLSelectElement>("#segment-select")?.value, { push: true }));
-// Hand the selected segment straight to the Deep Research pipeline (step 1,
-// pre-selected). Previously the only way in was the Reports tab's "+ New run",
-// so a segment had no direct route to the narrative flow it feeds.
-$$("#segment-deep")?.addEventListener("click", () => startPipeline($$<HTMLSelectElement>("#segment-select")?.value));
+let _initialized = false;
+function initSegment(): void {
+  if (_initialized) return;
+  _initialized = true;
 
-// Seed the result area so an un-loaded Segment tab is a clear prompt, not a void.
-// Any pull/cache load replaces this; a deep-link to ?segment= loads over it.
-emptyState($$("#seg-result"),
-  "<strong>No segment loaded</strong>" +
-  "Pick a peer universe above, then <em>Run live pull</em> (~30-60s for ~20 names) " +
-  "or <em>Load cached</em> for the last saved table.");
+  $$("#segment-select").addEventListener("change", () => {
+    if ($$("#view-segment").classList.contains("active")) {
+      pushNav({ view: "segment", segment: $$<HTMLSelectElement>("#segment-select").value }, { replace: true });
+    }
+  });
+  $$("#pipe-segment-select").addEventListener("change", () => {
+    if ($$("#view-pipeline").classList.contains("active")) {
+      pushNav({ view: "pipeline", segment: $$<HTMLSelectElement>("#pipe-segment-select").value }, { replace: true });
+    }
+  });
+  $$("#segment-run").addEventListener("click", () =>
+    runSegmentPull($$<HTMLSelectElement>("#segment-select").value));
+  $$("#segment-load").addEventListener("click", () =>
+    loadCachedSegment($$<HTMLSelectElement>("#segment-select").value, { push: true }));
+  $$("#segment-deep").addEventListener("click", () =>
+    startPipeline($$<HTMLSelectElement>("#segment-select").value));
+
+  // Seed the result area so an un-loaded Segment tab is a clear prompt, not a void.
+  // Any pull/cache load replaces this; a deep-link to ?segment= loads over it.
+  emptyState($$("#seg-result"),
+    "<strong>No segment loaded</strong>" +
+    "Pick a peer universe above, then <em>Run live pull</em> (~30-60s for ~20 names) " +
+    "or <em>Load cached</em> for the last saved table.");
+}
 
 // Leading ★ column: the segment table is the prime discovery surface, so a
 // find must be shortlistable in place (basket, "curious" tier, segment
@@ -255,6 +259,7 @@ function renderSegment(rec: SegmentRec) {
 }
 
 export {
+  initSegment,
   loadSegmentList,
   runSegmentPull,
   loadCachedSegment,

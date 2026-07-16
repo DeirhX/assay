@@ -1,8 +1,8 @@
 /// <reference types="node" />
 // Loads the real app shell markup into the test DOM before the app modules are
-// imported. Several modules (pipeline, errors, deepdive, segment) attach event
-// listeners to index.html elements at import time and would throw on a bare
-// document.
+// imported. Pipeline still attaches event listeners to index.html elements at
+// import time and would throw on a bare document; other views are moving toward
+// explicit init functions so this coupling can eventually disappear.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

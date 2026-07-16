@@ -53,10 +53,12 @@ function Add-Skip {
 
 # --- toolchain -------------------------------------------------------------
 if (-not $SkipInstall) {
-    Write-Host "=== npm install ===" -ForegroundColor Cyan
-    npm install | Out-Null
+    Write-Host "=== npm ci ===" -ForegroundColor Cyan
+    npm ci
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Write-Host "=== Python test dependencies ===" -ForegroundColor Cyan
     py -3 -m pip install --quiet -r tools/requirements-test.txt
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 # --- gating: Python job ----------------------------------------------------
