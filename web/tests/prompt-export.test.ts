@@ -57,7 +57,7 @@ describe("buildPortfolioPrompt", () => {
     // Privacy: no CZK amounts anywhere.
     expect(md).not.toMatch(/CZK/);
     // The option row must not appear as an equity line.
-    expect(md).not.toMatch(/\| KLAC  260717P/);
+    expect(md).not.toMatch(/\| KLAC {2}260717P/);
   });
 
   it("summarizes options exposure per underlying", () => {

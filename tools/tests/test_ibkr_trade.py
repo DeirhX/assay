@@ -9,9 +9,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import threading
 import time
 import unittest
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 import _support  # noqa: F401
@@ -488,6 +490,7 @@ class TradeServiceGuards(unittest.TestCase):
     def setUp(self):
         ibt._conid_cache.clear()
         trade_service._preview_issued.clear()
+        trade_service._placement_generation = 0
 
     @staticmethod
     def _arm_preview(token: str, age_s: float = 0.0) -> None:
@@ -499,6 +502,7 @@ class TradeServiceGuards(unittest.TestCase):
             "working_fingerprint": trade_service._working_fingerprint([]),
             "working_symbols": ["AMD"],
             "working_available": True,
+            "state": "previewed",
         }
 
     def test_basket_token_is_stable_and_account_bound(self):
@@ -874,14 +878,57 @@ class TradeServiceGuards(unittest.TestCase):
                     mock.patch.object(trade_service, "_prepare_trade_orders", return_value=([order], [])), \
                     mock.patch.object(ibt, "live_orders", return_value=[]), \
                     mock.patch.object(ibt, "place_orders",
-                                      side_effect=ibt.CPAPIError("gateway down")):
+                                      side_effect=ibt.CPAPIError("gateway down")) as place:
                 trade_service.save_basket([{"symbol": "AMD", "delta_czk": 1000}])
                 self._arm_preview(token)
                 with self.assertRaises(apierror.BadGateway):
                     trade_service._trade_place({"trades": [{"symbol": "AMD", "delta_czk": 1000}],
                                                 "account": "DU1", "confirm": True, "token": token})
-                # Placement never reached IBKR — the basket stays available to retry.
+                # The basket remains for reconciliation, but the token is not
+                # retryable: a gateway error after submission is ambiguous.
                 self.assertTrue(staged.exists())
+                self.assertEqual(trade_service._preview_issued[token]["state"], "uncertain")
+                with self.assertRaises(apierror.Conflict):
+                    trade_service._trade_place({
+                        "trades": [{"symbol": "AMD", "delta_czk": 1000}],
+                        "account": "DU1", "confirm": True, "token": token,
+                    })
+                place.assert_called_once()
+
+    def test_concurrent_place_requests_claim_preview_once(self):
+        basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])
+        token = trade_service._basket_token("DU1", basket)
+        body = {"trades": basket, "account": "DU1", "confirm": True, "token": token}
+        entered_broker = threading.Event()
+        release_broker = threading.Event()
+
+        def slow_place(_account, _orders):
+            entered_broker.set()
+            if not release_broker.wait(timeout=2):
+                raise AssertionError("test did not release broker call")
+            return [{"order_id": "1"}]
+
+        self._arm_preview(token)
+        with mock.patch.object(ibt, "trading_enabled", return_value=True), \
+                mock.patch.object(ibt, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(ibt, "live_orders", return_value=[]), \
+                mock.patch.object(ibt, "place_orders", side_effect=slow_place) as place, \
+                mock.patch.object(trade_service, "save_basket"):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(trade_service._trade_place, dict(body))
+                self.assertTrue(entered_broker.wait(timeout=1))
+                second = pool.submit(trade_service._trade_place, dict(body))
+                try:
+                    release_broker.set()
+                    result = first.result(timeout=2)
+                    with self.assertRaises((apierror.Conflict, ValueError)):
+                        second.result(timeout=2)
+                finally:
+                    release_broker.set()
+
+        self.assertEqual(result["placed"], [{"order_id": "1"}])
+        place.assert_called_once()
+        self.assertNotIn(token, trade_service._preview_issued)
 
     def test_place_rejects_expired_or_unknown_preview(self):
         basket = trade_service._normalize_basket([{"symbol": "AMD", "delta_czk": 1000}])

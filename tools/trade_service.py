@@ -63,6 +63,7 @@ STAGED_BASKET_JSON = DATA_DIR / "cache" / "staged-basket.json"
 PREVIEW_TTL_S = 600
 _preview_issued: dict[str, dict] = {}
 _basket_lock = threading.RLock()
+_placement_generation = 0
 
 # A holdings snapshot older than this shouldn't silently size real orders —
 # the CZK->shares math uses its marks. Warning only; the human decides.
@@ -2042,6 +2043,13 @@ def _trade_preview(body: dict) -> dict:
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to use the trade desk")
     basket = _reviewed_preview_basket(body)
+    with _basket_lock:
+        if any(rec.get("state") == "placing" for rec in _preview_issued.values()):
+            raise _Conflict(
+                "an order placement is already in progress — wait for the broker "
+                "response before previewing again"
+            )
+        placement_generation = _placement_generation
     preview_violations = _basket_sell_violations(basket)
     if preview_violations:
         raise _Conflict(
@@ -2176,8 +2184,7 @@ def _trade_preview(body: dict) -> dict:
 
     token = _basket_token(account_id, basket)
     now = time.time()
-    # Register the preview and prune expired entries so the map can't grow.
-    _preview_issued[token] = {
+    record = {
         "issued_at": now,
         "orders": orders,
         "working_fingerprint": _working_fingerprint(working_orders),
@@ -2186,10 +2193,27 @@ def _trade_preview(body: dict) -> dict:
         "working_option_conids": sorted(relevant_option_conids),
         "working_available": working_available,
         "placement_blocked": placement_blocked,
+        "state": "previewed",
     }
-    for t in [t for t, rec in _preview_issued.items()
-              if now - _number(rec.get("issued_at")) > PREVIEW_TTL_S]:
-        _preview_issued.pop(t, None)
+    # A placement may have started while the slower quote/what-if work above
+    # was running. Never publish that now-stale preview after the broker boundary
+    # moved; require a fresh working-order snapshot instead.
+    with _basket_lock:
+        if placement_generation != _placement_generation:
+            raise _Conflict(
+                "an order placement started while this preview was calculated — "
+                "refresh working orders and preview again"
+            )
+        current = _preview_issued.get(token)
+        if current and current.get("state") == "placing":
+            raise _Conflict(
+                "this basket is already being placed — wait for the broker response"
+            )
+        _preview_issued[token] = record
+        for t in [t for t, rec in _preview_issued.items()
+                  if rec.get("state") != "placing"
+                  and now - _number(rec.get("issued_at")) > PREVIEW_TTL_S]:
+            _preview_issued.pop(t, None)
 
     return {
         "account": account_id,
@@ -2410,6 +2434,7 @@ def _trade_place(body: dict) -> dict:
     confirmed, the preview token matches the exact basket+account, and (for live
     accounts) live placement is unlocked. Orders come from the token-bound
     server-side preview record, never from the client."""
+    global _placement_generation
     if not ibkr_trade.trading_enabled():
         raise _Forbidden("trading is disabled — set IBKR_TRADING_ENABLED to place orders")
     if not body.get("confirm"):
@@ -2428,10 +2453,20 @@ def _trade_place(body: dict) -> dict:
     # Freshness (after the authorization gates, which always win): a token is
     # only as good as the prices the preview sized from. Unknown tokens (e.g.
     # after a server restart) read as expired — fail safe.
-    issued = _preview_issued.get(expected)
-    if issued is None or time.time() - _number(issued.get("issued_at")) > PREVIEW_TTL_S:
-        raise ValueError("preview expired — prices and sizes may be stale; "
-                         "re-preview the basket before placing")
+    with _basket_lock:
+        issued = _preview_issued.get(expected)
+        if issued is None or time.time() - _number(issued.get("issued_at")) > PREVIEW_TTL_S:
+            _preview_issued.pop(expected, None)
+            raise ValueError("preview expired — prices and sizes may be stale; "
+                             "re-preview the basket before placing")
+        state = issued.get("state", "previewed")
+        if state == "placing":
+            raise _Conflict("this preview is already being placed — do not submit it twice")
+        if state == "uncertain":
+            raise _Conflict(
+                "the prior placement result is uncertain — refresh working orders "
+                "and preview again before submitting anything"
+            )
     if not issued.get("working_available"):
         raise _Conflict(
             "working orders could not be verified during preview — reconnect the "
@@ -2480,52 +2515,69 @@ def _trade_place(body: dict) -> dict:
             else 1
         ),
     )
-    try:
-        placed = ibkr_trade.place_orders(account_id, placement_orders)
-    except ibkr_trade.CPAPIError as exc:
-        partial = getattr(exc, "placed", None)
-        if isinstance(partial, list) and partial:
-            # Some earlier requests are already live at IBKR. Consume the local
-            # basket and return the accepted subset explicitly; retrying the
-            # original basket would duplicate those orders.
-            accepted_orders = [
-                dict(sent)
-                for acknowledgement in partial
-                if isinstance(acknowledgement, dict)
-                and isinstance((sent := acknowledgement.get("assay_order")), dict)
-            ]
-            save_basket([])
-            _preview_issued.pop(expected, None)
-            return {
-                "account": account_id,
-                "kind": ibkr_trade.account_kind(account_id),
-                "is_paper": ibkr_trade.is_paper_account(account_id),
-                "orders": accepted_orders,
-                "warnings": [
-                    f"{len(partial)} order(s) were accepted by IBKR before a later "
-                    "order failed. The local basket was cleared to prevent duplicate "
-                    "placement; review working orders before rebuilding the remainder."
-                ],
-                "placed": partial,
-                "placement_incomplete": True,
-                "staged_basket_cleared": True,
-            }
-        raise _BadGateway(str(exc)) from exc
-    # Close the loop: the staged basket was just submitted, so stop offering it
-    # for re-placement — double-placing the same persisted basket is the worst
-    # failure mode of the planner→desk hand-off. Stage a fresh basket any time.
-    # The preview token is consumed with it: a re-place needs a re-preview.
-    save_basket([])
-    _preview_issued.pop(expected, None)
-    return {
-        "account": account_id,
-        "kind": ibkr_trade.account_kind(account_id),
-        "is_paper": ibkr_trade.is_paper_account(account_id),
-        "orders": orders,
-        "warnings": warnings,
-        "placed": placed,
-        "staged_basket_cleared": True,
-    }
+    # Atomically claim this exact preview immediately before crossing the broker
+    # boundary. Hold the queue lock through placement: basket mutation or a
+    # second Place request must wait until the first broker outcome is known.
+    with _basket_lock:
+        current = _preview_issued.get(expected)
+        if current is not issued or current.get("state", "previewed") != "previewed":
+            raise _Conflict(
+                "this preview was replaced or is already being placed — refresh before retrying"
+            )
+        issued["state"] = "placing"
+        _placement_generation += 1
+        try:
+            placed = ibkr_trade.place_orders(account_id, placement_orders)
+        except ibkr_trade.CPAPIError as exc:
+            partial = getattr(exc, "placed", None)
+            if isinstance(partial, list) and partial:
+                # Some earlier requests are already live at IBKR. Consume the local
+                # basket and return the accepted subset explicitly; retrying the
+                # original basket would duplicate those orders.
+                accepted_orders = [
+                    dict(sent)
+                    for acknowledgement in partial
+                    if isinstance(acknowledgement, dict)
+                    and isinstance((sent := acknowledgement.get("assay_order")), dict)
+                ]
+                save_basket([])
+                _preview_issued.pop(expected, None)
+                return {
+                    "account": account_id,
+                    "kind": ibkr_trade.account_kind(account_id),
+                    "is_paper": ibkr_trade.is_paper_account(account_id),
+                    "orders": accepted_orders,
+                    "warnings": [
+                        f"{len(partial)} order(s) were accepted by IBKR before a later "
+                        "order failed. The local basket was cleared to prevent duplicate "
+                        "placement; review working orders before rebuilding the remainder."
+                    ],
+                    "placed": partial,
+                    "placement_incomplete": True,
+                    "staged_basket_cleared": True,
+                }
+            # A gateway error after submission is ambiguous: IBKR may have
+            # accepted an order before its response was lost. Keep the basket for
+            # reconciliation, but never allow this token to be retried blindly.
+            if _preview_issued.get(expected) is issued:
+                issued["state"] = "uncertain"
+            raise _BadGateway(
+                f"{exc}; placement result may be uncertain — refresh working orders "
+                "before previewing again"
+            ) from exc
+        # Close the loop: the staged basket was just submitted, so stop offering
+        # it for re-placement. save_basket is safe under the re-entrant lock.
+        save_basket([])
+        _preview_issued.pop(expected, None)
+        return {
+            "account": account_id,
+            "kind": ibkr_trade.account_kind(account_id),
+            "is_paper": ibkr_trade.is_paper_account(account_id),
+            "orders": orders,
+            "warnings": warnings,
+            "placed": placed,
+            "staged_basket_cleared": True,
+        }
 
 
 # Statuses that mean an order is done and no longer working. IBKR's

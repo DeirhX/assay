@@ -48,4 +48,16 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ["web/tests/**/*.ts", "e2e/**/*.ts"],
+    rules: {
+      // Test fixtures intentionally cast partial API payloads; production source
+      // keeps its own stricter boundary while tests still get dead-code checks.
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
+      ],
+    },
+  },
 );
