@@ -547,6 +547,32 @@ class NormalizeBasket(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be staged from the Exit plan"):
             trade_service.replace_stock_basket([_cc_leg()])
 
+    def test_set_limit_price_preserves_review_and_clears_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "staged-basket.json"
+            with mock.patch.object(
+                trade_service, "STAGED_BASKET_JSON", staged,
+            ), mock.patch.object(
+                trade_service, "basket_call_coverage_violations", return_value=[],
+            ), mock.patch.object(
+                trade_service, "queue_working_conflicts", return_value={
+                    "working_orders_verified": True,
+                    "working_orders_error": None,
+                    "coverage_violations": [],
+                },
+            ):
+                trade_service.save_basket([_cc_leg(limit_price=2.50)])
+                state = trade_service.basket_state()
+                trade_service.review_basket(state["revision"])
+                trade_service._preview_issued["token"] = {"test": True}
+                active = trade_service.set_basket_leg_limit_price(
+                    "covered_call:NVDA:555", 2.20,
+                )
+                after = trade_service.basket_state()
+        self.assertEqual(active[0]["limit_price"], 2.20)
+        self.assertTrue(after["reviewed"])
+        self.assertEqual(trade_service._preview_issued, {})
+
     def test_remove_leg_invalidates_review_and_rejects_stale_identifier(self):
         with tempfile.TemporaryDirectory() as tmp:
             staged = Path(tmp) / "staged-basket.json"
@@ -666,8 +692,21 @@ class PrepareCoveredCallOrders(unittest.TestCase):
         self.assertEqual(order["quantity"], 2)
         self.assertEqual(order["orderType"], "LMT")
         self.assertAlmostEqual(order["price"], 2.50)
+        self.assertFalse(order.get("custom_limit"))
         self.assertEqual(order["provenance"], [])
         self.assertIn("assay-", order["cOID"])
+
+    def test_prepare_honors_staged_custom_limit_price(self):
+        basket = trade_service._normalize_basket([_cc_leg(limit_price=2.35)])
+        with mock.patch.object(trade_service, "_load", return_value=_nvda_holdings()), \
+             mock.patch.object(ibkr_trade, "build_orders", return_value=([], [])), \
+             mock.patch.object(ibkr_trade, "market_snapshot", return_value={}), \
+             mock.patch.object(ibkr_trade, "resolve_exact_call", return_value=_resolved_call()), \
+             mock.patch.object(kid_block, "blocked_symbols", return_value=set()):
+            orders, _ = trade_service._prepare_trade_orders("DU1", basket)
+        self.assertAlmostEqual(orders[0]["price"], 2.35)
+        self.assertTrue(orders[0]["custom_limit"])
+        self.assertAlmostEqual(orders[0]["premium_credit"], 470.0)
 
     def test_prepare_carries_provenance_onto_order(self):
         prov = [{"source": "exit_plan", "route": "covered_call"}]
@@ -1220,6 +1259,25 @@ class PlaceTimeCoveredCallRevalidation(unittest.TestCase):
                 })
         self.assertIn("limit moved", str(ctx.exception))
         place.assert_not_called()
+
+    def test_place_keeps_custom_limit_when_quote_mid_moves(self):
+        basket = trade_service._normalize_basket([_cc_leg(limit_price=2.20)])
+        token = trade_service._basket_token("DU1", basket)
+        self._arm_cc_preview(token, self._cc_order(quantity=2, price=2.20, custom_limit=True))
+        with mock.patch.object(ibkr_trade, "trading_enabled", return_value=True), \
+                mock.patch.object(ibkr_trade, "accounts", return_value=[{"accountId": "DU1"}]), \
+                mock.patch.object(ibkr_trade, "live_orders", return_value=[]), \
+                mock.patch.object(
+                    ibkr_trade, "resolve_exact_call",
+                    return_value=_resolved_call(bid=3.00, ask=3.20),
+                ), \
+                mock.patch.object(trade_service, "save_basket"), \
+                mock.patch.object(ibkr_trade, "place_orders",
+                                  return_value=[{"order_id": "custom"}]) as place:
+            trade_service._trade_place({
+                "trades": basket, "account": "DU1", "confirm": True, "token": token,
+            })
+        self.assertEqual(place.call_args.args[1][0]["price"], 2.20)
 
     def test_place_time_coverage_is_aggregated_across_strikes(self):
         orders = [

@@ -23,7 +23,8 @@ import {
 import type { BrokerCorrelationState } from "./pipeline-summary";
 import {
   assignmentProjectionLabel, basketMoneyFacts, contractsLabel, coveredCallActionLabel,
-  orderBandScopeLabel, placeResultHtml, premiumCreditLabel, previewStats, provenanceLabel,
+  limitOfferLabel, orderBandScopeLabel, placeResultHtml, premiumCreditLabel,
+  previewStats, provenanceLabel, quoteBookLabel,
   reconciliationTitle, riskPanelHtml, sideTag,
   weightBandCaption, weightBandTrackHtml, weightScaleMax,
 } from "./trade-model";
@@ -534,8 +535,10 @@ function renderBasket() {
       if (t.type === "covered_call" || t.type === "cash_secured_put") {
         const isPut = t.type === "cash_secured_put";
         const legId = t.leg_id || `${t.type}:${t.symbol}:${t.conid}`;
-        return `<tr class="trade-basket-option${rowClass}">` +
-          `<td>${tickerAnchorHtml(t.symbol)}${excludedChip}<div class="muted">${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
+        return `<tr class="trade-basket-option ${isPut ? "put" : "call"}${rowClass}">` +
+          `<td>${tickerAnchorHtml(t.symbol)}${excludedChip}` +
+          `<div class="muted"><span class="trade-instrument-chip ${isPut ? "put" : "call"}">${isPut ? "Short put" : "Covered call"}</span> ` +
+          `${esc(t.expiry)} · ${esc(t.strike)} ${isPut ? "put" : "call"}</div></td>` +
           `<td class="tb-trend">${sparkPlaceholder(t.symbol)}</td>` +
           `<td>${sideTag("SELL")} <span class="muted">to open</span></td>` +
           `<td class="num tb-sell">${esc(t.contracts)} contract${t.contracts === 1 ? "" : "s"}` +
@@ -619,6 +622,59 @@ async function requestPreview(): Promise<void> {
   renderPreview();
 }
 
+async function applyPreviewLimit(input: HTMLInputElement): Promise<void> {
+  const legId = String(input.dataset.limitLeg || "").trim();
+  const original = String(input.dataset.limitOriginal || "");
+  const value = Number(input.value);
+  const status = $("#trade-place-status") || $("#trade-preview-status");
+  if (!legId) return;
+  if (!Number.isFinite(value) || value <= 0) {
+    input.value = original;
+    if (status) {
+      status.classList.add("err");
+      status.textContent = "Limit price must be a positive number.";
+    }
+    return;
+  }
+  if (original && Math.abs(value - Number(original)) < 1e-9) return;
+  input.disabled = true;
+  if (status) {
+    status.classList.remove("err");
+    status.innerHTML = `<span class="spinner"></span> updating limit and re-previewing\u2026`;
+  }
+  try {
+    const saved = await api<TradeQueueState>("/api/trade/basket", "POST", {
+      limit_leg_id: legId,
+      limit_price: value,
+    });
+    applyQueueState(saved);
+    publishQueueChanged();
+    stopPreviewCountdown();
+    _preview = null;
+    await requestPreview();
+    if (status) status.textContent = "";
+  } catch (e) {
+    input.disabled = false;
+    input.value = original;
+    if (status) {
+      status.classList.add("err");
+      status.textContent = "Could not update limit: " + (e as Error).message;
+    }
+  }
+}
+
+function wirePreviewLimitEdits(host: ParentNode): void {
+  host.querySelectorAll<HTMLInputElement>("input[data-limit-leg]").forEach((input) => {
+    input.addEventListener("change", () => { void applyPreviewLimit(input); });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      }
+    });
+  });
+}
+
 async function doPreview(btn: HTMLButtonElement) {
   const status = $("#trade-preview-status");
   if (status) { status.classList.remove("err"); status.innerHTML = `<span class="spinner"></span> previewing\u2026`; }
@@ -664,6 +720,7 @@ function renderPreview() {
     coverage_shares: o.coverage_shares, if_assigned_shares: o.if_assigned_shares,
     premium_credit: o.premium_credit, cash_secured_czk: o.cash_secured_czk,
     collateral_mode: o.collateral_mode,
+    price: o.price, bid: o.bid, ask: o.ask, limit_price: o.price,
     provenance: o.provenance,
     placeable: true, next_step: "Review and confirm this new order.",
   }));
@@ -817,10 +874,13 @@ function renderPreview() {
       : c.classification === "fully_covered" ? "covered"
       : c.classification === "same_side_partial" ? "adjusted" : "plain";
     const item = el("article", `trade-order-item ${tone}`);
-    if (isOption) item.classList.add("option");
+    if (isOption) item.classList.add("option", isPut ? "put" : "call");
     const top = el("div", "trade-order-top");
     const identity = el("div", "trade-order-identity");
-    identity.innerHTML = `<div>${tickerAnchorHtml(sym)} ${sideTag(c.side)}</div>` +
+    const instrumentChip = isOption
+      ? `<span class="trade-instrument-chip ${isPut ? "put" : "call"}">${isPut ? "Short put" : "Covered call"}</span>`
+      : "";
+    identity.innerHTML = `<div>${tickerAnchorHtml(sym)} ${sideTag(c.side)}${instrumentChip}</div>` +
       `<span class="trade-recon-chip ${tone}">${esc(reconciliationTitle(c))}</span>`;
     top.appendChild(identity);
     if (o) {
@@ -888,9 +948,24 @@ function renderPreview() {
           ? `Coverage blocked · ${esc(c.coverage_capacity_contracts)} contract(s) available`
           : `Coverage verified · ${esc(c.coverage_shares ?? 0)} shares reserved for this order`;
       const prov = provenanceLabel(c.provenance);
+      const limitPx = o?.price ?? c.price ?? c.limit_price;
+      const bid = o?.bid ?? c.bid;
+      const ask = o?.ask ?? c.ask;
+      const ccy = c.currency || "USD";
+      const legId = String(c.leg_id || o?.leg_id || "").trim();
+      const limitKind = String(c.side || "").toUpperCase() === "BUY" ? "Limit bid" : "Limit offer";
+      const limitControl = o && legId && limitPx != null && Number(limitPx) > 0
+        ? `<label class="trade-limit-edit"><span>${esc(limitKind)}</span>` +
+          `<input type="number" min="0.01" step="0.01" inputmode="decimal" ` +
+          `data-limit-leg="${esc(legId)}" data-limit-original="${esc(limitPx)}" ` +
+          `value="${esc(limitPx)}" title="Edit limit, then re-preview"/>` +
+          `<span class="trade-limit-ccy">${esc(ccy)}</span></label>`
+        : `<span><strong>${esc(limitOfferLabel(limitPx, ccy, c.side))}</strong></span>`;
       item.appendChild(el("div", "trade-order-breakdown",
         `<span><strong>${esc(coverage)}</strong></span>` +
-        `<span>${esc(premiumCreditLabel(c.premium_credit, c.currency || "option currency"))}</span>` +
+        limitControl +
+        `<span>${esc(quoteBookLabel(bid, ask, ccy))}</span>` +
+        `<span>${esc(premiumCreditLabel(c.premium_credit, ccy))}</span>` +
         (prov ? `<span>From ${isPut ? "Rebalance" : "Exit"} · ${esc(prov)}</span>` : "") +
         `<span>Assignment is conditional; shares may ${isPut ? "not be bought" : "not be sold"}.</span>`));
     } else if (c.classification !== "none") {
@@ -1006,6 +1081,7 @@ function renderPreview() {
   card.appendChild(el("div", "status", "")).id = "trade-place-status";
 
   paintPlaceBtn();
+  wirePreviewLimitEdits(card);
 
   // Server-side the token expires after preview_ttl_s; mirror it here with a
   // visible countdown so the refusal is anticipated, not a surprise flip.
@@ -1079,15 +1155,18 @@ function confirmPlaceModal(p: TradePreview): Promise<boolean> {
     const hasPuts = optionOrders.some((o) => o.instrument_type === "cash_secured_put");
     const optionFacts = optionOrders.length
       ? `<div class="trade-cf-options"><strong>${hasPuts ? "Written options" : "Covered calls"} · sell to open</strong>` +
-        optionOrders.map((o) =>
-          `<div>${tickerAnchorHtml(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
-          `${esc(o.expiry || "")} ${esc(o.strike)}${o.instrument_type === "cash_secured_put" ? "P" : "C"} · limit ${esc(o.price)} ${esc(o.currency || "")}` +
-          (o.instrument_type === "cash_secured_put"
-            ? `<span>${o.collateral_mode === "margin" ? "Assignment notional" : "Cash secured"}: ` +
-              `${fmtCZK(Number(o.cash_secured_czk) || 0)} CZK · +${esc(o.if_assigned_shares)} shares if assigned</span>`
-            : `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span>`) +
-          `</div>`
-        ).join("") +
+        optionOrders.map((o) => {
+          const put = o.instrument_type === "cash_secured_put";
+          return `<div class="trade-cf-option ${put ? "put" : "call"}">` +
+            `<span class="trade-instrument-chip ${put ? "put" : "call"}">${put ? "Short put" : "Covered call"}</span> ` +
+            `${tickerAnchorHtml(String(o.symbol || ""))} · ${esc(o.quantity)} contract${Number(o.quantity) === 1 ? "" : "s"} · ` +
+            `${esc(o.expiry || "")} ${esc(o.strike)}${put ? "P" : "C"} · limit ${esc(o.price)} ${esc(o.currency || "")}` +
+            (put
+              ? `<span>${o.collateral_mode === "margin" ? "Assignment notional" : "Cash secured"}: ` +
+                `${fmtCZK(Number(o.cash_secured_czk) || 0)} CZK · +${esc(o.if_assigned_shares)} shares if assigned</span>`
+              : `<span>Conditional assignment: ${esc(o.current_shares)} → ${esc(o.if_assigned_shares)} shares</span>`) +
+            `</div>`;
+        }).join("") +
         `<em>Assignment is conditional; the immediate share-weight projection is unchanged.</em></div>`
       : "";
     const ageLine = p.snapshot_age_days != null

@@ -23,6 +23,8 @@ export interface TradeOrder {
   cash_secured_czk?: number;
   collateral_mode?: "cash" | "margin";
   currency?: string | null;
+  bid?: number | null;
+  ask?: number | null;
   provenance?: TradeLegProvenance[];
 }
 

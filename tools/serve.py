@@ -140,6 +140,7 @@ from trade_service import (  # noqa: E402  -- gated live-trading service (thin h
     replace_stock_basket as _replace_stock_basket,
     review_basket as _review_basket, save_basket as _save_basket,
     set_basket_leg_included as _set_basket_leg_included,
+    set_basket_leg_limit_price as _set_basket_leg_limit_price,
     set_only_basket_legs_included as _set_only_basket_legs_included,
 )
 # Disk + identifier helpers and the job registry now live in their own modules;
@@ -1697,6 +1698,11 @@ class Handler(BaseHTTPRequestHandler):
             _set_basket_leg_included(
                 body.get("toggle_leg_id"),
                 body.get("included"),
+            )
+        elif body.get("limit_leg_id") is not None:
+            _set_basket_leg_limit_price(
+                body.get("limit_leg_id"),
+                body.get("limit_price"),
             )
         elif body.get("remove_leg_id") is not None:
             _remove_basket_leg(body.get("remove_leg_id"))

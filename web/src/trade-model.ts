@@ -47,6 +47,9 @@ type OptionPreviewFields = Omit<
   cash_secured_czk?: number;
   collateral_mode?: "cash" | "margin";
   currency?: string | null;
+  price?: number | null;
+  bid?: number | null;
+  ask?: number | null;
   provenance?: DisplayProvenance | DisplayProvenance[];
   coverage_ok?: boolean;
   coverage_capacity_contracts?: number;
@@ -176,6 +179,41 @@ export function premiumCreditLabel(czk?: number | null, currency = "CZK"): strin
   const n = Number(czk);
   if (!Number.isFinite(n) || n === 0) return `No premium credit (${currency})`;
   return `Premium credit: ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`;
+}
+
+/** Limit price the desk will send — sell = offer, buy = bid. */
+export function limitOfferLabel(
+  price?: number | null,
+  currency?: string | null,
+  side?: string | null,
+): string {
+  const n = Number(price);
+  if (!Number.isFinite(n) || n <= 0) return "No limit price";
+  const ccy = String(currency || "").trim();
+  const kind = String(side || "").toUpperCase() === "BUY" ? "Limit bid" : "Limit offer";
+  const px = n.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  });
+  return ccy ? `${kind}: ${px} ${ccy}` : `${kind}: ${px}`;
+}
+
+export function quoteBookLabel(
+  bid?: number | null,
+  ask?: number | null,
+  currency?: string | null,
+): string {
+  const fmt = (value: number | null | undefined) => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    return n.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    });
+  };
+  const ccy = String(currency || "").trim();
+  const book = `Bid / ask: ${fmt(bid)} / ${fmt(ask)}`;
+  return ccy ? `${book} ${ccy}` : book;
 }
 
 export function provenanceLabel(
