@@ -642,6 +642,60 @@ def set_only_basket_legs_included(leg_ids: Any) -> list[dict]:
         return _persist_basket_record(all_legs, excluded)
 
 
+def set_basket_leg_limit_price(leg_id: Any, limit_price: Any) -> list[dict]:
+    """Set or clear one queued leg's limit price without dropping projection review.
+
+    A limit-only edit changes the revision hash, so we re-stamp the reviewed
+    revision to the new hash when the queue was already approved. Outstanding
+    IBKR preview tokens are always cleared — the human must re-preview the new
+    limit before placement.
+    """
+    requested = str(leg_id or "").strip()
+    if not requested:
+        raise ValueError("limit_leg_id is required")
+    if limit_price is None or limit_price == "":
+        next_limit: float | None = None
+    else:
+        next_limit = coerce_optional_limit_price(
+            limit_price,
+            numeric_error="limit_price must be numeric",
+            positive_error="limit_price must be positive",
+        )
+        if next_limit is None or next_limit <= 0:
+            raise ValueError("limit_price must be positive")
+        next_limit = round(float(next_limit), 6)
+    with _basket_lock:
+        previous = basket_state()
+        raw = _load(STAGED_BASKET_JSON)
+        all_legs, excluded, _active = _basket_record(raw)
+        updated: list[dict] = []
+        found = False
+        for leg in all_legs:
+            if str(leg.get("leg_id") or "") != requested:
+                updated.append(leg)
+                continue
+            found = True
+            row = dict(leg)
+            row["limit_price"] = next_limit
+            updated.append(row)
+        if not found:
+            raise _Conflict(
+                "order queue changed — reload it before editing that limit"
+            )
+        active = [
+            leg for leg in updated
+            if str(leg.get("leg_id") or "") not in excluded
+        ]
+        revision = _basket_revision(active)
+        _preview_issued.clear()
+        return _persist_basket_record(
+            updated,
+            excluded,
+            reviewed_revision=revision if previous.get("reviewed") else "",
+            reviewed_at=previous.get("reviewed_at") if previous.get("reviewed") else None,
+        )
+
+
 def review_basket(revision: Any) -> dict:
     """Record that the human reviewed the projection for this exact queue."""
     with _basket_lock:
@@ -1197,6 +1251,36 @@ def _locked_limit(sym: str, side: str) -> float | None:
     return price_levels.limit_price_for(level, side)
 
 
+def _option_limit_from_leg(leg: dict, resolved: dict) -> tuple[float, bool]:
+    """Pick the SELL limit for an option order.
+
+    A positive ``limit_price`` on the staged leg is human authority (preview
+    editor / planner). Otherwise use the quote-derived mid from the resolver.
+    Returns ``(limit, custom)``.
+    """
+    sym = leg.get("symbol")
+    custom = coerce_optional_limit_price(
+        leg.get("limit_price"),
+        numeric_error=f"{sym}: limit_price must be numeric",
+        positive_error=f"{sym}: limit_price must be positive",
+    )
+    if custom is not None and custom > 0:
+        tick = _number(resolved.get("tick")) or ibkr_trade.tick_for_price(
+            resolved.get("rules"), custom,
+        )
+        if tick > 0:
+            # Floor to tick — conservative for a short (SELL) limit.
+            steps = math.floor((float(custom) + 1e-12) / tick)
+            custom = round(steps * tick, 6)
+        if custom <= 0:
+            raise ValueError(f"{sym}: limit_price must be positive")
+        return float(custom), True
+    limit = resolved.get("limit_price")
+    if not isinstance(limit, (int, float)) or float(limit) <= 0:
+        raise ValueError(f"{sym}: could not derive a valid limit price")
+    return float(limit), False
+
+
 # Bound the conid-resolution fan-out so we don't flood the single local gateway
 # session; a handful of concurrent secdef lookups is plenty to kill the serial stall.
 _PREPARE_MAX_WORKERS = 6
@@ -1318,8 +1402,9 @@ def _prepare_trade_orders(
     # basket, so a blocked buy can never slip through to placement.
     orders = _drop_blocked_buys(orders, kid_block.blocked_symbols())
 
-    # Covered calls are exact-contract SELL LIMIT orders. Everything executable is
-    # resolved again here; staged conid/price are audit context, never authority.
+    # Covered calls are exact-contract SELL LIMIT orders. Contract identity is
+    # re-resolved here; a positive staged limit_price is human authority, else
+    # the quote mid from the resolver.
     for leg in [t for t in basket if t.get("type") == "covered_call"]:
         sym = leg["symbol"]
         cap = call_capacity.get(
@@ -1383,7 +1468,7 @@ def _prepare_trade_orders(
                 continue
             raise ValueError(messages[exc.reason]) from exc
         bid, ask = resolved_call["bid"], resolved_call["ask"]
-        limit = resolved_call["limit_price"]
+        limit, custom_limit = _option_limit_from_leg(leg, resolved_call)
         if cap["capacity_contracts"] < 1:
             raise ValueError(
                 f"{sym}: no covered-call capacity — {cap['current_shares']} shares, "
@@ -1400,6 +1485,7 @@ def _prepare_trade_orders(
             "quantity": contracts,
             "tif": "GTC",
             "price": limit,
+            "custom_limit": custom_limit,
             "cOID": f"assay-{_basket_token(account_id, basket)}-{int(resolved_call['conid'])}-{contracts}",
             "expiry": resolved_call["expiry"],
             "strike": float(resolved_call["strike"]),
@@ -1470,7 +1556,7 @@ def _prepare_trade_orders(
                 f"{sym}: cash-secured puts need {total_put_collateral:,.0f} CZK after stock buys, "
                 f"but only {max(0.0, remaining_cash):,.0f} CZK is available"
             )
-        limit = resolved_put["limit_price"]
+        limit, custom_limit = _option_limit_from_leg(leg, resolved_put)
         current_shares = int(position_qty.get(sym, 0.0))
         orders.append({
             "instrument_type": "cash_secured_put",
@@ -1484,6 +1570,7 @@ def _prepare_trade_orders(
             "quantity": contracts,
             "tif": "GTC",
             "price": limit,
+            "custom_limit": custom_limit,
             "cOID": (
                 f"assay-{_basket_token(account_id, basket)}-"
                 f"{int(resolved_put['conid'])}-{contracts}"
@@ -1905,6 +1992,9 @@ def _reconcile_working_orders(
                     residual_qty * _number(order.get("price")) * OPTION_MULTIPLIER, 2
                 ),
                 "currency": order.get("currency"),
+                "price": order.get("price"),
+                "limit_price": order.get("price"),
+                "custom_limit": bool(order.get("custom_limit")),
                 "bid": order.get("bid"),
                 "ask": order.get("ask"),
                 "last": order.get("last"),
@@ -2297,23 +2387,32 @@ def _revalidate_covered_call_orders(
             bid, ask = resolved["bid"], resolved["ask"]
             fresh_limit = resolved["limit_price"]
             old_limit = _number(order.get("price"))
-            tick = _number(resolved.get("tick"))
-            if tick <= 0:
-                tick = ibkr_trade.tick_for_price(resolved.get("rules"), fresh_limit)
-            spread = ask - bid
-            if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
-                raise _Conflict(
-                    f"{sym}: covered-call limit moved from {old_limit:g} to {fresh_limit:g} "
-                    "— preview again"
-                )
+            custom_limit = bool(order.get("custom_limit"))
+            if custom_limit:
+                if old_limit <= 0:
+                    raise _Conflict(
+                        f"{sym}: covered-call custom limit is missing — preview again"
+                    )
+                place_limit = old_limit
+            else:
+                tick = _number(resolved.get("tick"))
+                if tick <= 0:
+                    tick = ibkr_trade.tick_for_price(resolved.get("rules"), fresh_limit)
+                spread = ask - bid
+                if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
+                    raise _Conflict(
+                        f"{sym}: covered-call limit moved from {old_limit:g} to {fresh_limit:g} "
+                        "— preview again"
+                    )
+                place_limit = fresh_limit
             order.update({
-                "price": fresh_limit,
+                "price": place_limit,
                 "bid": resolved.get("bid"),
                 "ask": resolved.get("ask"),
                 "last": resolved.get("last"),
                 "quote_timestamp": resolved.get("quote_timestamp"),
                 "premium_credit": round(
-                    fresh_limit * OPTION_MULTIPLIER * int(_number(order.get("quantity"))), 2,
+                    place_limit * OPTION_MULTIPLIER * int(_number(order.get("quantity"))), 2,
                 ),
             })
         base = capacity.get(sym) or {}
@@ -2381,19 +2480,28 @@ def _revalidate_cash_secured_put_orders(
             raise _Conflict(messages.get(exc.reason, f"{sym}: put validation failed") + " — preview again") from exc
         fresh_limit = resolved["limit_price"]
         old_limit = _number(order.get("price"))
-        tick = _number(resolved.get("tick")) or ibkr_trade.tick_for_price(
-            resolved.get("rules"), fresh_limit,
-        )
-        spread = float(resolved["ask"]) - float(resolved["bid"])
-        if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
-            raise _Conflict(
-                f"{sym}: cash-secured-put limit moved from {old_limit:g} "
-                f"to {fresh_limit:g} — preview again"
+        custom_limit = bool(order.get("custom_limit"))
+        if custom_limit:
+            if old_limit <= 0:
+                raise _Conflict(
+                    f"{sym}: cash-secured-put custom limit is missing — preview again"
+                )
+            place_limit = old_limit
+        else:
+            tick = _number(resolved.get("tick")) or ibkr_trade.tick_for_price(
+                resolved.get("rules"), fresh_limit,
             )
+            spread = float(resolved["ask"]) - float(resolved["bid"])
+            if old_limit <= 0 or abs(fresh_limit - old_limit) > max(tick, spread) + 1e-9:
+                raise _Conflict(
+                    f"{sym}: cash-secured-put limit moved from {old_limit:g} "
+                    f"to {fresh_limit:g} — preview again"
+                )
+            place_limit = fresh_limit
         contracts = int(_number(order.get("quantity")))
         fx = _number(order.get("_estimate_fx_to_base")) or 1.0
         order.update({
-            "price": fresh_limit,
+            "price": place_limit,
             "bid": resolved.get("bid"),
             "ask": resolved.get("ask"),
             "last": resolved.get("last"),
@@ -2401,7 +2509,7 @@ def _revalidate_cash_secured_put_orders(
             "cash_secured_czk": round(
                 float(resolved["strike"]) * OPTION_MULTIPLIER * contracts * fx, 2,
             ),
-            "premium_credit": round(fresh_limit * OPTION_MULTIPLIER * contracts, 2),
+            "premium_credit": round(place_limit * OPTION_MULTIPLIER * contracts, 2),
         })
 
     if margin_account_enabled(account_id):

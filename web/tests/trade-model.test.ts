@@ -12,12 +12,14 @@ import {
   coveredCallActionLabel,
   coverageCheckLabel,
   isCoveredCallLeg,
+  limitOfferLabel,
   optionContractLabel,
   orderBandScopeLabel,
   placeResultHtml,
   premiumCreditLabel,
   previewStats,
   provenanceLabel,
+  quoteBookLabel,
   reconciliationTitle,
   residualStockValueCzk,
   riskPanelHtml,
@@ -184,6 +186,10 @@ describe("option leg helpers", () => {
     expect(coverageCheckLabel(100, 1)).toBe("Covered: 100 shares for 1 contract");
     expect(coverageCheckLabel(50, 1)).toBe("Uncovered: 50 shares available, 100 required");
     expect(premiumCreditLabel(4200)).toMatch(/Premium credit: 4.200 CZK/);
+    expect(limitOfferLabel(17.5, "USD", "SELL")).toMatch(/^Limit offer: 17[,.]50 USD$/);
+    expect(limitOfferLabel(17.5, "USD", "BUY")).toMatch(/^Limit bid: 17[,.]50 USD$/);
+    expect(quoteBookLabel(17.4, 17.6, "USD")).toMatch(/^Bid \/ ask: 17[,.]40 \/ 17[,.]60 USD$/);
+    expect(quoteBookLabel(null, 17.6, "USD")).toMatch(/^Bid \/ ask: — \/ 17[,.]60 USD$/);
     expect(provenanceLabel({
       route: "covered_call", tranche: 2, rung: 1, intended_assigned_shares: 100,
     })).toContain("covered call");
