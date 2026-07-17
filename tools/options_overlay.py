@@ -108,17 +108,25 @@ def _quote_side(contract: dict[str, Any], *keys: str) -> float | None:
 
 
 def _short_credit(contract: dict[str, Any]) -> float | None:
-    """Premium credit for a short put/call: best bid, not mid.
+    """Sellable premium credit: the bid only.
 
-    Midpoint flatters yield. A marketable sell is paid the bid; last/ask are
-    fallbacks only when the bid is missing (common on thin weeklies).
+    Last/ask are not a short credit — using them minted absurd 1-DTE yields when
+    the book showed ``— / ask``. No bid means no yield from the tape.
     """
-    return _quote_side(contract, "bid", "last", "ask")
+    return _quote_side(contract, "bid")
 
 
 def _long_debit(contract: dict[str, Any]) -> float | None:
     """Premium debit for a long put/call: best ask (offer), not mid."""
     return _quote_side(contract, "ask", "last", "bid")
+
+
+def _rank_yield(rung: dict[str, Any]) -> tuple[int, float]:
+    """Richest real yield first; rungs without a sellable bid sink to the bottom."""
+    yld = rung.get("premium_yield_annual_pct")
+    if isinstance(yld, (int, float)):
+        return (0, -float(yld))
+    return (1, 0.0)
 
 
 def _chain_source(chain: dict[str, Any] | None) -> str:
@@ -269,10 +277,12 @@ def _call_candidate(
     edate: dt.date, chain_source: str, chain: dict[str, Any] | None, *,
     contracts: int, fx: float,
 ) -> dict[str, Any] | None:
-    """One covered-call ladder rung for a listed (or synthetic) call strike:
-    premium (short credit = bid, else Black-Scholes), annualized yield,
-    assignment probability (chain delta when present, else modeled), and a
-    liquidity tag."""
+    """One covered-call ladder rung for a listed (or synthetic) call strike.
+
+    Annualized yield is computed only from a live bid. Missing bid → no yield
+    (ask/last must not invent a short credit), though the rung may still be
+    stageable when an IBKR conid is known.
+    """
     strike = call.get("strike")
     if not isinstance(strike, (int, float)) or strike <= 0:
         return None
@@ -282,30 +292,43 @@ def _call_candidate(
     premium = _short_credit(call)
     source = chain_source if premium is not None else "black_scholes"
     if premium is None:
+        # Modelled premium is display-only; yield stays unset without a bid.
         premium = options_math.bs_price(spot, strike, t_years, use_vol, rate=rate, kind="call")
-    if premium is None or round(float(premium), 4) <= 0:
+    has_bid = source != "black_scholes"
+    if premium is not None:
+        premium = round(float(premium), 4)
+        if premium <= 0:
+            premium = None
+    if premium is None and not _conid(call):
         return None
-    premium = round(float(premium), 4)
     raw_delta = call.get("delta")
     delta = (float(raw_delta) if isinstance(raw_delta, (int, float)) and 0.0 < abs(raw_delta) <= 1.0
              else options_math.bs_delta(spot, strike, t_years, use_vol, rate=rate, kind="call"))
     dte = max(1, (edate - as_of).days)
-    yield_annual = (premium / strike) * (365.0 / dte)
-    liq, spread = _liquidity(call, source)
-    estimate = source == "black_scholes"
+    yield_annual = (
+        (premium / strike) * (365.0 / dte) if has_bid and premium is not None else None
+    )
+    liq, spread = _liquidity(call, source if has_bid else "black_scholes")
+    estimate = not has_bid
     out = {
         "strike": round(float(strike), 2),
         "premium": premium,
-        "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
-        "effective_exit": round(strike + premium, 4),
+        "premium_czk": (
+            round(premium * CONTRACT_SIZE * contracts * fx, 2) if premium is not None else None
+        ),
+        "effective_exit": (
+            round(strike + premium, 4) if premium is not None else None
+        ),
         "moneyness_pct": round((strike / spot - 1.0) * 100.0, 2),
-        "premium_yield_annual_pct": round(yield_annual * 100.0, 2),
+        "premium_yield_annual_pct": (
+            round(yield_annual * 100.0, 2) if yield_annual is not None else None
+        ),
         "assignment_prob_pct": round(delta * 100.0, 1) if delta is not None else None,
         "open_interest": _as_int(call.get("open_interest")),
         "volume": _as_int(call.get("volume")),
         "spread_pct": round(spread * 100.0, 1) if spread is not None else None,
         "liquidity": liq,
-        "source": source,
+        "source": chain_source if _conid(call) else source,
         "estimate": estimate,
     }
     _attach_executable_metadata(out, contract=call, chain=chain,
@@ -377,7 +400,7 @@ def covered_call_ladder(
             cand["expiry"] = expiry_iso
             cand["dte"] = max(1, (edate - as_of).days)
             rungs.append(cand)
-    rungs.sort(key=lambda r: r["premium_yield_annual_pct"], reverse=True)
+    rungs.sort(key=_rank_yield)
     return rungs
 
 
@@ -386,7 +409,10 @@ def _put_entry_candidate(
     edate: dt.date, chain_source: str, chain: dict[str, Any] | None, *,
     contracts: int, fx: float,
 ) -> dict[str, Any] | None:
-    """One cash-secured-put rung: premium yield and effective assigned entry."""
+    """One cash-secured-put rung: premium yield and effective assigned entry.
+
+    Yield requires a bid. Ask-only / last-only prints are not a short credit.
+    """
     strike = put.get("strike")
     if not isinstance(strike, (int, float)) or strike <= 0:
         return None
@@ -397,9 +423,13 @@ def _put_entry_candidate(
     source = chain_source if premium is not None else "black_scholes"
     if premium is None:
         premium = options_math.bs_price(spot, strike, t_years, use_vol, rate=rate, kind="put")
-    if premium is None or round(float(premium), 4) <= 0:
+    has_bid = source != "black_scholes"
+    if premium is not None:
+        premium = round(float(premium), 4)
+        if premium <= 0:
+            premium = None
+    if premium is None and not _conid(put):
         return None
-    premium = round(float(premium), 4)
     raw_delta = put.get("delta")
     delta = (
         float(raw_delta)
@@ -407,23 +437,31 @@ def _put_entry_candidate(
         else options_math.bs_delta(spot, strike, t_years, use_vol, rate=rate, kind="put")
     )
     dte = max(1, (edate - as_of).days)
-    yield_annual = (premium / strike) * (365.0 / dte)
-    liq, spread = _liquidity(put, source)
-    estimate = source == "black_scholes"
+    yield_annual = (
+        (premium / float(strike)) * (365.0 / dte) if has_bid and premium is not None else None
+    )
+    liq, spread = _liquidity(put, source if has_bid else "black_scholes")
+    estimate = not has_bid
     out = {
         "strike": round(float(strike), 2),
         "premium": premium,
-        "premium_czk": round(premium * CONTRACT_SIZE * contracts * fx, 2),
-        "effective_entry": round(float(strike) - premium, 4),
+        "premium_czk": (
+            round(premium * CONTRACT_SIZE * contracts * fx, 2) if premium is not None else None
+        ),
+        "effective_entry": (
+            round(float(strike) - premium, 4) if premium is not None else None
+        ),
         "cash_secured_czk": round(float(strike) * CONTRACT_SIZE * contracts * fx, 2),
         "moneyness_pct": round((float(strike) / spot - 1.0) * 100.0, 2),
-        "premium_yield_annual_pct": round(yield_annual * 100.0, 2),
+        "premium_yield_annual_pct": (
+            round(yield_annual * 100.0, 2) if yield_annual is not None else None
+        ),
         "assignment_prob_pct": round(abs(delta) * 100.0, 1) if delta is not None else None,
         "open_interest": _as_int(put.get("open_interest")),
         "volume": _as_int(put.get("volume")),
         "spread_pct": round(spread * 100.0, 1) if spread is not None else None,
         "liquidity": liq,
-        "source": source,
+        "source": chain_source if _conid(put) else source,
         "estimate": estimate,
     }
     _attach_executable_metadata(
@@ -487,7 +525,7 @@ def cash_secured_put_ladder(
             candidate["expiry"] = expiry_iso
             candidate["dte"] = max(1, (edate - as_of).days)
             rungs.append(candidate)
-    rungs.sort(key=lambda rung: rung["premium_yield_annual_pct"], reverse=True)
+    rungs.sort(key=_rank_yield)
     return rungs
 
 
@@ -501,13 +539,20 @@ def _pick_expiry(
     side: str | None = None,
     min_contracts: int = 4,
     prefer_soonest: bool = False,
+    allow_out_of_band: bool | None = None,
 ) -> dict[str, Any] | None:
     """Useful expiry in the DTE band, preferring a real ladder over a sparse date.
 
     ``prefer_soonest`` (nearest-weekly mode) ranks in-band candidates by DTE
     ascending after the sparse penalty; monthly mode ranks by distance to the
     band midpoint.
+
+    Out-of-band fallback is off when ``prefer_soonest`` is set (nearest mode):
+    names without weeklies must not silently reuse the monthly expiry and look
+    identical to the Monthly tab.
     """
+    if allow_out_of_band is None:
+        allow_out_of_band = not prefer_soonest
     target_dte = (dte_min + dte_max) / 2.0
     scored: list[tuple[int, float, dict[str, Any]]] = []
     fallback: list[tuple[int, int, dict[str, Any]]] = []
@@ -529,7 +574,7 @@ def _pick_expiry(
             scored.append((sparse, rank, e))
     if scored:
         return min(scored, key=lambda item: (item[0], item[1]))[2]
-    if fallback:
+    if allow_out_of_band and fallback:
         return min(fallback, key=lambda item: (item[0], item[1]))[2]
     return None
 

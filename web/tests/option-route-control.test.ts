@@ -109,6 +109,24 @@ describe("createOptionRouteControl", () => {
       expect(String(last?.[0])).toContain("expiry_mode=nearest");
     });
     await vi.waitFor(() => expect(control.detail.textContent).toContain("2026-07-10"));
+    const callsAfterNearest = apiMock.mock.calls.length;
+    const monthlyBtn = [...control.detail.querySelectorAll("button")]
+      .find((node) => node.textContent === "Monthly")!;
+    monthlyBtn.click();
+    await vi.waitFor(() => expect(control.detail.textContent).toContain("93"));
+    // Session cache: toggling back must not re-hit IBKR.
+    expect(apiMock.mock.calls.length).toBe(callsAfterNearest);
+  });
+
+  it("drops the session route cache when the detail is closed", async () => {
+    apiMock.mockResolvedValue(rebalanceRoute("increase"));
+    const control = createOptionRouteControl("NVDA", 230_000, new Map());
+    control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() => expect(control.detail.querySelector(".reb-option-contract")).toBeTruthy());
+    expect(apiMock).toHaveBeenCalledTimes(1);
+    control.detail.querySelector<HTMLButtonElement>(".reb-route-detail-close")!.click();
+    control.controls.querySelectorAll("button")[1].dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalledTimes(2));
   });
 
   it("calls onExitNavigate from compact select and exit button", () => {

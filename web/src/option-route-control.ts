@@ -45,13 +45,35 @@ export function writeOptionExpiryMode(mode: OptionExpiryMode): void {
 
 export class OptionRouteLoader {
   private token = 0;
+  /** In-memory routes for this control; lives until clearCache / amount change. */
+  private cache = new Map<string, RebalanceRouteResponse>();
+
+  private cacheKey(
+    symbol: string,
+    deltaCzk: number,
+    expiryMode: OptionExpiryMode,
+  ): string {
+    return `${symbol.toUpperCase()}|${Math.round(deltaCzk)}|${expiryMode}`;
+  }
 
   cancel(): void {
     this.token += 1;
   }
 
+  clearCache(): void {
+    this.cache.clear();
+  }
+
   isCurrent(token: number): boolean {
     return token === this.token;
+  }
+
+  getCached(
+    symbol: string,
+    deltaCzk: number,
+    expiryMode: OptionExpiryMode = readOptionExpiryMode(),
+  ): RebalanceRouteResponse | undefined {
+    return this.cache.get(this.cacheKey(symbol, deltaCzk, expiryMode));
   }
 
   async load(
@@ -61,12 +83,20 @@ export class OptionRouteLoader {
   ): Promise<{
     route: RebalanceRouteResponse;
     token: number;
+    fromCache: boolean;
   } | null> {
+    const key = this.cacheKey(symbol, deltaCzk, expiryMode);
+    const cached = this.cache.get(key);
+    if (cached) {
+      const token = ++this.token;
+      return { route: cached, token, fromCache: true };
+    }
     const token = ++this.token;
     try {
       const route = await fetchRebalanceRoute(symbol, deltaCzk, expiryMode);
       if (!this.isCurrent(token)) return null;
-      return { route, token };
+      this.cache.set(key, route);
+      return { route, token, fromCache: false };
     } catch (error) {
       if (!this.isCurrent(token)) return null;
       throw error;
@@ -152,6 +182,7 @@ export function createOptionRouteControl(
     close.addEventListener("click", () => {
       detail.hidden = true;
       detail.innerHTML = "";
+      loader.clearCache();
       paintCompactSelection();
     });
     chrome.append(bar, close);
@@ -255,7 +286,11 @@ export function createOptionRouteControl(
           `<strong>${rung.strike} ${right}</strong>` +
         `</div>` +
         `<div class="reb-option-metric"><span>Bid / ask</span><strong>${rung.bid ?? "—"} / ${rung.ask ?? "—"}</strong></div>` +
-        `<div class="reb-option-metric"><span>Yield p.a.</span><strong>${rung.premium_yield_annual_pct.toFixed(1)}%</strong></div>` +
+        `<div class="reb-option-metric"><span>Yield p.a.</span><strong>${
+          rung.premium_yield_annual_pct != null
+            ? `${rung.premium_yield_annual_pct.toFixed(1)}%`
+            : "—"
+        }</strong></div>` +
         `<div class="reb-option-metric"><span>Effective ${route.direction === "increase" ? "entry" : "exit"}</span>` +
           `<strong>${effective != null ? effective.toFixed(2) : "—"} <small>${esc(route.currency || "")}</small></strong></div>` +
         `<div class="reb-option-metric"><span>Assignment chance</span>` +
@@ -325,16 +360,19 @@ export function createOptionRouteControl(
   };
 
   loadOption = async (autoSelect = false): Promise<boolean> => {
-    option.disabled = true;
-    option.textContent = "Loading live option routes…";
-    detail.hidden = false;
-    const mode = readOptionExpiryMode();
-    detail.innerHTML = "";
-    attachDetailChrome(mode);
-    const status = el("div", "status");
-    status.innerHTML = `<span class="spinner"></span> loading strikes and quotes…`;
-    detail.appendChild(status);
     const requestedDelta = deltaCzk;
+    const mode = readOptionExpiryMode();
+    detail.hidden = false;
+    const cached = loader.getCached(symbol, requestedDelta, mode);
+    if (!cached) {
+      option.disabled = true;
+      option.textContent = "Loading live option routes…";
+      detail.innerHTML = "";
+      attachDetailChrome(mode);
+      const status = el("div", "status");
+      status.innerHTML = `<span class="spinner"></span> loading strikes and quotes…`;
+      detail.appendChild(status);
+    }
     try {
       const result = await loader.load(symbol, requestedDelta, mode);
       if (!result || requestedDelta !== deltaCzk) return false;
@@ -385,6 +423,7 @@ export function createOptionRouteControl(
     exitChoice.hidden = next >= 0;
     if (changed) {
       loader.cancel();
+      loader.clearCache();
       detail.innerHTML = "";
       detail.hidden = true;
       direct.disabled = false;

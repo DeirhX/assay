@@ -164,15 +164,16 @@ def build_route(
         and preflight_contracts < 1
     )
     option_right = "P" if direction == "increase" else "C"
-    # Opening the option route table always attempts a live IBKR rebuild so
-    # stale contract samples cannot masquerade as the current ladder.
+    # Prefer a coherent disk chain and refresh quotes only. Full secdef rebuilds
+    # are the multi-second CPAPI slog; reserve force_refresh for cold/missing
+    # caches inside cached_option_chain itself.
     chain_data = (
         None
         if skip_chain
         else option_market.cached_option_chain(
             sym,
             right=option_right,
-            force_refresh=True,
+            force_quotes=True,
             expiry_mode=mode,
         ) if chain is _UNSET
         else chain
@@ -312,7 +313,12 @@ def build_route(
     if contracts > 0:
         if not ladder:
             source = str((chain_data or {}).get("source") or "").strip().lower()
-            if source == "ibkr":
+            if mode == "nearest":
+                reasons.append(
+                    "No IBKR expiry in the nearest window (1–21 DTE); "
+                    "this name may only list monthlies — try Monthly."
+                )
+            elif source == "ibkr":
                 reasons.append(
                     "IBKR listed no usable OTM option strikes near the mark for this window."
                 )
