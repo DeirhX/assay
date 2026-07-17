@@ -162,14 +162,59 @@ def test_cash_secured_put_ladder_nearest_mode_uses_near_expiry():
     assert ladder[0]["expiry"] == "2026-07-10"
 
 
-def test_short_credit_uses_bid_not_mid():
+def test_nearest_mode_does_not_reuse_monthly_when_no_weeklies():
+    """ENTG-style: only monthlies listed → Nearest must not clone Monthly."""
+    chain = {
+        "source": "ibkr",
+        "underlying_price": 140.0,
+        "expiries": [
+            {
+                "expiry": "2026-08-21",
+                "puts": [
+                    {"strike": 130.0, "bid": 12.0, "ask": 14.0, "conid": 1, "delta": -0.4},
+                    {"strike": 125.0, "bid": 9.0, "ask": 11.0, "conid": 2, "delta": -0.3},
+                    {"strike": 115.0, "bid": 6.0, "ask": 8.0, "conid": 3, "delta": -0.25},
+                    {"strike": 105.0, "bid": 3.0, "ask": 5.0, "conid": 4, "delta": -0.17},
+                ],
+            },
+        ],
+    }
+    as_of = dt.date(2026, 7, 17)
+    nearest = ov.cash_secured_put_ladder(
+        140.0, 0.30, 0.04, as_of, chain,
+        contracts=1, fx=21.0, allow_synthetic=False, expiry_mode="nearest",
+    )
+    monthly = ov.cash_secured_put_ladder(
+        140.0, 0.30, 0.04, as_of, chain,
+        contracts=1, fx=21.0, allow_synthetic=False, expiry_mode="monthly",
+    )
+    assert nearest == []
+    assert monthly and monthly[0]["expiry"] == "2026-08-21"
+
+
+def test_pick_expiry_nearest_refuses_out_of_band_fallback():
+    expiries = [{
+        "expiry": "2026-08-21",
+        "puts": [{"strike": 130.0}] * 4,
+    }]
+    assert ov._pick_expiry(
+        expiries, dt.date(2026, 7, 17),
+        dte_min=1, dte_max=21, side="puts", prefer_soonest=True,
+    ) is None
+    assert ov._pick_expiry(
+        expiries, dt.date(2026, 7, 17),
+        dte_min=30, dte_max=45, side="puts", prefer_soonest=False,
+    )["expiry"] == "2026-08-21"
+
+
+def test_short_credit_uses_bid_not_mid_or_ask():
     assert ov._short_credit({"bid": 1.5, "ask": 1.7, "last": 1.6}) == 1.5
-    assert ov._short_credit({"bid": None, "ask": 2.15, "last": None}) == 2.15
+    assert ov._short_credit({"bid": None, "ask": 2.15, "last": 1.45}) is None
     assert ov._long_debit({"bid": 1.5, "ask": 1.7, "last": 1.6}) == 1.7
 
 
-def test_cash_secured_put_ladder_keeps_ask_only_nearest_range():
-    """Weeklies often quote ask-only; that must not collapse the ladder to one rung."""
+def test_cash_secured_put_ladder_ask_only_has_no_sell_yield():
+    """Ask-only weeklies stay visible for staging, but yield is not invented."""
     chain = {
         "source": "ibkr",
         "underlying_price": 380.0,
@@ -187,8 +232,10 @@ def test_cash_secured_put_ladder_keeps_ask_only_nearest_range():
         380.0, 0.30, 0.04, AS_OF.date(), chain,
         contracts=1, fx=21.0, allow_synthetic=False, expiry_mode="nearest",
     )
-    assert [rung["strike"] for rung in ladder] == [360.0, 350.0, 337.5, 310.0]
-    assert all(rung["premium"] > 0 for rung in ladder)
+    assert {rung["strike"] for rung in ladder} == {360.0, 350.0, 337.5, 310.0}
+    assert all(rung["premium_yield_annual_pct"] is None for rung in ladder)
+    assert all(rung["estimate"] is True for rung in ladder)
+    assert all(rung["stageable"] is True for rung in ladder)
 
 
 def test_cash_secured_put_ladder_refuses_synthetic_when_disallowed():
@@ -497,9 +544,9 @@ def test_ibkr_missing_bid_ask_not_executable():
     cc = out["covered_call"]
     assert cc["stageable"] is True
     assert cc["executable"] is False
-    assert cc["estimate"] is False          # last still prices the premium
-    assert cc["source"] == "ibkr"
-    assert cc["premium"] == 2.2
+    assert cc["estimate"] is True  # last/ask are not a short credit; BS marks estimate
+    assert cc["source"] == "black_scholes"
+    assert cc["premium"] > 0
     assert cc["conid"] == 100105
 
 

@@ -140,7 +140,7 @@ def test_route_fetches_only_the_option_side_needed_for_its_direction():
         rebalance_routes.build_route(_holdings(), "NVDA", 230_000, now=NOW)
 
     chain.assert_called_once_with(
-        "NVDA", right="P", force_refresh=True, expiry_mode="monthly",
+        "NVDA", right="P", force_quotes=True, expiry_mode="monthly",
     )
 
 
@@ -340,7 +340,7 @@ def test_chain_spot_falls_back_to_bid_ask_mid():
     }) == 100.0
 
 
-def test_route_table_access_requests_live_ibkr_refresh():
+def test_route_table_access_requests_quote_refresh():
     warm = _chain()
     warm["currency"] = None
     with mock.patch.object(
@@ -359,7 +359,7 @@ def test_route_table_access_requests_live_ibkr_refresh():
         route = rebalance_routes.build_route(_holdings(), "ADI", 230_000, now=NOW)
 
     chain.assert_called_once_with(
-        "ADI", right="P", force_refresh=True, expiry_mode="monthly",
+        "ADI", right="P", force_quotes=True, expiry_mode="monthly",
     )
     assert route["expiry_mode"] == "monthly"
     assert route["planned_shares"] == 100
