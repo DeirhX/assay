@@ -39,7 +39,7 @@ test.describe("app shell + navigation", () => {
     await expect(page.locator("#gateway-panel-content")).toContainText("login required");
   });
 
-  test("Orders lands on the pipeline index with the guarded execution flow", async ({ page }) => {
+  test("Trade lands on the pipeline index with the guarded execution flow", async ({ page }) => {
     await installApi(page);
     await page.goto("/");
 
@@ -59,21 +59,38 @@ test.describe("app shell + navigation", () => {
     await expect(page.locator('.group[data-group="rebalance"]')).toHaveClass(/active/);
   });
 
-  test("target-model tools live under Plan, outside the execution workflow", async ({ page }) => {
+  test("Targets lands on Composition; advanced modes stay outside Trade", async ({ page }) => {
     await installApi(page);
     await page.goto("/");
 
     await page.locator('.group[data-group="strategy"]').click();
-    const planTabs = page.locator('.subtabs[data-group="strategy"]');
-    await expect(planTabs).toBeVisible();
-    await expect(planTabs).toContainText("Guided plan");
-    await expect(planTabs).toContainText("Optimizer");
-    await expect(planTabs).toContainText("Pending model changes");
+    await expect(page.locator("#view-working-draft")).toHaveClass(/active/);
+    await expect(page.locator("#composition-panel")).toBeVisible();
+    await expect(page.locator('.subtabs[data-group="strategy"]')).toHaveCount(0);
     await expect(page.locator("#flowbar")).toBeHidden();
 
-    await planTabs.locator('[data-view="optimizer"]').click();
+    await page.locator('#composition-panel [data-shell-view="optimizer"]').click();
     await expect(page.locator("#view-optimizer")).toHaveClass(/active/);
     await expect(page.locator('.group[data-group="strategy"]')).toHaveClass(/active/);
+    await expect(page.locator("#flowbar")).toBeHidden();
+  });
+
+  test("Research is Topics and Ticker; Activity lives under Portfolio", async ({ page }) => {
+    await installApi(page);
+    await page.goto("/");
+
+    await page.locator('.group[data-group="research"]').click();
+    const researchTabs = page.locator('.subtabs[data-group="research"]');
+    await expect(researchTabs).toBeVisible();
+    await expect(researchTabs).toContainText("Topics");
+    await expect(researchTabs).toContainText("Ticker");
+    await expect(researchTabs).not.toContainText("Deep Research");
+
+    await page.locator('.group[data-group="portfolio"]').click();
+    const portTabs = page.locator('.subtabs[data-group="portfolio"]');
+    await expect(portTabs).toContainText("Activity");
+    await expect(portTabs).toContainText("Decisions");
+    await expect(page.locator('.utility-tab[data-view="activity"]')).toHaveCount(0);
   });
 
   test("advanced reductions has an explicit return to order building", async ({ page }) => {
@@ -86,11 +103,12 @@ test.describe("app shell + navigation", () => {
     await expect(page.locator("#view-rebalance")).toHaveClass(/active/);
   });
 
-  test("Journal keeps the Activity utility navigation highlighted", async ({ page }) => {
+  test("Journal highlights Portfolio Decisions subtab", async ({ page }) => {
     await installApi(page);
     await page.goto("/?view=journal");
 
-    await expect(page.locator('.utility-tab[data-view="activity"]')).toHaveClass(/active/);
+    await expect(page.locator('.group[data-group="portfolio"]')).toHaveClass(/active/);
+    await expect(page.locator('.subtab[data-view="journal"]')).toHaveClass(/active/);
     await expect(page.locator("#view-journal")).toHaveClass(/active/);
   });
 });

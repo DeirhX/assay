@@ -72,7 +72,7 @@ async function loadCachedSegment(name: string, { push = false }: { push?: boolea
   const validSortKeys = new Set(SEG_COLS.map(([key]) => key).filter((key) => key !== "__spark"));
   state.segSort = requestedSort && validSortKeys.has(requestedSort[1])
     ? { key: requestedSort[1], dir: requestedSort[2] === "asc" ? 1 : -1 }
-    : { key: "research_score", dir: -1 };
+    : { key: "oc_rank", dir: 1 };
   const status = $$("#seg-status");
   name = cleanSlug(name);
   if (!name) return;
@@ -134,8 +134,10 @@ const SEG_COLS: [string, string, boolean][] = [
   ["symbol", "Symbol", false],
   ["__spark", "Trend", false],   // cached-only sparkline; not a sortable metric
   ["decision", "Decision", false],
+  ["oc_rank", "OC #", true],
   ["research_score", "Score", true],
-  ["sleeve", "Sleeve", false],
+  ["home_segment", "Home", false],
+  ["sleeve", "Topic sleeve", false],
   ["owned_pct_nav", "Held %", true],
   ["price", "Price", true],
   ["market_cap_usd_b", "Mkt cap", true],
@@ -155,6 +157,10 @@ interface SegMember {
   data_quality?: string;
   decision?: string;
   research_score?: number | null;
+  oc_rank?: number | null;
+  oc_score?: number | null;
+  prospect?: number | null;
+  home_segment?: string | null;
   sleeve?: string;
   owned_pct_nav?: number | null;
   price?: number | null;
@@ -194,7 +200,7 @@ function renderSegment(rec: SegmentRec) {
         s.dir = s.key === key ? -s.dir : (num ? -1 : 1);
         s.key = key;
         replaceViewState({
-          sort: key === "research_score" && s.dir < 0
+          sort: key === "oc_rank" && s.dir > 0
             ? "" : `${key}:${s.dir < 0 ? "desc" : "asc"}`,
         });
         if (state.lastSegment) renderSegment(state.lastSegment);
@@ -221,12 +227,20 @@ function renderSegment(rec: SegmentRec) {
     // basket as a "curious" pick carrying which universe it was found in.
     const star = el("td", "seg-star-cell", starHtml(m.symbol, "segment", { tier: "curious", segment: slug || undefined }));
     tr.appendChild(star);
+    const ocTitle = m.oc_score == null ? ""
+      : ` title="OC score ${m.oc_score}${m.prospect != null ? ` · prospect ${m.prospect}` : ""} (advisory)"`;
     const cells = [
       `<span class="dot ${m.data_quality}"></span><strong>${esc(m.symbol)}</strong>`,
       sparkPlaceholder(m.symbol),
       decisionPill(m.decision, { fallback: "research" }),
+      m.oc_rank == null
+        ? `<span class="muted">–</span>`
+        : `<span class="score-pill"${ocTitle}>#${esc(m.oc_rank)}</span>`,
       `<span class="score-pill ${scoreClass(m.research_score)}">${m.research_score == null ? "n/a" : esc(m.research_score)}</span>`,
-      `<span class="sleeve-tag">${esc(m.sleeve)}</span>`,
+      m.home_segment
+        ? `<span class="sleeve-tag home-tag" title="Allocation home (partition)">${esc(m.home_segment)}</span>`
+        : `<span class="muted" title="No allocation home yet">unassigned</span>`,
+      `<span class="sleeve-tag">${esc(m.sleeve || "")}</span>`,
       m.owned_pct_nav != null ? `<span class="owned-pill">${m.owned_pct_nav.toFixed(1)}</span>` : `<span class="muted">–</span>`,
       fmtPrice(m.price),
       fmtB(m.market_cap_usd_b),
@@ -254,7 +268,7 @@ function renderSegment(rec: SegmentRec) {
   // One batch /api/spark call fills the Trend column; cached-only, so members
   // without a cached dossier just show an empty slot.
   void hydrateSparks(table);
-  card.appendChild(el("div", "hint", "Score is a rough research queue heuristic from target rule, band gap, growth, valuation, momentum, and data trust. It is not an order signal, because we are not building a robot broker for future regret. Click a row to deep-dive."));
+  card.appendChild(el("div", "hint", "OC # ranks opportunity cost inside this topic (prospect minus valuation/quality drag) — advisory only; bands still own trades. Home is the allocation sleeve that owns the name (partition). Score is the older research-queue heuristic. Click a row to deep-dive."));
   out.appendChild(card);
 }
 

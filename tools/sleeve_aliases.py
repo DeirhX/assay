@@ -42,6 +42,14 @@ _DEFAULT_ALIASES: dict[str, str] = {
     "networking": "semis-networking",
     "etf": "semis-etf",
     "etfs": "semis-etf",
+    "nuclear": "nuclear",
+    "uranium": "nuclear",
+    "fintech": "fintech",
+    "payments": "fintech",
+    "power": "power",
+    "electrification": "power",
+    "space": "space",
+    "launch": "space",
 }
 
 

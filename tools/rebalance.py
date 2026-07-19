@@ -36,6 +36,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import portfolio  # noqa: E402  -- single source of truth for position weights
+import segment_home  # noqa: E402  -- allocation-segment home partition
 from hygiene import SEV_RANK  # noqa: E402  -- shared severity rank
 from portfolio import HOLDINGS_JSON, TARGET_MODEL_JSON  # noqa: E402  -- canonical data paths
 
@@ -297,6 +298,10 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
         f"targets want managed names at ~{managed_target_mid:.1f}% + {cash_target:g}% cash, "
         f"leaving ~{budget:.1f}% for the {n_untargeted} untargeted 'hold' names "
         f"(currently {untargeted_cur:.1f}%){tail}")
+
+    # Allocation-segment home partition (sleeves are the segments).
+    for sev, area, msg in segment_home.validate_homes(model):
+        add(sev, area, msg)
 
     return findings
 

@@ -17,23 +17,24 @@ the **feature catalog**: every view, every button, and what it triggers.
 
 ## Navigation model
 
-The header exposes **five workflow-ordered groups**:
-**Today → Plan → Research → Orders → Portfolio**. Watchlist and Activity are
-utility destinations; the Settings gear sits outside the groups.
+The header exposes **five workflow-ordered groups** along the spine
+**Research → Decide → Act**:
+**Today → Targets → Research → Trade → Portfolio**. Watchlist is a utility;
+the Settings gear sits outside the groups.
 
-| Group | Lands on | Sub-tabs |
+| Group | Lands on | Sub-tabs / modes |
 | --- | --- | --- |
-| **Today** | Daily command center | *(single view)* |
-| **Plan** | Direction → Rebalance (`strategy`) | Guided plan · Optimizer · Pending model changes |
-| **Research** | Segment leaderboard | Explore · Ticker · Deep Research *(+ Pipeline/Segment sub-pages)* |
-| **Orders** | Order pipeline | Flowbar: Build orders · Review impact · Preview & place |
-| **Portfolio** | Positions | Positions · History · Analytics |
-| **Watchlist / Activity** | Their respective utility views | Activity also contains Decisions |
+| **Today** | Daily command center | *(single view; one Next step)* |
+| **Targets** | Composition & draft | No sub-bar. Guided plan / Optimizer are advanced modes from Composition |
+| **Research** | Topics (leaderboard) | Topics · Ticker. Deep Research library/pipeline are modes under Topics |
+| **Trade** | Order pipeline | Flowbar: Build orders · Review impact · Preview & place |
+| **Portfolio** | Positions | Positions · History · Analytics · Activity · Decisions |
+| **Watchlist** | Shortlist utility | Feeds guided plan / optimizer; not the order queue |
 
 Behaviors that apply everywhere:
 
 - **Group memory** — re-clicking most group headers returns you to the *last view
-  visited* in that group. Orders is deliberately stable: its header always opens
+  visited* in that group. Trade is deliberately stable: its header always opens
   the Order pipeline index rather than a remembered placement step.
 - **The URL is the persistence layer** — `?view=`, `?ticker=`, `?segment=`,
   `?run=` round-trip so any state is deep-linkable and back/forward works. A bare
@@ -185,9 +186,10 @@ Endpoints: `GET /api/deep-runs`, `GET /api/deep-run/{stem}`,
 A peer-comparison universe you can pull and rank.
 
 - Dropdown segment picker, **Run live pull**, **Load cached**.
-- A **sortable peer table** (score desc by default): ★, symbol, trend sparkline,
-  decision pill, metric columns (price, mkt cap, fwd P/E, P/S, rev growth, gross
-  margin, 3M/12M, vs-52w-high), held %. Row click → deep dive.
+- A **sortable peer table** (OC rank asc by default): ★, symbol, trend sparkline,
+  decision pill, **OC #** (advisory opportunity-cost rank), research score,
+  **Home** (allocation sleeve), topic sleeve tag, metric columns, held %.
+  Row click → deep dive.
 - A **macro regime strip** (rates/credit/USD/vol) above the table.
 
 Endpoints: `GET /api/segments`, `POST /api/pull-segment/{name}`,
@@ -263,17 +265,22 @@ Whole-book sizing under explicit constraints.
 Endpoints: `GET /api/optimizer`, `POST /api/optimizer/run|/api/optimizer/stage`,
 `POST /api/portfolio-review`.
 
-### Working draft — `staging.ts`
-The staged target model you review before committing to live.
+### Composition & draft — `staging.ts` (+ `composition.ts`)
+The Targets landing view: allocation-segment ratios plus the staged target model.
 
+- **Allocation composition** (top of the page): current vs proposed sleeve
+  midpoints, optional LLM propose, hand-edit, **Stage composition →** into the
+  draft. **Fold N standalones into sleeves** migrates top-level targets into the
+  partition (tag/home/ETF heuristic, else `other`) for review.
 - Reconciliation tiles (budget / over-allocation warnings), overlap advisories,
   pinned convictions.
 - Changes grouped **New / Adjusted / Removed** with band-shift viz and a **Keep
   current** per row.
-- Post-commit: confirmation, **Go to Trade →**, and an optional **Revert this
+- Post-commit: confirmation, hand-off to Trade, and an optional **Revert this
   commit** with a diff preview.
 
 Endpoints: `GET /api/staging`, `POST /api/staging/commit|discard|edit`,
+`GET /api/composition`, `POST /api/composition/propose|stage|migrate`,
 `GET /api/target-model/restore-preview`, `POST /api/target-model/restore`.
 
 ### Target state — `targetstate.ts`
@@ -505,6 +512,7 @@ Segments
 Target model / staging
   GET  /api/target-model             GET  /api/staging
   POST /api/staging/commit|discard|edit
+  GET  /api/composition              POST /api/composition/propose|stage|migrate
   GET  /api/target-model/restore-preview   POST /api/target-model/restore
   GET  /api/basket                   POST /api/basket/add|tier|remove|clear|draft-plan
   GET  /api/optimizer                POST /api/optimizer/run|stage

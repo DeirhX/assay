@@ -11,9 +11,9 @@
     <h1><button class="brand-home" id="brand-home" type="button" aria-label="Open Today dashboard">Assay</button></h1>
     <div class="groups" role="tablist" aria-label="Sections">
       <button class="group" data-group="today" type="button" role="tab">Today</button>
-      <button class="group" data-group="strategy" type="button" role="tab">Plan</button>
+      <button class="group" data-group="strategy" type="button" role="tab">Targets</button>
       <button class="group" data-group="research" type="button" role="tab">Research</button>
-      <button class="group" data-group="rebalance" type="button" role="tab">Orders <span class="group-badge" id="orders-count" hidden></span></button>
+      <button class="group" data-group="rebalance" type="button" role="tab">Trade <span class="group-badge" id="orders-count" hidden></span></button>
       <button class="group" data-group="portfolio" type="button" role="tab">Portfolio</button>
     </div>
     <div class="topsearch">
@@ -22,7 +22,6 @@
     </div>
     <div class="spacer"></div>
     <button class="tab utility-tab" data-view="basket" type="button">Watchlist <span class="group-badge" id="basket-count" hidden></span></button>
-    <button class="tab utility-tab" data-view="activity" type="button">Activity</button>
     <button class="task-indicator" id="task-indicator" type="button" aria-expanded="false" aria-controls="task-panel" title="Background tasks">Tasks</button>
     <button class="gateway-indicator checking" id="gateway-indicator" type="button" aria-live="polite" aria-expanded="false" aria-controls="gateway-panel" title="Checking the IBKR Client Portal Gateway">IBKR: checking…</button>
     <button class="error-indicator" id="error-indicator" type="button" aria-expanded="false" aria-controls="error-panel" hidden></button>
@@ -31,22 +30,14 @@
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
     <div class="subbar" id="subbar" hidden>
-      <div class="subtabs" data-group="strategy" role="tablist" hidden>
-        <button class="subtab" data-view="strategy" type="button" role="tab">Guided plan</button>
-        <button class="subtab" data-view="optimizer" type="button" role="tab">Optimizer</button>
-        <button class="subtab" data-view="working-draft" type="button" role="tab">Pending model changes</button>
-      </div>
       <div class="subtabs" data-group="research" role="tablist" hidden>
-        <button class="subtab" data-view="leaderboard" type="button" role="tab">Explore</button>
+        <button class="subtab" data-view="leaderboard" type="button" role="tab">Topics</button>
         <button class="subtab" data-view="deepdive" type="button" role="tab">Ticker</button>
-        <button class="subtab" data-view="analyses" type="button" role="tab">Deep Research</button>
       </div>
       <div class="subtabs" data-group="portfolio" role="tablist" hidden>
         <button class="subtab" data-view="holdings" type="button" role="tab">Positions</button>
         <button class="subtab" data-view="history" type="button" role="tab">History</button>
         <button class="subtab" data-view="risk" type="button" role="tab">Analytics</button>
-      </div>
-      <div class="subtabs" data-group="activity" role="tablist" hidden>
         <button class="subtab" data-view="activity" type="button" role="tab">Activity</button>
         <button class="subtab" data-view="journal" type="button" role="tab">Decisions</button>
       </div>
@@ -91,11 +82,12 @@
          Current holdings are shown as an input, not a numbered task. -->
     <nav class="flowbar" id="flowbar" aria-label="Rebalance pipeline" hidden></nav>
 
-    <!-- STRATEGY (guided Direction -> Rebalance) -->
+    <!-- STRATEGY (guided Direction -> Rebalance) — advanced Targets mode -->
     <section class="view" id="view-strategy">
       <div class="strat-head">
-        <h2>Direction → Rebalance</h2>
-        <details class="view-help"><summary>How this works</summary><p class="hint">Type a direction. Assay drafts a research segment, runs Deep Research, synthesizes target-model bands, and pauses at two approval gates before showing the rebalance recommendation. <span class="signpost">This is the <strong>guided</strong> path — it runs the whole flow for you. The <strong>Optimizer</strong> resizes the book automatically; the <strong>Rebalance</strong> planner is manual, one name at a time.</span> (The Research tabs hold these same steps as standalone tools.)</p></details>
+        <p class="mode-back"><button class="linklike" type="button" data-shell-view="working-draft">← Composition</button></p>
+        <h2>Guided plan</h2>
+        <details class="view-help"><summary>How this works</summary><p class="hint">An advanced Targets mode: type a direction, Assay drafts a research topic, runs Deep Research, synthesizes allocation bands, and pauses at approval gates. Prefer <strong>Composition</strong> for segment ratios; use <strong>Trade</strong> to build orders from the live model.</p></details>
       </div>
       <ol class="strat-stages" id="strat-stages" hidden>
         <li data-stage="draft">Draft</li>
@@ -122,8 +114,11 @@
     <section class="view" id="view-leaderboard">
       <div class="page-head page-head--spaced reb-head">
         <div class="page-head-text reb-head-text">
-          <h2>Segment leaderboard</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Every cached research segment ranked by "promise" — a deliberately dumb, transparent composite (<code>rank(3M momentum) + rank(breadth)</code>, shown on hover) — with your exposure overlaid. It orders, it doesn't forecast. All from cached pulls; nothing here fetches or trades. Callouts flag the two actionable mismatches: hot segments you barely own, and weak ones you're heavy in. Click a tile to open its peer table.</p></details>
+          <h2>Research topics</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Overlapping research lenses (topics), ranked by "promise" — <code>rank(3M momentum) + rank(breadth)</code> — with your exposure overlaid. Topics discover; allocation sleeves own capital. Click a tile for the peer table. Deep Research reports live in the library.</p></details>
+        </div>
+        <div class="page-head-actions reb-head-actions">
+          <button class="ghost" type="button" data-shell-view="analyses">Deep Research library →</button>
         </div>
       </div>
       <div class="status" id="lb-status"></div>
@@ -379,12 +374,13 @@
       </div>
     </section>
 
-    <!-- ANALYSES -->
+    <!-- ANALYSES (Research mode under Topics) -->
     <section class="view" id="view-analyses">
       <div class="analyses-head">
         <div class="analyses-head-text">
+          <p class="mode-back"><button class="linklike" type="button" data-shell-view="leaderboard">← Topics</button></p>
           <h2>Deep Research reports</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">Every saved Perplexity Deep Research run, newest first. Pick one to read its report, sources, and review gate. Use a segment below — or the button — to start a new run.</p></details>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Saved Perplexity Deep Research runs for research topics. Reports stage target proposals into Composition; they never trade.</p></details>
         </div>
         <button class="primary" id="analyses-new" type="button">+ New run</button>
       </div>
@@ -452,13 +448,14 @@
     <section class="view" id="view-optimizer">
       <div class="page-head page-head--spaced reb-head">
         <div class="page-head-text reb-head-text">
-          <h2>Target-model optimizer</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">One candidate pool — everything you hold, plus your watchlist picks and segment-discovered names — sized as a whole book by conviction under your constraints. Held names ride as <strong>carry</strong>, <strong>want</strong> picks grow, low-conviction and excluded names fund the plan. The result is a target-model proposal you review under <strong>Pending model changes</strong>; it never creates orders or changes holdings by itself.</p></details>
+          <h2>Optimizer</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Advanced Targets mode: size the whole book from holdings + watchlist + topic discoveries under your constraints. Stages a draft for Composition review — never trades by itself.</p></details>
         </div>
         <div class="page-head-actions reb-head-actions">
+          <button class="ghost" type="button" data-shell-view="working-draft">← Composition</button>
           <button class="ghost" id="opt-review" type="button" title="Run a cheap analysis across every holding and watchlist pick, feeding the convictions into the pool (runs in the Task Center)">Analyze the pool</button>
           <button class="primary" id="opt-run" type="button" title="Size the whole pool under the current constraints">Optimize</button>
-          <button class="ghost" id="opt-stage" type="button" title="Add the proposed bands to Pending model changes for review" disabled>Add model proposal →</button>
+          <button class="ghost" id="opt-stage" type="button" title="Add the proposed bands to Composition draft for review" disabled>Add model proposal →</button>
         </div>
       </div>
       <div class="status" id="opt-status"></div>
@@ -469,8 +466,8 @@
     <section class="view" id="view-working-draft">
       <div class="page-head page-head--spaced reb-head">
         <div class="page-head-text reb-head-text">
-          <h2>Pending model changes</h2>
-          <details class="view-help"><summary>How this works</summary><p class="hint">A safe scratchpad for target-model changes. Proposals from guided planning and the Optimizer collect here so you can review everything together. Applying the model changes target bands; it does <strong>not</strong> trade or change current holdings. A backup is retained for reversal.</p></details>
+          <h2>Composition &amp; draft</h2>
+          <details class="view-help"><summary>How this works</summary><p class="hint">Set allocation-segment ratios, fold standalone names into sleeves, and review staged target-model changes before applying. Applying changes updates target bands; it does <strong>not</strong> trade or change current holdings. A backup is retained for reversal.</p></details>
         </div>
         <div class="page-head-actions reb-head-actions">
           <button class="primary" id="stage-commit" type="button" title="Promote the pending changes to the live target model; this does not trade">Apply target model</button>
@@ -478,6 +475,7 @@
         </div>
       </div>
       <div class="status" id="stage-status"></div>
+      <div id="composition-panel"></div>
       <div id="stage-body"></div>
     </section>
 

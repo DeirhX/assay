@@ -1,4 +1,5 @@
 import { bandBar, bandText, directionTag, ruleWord, scaleMaxFor, type Band } from "./band-viz";
+import { loadComposition } from "./composition";
 import { $, api, apiLoad, esc, fmtWeight, loadError } from "./core";
 
 // The working-draft (staging) view. Renders the whole-book diff of the staged
@@ -120,6 +121,7 @@ function checkCategory(o: any): string {
   const a = String(o.area || "");
   if (a.startsWith("coverage:")) return "Held with no plan";
   if (a.startsWith("sleeve:")) return "Counted in two places";
+  if (a.startsWith("home:")) return "Allocation home";
   return "Plan vs. your holdings";
 }
 
@@ -260,12 +262,9 @@ function render(s: Staging): void {
             : "")
         + `</div>`
       : `<div class="stage-empty-hero">`
-        + `<strong>No pending model changes.</strong>`
-        + `<p>Guided planning and the Optimizer place target-band proposals here for one portfolio-level review.</p>`
-        + `<div class="stage-empty-actions">`
-        + `<button type="button" class="ghost" data-shell-view="strategy">Start guided plan &rarr;</button>`
-        + `<button type="button" class="ghost" data-shell-view="optimizer">Open Optimizer &rarr;</button>`
-        + `</div></div>`;
+        + `<strong>No pending draft.</strong>`
+        + `<p>Edit allocation segments above, or use Advanced modes (guided plan / optimizer) to stage proposals here.</p>`
+        + `</div>`;
     // Even with no draft, the reconciliation snapshot ("where your book stands,
     // what's unallocated, funding order") is a genuinely useful destination —
     // lead with it so the page isn't a dead end when the draft is empty.
@@ -298,6 +297,8 @@ function render(s: Staging): void {
 }
 
 async function loadStaging(): Promise<void> {
+  // Composition editor sits above the draft; refresh it whenever this view loads.
+  void loadComposition();
   await apiLoad<Staging>({
     path: "/api/staging",
     status: $("#stage-status"),

@@ -91,13 +91,13 @@ describe("planCard", () => {
     const html = planCard({ rows: 10, out_of_band: 3, buy: 2, trim: 1, review: 0, actionable: 3, conflicts: 1, gates_waiting: 1, gates_open: 0, untargeted: 2, untargeted_pct: 5.5 });
     expect(html).toContain("2 buy, 1 trim, 0 review");
     expect(html).toContain("conflict");
-    expect(html).toContain('data-goto="rebalance"');
+    expect(html).toContain('data-goto="orders"');
   });
 
-  it("routes a missing model to the Planner/Optimizer", () => {
+  it("routes a missing model to Composition", () => {
     const html = planCard(null);
-    expect(html).toContain('data-goto="strategy"');
-    expect(html).toContain('data-goto="optimizer"');
+    expect(html).toContain('data-goto="working-draft"');
+    expect(html).toContain("Composition");
   });
 
   it("flags a breached cash band", () => {
@@ -138,7 +138,7 @@ describe("in-flight cards hide when there is nothing in flight", () => {
     expect(html).toContain("1 short put");
     expect(html).toContain("1 covered call");
     expect(html).toContain("direct-share value");
-    expect(html).toContain('data-goto="orders"');
+    expect(html).toContain('data-goto="target-state"');
   });
 
   it("routes an approved valid queue directly to IBKR preview", () => {

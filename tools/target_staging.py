@@ -34,6 +34,7 @@ from pathlib import Path
 
 import portfolio
 import rebalance
+import segment_home
 from config import DATA_DIR, HOLDINGS_JSON, REPO_ROOT, TARGET_MODEL_JSON
 from holdings_sync import regenerate_site as _regenerate_site
 from store import load as _load, safe_symbol as _safe_symbol, write_json as _write_json
@@ -89,13 +90,15 @@ def ensure_provenance(model: dict) -> dict:
     """Backfill a ``provenance`` entry for every target/sleeve that lacks one,
     marking it ``legacy-plan`` as of the model's ``as_of`` so today's hand-set
     bands are explicitly labelled (and stale ones become visible) rather than
-    masquerading as freshly research-derived. Returns the provenance map."""
+    masquerading as freshly research-derived. Also backfills ``home_segment``
+    from sleeve membership / compatible tags. Returns the provenance map."""
     prov = model.setdefault("provenance", {})
     as_of = model.get("as_of")
     for sym in (model.get("targets") or {}):
         prov.setdefault(sym, {"source": "legacy-plan", "set_at": as_of})
     for name in (model.get("sleeves") or {}):
         prov.setdefault(f"[{name}]", {"source": "legacy-plan", "set_at": as_of})
+    segment_home.ensure_homes(model)
     return prov
 
 
@@ -234,13 +237,31 @@ def load_staged(*, create: bool = False) -> dict | None:
     return staged
 
 
+def _proposed_home(change: dict, *, known_sleeves: set[str]) -> str | None:
+    """Home implied by a change record (explicit field or target sleeve tag)."""
+    explicit = str(change.get("home_segment") or "").strip()
+    if explicit:
+        return explicit
+    pt = change.get("proposed_target") or {}
+    if isinstance(pt, dict):
+        tag = str(pt.get("sleeve") or "").strip()
+        if tag and tag in known_sleeves:
+            return tag
+    return None
+
+
 def _prov_record(change: dict, *, source: str, run_id, segment, now: str,
-                 pin: dict | None) -> dict:
+                 pin: dict | None, home_segment: str | None = None,
+                 prior_home: str | None = None) -> dict:
     rec: dict = {"source": source, "set_at": now}
     if run_id:
         rec["run_id"] = run_id
     if segment:
         rec["segment"] = segment
+    # Durable allocation home — preserved across research lineage overwrites.
+    home = home_segment or prior_home
+    if home:
+        rec["home_segment"] = home
     if change.get("conviction"):
         rec["conviction"] = change["conviction"]
     if change.get("conviction_source"):
@@ -255,15 +276,18 @@ def _prov_record(change: dict, *, source: str, run_id, segment, now: str,
 
 
 def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy",
-                  blocked=None, allow_drop_pinned: bool = False) -> dict:
+                  blocked=None, allow_drop_pinned: bool = False,
+                  allow_rehome: bool = False) -> dict:
     """Compose a set of proposal change records into the working draft, recording
     per-key provenance. Pinned names are guarded: a remove/drop of a pinned key
-    is skipped unless ``allow_drop_pinned`` (an explicit user override)."""
+    is skipped unless ``allow_drop_pinned`` (an explicit user override).
+    Home-segment moves are skipped unless ``allow_rehome``."""
     staged = load_staged(create=True)
     assert staged is not None  # create=True always returns a dict
     prov = staged.setdefault("provenance", {})
     pins = load_pins()
     blocked = set(blocked or [])
+    known = segment_home.sleeve_names(staged)
 
     guarded: list[dict] = []
     skipped_pre: list[dict] = []
@@ -282,6 +306,18 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
             if f"[{name}]" in pins:
                 skipped_pre.append({"symbol": f"[{name}]", "reason": "pinned: drop blocked (override required)"})
                 continue
+        if act in ("add_target", "modify_target"):
+            try:
+                sym = _safe_symbol(ch.get("symbol", ""))
+            except ValueError:
+                sym = None
+            if sym:
+                proposed = _proposed_home(ch, known_sleeves=known)
+                reason = segment_home.conflict_reason(
+                    staged, sym, proposed, allow_rehome=allow_rehome)
+                if reason:
+                    skipped_pre.append({"symbol": sym, "reason": reason})
+                    continue
         guarded.append(ch)
 
     applied, skipped = _apply_changes_to_model(staged, guarded, blocked=blocked)
@@ -297,24 +333,59 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
             except ValueError:
                 continue
             if sym in applied_set:
-                prov[sym] = _prov_record(ch, source=source, run_id=run_id,
-                                         segment=segment, now=now, pin=pins.get(sym))
+                prior = None
+                old = prov.get(sym)
+                if isinstance(old, dict):
+                    prior = str(old.get("home_segment") or "").strip() or None
+                proposed = _proposed_home(ch, known_sleeves=known)
+                prov[sym] = _prov_record(
+                    ch, source=source, run_id=run_id, segment=segment, now=now,
+                    pin=pins.get(sym), home_segment=proposed, prior_home=prior)
         elif act == "remove_target":
             try:
                 sym = _safe_symbol(ch.get("symbol", ""))
             except ValueError:
                 continue
             if f"-{sym}" in applied_set:
-                prov.pop(sym, None)
+                if ch.get("preserve_provenance"):
+                    # Sleeve migration: drop the top-level band but keep lineage
+                    # + home so the name stays in the partition map.
+                    prior = prov.get(sym) if isinstance(prov.get(sym), dict) else {}
+                    home = (str(ch.get("home_segment") or "").strip()
+                            or str((prior or {}).get("home_segment") or "").strip()
+                            or None)
+                    rec = dict(prior or {})
+                    rec.update({"source": source, "set_at": now})
+                    if run_id:
+                        rec["run_id"] = run_id
+                    if segment:
+                        rec["segment"] = segment
+                    if home:
+                        rec["home_segment"] = home
+                    prov[sym] = rec
+                else:
+                    prov.pop(sym, None)
         elif act in ("add_sleeve", "modify_sleeve", "set_sleeve", "zero_sleeve"):
             name = str(ch.get("sleeve") or ch.get("name") or "").strip()
             if f"[{name}]" in applied_set:
                 prov[f"[{name}]"] = _prov_record(ch, source=source, run_id=run_id,
                                                  segment=segment, now=now, pin=None)
+                # Sleeve membership is authoritative home for each member.
+                proposed = ch.get("proposed_sleeve") or {}
+                for m in (proposed.get("members") or []):
+                    try:
+                        msym = _safe_symbol(m)
+                    except ValueError:
+                        continue
+                    mrec = prov.setdefault(msym, {"source": source, "set_at": now})
+                    if isinstance(mrec, dict):
+                        mrec["home_segment"] = name
         elif act == "drop_sleeve":
             name = str(ch.get("sleeve") or ch.get("name") or "").strip()
             if f"[{name}]" in applied_set:
                 prov.pop(f"[{name}]", None)
+
+    segment_home.ensure_homes(staged)
 
     if run_id or segment:
         staged.setdefault("_runs", []).append({

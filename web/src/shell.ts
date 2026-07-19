@@ -23,6 +23,7 @@ import { initAttributionControls, loadAttribution } from "./attribution";
 import { loadExit } from "./exit";
 import { initSegment, loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
+import { initComposition } from "./composition";
 import { initStaging, loadStaging } from "./staging";
 import { initStrategy, loadStrategy } from "./strategy";
 import { initTaxControls, loadTax } from "./tax";
@@ -162,11 +163,13 @@ const VIEW_DEFINITIONS: Record<string, ViewDefinition> = {
   leaderboard: { group: "research", subtab: "leaderboard", load: loadLeaderboard },
   segment: { group: "research", subtab: "leaderboard", load: loadRegime },
   deepdive: { group: "research", subtab: "deepdive" },
-  analyses: { group: "research", subtab: "analyses", load: loadAnalyses },
-  pipeline: { group: "research", subtab: "analyses", load: loadPipeline },
-  strategy: { group: "strategy", subtab: "strategy", load: loadStrategy },
-  optimizer: { group: "strategy", subtab: "optimizer", load: loadOptimizer },
-  "working-draft": { group: "strategy", subtab: "working-draft", load: loadStaging },
+  // Deep Research library/pipeline are Research modes under Topics (no own subtab).
+  analyses: { group: "research", subtab: "leaderboard", load: loadAnalyses },
+  pipeline: { group: "research", subtab: "leaderboard", load: loadPipeline },
+  // Guided plan / Optimizer are Targets modes launched from Composition (no subtabs).
+  strategy: { group: "strategy", load: loadStrategy },
+  optimizer: { group: "strategy", load: loadOptimizer },
+  "working-draft": { group: "strategy", load: loadStaging },
   orders: { group: "rebalance", load: loadOrders },
   rebalance: { group: "rebalance", load: loadRebalance },
   "target-state": { group: "rebalance", load: loadTargetState },
@@ -189,9 +192,9 @@ const VIEW_DEFINITIONS: Record<string, ViewDefinition> = {
     group: "portfolio", subtab: "risk",
     load: () => { initTaxControls(); return loadTax(); },
   },
-  activity: { group: "activity", subtab: "activity", load: loadActivity },
+  activity: { group: "portfolio", subtab: "activity", load: loadActivity },
   journal: {
-    group: "activity", subtab: "journal",
+    group: "portfolio", subtab: "journal",
     load: () => { initJournalControls(); return loadJournal(); },
   },
   basket: { group: "basket", load: loadBasket },
@@ -218,10 +221,17 @@ const VIEW_SUBTAB = Object.fromEntries(
     .filter(([, def]) => def.subtab)
     .map(([view, def]) => [view, def.subtab as string]),
 );
-const GROUP_DEFAULT: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "orders", portfolio: "holdings", basket: "basket", activity: "activity" };
+// Targets lands on Composition (working draft); Trade stays on the Orders index.
+const GROUP_DEFAULT: Record<string, string> = {
+  today: "today", strategy: "working-draft", research: "leaderboard",
+  rebalance: "orders", portfolio: "holdings", basket: "basket",
+};
 // Remember the last view visited within each group so re-clicking a group header
 // returns you where you were, not always to the group's default.
-const lastViewByGroup: Record<string, string> = { today: "today", strategy: "strategy", research: "leaderboard", rebalance: "orders", portfolio: "holdings", basket: "basket", activity: "activity" };
+const lastViewByGroup: Record<string, string> = {
+  today: "today", strategy: "working-draft", research: "leaderboard",
+  rebalance: "orders", portfolio: "holdings", basket: "basket",
+};
 
 const cleanSymbol = (raw: string | null | undefined) => (raw || "").trim().toUpperCase();
 const cleanSlug = (raw: string | null | undefined) => (raw || "").trim();
@@ -370,17 +380,20 @@ function updateChrome(active: string) {
     b.classList.toggle("active", b.dataset.view === active || b.dataset.view === group);
   });
 
-  // The sub-tab bar only exists for groups that fan out into multiple views.
+  // Sub-tabs only for Research (Topics/Ticker) and Portfolio. Targets has no
+  // sub-bar — Composition is the group home; Guided/Optimizer are mode pages.
   const subbar = $$("#subbar");
-  const groupHasSubtabs = group === "strategy" || group === "research" ||
-    group === "portfolio" || group === "activity";
+  const groupHasSubtabs = group === "research" || group === "portfolio";
   if (subbar) subbar.hidden = !groupHasSubtabs;
   document.querySelectorAll<HTMLElement>(".subtabs").forEach((s) => { s.hidden = s.dataset.group !== group; });
   const wantSub = VIEW_SUBTAB[active];
-  document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => b.classList.toggle("active", VIEW_SUBTAB[b.dataset.view ?? ""] === wantSub));
+  document.querySelectorAll<HTMLElement>(".subtab").forEach((b) => {
+    const key = b.dataset.view ?? "";
+    // Subtab buttons use data-view of their primary view; match via VIEW_SUBTAB.
+    b.classList.toggle("active", VIEW_SUBTAB[key] === wantSub || key === wantSub);
+  });
 
-  // Rebalance uses the workflow bar as its only local navigation. Target-model
-  // tools live under Plan, so execution steps are no longer duplicated as tabs.
+  // Trade uses the workflow bar as its only local navigation.
   updateFlowBar(active, group);
 }
 
@@ -503,7 +516,7 @@ function initShell() {
     if (view) goToView(view);
   });
 
-  // Most group headers return to the last view used in that group. Orders is
+  // Most group headers return to the last view used in that group. Trade is
   // deliberately different: it always opens the pipeline index, never strands
   // the operator in a deep placement step remembered from an earlier session.
   document.querySelectorAll<HTMLElement>(".group").forEach((btn) => {
@@ -524,6 +537,7 @@ function initShell() {
   // Guided strategy view wiring (deferred here to dodge the import-cycle TDZ).
   initStrategy();
   initStaging();
+  initComposition();
   initBasket();
   initOptimizer();
   initOrders();

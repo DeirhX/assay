@@ -202,8 +202,8 @@ export function snapshotCard(s: SnapshotSum, auto?: AutomationSum, drift?: Drift
 export function planCard(p: PlanSum | null | undefined): string {
   if (!p) {
     return card("muted", "Standing plan", "",
-      `No target model yet. Draft one with the guided Planner or size the whole book in the Optimizer.`,
-      goBtn("strategy", "Planner →") + goBtn("optimizer", "Optimizer →"));
+      `No target model yet. Set allocation segments under Targets → Composition.`,
+      goBtn("working-draft", "Composition →", "primary"));
   }
   const tone = p.actionable ? "warn" : "ok";
   const chip = p.actionable
@@ -220,15 +220,19 @@ export function planCard(p: PlanSum | null | undefined): string {
       `${p.cash.status === "BELOW" ? "under" : "over"} its ${p.cash.low}–${p.cash.high}% band (target ${p.cash.target_pct}%).</span>`);
   }
   if (p.untargeted) bits.push(`${p.untargeted} held name${p.untargeted === 1 ? "" : "s"} (${(p.untargeted_pct ?? 0).toFixed(1)}%) ride with no band.`);
-  return card(tone, "Standing plan", chip, bits.join(" "), goBtn("rebalance", "Rebalance →"));
+  // One door: actionable drift goes to Trade; otherwise Composition for ratios.
+  const action = p.actionable
+    ? goBtn("orders", "Trade →", "primary")
+    : goBtn("working-draft", "Targets →");
+  return card(tone, "Standing plan", chip, bits.join(" "), action);
 }
 
 export function draftCard(d: DraftSum): string {
   if (!d.pending) return "";
-  return card("warn", "Pending model changes",
+  return card("warn", "Composition draft",
     `<span class="chip warn">${d.pending} pending</span>`,
     `Proposed target-band changes — applying them updates the model, not current holdings.`,
-    goBtn("working-draft", "Review model changes →", "primary"));
+    goBtn("working-draft", "Review draft →", "primary"));
 }
 
 export function stagedBasketCard(b: StagedBasketSum): string {
@@ -249,7 +253,6 @@ export function stagedBasketCard(b: StagedBasketSum): string {
     `${b.sells} share sell${b.sells === 1 ? "" : "s"}` +
     `${conditional ? ` · conditional: ${conditional}` : ""} · ` +
     `${sensitive(`${fmtCZK(b.total_abs_czk)} CZK`, "queued direct-share size")} direct-share value — queued, not yet placed.`,
-    goBtn("orders", "Order pipeline →") +
     goBtn(
       nextView || "target-state",
       ready ? "Preview & place →" : "Review projected portfolio →",
