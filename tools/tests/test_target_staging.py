@@ -95,12 +95,41 @@ class StageCompose(_StagingCase):
         self.assertEqual(staged["provenance"]["ASML"]["segment"], "add-equip")
         self.assertEqual(len(staged["_runs"]), 2)
 
-    def test_sleeve_is_persisted_on_the_band(self):
+    def test_unknown_sleeve_stays_standalone(self):
+        """Tag for a sleeve that does not exist yet → keep standalone band."""
         self._seed_live()
         ts.stage_changes([self._add("NVDA", 8, 10, sleeve="semis-compute")],
                          run_id="r", segment="s")
         staged = _load(self.staged)
         self.assertEqual(staged["targets"]["NVDA"]["sleeve"], "semis-compute")
+        self.assertNotIn("semis-compute", staged.get("sleeves") or {})
+
+    def test_known_sleeve_folds_into_roster(self):
+        """Tag matching a live allocation sleeve → member, not standalone."""
+        self._seed_live({
+            "as_of": "2026-01-01",
+            "cash_target_pct": 5.0,
+            "targets": {"TSM": {"low": 5, "high": 8, "rule": "hold"}},
+            "sleeves": {
+                "semis-compute": {
+                    "low": 10, "high": 14, "rule": "accumulate",
+                    "members": ["AVGO"],
+                },
+            },
+            "provenance": {},
+            "funding_order": [],
+        })
+        ts.stage_changes([self._add("NVDA", 8, 10, sleeve="semis-compute")],
+                         run_id="r", segment="s")
+        staged = _load(self.staged)
+        self.assertNotIn("NVDA", staged["targets"])
+        members = staged["sleeves"]["semis-compute"]["members"]
+        self.assertIn("NVDA", members)
+        self.assertIn("AVGO", members)
+        self.assertEqual(staged["sleeves"]["semis-compute"]["member_caps"]["NVDA"], 10.0)
+        self.assertEqual(staged["provenance"]["NVDA"]["home_segment"], "semis-compute")
+        # Existing sleeve band widened by the newcomer's band.
+        self.assertGreaterEqual(staged["sleeves"]["semis-compute"]["high"], 14.0)
 
 
 class DiffAndReconcile(_StagingCase):
@@ -452,6 +481,68 @@ class ProvenanceTimeline(_StagingCase):
         again = ts.backfill_provenance_log(path=self.prov_log, backup_dir=self.backups)
         self.assertEqual(again["written"], 0)  # idempotent
         self.assertEqual(len(ts.read_provenance_log(self.prov_log)), 2)
+
+
+class HomeSegment(_StagingCase):
+    def test_membership_backfilled_on_load_staged(self):
+        self._seed_live({
+            "as_of": "2026-01-01", "cash_target_pct": 0,
+            "targets": {},
+            "sleeves": {
+                "analog": {
+                    "low": 3, "high": 5, "rule": "accumulate",
+                    "members": ["TXN"],
+                },
+            },
+        })
+        staged = ts.load_staged(create=True)
+        self.assertEqual(staged["provenance"]["TXN"]["home_segment"], "analog")
+
+    def test_conflict_skips_without_allow_rehome(self):
+        self._seed_live({
+            "as_of": "2026-01-01", "cash_target_pct": 0,
+            "targets": {},
+            "sleeves": {
+                "analog": {
+                    "low": 3, "high": 5, "rule": "accumulate",
+                    "members": ["TXN"],
+                },
+                "semis-etf": {
+                    "low": 2, "high": 4, "rule": "accumulate",
+                    "members": ["SOXX"],
+                },
+            },
+        })
+        # Staging a standalone target that claims a different home must skip.
+        res = ts.stage_changes([{
+            "action": "add_target", "symbol": "TXN",
+            "home_segment": "semis-etf",
+            "proposed_target": {"low": 1, "high": 2, "rule": "hold"},
+        }])
+        self.assertEqual(res["applied"], [])
+        self.assertTrue(any("home_segment conflict" in (s.get("reason") or "")
+                            for s in res["skipped"]))
+
+    def test_research_lineage_preserves_home(self):
+        self._seed_live({
+            "as_of": "2026-01-01", "cash_target_pct": 0,
+            "targets": {"NVDA": {"low": 8, "high": 10, "rule": "accumulate"}},
+            "sleeves": {
+                "analog": {
+                    "low": 3, "high": 5, "rule": "accumulate", "members": [],
+                },
+            },
+            "provenance": {"NVDA": {
+                "source": "legacy-plan", "home_segment": "analog",
+            }},
+        })
+        ts.stage_changes([{
+            "action": "modify_target", "symbol": "NVDA",
+            "proposed_target": {"low": 7, "high": 9, "rule": "accumulate"},
+        }], segment="ai-topic", source="pipeline")
+        staged = _load(self.staged)
+        self.assertEqual(staged["provenance"]["NVDA"]["segment"], "ai-topic")
+        self.assertEqual(staged["provenance"]["NVDA"]["home_segment"], "analog")
 
 
 if __name__ == "__main__":

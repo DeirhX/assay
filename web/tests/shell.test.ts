@@ -82,7 +82,8 @@ describe("urlForNav", () => {
 
   it("round-trips through navFromUrl", () => {
     const nav = {
-      view: "pipeline", ticker: "", segment: "semis", run: "semis-2026-06-01",
+      view: "pipeline", ticker: "", segment: "semis", sleeve: "",
+      run: "semis-2026-06-01",
       tab: "", step: "4", segmode: "existing", repmode: "current", stage: "",
       filter: "", sort: "", range: "", benchmark: "", soon: "",
       sec: "",

@@ -91,6 +91,11 @@ from holdings_sync import (  # noqa: E402  -- read-only IBKR Flex sync (thin han
 )
 import holdings_live  # noqa: E402  -- read-only live-mark overlay (CPAPI) for the holdings view
 import target_staging  # noqa: E402  -- staging layer: working draft + provenance + pins
+import segment_home  # noqa: E402  -- allocation-segment home partition
+import composition  # noqa: E402  -- whole-book sleeve composition propose/stage
+import sleeve_migrate  # noqa: E402  -- fold standalone targets into sleeves
+import sleeve_cockpit  # noqa: E402  -- allocation-segment cockpit (members + OC)
+import opportunity_cost  # noqa: E402  -- within-segment OC ranking (advisory)
 import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
 import overview  # noqa: E402  -- "Today" cockpit: pure lane summaries + next-step pick
 import reconcile  # noqa: E402  -- ledger-vs-snapshot drift (pure)
@@ -351,6 +356,8 @@ _GET_EXACT = {
     "/api/symbol-search": "_get_symbol_search",
     "/api/strategy/runs": "_get_strategy_runs",
     "/api/staging": "_get_staging",
+    "/api/composition": "_get_composition",
+    "/api/sleeves": "_get_sleeves",
     "/api/basket": "_get_basket",
     "/api/optimizer": "_get_optimizer",
     "/api/spark": "_get_spark",
@@ -365,6 +372,7 @@ _GET_PREFIX = [
     ("/api/history/", "_get_history"),
     ("/api/price-history/", "_get_price_history"),
     ("/api/segment/", "_get_segment"),
+    ("/api/sleeve/", "_get_sleeve"),
 ]
 _POST_EXACT = {
     "/api/segment-draft": "_post_segment_draft",
@@ -396,6 +404,9 @@ _POST_EXACT = {
     "/api/staging/discard": "_post_staging_discard",
     "/api/target-model/restore": "_post_restore_target",
     "/api/staging/edit": "_post_staging_edit",
+    "/api/composition/propose": "_post_composition_propose",
+    "/api/composition/stage": "_post_composition_stage",
+    "/api/composition/migrate": "_post_composition_migrate",
     "/api/basket/add": "_post_basket_add",
     "/api/basket/tier": "_post_basket_tier",
     "/api/basket/remove": "_post_basket_remove",
@@ -617,7 +628,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, err)
         if err := _holdings_prereq_error(holdings):
             return self._send_error_json(404, err)
-        plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
+        # Optional advisory: weight sleeve buy suggestions by cached OC rank.
+        prefer = (query.get("prefer_rank") or [""])[0].strip().lower() in {"1", "true", "yes"}
+        plan = tax_lots.enrich_plan(
+            rebalance.plan(model, holdings, prefer_oc_rank=True if prefer else None),
+            holdings,
+        )
         _attach_research_overlay(plan, holdings)
         # Provenance + working-draft flag so the planner can badge each band's
         # source (legacy/stale vs research-derived vs pinned) and show a banner
@@ -810,6 +826,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_staging(self, path, query):
         return self._send_json(target_staging.diff_staged_vs_live())
+
+    def _get_composition(self, path, query):
+        snap = composition.snapshot()
+        # Surface a migration preview so the UI can offer "fold standalones".
+        snap["migration"] = sleeve_migrate.plan_migration()
+        return self._send_json(snap)
+
+    def _get_sleeves(self, path, query):
+        return self._send_json(sleeve_cockpit.index())
+
+    def _get_sleeve(self, path, query):
+        name = path.rsplit("/", 1)[-1]
+        if not name or name == "sleeve":
+            return self._send_error_json(400, "sleeve name required")
+        rec = sleeve_cockpit.detail(name)
+        if not rec:
+            return self._send_error_json(404, f"unknown allocation sleeve {name}")
+        return self._send_json(rec)
 
     def _get_basket(self, path, query):
         return self._send_json(basket.view())
@@ -1037,10 +1071,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, f"no price history for {sym}")
         return self._send_json(ph)
 
+    def _annotate_segment_rec(self, rec: dict) -> dict:
+        """Stamp allocation home + advisory OC rank onto a topic peer table."""
+        out = dict(rec)
+        model = _load(TARGET_MODEL_JSON) or {}
+        homes = segment_home.home_map(model)
+        members = opportunity_cost.annotate_segment_members(
+            list(out.get("members") or []), home_by_symbol=homes)
+        out["members"] = members
+        out["homes"] = {m["symbol"]: m["home_segment"]
+                        for m in members if m.get("home_segment")}
+        return out
+
     def _get_segment(self, path, query):
         name = path.rsplit("/", 1)[-1].lower()
         rec = _load(SEGMENT_OUT_DIR / f"{name}.json")
-        return self._send_json(rec) if rec else self._send_error_json(404, f"no cached segment {name}")
+        if not rec:
+            return self._send_error_json(404, f"no cached segment {name}")
+        return self._send_json(self._annotate_segment_rec(rec))
 
     def _get_symbol_search(self, path, query):
         q = (query.get("q") or [""])[0]
@@ -1441,7 +1489,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(400, "edit requires a 'change' object")
         return self._send_json(target_staging.stage_changes(
             [change], source="manual",
-            allow_drop_pinned=bool(body.get("allow_drop_pinned"))))
+            allow_drop_pinned=bool(body.get("allow_drop_pinned")),
+            allow_rehome=bool(body.get("allow_rehome"))))
+
+    def _post_composition_propose(self, path):
+        """LLM (or heuristic) proposal for allocation-segment weights."""
+        body = self._read_body()
+        direction = str(body.get("direction") or "")
+        use_llm = body.get("use_llm", True)
+        if isinstance(use_llm, str):
+            use_llm = use_llm not in ("0", "false", "")
+        return self._send_json(composition.propose(
+            direction, use_llm=bool(use_llm)))
+
+    def _post_composition_stage(self, path):
+        """Stage hand-tuned segment midpoints into the working draft."""
+        body = self._read_body()
+        targets = body.get("targets")
+        if not isinstance(targets, dict) or not targets:
+            return self._send_error_json(400, "stage requires a non-empty 'targets' map")
+        try:
+            parsed = {str(k): float(v) for k, v in targets.items()}
+        except (TypeError, ValueError):
+            return self._send_error_json(400, "targets values must be numbers")
+        cash = body.get("cash_target_pct")
+        try:
+            cash_f = float(cash) if cash is not None else None
+        except (TypeError, ValueError):
+            return self._send_error_json(400, "cash_target_pct must be a number")
+        return self._send_json(composition.stage_ratios(
+            parsed, cash_target_pct=cash_f))
+
+    def _post_composition_migrate(self, path):
+        """Fold standalone targets into allocation sleeves (staged, not live)."""
+        self._read_body()  # allow empty POST body
+        return self._send_json(sleeve_migrate.stage_migration())
 
     def _post_history_delete(self, path):
         body = self._read_body()
@@ -1761,7 +1843,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, f"unknown segment {name}")
         with _PULL_LOCK:
             rec = research_pull.pull_segment(name)
-        return self._send_json(rec)
+        return self._send_json(self._annotate_segment_rec(rec))
 
     def _post_thesis(self, path):
         sym = _safe_symbol(unquote(path.rsplit("/", 1)[-1]))

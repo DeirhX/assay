@@ -5681,3 +5681,59 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 .lb-callout-name { font-weight: 600; min-width: 140px; }
 .lb-callout-meta { color: var(--muted); font-size: 13px; flex: 1 1 auto; }
 .lb-callout-actions { display: flex; gap: 12px; }
+
+/* Allocation-segment composition editor (Plan → Pending model changes) */
+.comp-panel {
+  margin: 0 0 18px; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.comp-head {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+}
+.comp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.comp-direction { margin: 0 0 10px; }
+.comp-direction label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.comp-direction input {
+  width: min(100%, 520px); padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text);
+}
+.comp-table .comp-members { font-size: 11px; margin-top: 2px; }
+.comp-pct {
+  width: 5.5rem; padding: 4px 6px; text-align: right;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--panel-2); color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.comp-footer {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 12px; margin-top: 12px; font-size: 13px;
+}
+.comp-footer label { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.comp-total { font-variant-numeric: tabular-nums; }
+.comp-total.err { color: var(--bad); }
+.comp-unassigned { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.comp-note { margin: 0 0 8px; }
+.home-tag { border-color: rgba(130, 170, 255, 0.55); }
+.comp-advanced {
+  margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.comp-advanced summary {
+  cursor: pointer; font-weight: 600; color: var(--muted); font-size: 13px;
+}
+.comp-advanced-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.mode-back { margin: 0 0 6px; font-size: 13px; }
+.comp-sleeve-link { font-weight: 700; font-size: inherit; }
+
+/* Allocation-sleeve cockpit */
+.alloc-summary {
+  display: flex; flex-wrap: wrap; gap: 16px 28px;
+  margin: 0 0 12px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.alloc-stat { display: flex; flex-direction: column; gap: 2px; min-width: 5.5rem; }
+.alloc-stat strong { font-variant-numeric: tabular-nums; font-size: 1.15rem; }
+.alloc-ok { color: var(--good); }
+.alloc-drift { color: var(--warn); }
+.alloc-note { margin: 0 0 8px; }
+.alloc-table .pos { color: var(--good); }
+.alloc-table .neg { color: var(--bad); }

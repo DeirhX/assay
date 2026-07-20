@@ -172,7 +172,7 @@ function calloutHtml(kind: "hot" | "cold", rows: LeaderboardRow[]): string {
       `<span class="lb-callout-meta">score ${r.score} · 3M <span class="${pctClass(r.momentum_3m_med)}">${fmtPct(r.momentum_3m_med)}</span> · own ${sensitive(fmtWeight(r.exposure_pct), "segment exposure")}</span>` +
       `<span class="lb-callout-actions action-row">` +
         `<button class="linklike" type="button" data-segment="${esc(r.segment)}">Open segment</button>` +
-        `<button class="linklike" type="button" data-plan="${esc(dir)}">Explore in Plan →</button>` +
+        `<button class="linklike" type="button" data-plan="${esc(dir)}">Guided plan →</button>` +
       `</span>` +
     `</div>`;
   }).join("");

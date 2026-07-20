@@ -444,20 +444,20 @@ with `happy-dom`; Playwright e2e mock `/api/**` (port overridable via `E2E_PORT`
 
 ### 7.3 Navigation model
 
-Five workflow-ordered top-level groups:
-**Today → Plan → Research → Orders → Portfolio**. Watchlist and Activity are
-utility destinations; Settings remains the gear.
+Five workflow-ordered top-level groups along **Research → Decide → Act**:
+**Today → Targets → Research → Trade → Portfolio**. Watchlist is a utility;
+Settings remains the gear.
 `VIEW_GROUP` / `VIEW_SUBTAB` / `GROUP_DEFAULT` map flat views to groups and
 sub-tabs; `lastViewByGroup` remembers where you were per group.
 
-| Group | Default view | Sub-tabs |
+| Group | Default view | Sub-tabs / modes |
 | --- | --- | --- |
 | **Today** | `today` | — |
-| **Plan** | `strategy` | Guided plan, Optimizer, Pending model changes |
-| **Research** | `leaderboard` | Explore, Ticker, Deep Research; `pipeline` and `segment` are sub-pages |
-| **Orders** | `orders` | Stable Order pipeline index; the flowbar links Build (`rebalance`/`exit`) → Review (`target-state`) → Preview & place (`trade`) |
-| **Portfolio** | `holdings` | Positions, History, Analytics (Risk / Attribution / Tax lenses) |
-| **Watchlist / Activity** | `basket` / `activity` | Utility destinations; Activity also contains Decisions |
+| **Targets** | `working-draft` | No sub-bar; `strategy` / `optimizer` are advanced modes |
+| **Research** | `leaderboard` | Topics, Ticker; `analyses` / `pipeline` / `segment` are modes under Topics |
+| **Trade** | `orders` | Flowbar: Build (`rebalance`/`exit`) → Review (`target-state`) → Preview & place (`trade`) |
+| **Portfolio** | `holdings` | Positions, History, Analytics, Activity, Decisions |
+| **Watchlist** | `basket` | Utility shortlist (not the Trade order queue) |
 
 The URL is the persistence layer: `?view=`, `?ticker=`, `?segment=`, `?run=`
 round-trip through `navFromUrl`/`urlForNav` (bare `/` = Today). `api-types.ts` is
@@ -568,11 +568,13 @@ adds the private-data validators (`rebalance --check`, `verify_claims`,
 
 - **Band** — a `[low, high]` no-trade weight range (percent of invested book).
 - **Rule** — buy/trim intent for a name (`accumulate`, `hold`, `wait`, `trim_only`, `do_not_add`, `reduce`, `avoid`).
-- **Sleeve** — a group of symbols sharing one aggregate band, with optional per-member caps.
+- **Sleeve / allocation segment** — a group of symbols sharing one aggregate band (the book partition), with optional per-member caps. Every governed name has at most one **home_segment** (sleeve name) in provenance; research lineage (`provenance.segment`) is separate.
 - **Working draft** — the staged target model (`target-model.staged.json`) you review before committing to live.
-- **Provenance** — per-key record of where a target change came from (strategy run, optimizer, pipeline, pin, manual).
+- **Provenance** — per-key record of where a target change came from (strategy run, optimizer, pipeline, pin, manual), plus durable `home_segment`.
+- **Composition** — whole-book sleeve weight mix (`tools/composition.py`); LLM/heuristic propose → hand-tune → stage.
+- **Opportunity-cost rank** — advisory within-topic ranking (`tools/opportunity_cost.py`); does not place trades (band discipline still owns Act).
 - **Dossier** — a per-ticker research JSON (`data/research/<SYM>.json`): facts + cross-checks + preserved thesis.
 - **Cross-check** — a deterministic consistency test between sources, ranked `ERROR/WARN/INFO`.
 - **Price gate** — a locked buy-below/trim-above level that conditions a rebalance suggestion and becomes an order limit.
-- **Segment** — a research lens (peer universe); may overlap. Distinct from allocation sleeves.
+- **Topic (research segment)** — a research lens (peer universe); may overlap. Distinct from allocation sleeves.
 - **Deep Research run** — a saved Perplexity report + sidecars under `data/research/deep/`.
