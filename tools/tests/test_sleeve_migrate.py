@@ -121,5 +121,54 @@ class StageMigration(unittest.TestCase):
         self.assertEqual(staged["sleeves"]["analog"]["members"], ["TXN", "ADI"])
 
 
+class FoldTargetChanges(unittest.TestCase):
+    def test_folds_add_into_existing_sleeve(self):
+        model = {
+            "targets": {},
+            "sleeves": {
+                "analog": {
+                    "low": 3, "high": 5, "rule": "accumulate",
+                    "members": ["TXN"],
+                },
+            },
+            "provenance": {},
+        }
+        out = sm.fold_target_changes_into_sleeves(
+            [{"action": "add_target", "symbol": "ADI",
+              "proposed_target": {"low": 1, "high": 2, "rule": "hold", "sleeve": "analog"}}],
+            model,
+        )
+        acts = [c["action"] for c in out]
+        self.assertIn("modify_sleeve", acts)
+        self.assertNotIn("add_target", acts)
+        sleeve_ch = next(c for c in out if c["action"] == "modify_sleeve")
+        self.assertEqual(set(sleeve_ch["proposed_sleeve"]["members"]), {"TXN", "ADI"})
+        self.assertEqual(sleeve_ch["proposed_sleeve"]["member_caps"]["ADI"], 2.0)
+
+    def test_unknown_sleeve_passthrough(self):
+        model = {"targets": {}, "sleeves": {}, "provenance": {}}
+        ch = {"action": "add_target", "symbol": "NVDA",
+              "proposed_target": {"low": 8, "high": 10, "rule": "hold", "sleeve": "semis-compute"}}
+        out = sm.fold_target_changes_into_sleeves([ch], model)
+        self.assertEqual(out, [ch])
+
+    def test_removes_existing_standalone(self):
+        model = {
+            "targets": {"NVDA": {"low": 4, "high": 5, "rule": "hold", "sleeve": "semis-compute"}},
+            "sleeves": {
+                "semis-compute": {
+                    "low": 10, "high": 12, "rule": "accumulate", "members": ["AVGO"],
+                },
+            },
+        }
+        out = sm.fold_target_changes_into_sleeves(
+            [{"action": "modify_target", "symbol": "NVDA",
+              "proposed_target": {"low": 4, "high": 6, "rule": "hold", "sleeve": "semis-compute"}}],
+            model,
+        )
+        self.assertTrue(any(c["action"] == "remove_target" and c["symbol"] == "NVDA" for c in out))
+        self.assertTrue(any(c["action"] == "modify_sleeve" for c in out))
+
+
 if __name__ == "__main__":
     unittest.main()

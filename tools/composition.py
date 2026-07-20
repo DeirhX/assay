@@ -232,7 +232,8 @@ def propose(direction: str = "", *, use_llm: bool = True,
                         except (TypeError, ValueError):
                             cash_t = float(snap.get("cash_target_pct") or 0)
                         targets = normalize_targets(raw, cash_target=cash_t)
-                        rats = parsed.get("rationales") if isinstance(parsed.get("rationales"), dict) else {}
+                        rats_raw = parsed.get("rationales")
+                        rats: dict = rats_raw if isinstance(rats_raw, dict) else {}
                         return {
                             "source": "llm",
                             "targets": targets,

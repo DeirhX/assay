@@ -284,6 +284,13 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
     Home-segment moves are skipped unless ``allow_rehome``."""
     staged = load_staged(create=True)
     assert staged is not None  # create=True always returns a dict
+    # Research/construct still emits add_target with a sleeve tag; fold those
+    # into the allocation roster before home/pin guards (lazy import: migrate
+    # calls stage_changes).
+    from sleeve_migrate import fold_target_changes_into_sleeves
+    changes = fold_target_changes_into_sleeves(
+        list(changes or []), staged, allow_rehome=allow_rehome)
+
     prov = staged.setdefault("provenance", {})
     pins = load_pins()
     blocked = set(blocked or [])
@@ -291,7 +298,7 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
 
     guarded: list[dict] = []
     skipped_pre: list[dict] = []
-    for ch in changes or []:
+    for ch in changes:
         act = ch.get("action")
         if act == "remove_target" and not allow_drop_pinned:
             try:
@@ -333,14 +340,14 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
             except ValueError:
                 continue
             if sym in applied_set:
-                prior = None
+                prior_home = None
                 old = prov.get(sym)
                 if isinstance(old, dict):
-                    prior = str(old.get("home_segment") or "").strip() or None
-                proposed = _proposed_home(ch, known_sleeves=known)
+                    prior_home = str(old.get("home_segment") or "").strip() or None
+                home = _proposed_home(ch, known_sleeves=known)
                 prov[sym] = _prov_record(
                     ch, source=source, run_id=run_id, segment=segment, now=now,
-                    pin=pins.get(sym), home_segment=proposed, prior_home=prior)
+                    pin=pins.get(sym), home_segment=home, prior_home=prior_home)
         elif act == "remove_target":
             try:
                 sym = _safe_symbol(ch.get("symbol", ""))
@@ -350,11 +357,12 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
                 if ch.get("preserve_provenance"):
                     # Sleeve migration: drop the top-level band but keep lineage
                     # + home so the name stays in the partition map.
-                    prior = prov.get(sym) if isinstance(prov.get(sym), dict) else {}
+                    prior_raw = prov.get(sym)
+                    prior_prov: dict = prior_raw if isinstance(prior_raw, dict) else {}
                     home = (str(ch.get("home_segment") or "").strip()
-                            or str((prior or {}).get("home_segment") or "").strip()
+                            or str(prior_prov.get("home_segment") or "").strip()
                             or None)
-                    rec = dict(prior or {})
+                    rec = dict(prior_prov)
                     rec.update({"source": source, "set_at": now})
                     if run_id:
                         rec["run_id"] = run_id
@@ -371,8 +379,9 @@ def stage_changes(changes, *, run_id=None, segment=None, source: str = "strategy
                 prov[f"[{name}]"] = _prov_record(ch, source=source, run_id=run_id,
                                                  segment=segment, now=now, pin=None)
                 # Sleeve membership is authoritative home for each member.
-                proposed = ch.get("proposed_sleeve") or {}
-                for m in (proposed.get("members") or []):
+                sleeve_raw = ch.get("proposed_sleeve")
+                sleeve_def: dict = sleeve_raw if isinstance(sleeve_raw, dict) else {}
+                for m in (sleeve_def.get("members") or []):
                     try:
                         msym = _safe_symbol(m)
                     except ValueError:

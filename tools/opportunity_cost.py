@@ -12,7 +12,15 @@ band discipline still owns execution.
 
 from __future__ import annotations
 
+import datetime as dt
+from pathlib import Path
 from typing import Any
+
+from config import DATA_DIR
+from store import load as _load, write_json as _write_json
+
+# Sidecar cache — advisory ranks, not part of the staged target-model draft.
+OC_RANKS_JSON = DATA_DIR / "cache" / "oc-ranks.json"
 
 # Map qualitative LLM / heuristic convictions onto a 0–100 prospect scale.
 _CONVICTION_PROSPECT = {
@@ -146,3 +154,47 @@ def annotate_segment_members(members: list[dict[str, Any]],
         if home:
             row["home_segment"] = home
     return ranked
+
+
+def load_ranks(path: Path | None = None) -> dict[str, Any]:
+    """Cached per-sleeve OC ranks. Empty dict shape when missing/corrupt."""
+    rec = _load(path or OC_RANKS_JSON) or {}
+    if not isinstance(rec, dict):
+        return {"as_of": None, "sleeves": {}}
+    sleeves = rec.get("sleeves") if isinstance(rec.get("sleeves"), dict) else {}
+    return {"as_of": rec.get("as_of"), "sleeves": sleeves}
+
+
+def store_sleeve_ranks(sleeve: str, members: list[dict[str, Any]],
+                       *, path: Path | None = None) -> dict[str, Any]:
+    """Persist advisory ranks for one allocation sleeve into the sidecar cache."""
+    name = str(sleeve or "").strip()
+    if not name:
+        return load_ranks(path)
+    dest = path or OC_RANKS_JSON
+    data = load_ranks(dest)
+    by_sym: dict[str, Any] = {}
+    for m in members or []:
+        sym = str((m or {}).get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        by_sym[sym] = {
+            "oc_rank": m.get("oc_rank"),
+            "oc_score": m.get("oc_score"),
+            "prospect": m.get("prospect"),
+            "edge": m.get("edge"),
+        }
+    data.setdefault("sleeves", {})[name] = by_sym
+    data["as_of"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(dest, data)
+    return data
+
+
+def ranks_for_sleeve(sleeve: str, *, path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """symbol -> {oc_rank, ...} for one sleeve (empty if unknown)."""
+    name = str(sleeve or "").strip()
+    raw = (load_ranks(path).get("sleeves") or {}).get(name) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).upper(): v for k, v in raw.items() if isinstance(v, dict)}

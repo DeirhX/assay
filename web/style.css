@@ -5722,3 +5722,18 @@ button.ghost { transition: color .12s, border-color .12s, background .12s; }
 }
 .comp-advanced-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .mode-back { margin: 0 0 6px; font-size: 13px; }
+.comp-sleeve-link { font-weight: 700; font-size: inherit; }
+
+/* Allocation-sleeve cockpit */
+.alloc-summary {
+  display: flex; flex-wrap: wrap; gap: 16px 28px;
+  margin: 0 0 12px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.alloc-stat { display: flex; flex-direction: column; gap: 2px; min-width: 5.5rem; }
+.alloc-stat strong { font-variant-numeric: tabular-nums; font-size: 1.15rem; }
+.alloc-ok { color: var(--good); }
+.alloc-drift { color: var(--warn); }
+.alloc-note { margin: 0 0 8px; }
+.alloc-table .pos { color: var(--good); }
+.alloc-table .neg { color: var(--bad); }

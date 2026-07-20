@@ -95,12 +95,41 @@ class StageCompose(_StagingCase):
         self.assertEqual(staged["provenance"]["ASML"]["segment"], "add-equip")
         self.assertEqual(len(staged["_runs"]), 2)
 
-    def test_sleeve_is_persisted_on_the_band(self):
+    def test_unknown_sleeve_stays_standalone(self):
+        """Tag for a sleeve that does not exist yet → keep standalone band."""
         self._seed_live()
         ts.stage_changes([self._add("NVDA", 8, 10, sleeve="semis-compute")],
                          run_id="r", segment="s")
         staged = _load(self.staged)
         self.assertEqual(staged["targets"]["NVDA"]["sleeve"], "semis-compute")
+        self.assertNotIn("semis-compute", staged.get("sleeves") or {})
+
+    def test_known_sleeve_folds_into_roster(self):
+        """Tag matching a live allocation sleeve → member, not standalone."""
+        self._seed_live({
+            "as_of": "2026-01-01",
+            "cash_target_pct": 5.0,
+            "targets": {"TSM": {"low": 5, "high": 8, "rule": "hold"}},
+            "sleeves": {
+                "semis-compute": {
+                    "low": 10, "high": 14, "rule": "accumulate",
+                    "members": ["AVGO"],
+                },
+            },
+            "provenance": {},
+            "funding_order": [],
+        })
+        ts.stage_changes([self._add("NVDA", 8, 10, sleeve="semis-compute")],
+                         run_id="r", segment="s")
+        staged = _load(self.staged)
+        self.assertNotIn("NVDA", staged["targets"])
+        members = staged["sleeves"]["semis-compute"]["members"]
+        self.assertIn("NVDA", members)
+        self.assertIn("AVGO", members)
+        self.assertEqual(staged["sleeves"]["semis-compute"]["member_caps"]["NVDA"], 10.0)
+        self.assertEqual(staged["provenance"]["NVDA"]["home_segment"], "semis-compute")
+        # Existing sleeve band widened by the newcomer's band.
+        self.assertGreaterEqual(staged["sleeves"]["semis-compute"]["high"], 14.0)
 
 
 class DiffAndReconcile(_StagingCase):

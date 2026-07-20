@@ -94,6 +94,7 @@ import target_staging  # noqa: E402  -- staging layer: working draft + provenanc
 import segment_home  # noqa: E402  -- allocation-segment home partition
 import composition  # noqa: E402  -- whole-book sleeve composition propose/stage
 import sleeve_migrate  # noqa: E402  -- fold standalone targets into sleeves
+import sleeve_cockpit  # noqa: E402  -- allocation-segment cockpit (members + OC)
 import opportunity_cost  # noqa: E402  -- within-segment OC ranking (advisory)
 import basket  # noqa: E402  -- cross-surface ticker shortlist (upstream of the working draft)
 import overview  # noqa: E402  -- "Today" cockpit: pure lane summaries + next-step pick
@@ -356,6 +357,7 @@ _GET_EXACT = {
     "/api/strategy/runs": "_get_strategy_runs",
     "/api/staging": "_get_staging",
     "/api/composition": "_get_composition",
+    "/api/sleeves": "_get_sleeves",
     "/api/basket": "_get_basket",
     "/api/optimizer": "_get_optimizer",
     "/api/spark": "_get_spark",
@@ -370,6 +372,7 @@ _GET_PREFIX = [
     ("/api/history/", "_get_history"),
     ("/api/price-history/", "_get_price_history"),
     ("/api/segment/", "_get_segment"),
+    ("/api/sleeve/", "_get_sleeve"),
 ]
 _POST_EXACT = {
     "/api/segment-draft": "_post_segment_draft",
@@ -625,7 +628,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(404, err)
         if err := _holdings_prereq_error(holdings):
             return self._send_error_json(404, err)
-        plan = tax_lots.enrich_plan(rebalance.plan(model, holdings), holdings)
+        # Optional advisory: weight sleeve buy suggestions by cached OC rank.
+        prefer = (query.get("prefer_rank") or [""])[0].strip().lower() in {"1", "true", "yes"}
+        plan = tax_lots.enrich_plan(
+            rebalance.plan(model, holdings, prefer_oc_rank=True if prefer else None),
+            holdings,
+        )
         _attach_research_overlay(plan, holdings)
         # Provenance + working-draft flag so the planner can badge each band's
         # source (legacy/stale vs research-derived vs pinned) and show a banner
@@ -824,6 +832,18 @@ class Handler(BaseHTTPRequestHandler):
         # Surface a migration preview so the UI can offer "fold standalones".
         snap["migration"] = sleeve_migrate.plan_migration()
         return self._send_json(snap)
+
+    def _get_sleeves(self, path, query):
+        return self._send_json(sleeve_cockpit.index())
+
+    def _get_sleeve(self, path, query):
+        name = path.rsplit("/", 1)[-1]
+        if not name or name == "sleeve":
+            return self._send_error_json(400, "sleeve name required")
+        rec = sleeve_cockpit.detail(name)
+        if not rec:
+            return self._send_error_json(404, f"unknown allocation sleeve {name}")
+        return self._send_json(rec)
 
     def _get_basket(self, path, query):
         return self._send_json(basket.view())

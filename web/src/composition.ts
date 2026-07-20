@@ -68,7 +68,8 @@ function panelHtml(): string {
     const members = (s.members || []).slice(0, 6).join(", ")
       + ((s.members || []).length > 6 ? "…" : "");
     return `<tr>
-      <td><strong>${esc(s.name)}</strong>
+      <td><button type="button" class="linklike comp-sleeve-link" data-open-alloc="${esc(s.name)}"
+        title="Open ${esc(s.name)} members, held vs band, OC rank">${esc(s.name)}</button>
         <div class="muted comp-members">${esc(members) || "no members"}</div></td>
       <td class="num">${fmtWeight(s.current_pct)}</td>
       <td class="num">${s.target_pct == null ? "–" : fmtWeight(s.target_pct)}</td>
@@ -87,12 +88,12 @@ function panelHtml(): string {
     <div class="comp-head">
       <div>
         <div class="subhead">Allocation segments <span class="stage-sub">— ratios suggested by research, fine-tuned by hand</span></div>
-        <p class="hint">Each name has one home segment (a sleeve). Edit midpoints, then stage into pending model changes. Band discipline still owns trades.</p>
+        <p class="hint">Each name has one home segment (a sleeve). Edit midpoints, then stage into the working draft. Click a segment name for members &amp; OC rank. Band discipline still owns trades.</p>
       </div>
       <div class="comp-actions">
         ${migrateBtn}
         <button class="ghost" type="button" id="comp-propose" title="Ask the LLM (or heuristic fallback) for a segment mix">Propose from research</button>
-        <button class="primary" type="button" id="comp-stage" title="Stage these midpoints into Pending model changes">Stage composition →</button>
+        <button class="primary" type="button" id="comp-stage" title="Stage these midpoints into the working draft">Stage composition →</button>
       </div>
     </div>
     <div class="comp-direction">
@@ -192,8 +193,8 @@ function initComposition(): void {
       if (!window.confirm(
         `Fold ${n} standalone target(s) into allocation sleeves?\n\n`
         + `Tagged names go to their sleeve (aliases applied); ETFs → semis-etf; `
-        + `the rest land in "other". Review the draft, then Apply target model. `
-        + `This does not trade.`,
+        + `untagged names need a destination sleeve. Review the working draft, `
+        + `then Apply target model. This does not trade.`,
       )) return;
       migrate.setAttribute("disabled", "true");
       const st = status();

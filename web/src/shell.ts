@@ -24,6 +24,7 @@ import { loadExit } from "./exit";
 import { initSegment, loadCachedSegment, loadSegmentList } from "./segment";
 import { loadSetup } from "./setup";
 import { initComposition } from "./composition";
+import { initAlloc, loadAlloc } from "./sleeve-cockpit";
 import { initStaging, loadStaging } from "./staging";
 import { initStrategy, loadStrategy } from "./strategy";
 import { initTaxControls, loadTax } from "./tax";
@@ -166,9 +167,10 @@ const VIEW_DEFINITIONS: Record<string, ViewDefinition> = {
   // Deep Research library/pipeline are Research modes under Topics (no own subtab).
   analyses: { group: "research", subtab: "leaderboard", load: loadAnalyses },
   pipeline: { group: "research", subtab: "leaderboard", load: loadPipeline },
-  // Guided plan / Optimizer are Targets modes launched from Composition (no subtabs).
+  // Guided plan / Optimizer / Alloc cockpit are Targets modes from Composition.
   strategy: { group: "strategy", load: loadStrategy },
   optimizer: { group: "strategy", load: loadOptimizer },
+  alloc: { group: "strategy", load: loadAlloc },
   "working-draft": { group: "strategy", load: loadStaging },
   orders: { group: "rebalance", load: loadOrders },
   rebalance: { group: "rebalance", load: loadRebalance },
@@ -248,6 +250,7 @@ interface NavState {
   view?: string | null;
   ticker?: string;
   segment?: string;
+  sleeve?: string;
   run?: string;
   tab?: string;
   step?: string;
@@ -263,7 +266,7 @@ interface NavState {
 }
 
 const VIEW_STATE_KEYS = [
-  "ticker", "segment", "run", "tab", "step", "segmode", "repmode", "stage",
+  "ticker", "segment", "sleeve", "run", "tab", "step", "segmode", "repmode", "stage",
   "filter", "sort", "range", "benchmark", "soon",
   "sec",
 ] as const;
@@ -302,6 +305,7 @@ function navFromUrl() {
     view,
     ticker: cleanSymbol(params.get("ticker")),
     segment: cleanSlug(params.get("segment")),
+    sleeve: cleanSlug(params.get("sleeve")),
     run: cleanSlug(params.get("run")),
     tab: cleanSlug(params.get("tab")),
     step: cleanSlug(params.get("step")),
@@ -322,12 +326,10 @@ function urlForNav(nav: NavState) {
   url.search = "";
   url.hash = "";
   if (nav.view && nav.view !== DEFAULT_VIEW) url.searchParams.set("view", nav.view);
-  if (nav.ticker) url.searchParams.set("ticker", cleanSymbol(nav.ticker));
-  if (nav.segment) url.searchParams.set("segment", cleanSlug(nav.segment));
-  if (nav.run) url.searchParams.set("run", cleanSlug(nav.run));
-  for (const key of VIEW_STATE_KEYS.slice(3)) {
+  for (const key of VIEW_STATE_KEYS) {
     const value = nav[key];
-    if (value) url.searchParams.set(key, cleanSlug(value));
+    if (!value) continue;
+    url.searchParams.set(key, key === "ticker" ? cleanSymbol(value) : cleanSlug(value));
   }
   return url;
 }
@@ -538,6 +540,7 @@ function initShell() {
   initStrategy();
   initStaging();
   initComposition();
+  initAlloc();
   initBasket();
   initOptimizer();
   initOrders();

@@ -276,6 +276,8 @@ def check_model(model: dict[str, Any], holdings: dict[str, Any]) -> list[Finding
     # Standing coverage invariant: a held position with no band/rule is governed
     # by nothing -- drift can't be computed and it silently rides outside the
     # plan. Name each one (WARN if it's a meaningful size, INFO if a stub).
+    # Not ERROR: a sleeve-only *managed* book can still hold names outside the
+    # partition (mega-caps, legacy names) without being broken.
     for sym, w in untargeted:
         sev = "WARN" if w >= COVERAGE_WARN_PCT else "INFO"
         add(sev, f"coverage:{sym}",
@@ -546,6 +548,7 @@ def _allocate_sleeve_members(
     sl: dict[str, Any], members: list[str], weights: dict[str, float],
     czk: Callable[[float | None], int | None], action: str | None, delta: float,
     provenance: dict[str, Any],
+    *, prefer_oc_rank: bool = False, oc_ranks: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Turn a sleeve's *aggregate* buy/trim suggestion into per-member advice so
     the UI can show which names to act on, in what order, and stage member trades
@@ -556,22 +559,36 @@ def _allocate_sleeve_members(
     members in proportion to their room-to-target (for buys) or excess-over-target
     (for trims), so the per-member deltas sum back to the sleeve delta. Members
     already at/above their share get nothing; the most under-weight name leads the
-    order. Pure advice — the human still edits the amounts."""
+    order. With ``prefer_oc_rank``, buy room is further weighted by inverse OC
+    rank (still advisory — bands alone decide *whether* to buy). Pure advice —
+    the human still edits the amounts."""
     low = float(sl["low"])
     high = float(sl["high"])
     mid = (low + high) / 2.0
     caps = sl.get("member_caps", {}) or {}
     n = max(1, len(members))
     base_share = mid / n
+    oc_ranks = oc_ranks or {}
 
     def target_for(sym: str) -> float:
         cap = caps.get(sym)
         return min(base_share, float(cap)) if cap is not None else base_share
 
+    def oc_weight(sym: str) -> float:
+        if not prefer_oc_rank:
+            return 1.0
+        rec = oc_ranks.get(sym) or {}
+        rank = rec.get("oc_rank")
+        if isinstance(rank, (int, float)) and rank > 0:
+            return 1.0 / float(rank)
+        return 0.25  # unranked: still eligible, but deprioritized
+
     curs = {m: weights.get(m, 0.0) for m in members}
     rooms = {m: max(0.0, target_for(m) - curs[m]) for m in members}
     excess = {m: max(0.0, curs[m] - target_for(m)) for m in members}
+    buy_w = {m: rooms[m] * oc_weight(m) for m in members}
     sum_room = sum(rooms.values())
+    sum_buy_w = sum(buy_w.values())
     sum_excess = sum(excess.values())
 
     out: list[dict[str, Any]] = []
@@ -580,11 +597,17 @@ def _allocate_sleeve_members(
         cap = caps.get(m)
         mdelta = 0.0
         if action == "buy" and delta > EPS:
-            mdelta = delta * (rooms[m] / sum_room) if sum_room > EPS else delta / n
+            if prefer_oc_rank and sum_buy_w > EPS:
+                mdelta = delta * (buy_w[m] / sum_buy_w)
+            elif sum_room > EPS:
+                mdelta = delta * (rooms[m] / sum_room)
+            else:
+                mdelta = delta / n
         elif action == "trim" and delta < -EPS:
             mdelta = delta * (excess[m] / sum_excess) if sum_excess > EPS else delta / n
         prov = provenance.get(m) if isinstance(provenance, dict) else None
-        out.append({
+        oc = oc_ranks.get(m) or {}
+        row = {
             "symbol": m,
             "current_pct": round(cur, 2),
             "current_czk": czk(cur),
@@ -594,7 +617,12 @@ def _allocate_sleeve_members(
             "suggest_delta_pct": round(mdelta, 2),
             "suggest_delta_czk": czk(mdelta),
             "member_action": ("buy" if mdelta > EPS else "trim" if mdelta < -EPS else None),
-        })
+        }
+        if oc.get("oc_rank") is not None:
+            row["oc_rank"] = oc["oc_rank"]
+        if oc.get("oc_score") is not None:
+            row["oc_score"] = oc["oc_score"]
+        out.append(row)
     # Order by the size of the suggested move (biggest first); ties and no-ops
     # keep the model's member order.
     for rank, i in enumerate(sorted(range(len(out)), key=lambda i: -abs(out[i]["suggest_delta_pct"])), start=1):
@@ -602,7 +630,8 @@ def _allocate_sleeve_members(
     return out
 
 
-def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
+def plan(model: dict[str, Any], holdings: dict[str, Any],
+         *, prefer_oc_rank: bool | None = None) -> dict[str, Any]:
     """Structured drift + suggested-action data for the UI rebalance planner.
 
     Shares ``current_weights`` with ``check_model`` so the interactive view, the
@@ -667,6 +696,19 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
                     float(t["low"]), float(t["high"]), t.get("note"))
 
     provenance = model.get("provenance", {}) if isinstance(model, dict) else {}
+    if prefer_oc_rank is None:
+        prefer_oc_rank = bool(model.get("prefer_oc_rank"))
+    # Lazy import: opportunity_cost is advisory and not on the rebalance hot path
+    # unless ranks are requested.
+    oc_by_sleeve: dict[str, dict[str, dict[str, Any]]] = {}
+    if prefer_oc_rank:
+        import opportunity_cost as _oc
+        cached = _oc.load_ranks().get("sleeves") or {}
+        for sname, payload in cached.items():
+            if isinstance(payload, dict):
+                oc_by_sleeve[str(sname)] = {
+                    str(k).upper(): v for k, v in payload.items() if isinstance(v, dict)
+                }
     for name, sl in sleeves.items():
         if not _band_ok(sl.get("low"), sl.get("high")):
             continue
@@ -679,7 +721,11 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
             ("sleeve", name),
             _suggest(rule, _status(cur, low, high), cur, low, high),
         )
-        member_rows = _allocate_sleeve_members(sl, members, weights, czk, action, delta, provenance)
+        member_rows = _allocate_sleeve_members(
+            sl, members, weights, czk, action, delta, provenance,
+            prefer_oc_rank=bool(prefer_oc_rank),
+            oc_ranks=oc_by_sleeve.get(name) or {},
+        )
         for member in member_rows:
             mark = marks.get(portfolio.clean_symbol(member.get("symbol")))
             if mark:
@@ -703,6 +749,7 @@ def plan(model: dict[str, Any], holdings: dict[str, Any]) -> dict[str, Any]:
         # current cash vs the target band, for display and what-if steering.
         "cash": cash_block(model, holdings),
         "funding_order": model.get("funding_order", []),
+        "prefer_oc_rank": bool(prefer_oc_rank),
         "rows": rows,
         "untargeted": [{"symbol": s, "current_pct": round(w, 2), "current_czk": czk(w)}
                        for s, w in untargeted],

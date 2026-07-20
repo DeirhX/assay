@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import _support  # noqa: F401
 import opportunity_cost as oc
@@ -56,6 +58,20 @@ class Rank(unittest.TestCase):
         out = oc.annotate_segment_members(rows, home_by_symbol={"TXN": "analog"})
         self.assertEqual(out[0]["home_segment"], "analog")
         self.assertEqual(out[0]["oc_rank"], 1)
+
+
+class PersistRanks(unittest.TestCase):
+    def test_store_and_load_sleeve_ranks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "oc-ranks.json"
+            oc.store_sleeve_ranks(
+                "analog",
+                [{"symbol": "TXN", "oc_rank": 1, "oc_score": 12.0, "prospect": 85}],
+                path=path,
+            )
+            loaded = oc.ranks_for_sleeve("analog", path=path)
+            self.assertEqual(loaded["TXN"]["oc_rank"], 1)
+            self.assertEqual(loaded["TXN"]["prospect"], 85)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,23 @@ class CheckModel(unittest.TestCase):
         f = findings_for(model, holdings)
         self.assertIn(("WARN", "coverage:ORPHAN"), f)
 
+    def test_untargeted_stays_warn_even_with_sleeves(self):
+        """Outside-partition holds are coverage gaps, not hard model errors."""
+        model = {
+            "targets": {},
+            "sleeves": {
+                "analog": {"low": 3, "high": 5, "rule": "accumulate", "members": ["TXN"]},
+            },
+        }
+        holdings = {"positions": [
+            {"symbol": "TXN", "base_market_value": 4.0},
+            {"symbol": "ORPHAN", "base_market_value": 3.0},
+            {"symbol": "REST", "base_market_value": 93.0},
+        ]}
+        f = findings_for(model, holdings)
+        self.assertIn(("WARN", "coverage:ORPHAN"), f)
+        self.assertNotIn(("ERROR", "coverage:ORPHAN"), f)
+
     def test_clean_model_has_no_errors(self):
         model = {
             "targets": {"AMD": {"low": 10, "high": 14, "rule": "trim_only"}},
@@ -274,6 +291,19 @@ class Plan(unittest.TestCase):
         by = {m["symbol"]: m for m in out}
         self.assertEqual(by["TXN"]["conviction"], "high")
         self.assertIsNone(by["ADI"]["conviction"])
+
+    def test_prefer_oc_rank_biases_buy_toward_best(self):
+        members = ["TXN", "ADI"]
+        weights = {"TXN": 0.0, "ADI": 0.0}
+        sl = {"low": 5.0, "high": 6.0, "members": members}
+        ranks = {"TXN": {"oc_rank": 1}, "ADI": {"oc_rank": 2}}
+        out = rb._allocate_sleeve_members(
+            sl, members, weights, round, "buy", 5.0, {},
+            prefer_oc_rank=True, oc_ranks=ranks,
+        )
+        by = {m["symbol"]: m for m in out}
+        self.assertGreater(by["TXN"]["suggest_delta_pct"], by["ADI"]["suggest_delta_pct"])
+        self.assertEqual(by["TXN"]["oc_rank"], 1)
 
     def test_untargeted_bucket(self):
         p = self._plan()

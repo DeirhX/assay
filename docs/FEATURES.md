@@ -25,7 +25,7 @@ the Settings gear sits outside the groups.
 | Group | Lands on | Sub-tabs / modes |
 | --- | --- | --- |
 | **Today** | Daily command center | *(single view; one Next step)* |
-| **Targets** | Composition & draft | No sub-bar. Guided plan / Optimizer are advanced modes from Composition |
+| **Targets** | Composition & draft | No sub-bar. Sleeve cockpit / Guided plan / Optimizer are modes from Composition |
 | **Research** | Topics (leaderboard) | Topics · Ticker. Deep Research library/pipeline are modes under Topics |
 | **Trade** | Order pipeline | Flowbar: Build orders · Review impact · Preview & place |
 | **Portfolio** | Positions | Positions · History · Analytics · Activity · Decisions |
@@ -270,8 +270,11 @@ The Targets landing view: allocation-segment ratios plus the staged target model
 
 - **Allocation composition** (top of the page): current vs proposed sleeve
   midpoints, optional LLM propose, hand-edit, **Stage composition →** into the
-  draft. **Fold N standalones into sleeves** migrates top-level targets into the
+  working draft. Click a segment name to open its **allocation cockpit**.
+  **Fold N standalones into sleeves** migrates top-level targets into the
   partition (tag/home/ETF heuristic, else `other`) for review.
+- Research/construct apply folds tagged names into the sleeve roster when the
+  sleeve already exists (no new standalone bands).
 - Reconciliation tiles (budget / over-allocation warnings), overlap advisories,
   pinned convictions.
 - Changes grouped **New / Adjusted / Removed** with band-shift viz and a **Keep
@@ -281,7 +284,16 @@ The Targets landing view: allocation-segment ratios plus the staged target model
 
 Endpoints: `GET /api/staging`, `POST /api/staging/commit|discard|edit`,
 `GET /api/composition`, `POST /api/composition/propose|stage|migrate`,
+`GET /api/sleeves`, `GET /api/sleeve/<name>`,
 `GET /api/target-model/restore-preview`, `POST /api/target-model/restore`.
+
+### Allocation cockpit — `sleeve-cockpit.ts`
+Read-only view of one allocation sleeve: held vs band, plan Δ, members with
+advisory OC rank / prospect / conviction / share targets / caps. Deep link
+`?view=alloc&sleeve=<name>`. Opening a sleeve refreshes cached OC ranks used
+when rebalance is called with `?prefer_rank=1` (or `model.prefer_oc_rank`).
+
+Endpoints: `GET /api/sleeve/<name>`, `GET /api/sleeves`.
 
 ### Target state — `targetstate.ts`
 A read-only projection of where the book lands.
